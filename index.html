@@ -1,0 +1,571 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>DFW Sectionals — Timeline</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root {
+      --primary: #1e90ff;
+      --bg-glass: rgba(20, 25, 30, 0.85); /* Slightly more transparent for mobile */
+      --text-light: #fff;
+      --timeline-h: 6px;
+      --card-radius: 16px;
+    }
+    
+    html, body { height: 100%; margin: 0; background: #111; font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
+    #map { height: 100%; width: 100%; z-index: 1; background: #111; }
+
+    /* Map Performance Tweaks */
+    .leaflet-fade-anim .leaflet-tile,
+    .leaflet-zoom-anim .leaflet-zoom-animated { will-change: transform; } 
+
+    /* UI Container */
+    .ui-layer { 
+      position: absolute; 
+      bottom: 30px; 
+      left: 50%; 
+      transform: translateX(-50%); 
+      width: min(1000px, 94vw); 
+      z-index: 1000; 
+      pointer-events: none;
+    }
+
+    /* Main Control Card */
+    .controls-card { 
+      background: var(--bg-glass); 
+      backdrop-filter: blur(12px); 
+      -webkit-backdrop-filter: blur(12px);
+      padding: 16px 24px; 
+      border-radius: var(--card-radius); 
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6); 
+      border: 1px solid rgba(255,255,255,0.1); 
+      
+      display: flex; 
+      align-items: center; 
+      gap: 20px; 
+      pointer-events: auto; 
+    }
+
+    /* Play Button */
+    .btn-play { 
+      width: 44px; height: 44px; 
+      border-radius: 50%; 
+      background: var(--primary); 
+      border: none; color: white; 
+      font-size: 18px; cursor: pointer; 
+      display: grid; place-items: center; 
+      transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
+      flex-shrink: 0; padding-left: 4px; 
+      /* Larger touch target without changing visuals */
+      box-shadow: 0 4px 12px rgba(30, 144, 255, 0.3);
+    }
+    .btn-play.paused { padding-left: 0; }
+    .btn-play:active { transform: scale(0.92); }
+
+    /* Timeline Track */
+    .timeline-track-wrapper { 
+      flex: 1; 
+      position: relative; 
+      height: 40px; /* Taller hit area for touch */
+      display: flex; 
+      align-items: center; 
+      cursor: pointer; 
+      touch-action: none; /* Prevents scrolling while dragging */
+    }
+    .timeline-track { width: 100%; height: var(--timeline-h); background: rgba(255,255,255,0.2); border-radius: 4px; position: relative; }
+    .timeline-progress { position: absolute; height: 100%; background: var(--primary); border-radius: 4px; width: 0%; pointer-events: none; }
+
+    .tick { position: absolute; width: 2px; height: 12px; background: rgba(255,255,255,0.4); top: 50%; transform: translate(-50%, -50%); pointer-events: none; transition: height 0.2s, background 0.2s; }
+    .tick.active { background: #fff; height: 16px; opacity: 1; box-shadow: 0 0 8px rgba(255,255,255,0.5); }
+
+    /* Slider Handle */
+    .handle { 
+      position: absolute; 
+      width: 20px; height: 20px; 
+      background: #fff; border-radius: 50%; 
+      top: 50%; transform: translate(-50%, -50%); 
+      box-shadow: 0 0 0 4px rgba(30,144,255,0.4); 
+      cursor: grab; transition: transform 0.1s; 
+      z-index: 2;
+    }
+    /* Invisible larger hit area for the handle */
+    .handle::after {
+        content: ''; position: absolute;
+        top: -15px; left: -15px; right: -15px; bottom: -15px;
+    }
+    .handle:active { cursor: grabbing; transform: translate(-50%, -50%) scale(1.15); }
+
+    /* Info Panel */
+    .info-panel { 
+      display: flex; flex-direction: column; align-items: flex-end; 
+      min-width: 100px; color: var(--text-light); 
+      text-align: right;
+    }
+    .label-sub { font-size: 11px; opacity: 0.6; margin-top: 4px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px;}
+
+    /* Loader */
+    .loader { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.1); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; opacity: 0; transition: opacity 0.2s; margin-right: 10px;}
+    .loader.active { opacity: 1; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Toast */
+    .toast { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: #e74c3c; color: white; padding: 10px 20px; border-radius: 20px; font-weight: 600; font-size: 13px; z-index: 2000; opacity: 0; transition: opacity 0.3s; pointer-events: none; box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+    .toast.visible { opacity: 1; }
+
+    /* Dropdown styling */
+    .time-select {
+      appearance: none;
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      background: rgba(255,255,255,0.08);
+      color: var(--text-light);
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 10px;
+      padding: 8px 36px 8px 12px;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      line-height: 1;
+      outline: none;
+      cursor: pointer;
+      position: relative;
+    }
+    /* simple chevron */
+    .time-select {
+      background-image:
+        linear-gradient(45deg, transparent 50%, rgba(255,255,255,0.7) 50%),
+        linear-gradient(135deg, rgba(255,255,255,0.7) 50%, transparent 50%);
+      background-position:
+        calc(100% - 18px) calc(50% - 3px),
+        calc(100% - 12px) calc(50% - 3px);
+      background-size: 6px 6px, 6px 6px;
+      background-repeat: no-repeat;
+    }
+
+    /* --- MOBILE OPTIMIZATIONS --- */
+    @media (max-width: 640px) {
+      .ui-layer { bottom: 20px; width: 92vw; }
+      
+      .controls-card {
+        flex-wrap: wrap; /* Allow items to wrap to next line */
+        padding: 16px;   /* Reduce padding slightly */
+        gap: 12px;       /* Tighter gap */
+        justify-content: space-between;
+      }
+
+      /* Row 1: Play Button & Date Info */
+      .btn-play { order: 1; }
+      
+      .info-panel { 
+        order: 2; 
+        align-items: center; /* Center align text for balance */
+        flex-direction: row; /* Put label/sub on same line or stack differently if preferred */
+        gap: 10px;
+      }
+      .label-sub { margin-top: 0; display: none; /* Hide 'Timeline' text on mobile to save space */ }
+
+      /* Row 2: The Timeline (Full Width) */
+      .timeline-track-wrapper {
+        order: 3;
+        flex-basis: 100%; /* Force full width */
+        width: 100%;
+        margin-top: 10px; /* Add spacing from top row */
+        height: 44px; /* Even bigger touch target */
+      }
+      
+      /* Hide loader on mobile to save space, or move it */
+      .loader { position: absolute; top: 16px; left: 70px; } 
+
+      .time-select { font-size: 15px; padding: 8px 34px 8px 10px; }
+    }
+  </style>
+
+  <script async src="https://plausible.io/js/pa-oIee4DcCO6MlCK-80VGrZ.js"></script>
+  <script>
+    window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)},plausible.init=plausible.init||function(i){plausible.o=i||{}};
+    plausible.init()
+  </script>
+</head>
+<body>
+
+<div id="map"></div>
+<div class="toast" id="toast"></div>
+
+<div class="ui-layer">
+  <div class="controls-card">
+    <button class="btn-play" id="playBtn" title="Play/Pause">▶</button>
+    <div class="loader" id="loader"></div>
+    
+    <div class="timeline-track-wrapper" id="trackWrapper">
+      <div class="timeline-track">
+        <div class="timeline-progress" id="progress"></div>
+        <div id="ticksContainer"></div>
+        <div class="handle" id="handle"></div>
+      </div>
+    </div>
+
+    <div class="info-panel">
+      <select id="timeSelect" class="time-select" aria-label="Select timeframe"></select>
+      <div class="label-sub" id="lblRange">Timeline</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+
+<script>
+/** CONFIGURATION **/
+const CONFIG = {
+  rdntEndpoint: 'https://tiles.rdnt.io/tiles',
+  rdntQuery: '&rgb=1,2,3',
+  baseUrl: 'https://aeromap.io/dfw/',
+  csvUrl: 'https://hemenway.github.io/collection.csv', // Dynamic Source
+  animationSpeed: 1000,
+  initialView: { center: [32.7767, -96.7970], zoom: 10 },
+  frames: [] // Will be populated dynamically
+};
+
+/** UTILITIES **/
+const Utils = {
+  buildCogUrl: (filename) => {
+    const encoded = encodeURIComponent(CONFIG.baseUrl + filename);
+    return `${CONFIG.rdntEndpoint}?url=${encoded}${CONFIG.rdntQuery}`;
+  },
+  toast: (msg, duration=3000) => {
+    const el = document.getElementById('toast');
+    if(el) {
+      el.textContent = msg;
+      el.classList.add('visible');
+      setTimeout(() => el.classList.remove('visible'), duration);
+    }
+  },
+  formatDateId: (dateStr) => {
+    // Convert YYYY-MM-DD to YYYY MMM (e.g., 2011 Sep)
+    try {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      // Note: Date() month is 0-indexed
+      const date = new Date(y, m - 1, d);
+      return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+    } catch(e) {
+      return dateStr;
+    }
+  }
+};
+
+/** DATA LOADER **/
+async function loadData() {
+  return new Promise((resolve, reject) => {
+    Papa.parse(CONFIG.csvUrl, {
+      download: true,
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        try {
+          // 1. Group by date
+          const framesMap = {};
+          
+          results.data.forEach(row => {
+            // Skip rows without filenames or invalid dates
+            if (!row.filename || !row.date_iso || row.date_iso === '?') return;
+
+            const date = row.date_iso;
+            if (!framesMap[date]) {
+              framesMap[date] = { date: date, files: [] };
+            }
+            
+            // Handle multiple files in one cell (e.g. "file1.tif, file2.tif")
+            const files = row.filename.split(',').map(s => s.trim()).filter(s => s.length > 0);
+            framesMap[date].files.push(...files);
+          });
+
+          // 2. Convert to array and sort
+          const framesList = Object.values(framesMap).sort((a, b) => {
+            return new Date(a.date) - new Date(b.date);
+          });
+
+          // 3. Add ID formatting
+          CONFIG.frames = framesList.map(f => ({
+            id: Utils.formatDateId(f.date),
+            date: f.date,
+            files: f.files
+          }));
+
+          resolve();
+        } catch (e) {
+          console.error("Data processing error", e);
+          Utils.toast("Error processing CSV data");
+          reject(e);
+        }
+      },
+      error: (err) => {
+        console.error("CSV Load Error", err);
+        Utils.toast("Failed to load timeline data");
+        reject(err);
+      }
+    });
+  });
+}
+
+/** MAP CONTROLLER **/
+class MapController {
+  constructor(mapId) {
+    this.map = L.map(mapId, {
+      zoomControl: false,
+      fadeAnimation: true,
+      zoomAnimation: true,
+      attributionControl: false 
+    }).setView(CONFIG.initialView.center, CONFIG.initialView.zoom);
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      maxZoom: 20, opacity: 1, zIndex: 1
+    }).addTo(this.map);
+    
+    L.control.zoom({ position: 'topright' }).addTo(this.map);
+
+    this.cache = {};
+    this.activeLayers = [];
+  }
+
+  async getLayerData(filename) {
+    if (this.cache[filename]) return this.cache[filename];
+    try {
+      const url = Utils.buildCogUrl(filename);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const tileJson = await res.json();
+
+      const tileUrl = tileJson.tiles[0];
+      const layer = L.tileLayer(tileUrl, {
+        minZoom: tileJson.minzoom || 0,
+        maxZoom: 22,
+        tileSize: 256,
+        opacity: 0,
+        zIndex: 10,
+        keepBuffer: 2
+      });
+
+      this.cache[filename] = { layer, bounds: tileJson.bounds };
+      return this.cache[filename];
+    } catch (e) {
+      console.error(`Failed to load ${filename}`, e);
+      // Suppress individual toast errors to avoid spamming on load
+      return null;
+    }
+  }
+
+  async preloadFrame(index) {
+    if (!CONFIG.frames[index]) return;
+    setTimeout(() => {
+        CONFIG.frames[index].files.forEach(f => this.getLayerData(f));
+    }, 200);
+  }
+
+  waitForLayer(layer) {
+    return new Promise(resolve => {
+      if (layer._tiles && Object.keys(layer._tiles).length > 0) return resolve();
+      const onload = () => { layer.off('load', onload); resolve(); };
+      layer.on('load', onload);
+      setTimeout(() => { layer.off('load', onload); resolve(); }, 2000); 
+    });
+  }
+
+  async showFrame(index) {
+    const frame = CONFIG.frames[index];
+    const loader = document.getElementById('loader');
+
+    const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
+
+    const layerDataList = await Promise.all(frame.files.map(f => this.getLayerData(f)));
+
+    const newLayers = [];
+    layerDataList.forEach(d => {
+      if (d && d.layer) {
+        if (!this.map.hasLayer(d.layer)) {
+          d.layer.setOpacity(0);
+          d.layer.addTo(this.map);
+        }
+        newLayers.push(d.layer);
+      }
+    });
+
+    const isMobile = window.innerWidth < 640;
+    if (!isMobile) {
+        await Promise.all(newLayers.map(l => this.waitForLayer(l)));
+    }
+
+    requestAnimationFrame(() => {
+      newLayers.forEach(l => l.setOpacity(1));
+      this.activeLayers.forEach(l => { if (!newLayers.includes(l)) this.map.removeLayer(l); });
+      this.activeLayers = newLayers;
+
+      clearTimeout(spinnerTimeout);
+      loader.classList.remove('active');
+    });
+
+    const nextIdx = (index + 1) % CONFIG.frames.length;
+    this.preloadFrame(nextIdx);
+  }
+}
+
+/** TIMELINE CONTROLLER **/
+class TimelineApp {
+  constructor(mapController) {
+    this.mapCtrl = mapController;
+    this.frames = CONFIG.frames;
+
+    const dates = this.frames.map(f => new Date(f.date).getTime());
+    const min = Math.min(...dates);
+    const max = Math.max(...dates);
+    this.frames.forEach((f, i) => { const d = dates[i]; f.pct = max === min ? 0 : ((d - min) / (max - min)) * 100; });
+
+    this.currentIndex = 0;
+    this.isPlaying = false;
+    this.timer = null;
+
+    this.ui = {
+      playBtn: document.getElementById('playBtn'),
+      progress: document.getElementById('progress'),
+      handle: document.getElementById('handle'),
+      track: document.getElementById('trackWrapper'),
+      timeSelect: document.getElementById('timeSelect'),
+      lblRange: document.getElementById('lblRange'),
+      ticks: document.getElementById('ticksContainer')
+    };
+
+    this.initUI();
+    this.update(0);
+
+    window.addEventListener('keydown', (e) => {
+      if (e.key === ' ') { this.togglePlay(); e.preventDefault(); }
+      if (e.key === 'ArrowRight') this.step(1);
+      if (e.key === 'ArrowLeft') this.step(-1);
+    });
+  }
+
+  initUI() {
+    this.ui.lblRange.textContent = `${this.frames[0].id} — ${this.frames[this.frames.length-1].id}`;
+
+    // populate dropdown
+    this.ui.timeSelect.innerHTML = '';
+    this.frames.forEach((f, i) => {
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = f.id; 
+      this.ui.timeSelect.appendChild(opt);
+    });
+    this.ui.timeSelect.addEventListener('change', () => {
+      const idx = parseInt(this.ui.timeSelect.value, 10);
+      if (!Number.isNaN(idx) && idx >= 0 && idx < this.frames.length) {
+        this.stop(); 
+        this.update(idx);
+      }
+    });
+
+    // ticks
+    this.frames.forEach((f) => {
+      const tick = document.createElement('div');
+      tick.className = 'tick';
+      tick.style.left = `${f.pct}%`;
+      this.ui.ticks.appendChild(tick);
+    });
+
+    // play
+    this.ui.playBtn.onclick = () => this.togglePlay();
+
+    // drag on the track/handle
+    const handleInput = (clientX) => {
+      const rect = this.ui.track.getBoundingClientRect();
+      const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
+      const pct = (x / rect.width) * 100;
+
+      let closestIdx = 0, minDiff = Infinity;
+      this.frames.forEach((f, i) => {
+        const diff = Math.abs(f.pct - pct);
+        if (diff < minDiff) { minDiff = diff; closestIdx = i; }
+      });
+
+      if (closestIdx !== this.currentIndex) this.update(closestIdx);
+    };
+
+    let isDragging = false;
+    const startDrag = (e) => { 
+        isDragging = true; 
+        this.stop(); 
+        handleInput((e.touches?.[0]?.clientX) ?? e.clientX); 
+    };
+    const moveDrag  = (e) => { if (isDragging) handleInput((e.touches?.[0]?.clientX) ?? e.clientX); };
+    const endDrag   = () => { isDragging = false; };
+
+    this.ui.track.addEventListener('mousedown', startDrag);
+    this.ui.track.addEventListener('touchstart', startDrag, {passive:false});
+    window.addEventListener('mousemove', moveDrag);
+    window.addEventListener('touchmove', moveDrag, {passive:false});
+    window.addEventListener('mouseup', endDrag);
+    window.addEventListener('touchend', endDrag);
+  }
+
+  update(index) {
+    this.currentIndex = index;
+    const f = this.frames[index];
+
+    if (this.ui.timeSelect && this.ui.timeSelect.value !== String(index)) {
+      this.ui.timeSelect.value = String(index);
+    }
+
+    this.ui.handle.style.left = `${f.pct}%`;
+    this.ui.progress.style.width = `${f.pct}%`;
+
+    Array.from(this.ui.ticks.children).forEach((tick, i) => {
+      if (i === index) tick.classList.add('active'); else tick.classList.remove('active');
+    });
+
+    this.mapCtrl.showFrame(index);
+  }
+
+  step(dir) {
+    this.stop();
+    let next = this.currentIndex + dir;
+    if (next >= this.frames.length) next = 0;
+    if (next < 0) next = this.frames.length - 1;
+    this.update(next);
+  }
+
+  togglePlay() {
+    if (this.isPlaying) this.stop(); else this.play();
+  }
+
+  play() {
+    this.isPlaying = true;
+    this.ui.playBtn.textContent = '❚❚';
+    this.ui.playBtn.classList.add('paused');
+    this.timer = setInterval(() => this.update((this.currentIndex + 1) % this.frames.length), CONFIG.animationSpeed);
+  }
+
+  stop() {
+    this.isPlaying = false;
+    this.ui.playBtn.textContent = '▶';
+    this.ui.playBtn.classList.remove('paused');
+    clearInterval(this.timer);
+  }
+}
+
+// Initialize Application
+async function initApp() {
+  await loadData(); // Fetch and parse CSV first
+  
+  if (CONFIG.frames.length === 0) {
+    Utils.toast("No valid frames found in CSV");
+    return;
+  }
+  
+  const mapCtrl = new MapController('map');
+  new TimelineApp(mapCtrl);
+}
+
+document.addEventListener('DOMContentLoaded', initApp);
+</script>
+</body>
+</html>
