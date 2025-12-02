@@ -8,7 +8,7 @@
   <style>
     :root {
       --primary: #1e90ff;
-      --bg-glass: rgba(20, 25, 30, 0.85); /* Slightly more transparent for mobile */
+      --bg-glass: rgba(20, 25, 30, 0.85);
       --text-light: #fff;
       --timeline-h: 6px;
       --card-radius: 16px;
@@ -41,7 +41,6 @@
       border-radius: var(--card-radius); 
       box-shadow: 0 8px 32px rgba(0,0,0,0.6); 
       border: 1px solid rgba(255,255,255,0.1); 
-      
       display: flex; 
       align-items: center; 
       gap: 20px; 
@@ -58,7 +57,6 @@
       display: grid; place-items: center; 
       transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
       flex-shrink: 0; padding-left: 4px; 
-      /* Larger touch target without changing visuals */
       box-shadow: 0 4px 12px rgba(30, 144, 255, 0.3);
     }
     .btn-play.paused { padding-left: 0; }
@@ -68,11 +66,11 @@
     .timeline-track-wrapper { 
       flex: 1; 
       position: relative; 
-      height: 40px; /* Taller hit area for touch */
+      height: 40px; 
       display: flex; 
       align-items: center; 
       cursor: pointer; 
-      touch-action: none; /* Prevents scrolling while dragging */
+      touch-action: none; 
     }
     .timeline-track { width: 100%; height: var(--timeline-h); background: rgba(255,255,255,0.2); border-radius: 4px; position: relative; }
     .timeline-progress { position: absolute; height: 100%; background: var(--primary); border-radius: 4px; width: 0%; pointer-events: none; }
@@ -90,7 +88,6 @@
       cursor: grab; transition: transform 0.1s; 
       z-index: 2;
     }
-    /* Invisible larger hit area for the handle */
     .handle::after {
         content: ''; position: absolute;
         top: -15px; left: -15px; right: -15px; bottom: -15px;
@@ -131,9 +128,6 @@
       outline: none;
       cursor: pointer;
       position: relative;
-    }
-    /* simple chevron */
-    .time-select {
       background-image:
         linear-gradient(45deg, transparent 50%, rgba(255,255,255,0.7) 50%),
         linear-gradient(135deg, rgba(255,255,255,0.7) 50%, transparent 50%);
@@ -144,40 +138,45 @@
       background-repeat: no-repeat;
     }
 
+    /* Controls: Support + Brand */
+    .leaflet-control.support-control a {
+      display: inline-block;
+      text-decoration: none;
+      background: var(--bg-glass);
+      border: 1px solid rgba(255,255,255,0.12);
+      padding: 6px 10px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 12px;
+      color: #fff;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+    .leaflet-control.support-control a:hover { filter: brightness(1.1); }
+
+    .leaflet-control.brand-badge {
+      background: var(--bg-glass);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 6px 12px;
+      font-weight: 800;
+      letter-spacing: 0.3px;
+      color: #fff;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      user-select: none;
+      font-size: 13px;
+    }
+
     /* --- MOBILE OPTIMIZATIONS --- */
     @media (max-width: 640px) {
       .ui-layer { bottom: 20px; width: 92vw; }
-      
-      .controls-card {
-        flex-wrap: wrap; /* Allow items to wrap to next line */
-        padding: 16px;   /* Reduce padding slightly */
-        gap: 12px;       /* Tighter gap */
-        justify-content: space-between;
-      }
-
-      /* Row 1: Play Button & Date Info */
+      .controls-card { flex-wrap: wrap; padding: 16px; gap: 12px; justify-content: space-between; }
       .btn-play { order: 1; }
-      
-      .info-panel { 
-        order: 2; 
-        align-items: center; /* Center align text for balance */
-        flex-direction: row; /* Put label/sub on same line or stack differently if preferred */
-        gap: 10px;
-      }
-      .label-sub { margin-top: 0; display: none; /* Hide 'Timeline' text on mobile to save space */ }
-
-      /* Row 2: The Timeline (Full Width) */
-      .timeline-track-wrapper {
-        order: 3;
-        flex-basis: 100%; /* Force full width */
-        width: 100%;
-        margin-top: 10px; /* Add spacing from top row */
-        height: 44px; /* Even bigger touch target */
-      }
-      
-      /* Hide loader on mobile to save space, or move it */
+      .info-panel { order: 2; align-items: center; flex-direction: row; gap: 10px; }
+      .label-sub { margin-top: 0; display: none; }
+      .timeline-track-wrapper { order: 3; flex-basis: 100%; width: 100%; margin-top: 10px; height: 44px; }
       .loader { position: absolute; top: 16px; left: 70px; } 
-
       .time-select { font-size: 15px; padding: 8px 34px 8px 10px; }
     }
   </style>
@@ -243,10 +242,8 @@ const Utils = {
     }
   },
   formatDateId: (dateStr) => {
-    // Convert YYYY-MM-DD to YYYY MMM (e.g., 2011 Sep)
     try {
       const [y, m, d] = dateStr.split('-').map(Number);
-      // Note: Date() month is 0-indexed
       const date = new Date(y, m - 1, d);
       return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
     } catch(e) {
@@ -264,35 +261,22 @@ async function loadData() {
       skipEmptyLines: true,
       complete: (results) => {
         try {
-          // 1. Group by date
           const framesMap = {};
-          
           results.data.forEach(row => {
-            // Skip rows without filenames or invalid dates
             if (!row.filename || !row.date_iso || row.date_iso === '?') return;
-
             const date = row.date_iso;
-            if (!framesMap[date]) {
-              framesMap[date] = { date: date, files: [] };
-            }
-            
-            // Handle multiple files in one cell (e.g. "file1.tif, file2.tif")
+            if (!framesMap[date]) framesMap[date] = { date: date, files: [] };
             const files = row.filename.split(',').map(s => s.trim()).filter(s => s.length > 0);
             framesMap[date].files.push(...files);
           });
-
-          // 2. Convert to array and sort
           const framesList = Object.values(framesMap).sort((a, b) => {
             return new Date(a.date) - new Date(b.date);
           });
-
-          // 3. Add ID formatting
           CONFIG.frames = framesList.map(f => ({
             id: Utils.formatDateId(f.date),
             date: f.date,
             files: f.files
           }));
-
           resolve();
         } catch (e) {
           console.error("Data processing error", e);
@@ -316,13 +300,38 @@ class MapController {
       zoomControl: false,
       fadeAnimation: true,
       zoomAnimation: true,
-      attributionControl: false 
+      attributionControl: true
     }).setView(CONFIG.initialView.center, CONFIG.initialView.zoom);
 
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-      maxZoom: 20, opacity: 1, zIndex: 1
+      maxZoom: 20, opacity: 1, zIndex: 1,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; &copy; <a href="https://carto.com/attributions">CARTO</a>'
     }).addTo(this.map);
-    
+
+    // --- Top-left brand badge: "AeroMap"
+    const BrandControl = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function () {
+        const div = L.DomUtil.create('div', 'leaflet-control brand-badge');
+        div.innerHTML = 'AeroMap';
+        L.DomEvent.disableClickPropagation(div);
+        return div;
+      }
+    });
+    this.map.addControl(new BrandControl());
+
+    // --- Bottom-left support button
+    const SupportControl = L.Control.extend({
+      options: { position: 'bottomleft' },
+      onAdd: function() {
+        const div = L.DomUtil.create('div', 'leaflet-control support-control');
+        div.innerHTML = `<a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" aria-label="Support the project">❤️ Support the project</a>`;
+        L.DomEvent.disableClickPropagation(div);
+        return div;
+      }
+    });
+    this.map.addControl(new SupportControl());
+
     L.control.zoom({ position: 'topright' }).addTo(this.map);
 
     this.cache = {};
@@ -351,7 +360,6 @@ class MapController {
       return this.cache[filename];
     } catch (e) {
       console.error(`Failed to load ${filename}`, e);
-      // Suppress individual toast errors to avoid spamming on load
       return null;
     }
   }
@@ -359,7 +367,7 @@ class MapController {
   async preloadFrame(index) {
     if (!CONFIG.frames[index]) return;
     setTimeout(() => {
-        CONFIG.frames[index].files.forEach(f => this.getLayerData(f));
+      CONFIG.frames[index].files.forEach(f => this.getLayerData(f));
     }, 200);
   }
 
