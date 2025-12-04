@@ -36,6 +36,19 @@
       box-sizing: border-box;
     }
 
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+      }
+      to {
+        opacity: 1;
+      }
+    }
+
+    body {
+      animation: fadeIn 0.3s ease-in;
+    }
+
     #map {
       height: 100%;
       width: 100%;
@@ -301,6 +314,16 @@
       width: 3px;
       opacity: 1;
       box-shadow: 0 0 12px var(--primary);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        box-shadow: 0 0 12px var(--primary);
+      }
+      50% {
+        box-shadow: 0 0 20px var(--primary), 0 0 30px rgba(30, 144, 255, 0.5);
+      }
     }
 
     .tick.major {
@@ -648,6 +671,47 @@
       margin-top: 8px;
     }
 
+    /* Speed Control */
+    .speed-selector {
+      display: flex;
+      gap: 4px;
+      margin-top: 8px;
+      font-size: 11px;
+    }
+
+    .speed-btn {
+      flex: 1;
+      padding: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s var(--transition-smooth);
+      text-align: center;
+    }
+
+    .speed-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-light);
+    }
+
+    .speed-btn.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: white;
+    }
+
+    .speed-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      text-align: center;
+      margin-bottom: 4px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
     /* Opacity Control */
     .opacity-control {
       position: absolute;
@@ -810,6 +874,14 @@
       .tick-label {
         display: none;
       }
+
+      .speed-selector {
+        font-size: 10px;
+      }
+
+      .speed-btn {
+        padding: 5px;
+      }
     }
 
     @media (min-width: 768px) {
@@ -932,6 +1004,16 @@
       <div class="info-panel">
         <select id="timeSelect" class="time-select" aria-label="Select timeframe"></select>
         <div class="label-sub" id="lblRange">Timeline</div>
+      </div>
+    </div>
+    
+    <!-- Speed Control for Play -->
+    <div style="text-align: center; margin-top: 12px;">
+      <div class="speed-label">Animation Speed</div>
+      <div class="speed-selector">
+        <button class="speed-btn" data-speed="3000">Slow</button>
+        <button class="speed-btn active" data-speed="2000">Normal</button>
+        <button class="speed-btn" data-speed="1000">Fast</button>
       </div>
     </div>
   </div>
@@ -1159,6 +1241,7 @@
         this.currentIndex = 0;
         this.isPlaying = false;
         this.playInterval = null;
+        this.playSpeed = 2000; // milliseconds
 
         this.ui = {
           prevBtn: document.getElementById('prevBtn'),
@@ -1283,15 +1366,50 @@
               copyBtn.classList.remove('copied');
             }, 2000);
           } catch (err) {
-            shareUrl.select();
-            document.execCommand('copy');
-            Utils.toast('URL copied to clipboard');
+            // Fallback for browsers without clipboard API support
+            try {
+              shareUrl.select();
+              shareUrl.setSelectionRange(0, 99999); // For mobile devices
+              const success = document.execCommand('copy');
+              if (success) {
+                copyBtn.textContent = '✓ Copied';
+                copyBtn.classList.add('copied');
+                setTimeout(() => {
+                  copyBtn.textContent = 'Copy';
+                  copyBtn.classList.remove('copied');
+                }, 2000);
+              } else {
+                Utils.toast('Please manually copy the URL');
+              }
+            } catch (fallbackErr) {
+              Utils.toast('Please manually copy the URL');
+            }
           }
         });
 
         // Play button
         this.ui.playBtn?.addEventListener('click', () => {
           this.togglePlay();
+        });
+
+        // Speed control buttons
+        document.querySelectorAll('.speed-btn').forEach(btn => {
+          btn.addEventListener('click', (e) => {
+            const speed = parseInt(e.target.dataset.speed);
+            this.playSpeed = speed;
+            
+            // Update active state
+            document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            
+            // If currently playing, restart with new speed
+            if (this.isPlaying) {
+              clearInterval(this.playInterval);
+              this.playInterval = setInterval(() => {
+                this.step(1);
+              }, this.playSpeed);
+            }
+          });
         });
       }
 
@@ -1321,7 +1439,7 @@
           playBtn.title = 'Pause (Space)';
           this.playInterval = setInterval(() => {
             this.step(1);
-          }, 2000);
+          }, this.playSpeed);
         } else {
           playBtn.textContent = '▶';
           playBtn.title = 'Play (Space)';
