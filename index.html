@@ -5,8 +5,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>AeroMap - Historical Aeronautical Chart Viewer</title>
-  <meta name="description" content="Explore historical aeronautical charts and sectional maps. View how aviation charts have evolved over time with AeroMap's interactive timeline viewer." />
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+  <meta name="description"
+    content="Explore historical aeronautical charts and sectional maps. View how aviation charts have evolved over time with AeroMap's interactive timeline viewer." />
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     :root {
@@ -40,6 +42,7 @@
       from {
         opacity: 0;
       }
+
       to {
         opacity: 1;
       }
@@ -91,6 +94,7 @@
       align-items: center;
       gap: 8px;
       transition: color 0.2s var(--transition-smooth);
+      white-space: nowrap;
     }
 
     .site-logo:hover {
@@ -318,9 +322,11 @@
     }
 
     @keyframes pulse {
-      0%, 100% {
+      0%,
+      100% {
         box-shadow: 0 0 12px var(--primary);
       }
+
       50% {
         box-shadow: 0 0 20px var(--primary), 0 0 30px rgba(30, 144, 255, 0.5);
       }
@@ -377,7 +383,7 @@
       transform: translate(-50%, -50%) scale(1.2);
     }
 
-    /* Info Panel */
+    /* Info Panel (right of controls) */
     .info-panel {
       display: flex;
       flex-direction: column;
@@ -481,7 +487,6 @@
     }
 
     /* Controls: Brand */
-
     .leaflet-control.brand-badge {
       background: var(--bg-glass);
       border: 1px solid rgba(255, 255, 255, 0.12);
@@ -781,55 +786,94 @@
 
     /* --- MOBILE OPTIMIZATIONS --- */
     @media (max-width: 640px) {
+      :root {
+        --card-radius: 14px;
+        --timeline-h: 5px;
+      }
+
       .header-bar {
-        height: 60px;
-        padding: 0 16px;
+        height: 56px;
+        padding: 0 12px;
       }
 
       .site-logo {
-        font-size: 20px;
+        font-size: 19px;
       }
 
       .site-tagline {
         display: none;
       }
 
+      .header-actions {
+        gap: 8px;
+      }
+
       .header-actions .icon-btn {
-        width: 36px;
-        height: 36px;
+        width: 34px;
+        height: 34px;
         font-size: 16px;
+        border-radius: 9px;
+      }
+
+      /* Hide fullscreen button on mobile */
+      #fullscreenBtn {
+        display: none;
       }
 
       .chart-info {
-        top: 70px;
-        left: 16px;
-        right: 16px;
+        top: 64px;
+        left: 12px;
+        right: 12px;
         max-width: none;
+        padding: 10px 14px;
+        border-radius: 14px;
+      }
+
+      .chart-info h3 {
+        font-size: 13px;
+      }
+
+      .chart-info p {
+        font-size: 11px;
       }
 
       .opacity-control,
       .share-panel {
         top: auto;
         bottom: 140px;
-        right: 16px;
-        left: 16px;
+        right: 12px;
+        left: 12px;
         min-width: 0;
+        padding: 14px;
+        border-radius: 14px;
       }
 
       .ui-layer {
-        bottom: 20px;
+        bottom: 18px;
         width: 92vw;
       }
 
       .controls-card {
         flex-wrap: wrap;
-        padding: 16px;
-        gap: 12px;
+        padding: 14px;
+        gap: 10px;
         justify-content: space-between;
+        border-radius: var(--card-radius);
       }
 
       .jog-controls {
         order: 1;
+      }
+
+      .btn-nav {
+        width: 36px;
+        height: 36px;
+        font-size: 16px;
+      }
+
+      .btn-play {
+        width: 40px;
+        height: 40px;
       }
 
       .info-panel {
@@ -837,6 +881,7 @@
         align-items: center;
         flex-direction: row;
         gap: 10px;
+        min-width: auto;
       }
 
       .label-sub {
@@ -848,19 +893,19 @@
         order: 3;
         flex-basis: 100%;
         width: 100%;
-        margin-top: 10px;
-        height: 50px;
+        margin-top: 6px;
+        height: 46px;
       }
 
       .loader {
         position: absolute;
-        top: 16px;
-        left: 110px;
+        top: 14px;
+        left: 105px;
       }
 
       .time-select {
         font-size: 15px;
-        padding: 8px 34px 8px 10px;
+        padding: 8px 32px 8px 10px;
       }
 
       .shortcuts-content {
@@ -913,9 +958,12 @@
       <button class="icon-btn" id="opacityBtn" title="Adjust Opacity">◐</button>
       <button class="icon-btn" id="fullscreenBtn" title="Fullscreen (F)">⛶</button>
       <button class="icon-btn" id="helpBtn" title="Keyboard Shortcuts (?)">?</button>
-      <a href="https://github.com/hemenway/AeroMap" target="_blank" rel="noopener" class="icon-btn" title="View on GitHub">
+      <a href="https://github.com/hemenway/AeroMap" target="_blank" rel="noopener" class="icon-btn"
+        title="View on GitHub">
         <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
-          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58[...]">
+          </path>
         </svg>
       </a>
     </div>
@@ -990,7 +1038,7 @@
         <button class="btn-play" id="playBtn" title="Play/Pause (Space)">▶</button>
         <button class="btn-nav" id="nextBtn" title="Next Timeframe (→)">→</button>
       </div>
-      
+
       <div class="loader" id="loader"></div>
 
       <div class="timeline-track-wrapper" id="trackWrapper">
@@ -998,606 +1046,4 @@
           <div class="timeline-progress" id="progress"></div>
           <div id="ticksContainer"></div>
           <div class="handle" id="handle"></div>
-        </div>
-      </div>
-
-      <div class="info-panel">
-        <select id="timeSelect" class="time-select" aria-label="Select timeframe"></select>
-        <div class="label-sub" id="lblRange">Timeline</div>
-      </div>
-    </div>
-    
-    <!-- Speed Control for Play -->
-    <div style="text-align: center; margin-top: 12px;">
-      <div class="speed-label">Animation Speed</div>
-      <div class="speed-selector">
-        <button class="speed-btn" data-speed="3000">Slow</button>
-        <button class="speed-btn active" data-speed="2000">Normal</button>
-        <button class="speed-btn" data-speed="1000">Fast</button>
-      </div>
-    </div>
-  </div>
-
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-
-  <script>
-    /** CONFIGURATION **/
-    const CONFIG = {
-      rdntEndpoint: 'https://tiles.rdnt.io/tiles',
-      rdntQuery: '&rgb=1,2,3',
-      baseUrl: 'https://aeromap.io/dfw/',
-      csvUrl: 'https://hemenway.github.io/collection.csv', // Dynamic Source
-      initialView: { center: [32.7767, -96.7970], zoom: 10 },
-      frames: [] // Will be populated dynamically
-    };
-
-    /** UTILITIES **/
-    const Utils = {
-      buildCogUrl: (filename) => {
-        const encoded = encodeURIComponent(CONFIG.baseUrl + filename);
-        return `${CONFIG.rdntEndpoint}?url=${encoded}${CONFIG.rdntQuery}`;
-      },
-      toast: (msg, duration = 3000) => {
-        const el = document.getElementById('toast');
-        if (el) {
-          el.textContent = msg;
-          el.classList.add('visible');
-          setTimeout(() => el.classList.remove('visible'), duration);
-        }
-      },
-      formatDateId: (dateStr) => {
-        try {
-          const [y, m, d] = dateStr.split('-').map(Number);
-          const date = new Date(y, m - 1, d);
-          return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
-        } catch (e) {
-          return dateStr;
-        }
-      },
-      toggleFullscreen: () => {
-        if (!document.fullscreenElement) {
-          document.documentElement.requestFullscreen().catch(err => {
-            Utils.toast(`Error entering fullscreen: ${err.message}`);
-          });
-        } else {
-          if (document.exitFullscreen) {
-            document.exitFullscreen();
-          }
-        }
-      }
-    };
-
-    /** DATA LOADER **/
-    async function loadData() {
-      return new Promise((resolve, reject) => {
-        Papa.parse(CONFIG.csvUrl, {
-          download: true,
-          header: true,
-          skipEmptyLines: true,
-          complete: (results) => {
-            try {
-              const framesMap = {};
-              results.data.forEach(row => {
-                if (!row.filename || !row.date_iso || row.date_iso === '?') return;
-                const date = row.date_iso;
-                if (!framesMap[date]) framesMap[date] = { date: date, files: [] };
-                const files = row.filename.split(',').map(s => s.trim()).filter(s => s.length > 0);
-                framesMap[date].files.push(...files);
-              });
-              const framesList = Object.values(framesMap).sort((a, b) => {
-                return new Date(a.date) - new Date(b.date);
-              });
-              CONFIG.frames = framesList.map(f => ({
-                id: Utils.formatDateId(f.date),
-                date: f.date,
-                files: f.files
-              }));
-              resolve();
-            } catch (e) {
-              console.error("Data processing error", e);
-              Utils.toast("Error processing CSV data");
-              reject(e);
-            }
-          },
-          error: (err) => {
-            console.error("CSV Load Error", err);
-            Utils.toast("Failed to load timeline data");
-            reject(err);
-          }
-        });
-      });
-    }
-
-    /** MAP CONTROLLER **/
-    class MapController {
-      constructor(mapId) {
-        this.map = L.map(mapId, {
-          zoomControl: false,
-          fadeAnimation: true,
-          zoomAnimation: true,
-          attributionControl: true
-        }).setView(CONFIG.initialView.center, CONFIG.initialView.zoom);
-
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-          maxZoom: 20, opacity: 1, zIndex: 1,
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; &copy; <a href="https://carto.com/attributions">CARTO</a>'
-        }).addTo(this.map);
-
-        // --- Top-left brand badge: "AeroMap"
-        const BrandControl = L.Control.extend({
-          options: { position: 'topleft' },
-          onAdd: function () {
-            const div = L.DomUtil.create('div', 'leaflet-control brand-badge');
-            div.innerHTML = 'AeroMap';
-            L.DomEvent.disableClickPropagation(div);
-            return div;
-          }
-        });
-        this.map.addControl(new BrandControl());
-
-        L.control.zoom({ position: 'topright' }).addTo(this.map);
-
-        this.cache = {};
-        this.activeLayers = [];
-      }
-
-      async getLayerData(filename) {
-        if (this.cache[filename]) return this.cache[filename];
-        try {
-          const url = Utils.buildCogUrl(filename);
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const tileJson = await res.json();
-
-          const tileUrl = tileJson.tiles[0];
-          const layer = L.tileLayer(tileUrl, {
-            minZoom: tileJson.minzoom || 0,
-            maxZoom: 22,
-            tileSize: 256,
-            opacity: 0,
-            zIndex: 10,
-            keepBuffer: 2
-          });
-
-          this.cache[filename] = { layer, bounds: tileJson.bounds };
-          return this.cache[filename];
-        } catch (e) {
-          console.error(`Failed to load ${filename}`, e);
-          return null;
-        }
-      }
-
-      async preloadFrame(index) {
-        if (!CONFIG.frames[index]) return;
-        setTimeout(() => {
-          CONFIG.frames[index].files.forEach(f => this.getLayerData(f));
-        }, 200);
-      }
-
-      waitForLayer(layer) {
-        return new Promise(resolve => {
-          if (layer._tiles && Object.keys(layer._tiles).length > 0) return resolve();
-          const onload = () => { layer.off('load', onload); resolve(); };
-          layer.on('load', onload);
-          setTimeout(() => { layer.off('load', onload); resolve(); }, 2000);
-        });
-      }
-
-      async showFrame(index) {
-        const frame = CONFIG.frames[index];
-        const loader = document.getElementById('loader');
-
-        const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
-
-        const layerDataList = await Promise.all(frame.files.map(f => this.getLayerData(f)));
-
-        const newLayers = [];
-        layerDataList.forEach(d => {
-          if (d && d.layer) {
-            if (!this.map.hasLayer(d.layer)) {
-              d.layer.setOpacity(0);
-              d.layer.addTo(this.map);
-            }
-            newLayers.push(d.layer);
-          }
-        });
-
-        const isMobile = window.innerWidth < 640;
-        if (!isMobile) {
-          await Promise.all(newLayers.map(l => this.waitForLayer(l)));
-        }
-
-        const opacityValue = parseFloat(document.getElementById('opacitySlider')?.value || 100) / 100;
-        requestAnimationFrame(() => {
-          newLayers.forEach(l => l.setOpacity(opacityValue));
-          this.activeLayers.forEach(l => { if (!newLayers.includes(l)) this.map.removeLayer(l); });
-          this.activeLayers = newLayers;
-
-          clearTimeout(spinnerTimeout);
-          loader.classList.remove('active');
-        });
-
-        const nextIdx = (index + 1) % CONFIG.frames.length;
-        this.preloadFrame(nextIdx);
-      }
-
-      setOpacity(opacity) {
-        this.activeLayers.forEach(layer => layer.setOpacity(opacity));
-      }
-    }
-
-    /** TIMELINE CONTROLLER **/
-    class TimelineApp {
-      constructor(mapController) {
-        this.mapCtrl = mapController;
-        this.frames = CONFIG.frames;
-
-        const dates = this.frames.map(f => new Date(f.date).getTime());
-        const min = Math.min(...dates);
-        const max = Math.max(...dates);
-        this.frames.forEach((f, i) => { const d = dates[i]; f.pct = max === min ? 0 : ((d - min) / (max - min)) * 100; });
-
-        this.currentIndex = 0;
-        this.isPlaying = false;
-        this.playInterval = null;
-        this.playSpeed = 2000; // milliseconds
-
-        this.ui = {
-          prevBtn: document.getElementById('prevBtn'),
-          nextBtn: document.getElementById('nextBtn'),
-          playBtn: document.getElementById('playBtn'),
-          progress: document.getElementById('progress'),
-          handle: document.getElementById('handle'),
-          track: document.getElementById('trackWrapper'),
-          timeSelect: document.getElementById('timeSelect'),
-          lblRange: document.getElementById('lblRange'),
-          ticks: document.getElementById('ticksContainer')
-        };
-
-        this.initUI();
-        this.initControls();
-        this.update(0);
-
-        window.addEventListener('keydown', (e) => {
-          if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-          
-          if (e.key === 'ArrowRight') this.step(1);
-          if (e.key === 'ArrowLeft') this.step(-1);
-          if (e.key === ' ') {
-            e.preventDefault();
-            this.togglePlay();
-          }
-          if (e.key === 'f' || e.key === 'F') {
-            e.preventDefault();
-            Utils.toggleFullscreen();
-          }
-          if (e.key === 's' || e.key === 'S') {
-            e.preventDefault();
-            const sharePanel = document.getElementById('sharePanel');
-            const wasVisible = sharePanel.classList.contains('visible');
-            this.hideAllPanels();
-            if (!wasVisible) {
-              this.updateShareUrl();
-              sharePanel.classList.add('visible');
-            }
-          }
-          if (e.key === '?') {
-            e.preventDefault();
-            document.getElementById('shortcutsOverlay').classList.add('visible');
-          }
-          if (e.key === 'Escape') {
-            document.getElementById('shortcutsOverlay').classList.remove('visible');
-            this.hideAllPanels();
-          }
-        });
-      }
-
-      initControls() {
-        // Chart info visibility
-        setTimeout(() => {
-          document.getElementById('chartInfo').classList.add('visible');
-          setTimeout(() => {
-            document.getElementById('chartInfo').classList.remove('visible');
-          }, 5000);
-        }, 1000);
-
-        // Help button
-        document.getElementById('helpBtn')?.addEventListener('click', () => {
-          document.getElementById('shortcutsOverlay').classList.add('visible');
-          this.hideAllPanels(['shortcutsOverlay']);
-        });
-
-        document.getElementById('closeShortcuts')?.addEventListener('click', () => {
-          document.getElementById('shortcutsOverlay').classList.remove('visible');
-        });
-
-        document.getElementById('shortcutsOverlay')?.addEventListener('click', (e) => {
-          if (e.target.id === 'shortcutsOverlay') {
-            document.getElementById('shortcutsOverlay').classList.remove('visible');
-          }
-        });
-
-        // Fullscreen button
-        document.getElementById('fullscreenBtn')?.addEventListener('click', () => {
-          Utils.toggleFullscreen();
-        });
-
-        // Opacity control
-        const opacityBtn = document.getElementById('opacityBtn');
-        const opacityControl = document.getElementById('opacityControl');
-        const opacitySlider = document.getElementById('opacitySlider');
-        const opacityValue = document.getElementById('opacityValue');
-
-        opacityBtn?.addEventListener('click', () => {
-          const wasVisible = opacityControl.classList.contains('visible');
-          this.hideAllPanels();
-          if (!wasVisible) opacityControl.classList.add('visible');
-        });
-
-        opacitySlider?.addEventListener('input', (e) => {
-          const value = e.target.value;
-          opacityValue.textContent = value;
-          this.mapCtrl.setOpacity(value / 100);
-        });
-
-        // Share button
-        const shareBtn = document.getElementById('shareBtn');
-        const sharePanel = document.getElementById('sharePanel');
-        const shareUrl = document.getElementById('shareUrl');
-        const copyBtn = document.getElementById('copyBtn');
-
-        shareBtn?.addEventListener('click', () => {
-          const wasVisible = sharePanel.classList.contains('visible');
-          this.hideAllPanels();
-          if (!wasVisible) {
-            this.updateShareUrl();
-            sharePanel.classList.add('visible');
-          }
-        });
-
-        copyBtn?.addEventListener('click', async () => {
-          try {
-            await navigator.clipboard.writeText(shareUrl.value);
-            copyBtn.textContent = '✓ Copied';
-            copyBtn.classList.add('copied');
-            setTimeout(() => {
-              copyBtn.textContent = 'Copy';
-              copyBtn.classList.remove('copied');
-            }, 2000);
-          } catch (err) {
-            // Fallback for browsers without clipboard API support
-            try {
-              shareUrl.select();
-              shareUrl.setSelectionRange(0, 99999); // For mobile devices
-              const success = document.execCommand('copy');
-              if (success) {
-                copyBtn.textContent = '✓ Copied';
-                copyBtn.classList.add('copied');
-                setTimeout(() => {
-                  copyBtn.textContent = 'Copy';
-                  copyBtn.classList.remove('copied');
-                }, 2000);
-              } else {
-                Utils.toast('Please manually copy the URL');
-              }
-            } catch (fallbackErr) {
-              Utils.toast('Please manually copy the URL');
-            }
-          }
-        });
-
-        // Play button
-        this.ui.playBtn?.addEventListener('click', () => {
-          this.togglePlay();
-        });
-
-        // Speed control buttons
-        document.querySelectorAll('.speed-btn').forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            const speed = parseInt(e.target.dataset.speed);
-            this.playSpeed = speed;
-            
-            // Update active state
-            document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            
-            // If currently playing, restart with new speed
-            if (this.isPlaying) {
-              clearInterval(this.playInterval);
-              this.playInterval = setInterval(() => {
-                this.step(1);
-              }, this.playSpeed);
-            }
-          });
-        });
-      }
-
-      hideAllPanels(except = []) {
-        const panels = ['opacityControl', 'sharePanel'];
-        panels.forEach(id => {
-          if (!except.includes(id)) {
-            document.getElementById(id)?.classList.remove('visible');
-          }
-        });
-      }
-
-      updateShareUrl() {
-        const frame = this.frames[this.currentIndex];
-        const center = this.mapCtrl.map.getCenter();
-        const zoom = this.mapCtrl.map.getZoom();
-        const url = `${window.location.origin}${window.location.pathname}?date=${frame.date}&lat=${center.lat.toFixed(4)}&lng=${center.lng.toFixed(4)}&zoom=${zoom}`;
-        document.getElementById('shareUrl').value = url;
-      }
-
-      togglePlay() {
-        this.isPlaying = !this.isPlaying;
-        const playBtn = this.ui.playBtn;
-        
-        if (this.isPlaying) {
-          playBtn.textContent = '⏸';
-          playBtn.title = 'Pause (Space)';
-          this.playInterval = setInterval(() => {
-            this.step(1);
-          }, this.playSpeed);
-        } else {
-          playBtn.textContent = '▶';
-          playBtn.title = 'Play (Space)';
-          if (this.playInterval) {
-            clearInterval(this.playInterval);
-            this.playInterval = null;
-          }
-        }
-      }
-
-      initUI() {
-        this.ui.lblRange.textContent = `${this.frames[0].id} — ${this.frames[this.frames.length - 1].id}`;
-
-        // populate dropdown
-        this.ui.timeSelect.innerHTML = '';
-        this.frames.forEach((f, i) => {
-          const opt = document.createElement('option');
-          opt.value = String(i);
-          opt.textContent = f.id;
-          this.ui.timeSelect.appendChild(opt);
-        });
-        this.ui.timeSelect.addEventListener('change', () => {
-          const idx = parseInt(this.ui.timeSelect.value, 10);
-          if (!Number.isNaN(idx) && idx >= 0 && idx < this.frames.length) {
-            this.update(idx);
-          }
-        });
-
-        // ticks with year labels
-        const years = new Set();
-        this.frames.forEach((f, i) => {
-          const tick = document.createElement('div');
-          tick.className = 'tick';
-          tick.style.left = `${f.pct}%`;
-          
-          // Extract year from date
-          const year = f.date.split('-')[0];
-          
-          // Mark as major tick if it's a new year or every 5th year
-          if (!years.has(year)) {
-            years.add(year);
-            const yearNum = parseInt(year);
-            if (yearNum % 5 === 0 || i === 0 || i === this.frames.length - 1) {
-              tick.classList.add('major');
-              const label = document.createElement('div');
-              label.className = 'tick-label';
-              label.textContent = year;
-              tick.appendChild(label);
-            }
-          }
-          
-          this.ui.ticks.appendChild(tick);
-        });
-
-        // Jog Controls
-        this.ui.prevBtn.onclick = () => this.step(-1);
-        this.ui.nextBtn.onclick = () => this.step(1);
-
-        // drag on the track/handle
-        const handleInput = (clientX) => {
-          const rect = this.ui.track.getBoundingClientRect();
-          const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
-          const pct = (x / rect.width) * 100;
-
-          let closestIdx = 0, minDiff = Infinity;
-          this.frames.forEach((f, i) => {
-            const diff = Math.abs(f.pct - pct);
-            if (diff < minDiff) { minDiff = diff; closestIdx = i; }
-          });
-
-          if (closestIdx !== this.currentIndex) this.update(closestIdx);
-        };
-
-        let isDragging = false;
-        const startDrag = (e) => {
-          isDragging = true;
-          handleInput((e.touches?.[0]?.clientX) ?? e.clientX);
-        };
-        const moveDrag = (e) => { if (isDragging) handleInput((e.touches?.[0]?.clientX) ?? e.clientX); };
-        const endDrag = () => { isDragging = false; };
-
-        this.ui.track.addEventListener('mousedown', startDrag);
-        this.ui.track.addEventListener('touchstart', startDrag, { passive: false });
-        window.addEventListener('mousemove', moveDrag);
-        window.addEventListener('touchmove', moveDrag, { passive: false });
-        window.addEventListener('mouseup', endDrag);
-        window.addEventListener('touchend', endDrag);
-      }
-
-      update(index) {
-        this.currentIndex = index;
-        const f = this.frames[index];
-
-        if (this.ui.timeSelect && this.ui.timeSelect.value !== String(index)) {
-          this.ui.timeSelect.value = String(index);
-        }
-
-        this.ui.handle.style.left = `${f.pct}%`;
-        this.ui.progress.style.width = `${f.pct}%`;
-
-        Array.from(this.ui.ticks.children).forEach((tick, i) => {
-          if (i === index) tick.classList.add('active'); else tick.classList.remove('active');
-        });
-
-        this.mapCtrl.showFrame(index);
-      }
-
-      step(dir) {
-        let next = this.currentIndex + dir;
-        if (next >= this.frames.length) next = 0;
-        if (next < 0) next = this.frames.length - 1;
-        this.update(next);
-      }
-    }
-
-    // Initialize Application
-    async function initApp() {
-      await loadData(); // Fetch and parse CSV first
-
-      if (CONFIG.frames.length === 0) {
-        Utils.toast("No valid frames found in CSV");
-        return;
-      }
-
-      const mapCtrl = new MapController('map');
-      const timelineApp = new TimelineApp(mapCtrl);
-
-      // Handle URL parameters for shared links
-      const urlParams = new URLSearchParams(window.location.search);
-      const dateParam = urlParams.get('date');
-      const latParam = urlParams.get('lat');
-      const lngParam = urlParams.get('lng');
-      const zoomParam = urlParams.get('zoom');
-
-      // Set map position from URL if available
-      if (latParam && lngParam && zoomParam) {
-        const lat = parseFloat(latParam);
-        const lng = parseFloat(lngParam);
-        const zoom = parseInt(zoomParam);
-        if (!isNaN(lat) && !isNaN(lng) && !isNaN(zoom)) {
-          mapCtrl.map.setView([lat, lng], zoom);
-        }
-      }
-
-      // Set timeframe from URL if available
-      if (dateParam) {
-        const frameIndex = CONFIG.frames.findIndex(f => f.date === dateParam);
-        if (frameIndex >= 0) {
-          timelineApp.update(frameIndex);
-        }
-      }
-    }
-
-    document.addEventListener('DOMContentLoaded', initApp);
-  </script>
-  <script data-name="BMC-Widget" data-cfasync="false" src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js"
-    data-id="ryanhemenway" data-description="Support me on Buy me a coffee!" data-message="Support the Project"
-    data-color="#40DCA5" data-position="Left" data-x_margin="18" data-y_margin="18"></script>
-</body>
-
-</html>
+          [...]
