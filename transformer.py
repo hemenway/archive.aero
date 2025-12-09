@@ -26,7 +26,7 @@ Keyboard Shortcuts:
 """
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
 import os
 import math
@@ -34,7 +34,6 @@ import logging
 import json
 import shlex
 from typing import Optional, Tuple, List, Dict, Any
-from pathlib import Path
 from datetime import datetime
 from collections import deque
 
@@ -713,15 +712,24 @@ class SmartAlignApp:
                 'timestamp': datetime.now().isoformat()
             }
             
+            # Validate session_file path is within expected directory
+            session_path = os.path.abspath(self.session_file)
+            folder_path = os.path.abspath(self.folder_path)
+            
+            if not session_path.startswith(folder_path):
+                logger.error("Session file path validation failed")
+                return
+            
             # Use atomic write: write to temp file, then rename
-            temp_file = self.session_file + '.tmp'
+            # Use a safe temp filename in the same directory
+            temp_file = session_path + '.tmp'
             
             try:
                 with open(temp_file, 'w') as f:
                     json.dump(session_data, f, indent=2)
                 
                 # Atomic rename (on POSIX systems)
-                os.replace(temp_file, self.session_file)
+                os.replace(temp_file, session_path)
                 logger.debug("Session saved")
                 
             except (OSError, IOError) as e:
@@ -730,7 +738,7 @@ class SmartAlignApp:
                 if os.path.exists(temp_file):
                     try:
                         os.remove(temp_file)
-                    except:
+                    except OSError:
                         pass
             
         except Exception as e:
