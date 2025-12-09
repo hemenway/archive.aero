@@ -3,16 +3,38 @@ GeoTIFF Aligner Application
 
 A sophisticated tool for aligning GeoTIFF images with Lambert Conformal Conic (LCC) projection.
 Provides interactive controls for translating, scaling, and aligning aerial maps.
+
+Keyboard Shortcuts:
+    View Navigation:
+        +/= : Zoom in
+        -/_ : Zoom out
+        Mouse Wheel : Zoom at cursor
+        Left Drag : Pan viewport
+    
+    Map Alignment:
+        Right Drag : Move map
+        Shift+Left Drag : Move map (Mac)
+        Arrow Keys : Nudge map position
+        [ : Scale down (fine)
+        ] : Scale up (fine)
+        Shift+[ : Scale down (coarse)
+        Shift+] : Scale up (coarse)
+    
+    File Operations:
+        Enter : Save and next image
+        Escape : Show help
 """
 
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 import os
 import math
 import logging
-from typing import Optional, Tuple, List
+import json
+from typing import Optional, Tuple, List, Dict, Any
 from pathlib import Path
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -73,6 +95,11 @@ class Config:
     # File Extensions
     SUPPORTED_EXTENSIONS = ('.tif', '.tiff')
     OUTPUT_SCRIPT_NAME = "run_realignment.sh"
+    SESSION_FILE = ".alignment_session.json"
+    
+    # Performance
+    IMAGE_RESIZE_QUALITY = Image.Resampling.NEAREST  # Fast for interactive use
+    CANVAS_UPDATE_DELAY = 10  # milliseconds
 
 
 # --- LCC MATH CLASS ---
@@ -209,6 +236,8 @@ class SmartAlignApp:
         self.current_index: int = 0
         self.current_image_path: Optional[str] = None
         self.output_script: Optional[str] = None
+        self.session_file: Optional[str] = None
+        self.folder_path: Optional[str] = None
         
         self.original_img: Optional[Image.Image] = None
         self.tk_img: Optional[ImageTk.PhotoImage] = None
@@ -229,6 +258,11 @@ class SmartAlignApp:
         self.drag_start_x: int = 0
         self.drag_start_y: int = 0
         self.is_aligning: bool = False
+        
+        # Undo/Redo stacks
+        self.undo_stack: List[Dict[str, float]] = []
+        self.redo_stack: List[Dict[str, float]] = []
+        self.max_undo_steps: int = 50
 
         self._setup_ui()
         logger.info("SmartAlignApp initialized successfully")
@@ -349,6 +383,196 @@ class SmartAlignApp:
         self.root.bind("<Right>", lambda e: self.nudge(1, 0))
         self.root.bind("<Up>", lambda e: self.nudge(0, -1))
         self.root.bind("<Down>", lambda e: self.nudge(0, 1))
+        
+        # Undo/Redo
+        self.root.bind("<Control-z>", lambda e: self.undo())
+        self.root.bind("<Control-y>", lambda e: self.redo())
+        self.root.bind("<Control-Shift-Z>", lambda e: self.redo())
+        
+        # Help
+        self.root.bind("<Escape>", lambda e: self.show_help())
+        self.root.bind("<F1>", lambda e: self.show_help())
+    
+    def _save_state(self):
+        """Save current alignment state to undo stack."""
+        state = {
+            'align_x': self.align_x,
+            'align_y': self.align_y,
+            'img_scale': self.img_scale,
+            'view_pan_x': self.view_pan_x,
+            'view_pan_y': self.view_pan_y,
+            'scale': self.scale
+        }
+        self.undo_stack.append(state)
+        if len(self.undo_stack) > self.max_undo_steps:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()  # Clear redo stack on new action
+        logger.debug(f"State saved (undo stack: {len(self.undo_stack)})")
+    
+    def undo(self):
+        """Undo the last alignment change."""
+        if not self.undo_stack:
+            logger.info("Nothing to undo")
+            self._show_feedback("Nothing to undo", duration=1000)
+            return
+        
+        # Save current state to redo stack
+        current_state = {
+            'align_x': self.align_x,
+            'align_y': self.align_y,
+            'img_scale': self.img_scale,
+            'view_pan_x': self.view_pan_x,
+            'view_pan_y': self.view_pan_y,
+            'scale': self.scale
+        }
+        self.redo_stack.append(current_state)
+        
+        # Restore previous state
+        state = self.undo_stack.pop()
+        self.align_x = state['align_x']
+        self.align_y = state['align_y']
+        self.img_scale = state['img_scale']
+        self.view_pan_x = state['view_pan_x']
+        self.view_pan_y = state['view_pan_y']
+        self.scale = state['scale']
+        
+        self.redraw()
+        logger.info("Undo performed")
+        self._show_feedback("Undo", duration=500)
+    
+    def redo(self):
+        """Redo the last undone change."""
+        if not self.redo_stack:
+            logger.info("Nothing to redo")
+            self._show_feedback("Nothing to redo", duration=1000)
+            return
+        
+        # Save current state to undo stack
+        self._save_state()
+        self.undo_stack.pop()  # Remove the duplicate we just added
+        
+        # Restore redo state
+        state = self.redo_stack.pop()
+        self.align_x = state['align_x']
+        self.align_y = state['align_y']
+        self.img_scale = state['img_scale']
+        self.view_pan_x = state['view_pan_x']
+        self.view_pan_y = state['view_pan_y']
+        self.scale = state['scale']
+        
+        self.redraw()
+        logger.info("Redo performed")
+        self._show_feedback("Redo", duration=500)
+    
+    def show_help(self):
+        """Display keyboard shortcuts help dialog."""
+        help_window = tk.Toplevel(self.root)
+        help_window.title("Keyboard Shortcuts")
+        help_window.geometry("600x500")
+        help_window.configure(bg="#2b2b2b")
+        
+        # Create frame with scrollbar
+        main_frame = tk.Frame(help_window, bg="#2b2b2b")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Title
+        title = tk.Label(
+            main_frame,
+            text="⌨️ Keyboard Shortcuts",
+            font=("Arial", 18, "bold"),
+            bg="#2b2b2b",
+            fg="#ffffff"
+        )
+        title.pack(pady=(0, 20))
+        
+        # Create sections
+        shortcuts = [
+            ("View Navigation", [
+                ("+/=", "Zoom in"),
+                ("-/_", "Zoom out"),
+                ("Mouse Wheel", "Zoom at cursor position"),
+                ("Left Click + Drag", "Pan viewport"),
+            ]),
+            ("Map Alignment", [
+                ("Right Click + Drag", "Move map image"),
+                ("Shift + Left Drag", "Move map (Mac)"),
+                ("Arrow Keys", "Nudge map position"),
+                ("[", "Scale down (fine adjustment)"),
+                ("]", "Scale up (fine adjustment)"),
+                ("Shift + [", "Scale down (coarse)"),
+                ("Shift + ]", "Scale up (coarse)"),
+            ]),
+            ("File Operations", [
+                ("Enter", "Save alignment and next image"),
+            ]),
+            ("Editing", [
+                ("Ctrl+Z", "Undo last change"),
+                ("Ctrl+Y / Ctrl+Shift+Z", "Redo"),
+            ]),
+            ("Help", [
+                ("Esc / F1", "Show this help dialog"),
+            ]),
+        ]
+        
+        for section_title, items in shortcuts:
+            # Section header
+            section_label = tk.Label(
+                main_frame,
+                text=section_title,
+                font=("Arial", 12, "bold"),
+                bg="#2b2b2b",
+                fg="#4CAF50",
+                anchor="w"
+            )
+            section_label.pack(fill=tk.X, pady=(10, 5))
+            
+            # Section items
+            for key, description in items:
+                item_frame = tk.Frame(main_frame, bg="#2b2b2b")
+                item_frame.pack(fill=tk.X, pady=2)
+                
+                key_label = tk.Label(
+                    item_frame,
+                    text=key,
+                    font=("Courier", 10, "bold"),
+                    bg="#404040",
+                    fg="#FFD700",
+                    padx=10,
+                    pady=5,
+                    width=25,
+                    anchor="w"
+                )
+                key_label.pack(side=tk.LEFT, padx=(0, 10))
+                
+                desc_label = tk.Label(
+                    item_frame,
+                    text=description,
+                    font=("Arial", 10),
+                    bg="#2b2b2b",
+                    fg="#cccccc",
+                    anchor="w"
+                )
+                desc_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Close button
+        close_btn = tk.Button(
+            main_frame,
+            text="Close",
+            command=help_window.destroy,
+            font=("Arial", 11, "bold"),
+            bg="#555",
+            fg="white",
+            padx=30,
+            pady=10,
+            relief="flat",
+            cursor="hand2"
+        )
+        close_btn.pack(pady=(20, 0))
+        
+        # Center the window
+        help_window.transient(self.root)
+        help_window.grab_set()
+        help_window.focus_set()
 
     def load_folder(self):
         """
@@ -362,6 +586,7 @@ class SmartAlignApp:
             return
         
         logger.info(f"Loading folder: {folder}")
+        self.folder_path = folder
         
         try:
             # Find all TIFF files in the folder
@@ -387,16 +612,82 @@ class SmartAlignApp:
                 with open(self.output_script, "w") as f:
                     f.write("#!/bin/bash\n")
                     f.write("# GeoTIFF Alignment Script\n")
-                    f.write("# Generated by GeoTIFF Aligner\n\n")
+                    f.write(f"# Generated by GeoTIFF Aligner on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
                     f.write("mkdir -p aligned\n\n")
                 logger.info(f"Created output script: {self.output_script}")
 
-            self.current_index = 0
+            # Set up session file
+            self.session_file = os.path.join(folder, Config.SESSION_FILE)
+            
+            # Load session if exists
+            session_loaded = self._load_session()
+            
+            if not session_loaded:
+                self.current_index = 0
+            
             self.load_image()
             
         except Exception as e:
             logger.error(f"Error loading folder: {e}", exc_info=True)
             messagebox.showerror("Error", f"Failed to load folder: {str(e)}")
+    
+    def _load_session(self) -> bool:
+        """
+        Load session data if it exists.
+        
+        Returns:
+            True if session was loaded, False otherwise
+        """
+        if not self.session_file or not os.path.exists(self.session_file):
+            return False
+        
+        try:
+            with open(self.session_file, 'r') as f:
+                session_data = json.load(f)
+            
+            # Verify session is for current files
+            if session_data.get('files') != self.image_files:
+                logger.info("Session files don't match, starting fresh")
+                return False
+            
+            self.current_index = session_data.get('current_index', 0)
+            logger.info(f"Session loaded: resuming at image {self.current_index + 1}")
+            
+            # Ask user if they want to resume
+            resume = messagebox.askyesno(
+                "Resume Session",
+                f"Found previous session. Resume at image {self.current_index + 1}/{len(self.image_files)}?"
+            )
+            
+            if not resume:
+                self.current_index = 0
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error loading session: {e}", exc_info=True)
+            return False
+    
+    def _save_session(self):
+        """Save current session state."""
+        if not self.session_file or not self.folder_path:
+            return
+        
+        try:
+            session_data = {
+                'files': self.image_files,
+                'current_index': self.current_index,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            with open(self.session_file, 'w') as f:
+                json.dump(session_data, f, indent=2)
+            
+            logger.debug("Session saved")
+            
+        except Exception as e:
+            logger.error(f"Error saving session: {e}", exc_info=True)
 
     def load_image(self):
         """
@@ -467,6 +758,10 @@ class SmartAlignApp:
             event: The mouse event
             aligning: If True, move the map; if False, pan the viewport
         """
+        # Save state for undo when starting alignment drag
+        if aligning:
+            self._save_state()
+        
         self.drag_start_x = event.x
         self.drag_start_y = event.y
         self.is_aligning = aligning
@@ -513,12 +808,16 @@ class SmartAlignApp:
         Args:
             factor: The scaling factor to apply (e.g., 1.005 for slight increase)
         """
+        # Save state for undo
+        self._save_state()
+        
         old_scale = self.img_scale
         new_scale = self.img_scale * factor
         
         # Enforce scale limits
         if new_scale < Config.MIN_IMG_SCALE or new_scale > Config.MAX_IMG_SCALE:
             logger.debug(f"Scale limit reached: {new_scale:.3f}")
+            self.undo_stack.pop()  # Remove the state we just saved
             return
         
         # Adjust align_x/y so the visual center stays fixed relative to the screen
@@ -804,6 +1103,14 @@ class SmartAlignApp:
             
             # Move to next image
             self.current_index += 1
+            
+            # Save session progress
+            self._save_session()
+            
+            # Clear undo/redo stacks for new image
+            self.undo_stack.clear()
+            self.redo_stack.clear()
+            
             self.load_image()
             
         except Exception as e:
