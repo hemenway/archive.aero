@@ -219,30 +219,7 @@ class SmartAlignApp:
         self.root.geometry(f"{Config.WINDOW_WIDTH}x{Config.WINDOW_HEIGHT}")
 
         self.lcc = LCCProjection()
-        self._init_projection_constants()
-
-    def _init_projection_constants(self):
-        """Initialize or re-initialize projection constants based on Config."""
-        # Projection String for GDAL
-        self.PROJ_STRING = (
-            "+proj=lcc "
-            f"+lat_1={Config.LAT_1} "
-            f"+lat_2={Config.LAT_2} "
-            f"+lat_0={Config.LAT_0} "
-            f"+lon_0={Config.LON_0} "
-            "+x_0=0 "
-            "+y_0=0 "
-            "+datum=NAD83 "
-            "+units=m "
-            "+no_defs"
-        )
         
-        # Base Metadata (Meters)
-        self.base_pixel_w = Config.BASE_PIXEL_WIDTH
-        self.base_pixel_h = Config.BASE_PIXEL_HEIGHT
-        self.default_ul_x = Config.DEFAULT_UL_X
-        self.default_ul_y = Config.DEFAULT_UL_Y
-
         # State
         self.image_files: List[str] = []
         self.current_index: int = 0
@@ -275,8 +252,31 @@ class SmartAlignApp:
         self.undo_stack: deque = deque(maxlen=50)
         self.redo_stack: deque = deque(maxlen=50)
 
+        self._update_projection_constants()
         self._setup_ui()
         logger.info("SmartAlignApp initialized successfully")
+
+    def _update_projection_constants(self):
+        """Initialize or re-initialize projection constants based on Config."""
+        # Projection String for GDAL
+        self.PROJ_STRING = (
+            "+proj=lcc "
+            f"+lat_1={Config.LAT_1} "
+            f"+lat_2={Config.LAT_2} "
+            f"+lat_0={Config.LAT_0} "
+            f"+lon_0={Config.LON_0} "
+            "+x_0=0 "
+            "+y_0=0 "
+            "+datum=NAD83 "
+            "+units=m "
+            "+no_defs"
+        )
+        
+        # Base Metadata (Meters)
+        self.base_pixel_w = Config.BASE_PIXEL_WIDTH
+        self.base_pixel_h = Config.BASE_PIXEL_HEIGHT
+        self.default_ul_x = Config.DEFAULT_UL_X
+        self.default_ul_y = Config.DEFAULT_UL_Y
 
     def _setup_ui(self):
         """Set up the user interface components."""
@@ -284,11 +284,10 @@ class SmartAlignApp:
         control_frame = tk.Frame(self.root, height=60, bg="#333")
         control_frame.pack(side=tk.TOP, fill=tk.X)
 
+        # Button style - removed bg/fg for Mac compatibility
         btn_style = {
-            "bg": "#555",
-            "fg": "white",
             "font": ("Arial", 10, "bold"),
-            "relief": "flat"
+            # "relief": "flat" # Removed relief as well to let native look take over
         }
         
         tk.Button(
@@ -1240,7 +1239,7 @@ class SmartAlignApp:
     def reinitialize_projection(self):
         """Re-initialize projection after settings change."""
         self.lcc = LCCProjection()
-        self._init_projection_constants()
+        self._update_projection_constants()
         self.redraw()
         logger.info("Projection re-initialized with new settings")
 
