@@ -1244,6 +1244,81 @@ class SmartAlignApp:
         self.redraw()
         logger.info("Projection re-initialized with new settings")
 
+    def _run_setup_workflow(self) -> bool:
+        """
+        Run the initial setup workflow (Projection -> Corners).
+        
+        Returns:
+            True if completed successfully, False if cancelled.
+        """
+        # 1. Projection Setup
+        proj_dialog = ProjectionSetupDialog(self.root, self)
+        self.root.wait_window(proj_dialog.window)
+        if not proj_dialog.result:
+            return False
+            
+        # 2. Corners Setup
+        corners_dialog = CornersDialog(self.root, self)
+        self.root.wait_window(corners_dialog.window)
+        if not corners_dialog.result:
+            return False
+            
+        # 3. Calculate Geometry
+        try:
+            self._calculate_geometry(corners_dialog.result)
+            return True
+        except Exception as e:
+            logger.error(f"Geometry calculation failed: {e}")
+            messagebox.showerror("Error", f"Failed to calculate geometry: {e}")
+            return False
+
+    def _calculate_geometry(self, corners: Dict[str, Tuple[float, float]]):
+        """
+        Calculate UL and Pixel Size based on 4 corners.
+        
+        Args:
+            corners: Dict with keys 'nw', 'ne', 'se', 'sw', values are (lat, lon)
+        """
+        # Project all corners to LCC (meters)
+        nw_m = self.lcc.project(*corners['nw'])
+        ne_m = self.lcc.project(*corners['ne'])
+        se_m = self.lcc.project(*corners['se'])
+        sw_m = self.lcc.project(*corners['sw'])
+        
+        # Calculate bounds
+        min_x = min(nw_m[0], sw_m[0])
+        max_x = max(ne_m[0], se_m[0])
+        min_y = min(sw_m[1], se_m[1])
+        max_y = max(nw_m[1], ne_m[1])
+        
+        width_m = max_x - min_x
+        height_m = max_y - min_y
+        
+        # Get image size (of first image)
+        if not self.image_files:
+            raise ValueError("No images loaded")
+            
+        with Image.open(self.image_files[0]) as img:
+            img_w, img_h = img.size
+            
+        # Calculate pixel resolution
+        # Note: Height is negative in GeoTIFF convention (top-down)
+        pixel_w = width_m / img_w
+        pixel_h = -(height_m / img_h)
+        
+        # Update Config
+        Config.BASE_PIXEL_WIDTH = pixel_w
+        Config.BASE_PIXEL_HEIGHT = pixel_h
+        Config.DEFAULT_UL_X = min_x
+        Config.DEFAULT_UL_Y = max_y
+        
+        logger.info(f"Calculated Geometry:")
+        logger.info(f"  Pixel Size: {pixel_w:.4f}, {pixel_h:.4f}")
+        logger.info(f"  UL: {min_x:.3f}, {max_y:.3f}")
+        
+        # Re-init projection to pick up new constants
+        self.reinitialize_projection()
+
 
 class SettingsDialog:
     """Dialog for editing configuration parameters."""
@@ -1343,80 +1418,6 @@ class SettingsDialog:
         except ValueError as e:
             messagebox.showerror("Error", "Invalid input. Please check your values.")
 
-    def _run_setup_workflow(self) -> bool:
-        """
-        Run the initial setup workflow (Projection -> Corners).
-        
-        Returns:
-            True if completed successfully, False if cancelled.
-        """
-        # 1. Projection Setup
-        proj_dialog = ProjectionSetupDialog(self.root, self)
-        self.root.wait_window(proj_dialog.window)
-        if not proj_dialog.result:
-            return False
-            
-        # 2. Corners Setup
-        corners_dialog = CornersDialog(self.root, self)
-        self.root.wait_window(corners_dialog.window)
-        if not corners_dialog.result:
-            return False
-            
-        # 3. Calculate Geometry
-        try:
-            self._calculate_geometry(corners_dialog.result)
-            return True
-        except Exception as e:
-            logger.error(f"Geometry calculation failed: {e}")
-            messagebox.showerror("Error", f"Failed to calculate geometry: {e}")
-            return False
-
-    def _calculate_geometry(self, corners: Dict[str, Tuple[float, float]]):
-        """
-        Calculate UL and Pixel Size based on 4 corners.
-        
-        Args:
-            corners: Dict with keys 'nw', 'ne', 'se', 'sw', values are (lat, lon)
-        """
-        # Project all corners to LCC (meters)
-        nw_m = self.lcc.project(*corners['nw'])
-        ne_m = self.lcc.project(*corners['ne'])
-        se_m = self.lcc.project(*corners['se'])
-        sw_m = self.lcc.project(*corners['sw'])
-        
-        # Calculate bounds
-        min_x = min(nw_m[0], sw_m[0])
-        max_x = max(ne_m[0], se_m[0])
-        min_y = min(sw_m[1], se_m[1])
-        max_y = max(nw_m[1], ne_m[1])
-        
-        width_m = max_x - min_x
-        height_m = max_y - min_y
-        
-        # Get image size (of first image)
-        if not self.image_files:
-            raise ValueError("No images loaded")
-            
-        with Image.open(self.image_files[0]) as img:
-            img_w, img_h = img.size
-            
-        # Calculate pixel resolution
-        # Note: Height is negative in GeoTIFF convention (top-down)
-        pixel_w = width_m / img_w
-        pixel_h = -(height_m / img_h)
-        
-        # Update Config
-        Config.BASE_PIXEL_WIDTH = pixel_w
-        Config.BASE_PIXEL_HEIGHT = pixel_h
-        Config.DEFAULT_UL_X = min_x
-        Config.DEFAULT_UL_Y = max_y
-        
-        logger.info(f"Calculated Geometry:")
-        logger.info(f"  Pixel Size: {pixel_w:.4f}, {pixel_h:.4f}")
-        logger.info(f"  UL: {min_x:.3f}, {max_y:.3f}")
-        
-        # Re-init projection to pick up new constants
-        self.reinitialize_projection()
 
 
 class ProjectionSetupDialog:
