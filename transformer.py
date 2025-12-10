@@ -252,6 +252,20 @@ class SmartAlignApp:
         self.undo_stack: deque = deque(maxlen=50)
         self.redo_stack: deque = deque(maxlen=50)
 
+        # Loupe State
+        self.loupe_items = {}
+        self.tk_loupe_img = None
+        self.zoom_level = 4
+        self.loupe_size = 150
+        self.loupe_locked = False
+        self.locked_coords = (0, 0)
+        
+        # Clicking State
+        self.click_mode = False
+        self.clicks = []
+        self.click_ids = []
+        self.target_corners = {} # To store Lat/Lon from dialog
+
         self._update_projection_constants()
         self._setup_ui()
         logger.info("SmartAlignApp initialized successfully")
@@ -347,7 +361,7 @@ class SmartAlignApp:
         # Mouse Bindings - Pan viewport with left click
         self.canvas.bind(
             "<ButtonPress-1>",
-            lambda e: self.start_drag(e, aligning=False)
+            self.handle_click
         )
         self.canvas.bind("<B1-Motion>", self.do_drag)
         
@@ -409,6 +423,14 @@ class SmartAlignApp:
         # Help
         self.root.bind("<Escape>", lambda e: self.show_help())
         self.root.bind("<F1>", lambda e: self.show_help())
+        
+        # Loupe Bindings
+        self.canvas.bind("<Motion>", self.update_loupe)
+        self.canvas.bind("<Leave>", self.hide_loupe)
+        self.root.bind("<Shift_L>", self.enable_lock)
+        self.root.bind("<Shift_R>", self.enable_lock)
+        self.root.bind("<KeyRelease-Shift_L>", self.disable_lock)
+        self.root.bind("<KeyRelease-Shift_R>", self.disable_lock)
     
     def _save_state(self):
         """Save current alignment state to undo stack."""
@@ -1256,67 +1278,300 @@ class SmartAlignApp:
         if not proj_dialog.result:
             return False
             
-        # 2. Corners Setup
+        # 2. Corners Setup (Get Lat/Lon)
         corners_dialog = CornersDialog(self.root, self)
         self.root.wait_window(corners_dialog.window)
         if not corners_dialog.result:
             return False
             
-        # 3. Calculate Geometry
+        self.target_corners = corners_dialog.result
+        
+        # 3. Interactive Clicking (Get Pixels)
+        # Load the first image so user can see it
+        if not self.image_files:
+            messagebox.showerror("Error", "No images found in folder")
+            return False
+            
+        # Temporarily load image without projection/alignment
+        self.current_index = 0
+        self.load_image()
+        
+        # Start Clicking Mode
+        self.click_mode = True
+        self.clicks = []
+        self.click_ids = []
+        self._update_click_status()
+        
+        # Wait for 4 clicks (This blocks the workflow until clicks are done)
+        # We use a local event loop or wait_variable
+        self.click_done_var = tk.BooleanVar()
+        self.root.wait_variable(self.click_done_var)
+        
+        self.click_mode = False
+        
+        if not self.click_done_var.get():
+            return False
+
+        # 4. Calculate Geometry
         try:
-            self._calculate_geometry(corners_dialog.result)
+            # Map clicks to corners: NW, NE, SE, SW
+            # We assume user clicked in that order as prompted
+            clicked_pixels = {
+                'nw': self.clicks[0],
+                'ne': self.clicks[1],
+                'se': self.clicks[2],
+                'sw': self.clicks[3]
+            }
+            
+            self._calculate_geometry(self.target_corners, clicked_pixels)
             return True
         except Exception as e:
             logger.error(f"Geometry calculation failed: {e}")
             messagebox.showerror("Error", f"Failed to calculate geometry: {e}")
             return False
 
-    def _calculate_geometry(self, corners: Dict[str, Tuple[float, float]]):
+    def _update_click_status(self):
+        """Update status label during clicking mode."""
+        labels = [
+            "1. Click North-West Corner (Top-Left)",
+            "2. Click North-East Corner (Top-Right)",
+            "3. Click South-East Corner (Bottom-Right)",
+            "4. Click South-West Corner (Bottom-Left)",
+            "Done!"
+        ]
+        if len(self.clicks) < 4:
+            msg = labels[len(self.clicks)]
+            self.status_label.config(text=f"SETUP: {msg}", fg="#00ffff")
+        else:
+            self.status_label.config(text="Processing...", fg="#00ff00")
+            self.click_done_var.set(True)
+
+    def _calculate_geometry(self, latlon_corners: Dict[str, Tuple[float, float]], pixel_corners: Dict[str, Tuple[float, float]]):
         """
-        Calculate UL and Pixel Size based on 4 corners.
-        
-        Args:
-            corners: Dict with keys 'nw', 'ne', 'se', 'sw', values are (lat, lon)
+        Calculate UL and Pixel Size based on Lat/Lon and Pixel coordinates.
         """
-        # Project all corners to LCC (meters)
-        nw_m = self.lcc.project(*corners['nw'])
-        ne_m = self.lcc.project(*corners['ne'])
-        se_m = self.lcc.project(*corners['se'])
-        sw_m = self.lcc.project(*corners['sw'])
+        # Project Lat/Lon to Meters (LCC)
+        nw_m = self.lcc.project(*latlon_corners['nw'])
+        ne_m = self.lcc.project(*latlon_corners['ne'])
+        se_m = self.lcc.project(*latlon_corners['se'])
+        sw_m = self.lcc.project(*latlon_corners['sw'])
         
-        # Calculate bounds
-        min_x = min(nw_m[0], sw_m[0])
-        max_x = max(ne_m[0], se_m[0])
-        min_y = min(sw_m[1], se_m[1])
-        max_y = max(nw_m[1], ne_m[1])
+        # Get Pixel Coordinates (these are raw image pixels, not screen coords)
+        # Note: self.clicks stores (x, y) in raw image coordinates
+        nw_p = pixel_corners['nw']
+        ne_p = pixel_corners['ne']
+        se_p = pixel_corners['se']
+        sw_p = pixel_corners['sw']
         
-        width_m = max_x - min_x
-        height_m = max_y - min_y
+        # Calculate Width (Meters)
+        width_top_m = math.sqrt((ne_m[0] - nw_m[0])**2 + (ne_m[1] - nw_m[1])**2)
+        width_bot_m = math.sqrt((se_m[0] - sw_m[0])**2 + (se_m[1] - sw_m[1])**2)
+        avg_width_m = (width_top_m + width_bot_m) / 2
         
-        # Get image size (of first image)
-        if not self.image_files:
-            raise ValueError("No images loaded")
-            
-        with Image.open(self.image_files[0]) as img:
-            img_w, img_h = img.size
-            
-        # Calculate pixel resolution
-        # Note: Height is negative in GeoTIFF convention (top-down)
-        pixel_w = width_m / img_w
-        pixel_h = -(height_m / img_h)
+        # Calculate Width (Pixels)
+        width_top_p = math.sqrt((ne_p[0] - nw_p[0])**2 + (ne_p[1] - nw_p[1])**2)
+        width_bot_p = math.sqrt((se_p[0] - sw_p[0])**2 + (se_p[1] - sw_p[1])**2)
+        avg_width_p = (width_top_p + width_bot_p) / 2
+        
+        # Calculate Height (Meters)
+        height_left_m = math.sqrt((sw_m[0] - nw_m[0])**2 + (sw_m[1] - nw_m[1])**2)
+        height_right_m = math.sqrt((se_m[0] - ne_m[0])**2 + (se_m[1] - ne_m[1])**2)
+        avg_height_m = (height_left_m + height_right_m) / 2
+        
+        # Calculate Height (Pixels)
+        height_left_p = math.sqrt((sw_p[0] - nw_p[0])**2 + (sw_p[1] - nw_p[1])**2)
+        height_right_p = math.sqrt((se_p[0] - ne_p[0])**2 + (se_p[1] - ne_p[1])**2)
+        avg_height_p = (height_left_p + height_right_p) / 2
+        
+        # Calculate Resolution
+        pixel_w = avg_width_m / avg_width_p
+        pixel_h = -(avg_height_m / avg_height_p) # Negative for GeoTIFF
+        
+        # Calculate UL (Upper Left)
+        # We use the NW click as the anchor
+        # NW_M_X = UL_X + (NW_P_X * PIXEL_W)
+        # => UL_X = NW_M_X - (NW_P_X * PIXEL_W)
+        
+        # However, LCC projection might be rotated relative to image.
+        # For simplicity in this "North Up" aligner, we assume mostly aligned.
+        # Better: Use the min_x/max_y from projected corners as a starting point,
+        # but that ignores the pixel offsets.
+        
+        # Let's use the NW point alignment:
+        # projected x = ul_x + pixel_x * pixel_w
+        # projected y = ul_y + pixel_y * pixel_h
+        
+        ul_x = nw_m[0] - (nw_p[0] * pixel_w)
+        ul_y = nw_m[1] - (nw_p[1] * pixel_h)
         
         # Update Config
         Config.BASE_PIXEL_WIDTH = pixel_w
         Config.BASE_PIXEL_HEIGHT = pixel_h
-        Config.DEFAULT_UL_X = min_x
-        Config.DEFAULT_UL_Y = max_y
+        Config.DEFAULT_UL_X = ul_x
+        Config.DEFAULT_UL_Y = ul_y
         
-        logger.info(f"Calculated Geometry:")
+        logger.info(f"Calculated Geometry from Clicks:")
         logger.info(f"  Pixel Size: {pixel_w:.4f}, {pixel_h:.4f}")
-        logger.info(f"  UL: {min_x:.3f}, {max_y:.3f}")
+        logger.info(f"  UL: {ul_x:.3f}, {ul_y:.3f}")
         
         # Re-init projection to pick up new constants
         self.reinitialize_projection()
+
+    # --- Click Handling ---
+    def handle_click(self, event):
+        """Handle mouse click events."""
+        if self.click_mode:
+            self.on_click(event)
+        else:
+            self.start_drag(event, aligning=False)
+
+    def on_click(self, event):
+        """Record a click for GCP setup."""
+        if not self.original_img: return
+
+        # Calculate click position in image coordinates
+        img_screen_x = self.view_pan_x + (self.align_x * self.scale)
+        img_screen_y = self.view_pan_y + (self.align_y * self.scale)
+        
+        click_x = (event.x - img_screen_x) / self.scale
+        click_y = (event.y - img_screen_y) / self.scale
+        
+        # Valid Click Check
+        if click_x < 0 or click_y < 0 or click_x > self.orig_w or click_y > self.orig_h: return
+
+        self.clicks.append((click_x, click_y))
+        
+        # Draw Marker
+        r = 5
+        # Draw on canvas relative to screen
+        # We need to store the ID to remove it later if needed, but for now we just clear all on reload
+        # Actually, we should draw it in screen coords for now
+        
+        # But wait, if we zoom/pan, the marker will stay at screen coords if we just draw it once.
+        # We need to redraw markers in redraw() or just accept they are temporary during setup.
+        # Since setup blocks interaction (wait_variable), panning/zooming might not be active or needed?
+        # The user CAN zoom/pan during setup because events are bound.
+        # So we should probably add markers to a list and draw them in redraw().
+        
+        # For simplicity in this "modal" phase, let's just draw them and assume user won't pan much 
+        # OR better: add to a temporary list that redraw() knows about.
+        
+        # Let's just draw them for immediate feedback.
+        dot_id = self.canvas.create_oval(event.x-r, event.y-r, event.x+r, event.y+r, fill="red", outline="yellow", tags="gcp_marker")
+        self.click_ids.append(dot_id)
+        
+        self._update_click_status()
+        
+        # Force a Loupe Update
+        self.update_loupe(event)
+        
+        # Check if done
+        if len(self.clicks) == 4:
+            # Small delay to let user see the last dot
+            self.root.after(200, lambda: self.click_done_var.set(True))
+
+    # --- Loupe Methods ---
+    def enable_lock(self, event):
+        if not self.loupe_locked and 'img' in self.loupe_items:
+            coords = self.canvas.coords(self.loupe_items['img'])
+            if coords:
+                self.locked_coords = (coords[0], coords[1])
+                self.loupe_locked = True
+                
+    def disable_lock(self, event):
+        self.loupe_locked = False
+
+    def update_loupe(self, event):
+        if not self.original_img or not self.click_mode: 
+            self.hide_loupe(event)
+            return
+
+        # Calc coordinates in raw image pixels
+        # self.view_pan_x/y are viewport offsets
+        # self.scale is view zoom
+        # self.align_x/y are image alignment offsets (should be 0 during setup)
+        
+        # Screen to Image Transform:
+        # screen_x = view_pan_x + (align_x * scale) + (img_x * scale)
+        # => img_x = (screen_x - view_pan_x) / scale - align_x
+        
+        # But wait, load_image centers the image.
+        # Let's look at redraw():
+        # img_x = self.view_pan_x + (self.align_x * self.scale)
+        # img_y = self.view_pan_y + (self.align_y * self.scale)
+        # self.canvas.create_image(img_x, img_y, ...)
+        
+        # So the Top-Left of the image on screen is at (img_x, img_y).
+        img_screen_x = self.view_pan_x + (self.align_x * self.scale)
+        img_screen_y = self.view_pan_y + (self.align_y * self.scale)
+        
+        raw_x = (event.x - img_screen_x) / self.scale
+        raw_y = (event.y - img_screen_y) / self.scale
+        
+        # Check bounds
+        if raw_x < 0 or raw_y < 0 or raw_x > self.orig_w or raw_y > self.orig_h:
+            self.hide_loupe(event)
+            return
+
+        # Crop & Zoom
+        src_r = (self.loupe_size / 2) / self.zoom_level
+        left = max(0, raw_x - src_r)
+        top = max(0, raw_y - src_r)
+        right = min(self.orig_w, raw_x + src_r)
+        bottom = min(self.orig_h, raw_y + src_r)
+        
+        try:
+            crop = self.original_img.crop((left, top, right, bottom))
+            zoom_img = crop.resize((self.loupe_size, self.loupe_size), Image.Resampling.NEAREST)
+            self.tk_loupe_img = ImageTk.PhotoImage(zoom_img)
+            
+            # Position Logic
+            if self.loupe_locked:
+                lx, ly = self.locked_coords
+            else:
+                lx = event.x + 20
+                ly = event.y + 20
+                
+                # Boundary Flip
+                if lx + self.loupe_size > self.canvas.winfo_width():
+                    lx = event.x - self.loupe_size - 20
+                if ly + self.loupe_size > self.canvas.winfo_height():
+                    ly = event.y - self.loupe_size - 20
+
+            # Create or Update Items
+            if 'img' not in self.loupe_items:
+                # Init Loupe Elements
+                self.loupe_items['img'] = self.canvas.create_image(lx, ly, anchor=tk.NW, image=self.tk_loupe_img)
+                self.loupe_items['border'] = self.canvas.create_rectangle(lx, ly, lx+self.loupe_size, ly+self.loupe_size, outline="yellow", width=2)
+                
+                cx = lx + self.loupe_size/2
+                cy = ly + self.loupe_size/2
+                self.loupe_items['v_line'] = self.canvas.create_line(cx, ly, cx, ly+self.loupe_size, fill="red")
+                self.loupe_items['h_line'] = self.canvas.create_line(lx, cy, lx+self.loupe_size, cy, fill="red")
+            else:
+                # Update Existing
+                self.canvas.itemconfig(self.loupe_items['img'], image=self.tk_loupe_img)
+                self.canvas.coords(self.loupe_items['img'], lx, ly)
+                self.canvas.coords(self.loupe_items['border'], lx, ly, lx+self.loupe_size, ly+self.loupe_size)
+                
+                cx = lx + self.loupe_size/2
+                cy = ly + self.loupe_size/2
+                self.canvas.coords(self.loupe_items['v_line'], cx, ly, cx, ly+self.loupe_size)
+                self.canvas.coords(self.loupe_items['h_line'], lx, cy, lx+self.loupe_size, cy)
+                
+                # Raise to Top
+                for key in self.loupe_items:
+                    self.canvas.tag_raise(self.loupe_items[key])
+                
+        except Exception as e:
+            pass
+
+    def hide_loupe(self, event):
+        # Only hide if we are truly leaving (prevents flicker)
+        if 'img' in self.loupe_items:
+            for key in self.loupe_items:
+                self.canvas.delete(self.loupe_items[key])
+            self.loupe_items = {}
 
 
 class SettingsDialog:
