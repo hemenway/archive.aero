@@ -677,46 +677,7 @@
       margin-top: 8px;
     }
 
-    /* Speed Control */
-    .speed-selector {
-      display: flex;
-      gap: 4px;
-      margin-top: 8px;
-      font-size: 11px;
-    }
 
-    .speed-btn {
-      flex: 1;
-      padding: 6px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 6px;
-      color: var(--text-muted);
-      cursor: pointer;
-      transition: all 0.2s var(--transition-smooth);
-      text-align: center;
-    }
-
-    .speed-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
-      color: var(--text-light);
-    }
-
-    .speed-btn.active {
-      background: var(--primary);
-      border-color: var(--primary);
-      color: white;
-    }
-
-    .speed-label {
-      font-size: 10px;
-      color: var(--text-muted);
-      text-align: center;
-      margin-bottom: 4px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
 
     /* Opacity Control */
     .opacity-control {
@@ -886,14 +847,6 @@
       .tick-label {
         display: none;
       }
-
-      .speed-selector {
-        font-size: 10px;
-      }
-
-      .speed-btn {
-        padding: 5px;
-      }
     }
 
     @media (min-width: 768px) {
@@ -1023,20 +976,11 @@
       </div>
     </div>
 
-    <!-- Speed Control for Play -->
-    <div style="text-align: center; margin-top: 12px;">
-      <div class="speed-label">Animation Speed</div>
-      <div class="speed-selector">
-        <button class="speed-btn" data-speed="3000">Slow</button>
-        <button class="speed-btn active" data-speed="2000">Normal</button>
-        <button class="speed-btn" data-speed="1000">Fast</button>
-      </div>
-    </div>
+
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="https://unpkg.com/leaflet-boundary-canvas@1.0.0/src/Leaflet.BoundaryCanvas.js"></script>
 
   <script>
     /** CONFIGURATION **/
@@ -1046,15 +990,7 @@
       baseUrl: 'https://aeromap.io/dfw/',
       csvUrl: 'https://hemenway.github.io/collection.csv', // Dynamic Source
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
-      bounds: [[32, -102], [34, -96]],
       frames: [] // Will be populated dynamically
-    };
-
-    const BOUNDARY_GEOJSON = {
-      "type": "Polygon",
-      "coordinates": [[
-        [-102, 32], [-96, 32], [-96, 34], [-102, 34], [-102, 32]
-      ]]
     };
 
     /** UTILITIES **/
@@ -1176,20 +1112,14 @@
           const tileJson = await res.json();
 
           const tileUrl = tileJson.tiles[0];
-          const baseLayer = L.tileLayer(tileUrl, {
+          const layer = L.tileLayer(tileUrl, {
             minZoom: tileJson.minzoom || 0,
             maxZoom: 22,
             tileSize: 256,
             opacity: 0,
             zIndex: 10,
-            keepBuffer: 2,
-            bounds: CONFIG.bounds
+            keepBuffer: 2
           });
-
-          // Use BoundaryCanvas if available, otherwise fallback to baseLayer
-          const layer = L.TileLayer.BoundaryCanvas ? L.TileLayer.BoundaryCanvas.createFromLayer(baseLayer, {
-            boundary: BOUNDARY_GEOJSON
-          }) : baseLayer;
 
           this.cache[filename] = { layer, bounds: tileJson.bounds };
           return this.cache[filename];
@@ -1272,7 +1202,6 @@
         this.currentIndex = 0;
         this.isPlaying = false;
         this.playInterval = null;
-        this.playSpeed = 2000; // milliseconds
 
         this.ui = {
           prevBtn: document.getElementById('prevBtn'),
@@ -1423,25 +1352,7 @@
           this.togglePlay();
         });
 
-        // Speed control buttons
-        document.querySelectorAll('.speed-btn').forEach(btn => {
-          btn.addEventListener('click', (e) => {
-            const speed = parseInt(e.target.dataset.speed);
-            this.playSpeed = speed;
 
-            // Update active state
-            document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-
-            // If currently playing, restart with new speed
-            if (this.isPlaying) {
-              clearInterval(this.playInterval);
-              this.playInterval = setInterval(() => {
-                this.step(1);
-              }, this.playSpeed);
-            }
-          });
-        });
       }
 
       hideAllPanels(except = []) {
@@ -1470,7 +1381,7 @@
           playBtn.title = 'Pause (Space)';
           this.playInterval = setInterval(() => {
             this.step(1);
-          }, this.playSpeed);
+          }, 2000);
         } else {
           playBtn.textContent = '▶';
           playBtn.title = 'Play (Space)';
