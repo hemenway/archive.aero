@@ -1,8 +1,8 @@
-# AeroMap
+# archive.aero
 
 Historical Aerial Maps — Accessible, Searchable, Viewable Anywhere
 
-AeroMap is an open-source project for hosting, viewing, and distributing historical aeronautical chart scans. It provides a modern web interface that loads Cloud-Optimized GeoTIFFs (COGs) directly from object storage and map tile services.
+archive.aero is an open-source project for viewing historical aeronautical chart scans. It provides a modern web interface that loads Cloud-Optimized GeoTIFFs (COGs) directly from object storage and map tile services.
 
 This project powers [aeromap.io](https://aeromap.io), a simple, fast, and public viewer for aviation map history.
 
@@ -10,7 +10,7 @@ This project powers [aeromap.io](https://aeromap.io), a simple, fast, and public
 
 ## About
 
-AeroMap is designed to feel like a “ForeFlight Time Machine” — a way to explore how aeronautical charts and airspace depictions have evolved over time.
+archive.aero is designed to feel like a “ForeFlight Time Machine” — a way to explore how aeronautical charts and airspace depictions have evolved over time.
 
 The project focuses on:
 
