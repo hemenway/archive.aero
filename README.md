@@ -4,7 +4,7 @@ Historical Aerial Maps — Accessible, Searchable, Viewable Anywhere
 
 archive.aero is an open-source project for viewing historical aeronautical chart scans. It provides a modern web interface that loads Cloud-Optimized GeoTIFFs (COGs) directly from object storage and map tile services.
 
-This project powers [aeromap.io](https://aeromap.io), a simple, fast, and public viewer for aviation map history.
+This project powers [archive.aero](https://archive.aero), a simple, fast, and public viewer for aviation map history.
 
 ⸻
 
@@ -30,11 +30,10 @@ The project focuses on:
 
 ### Goals
 
-- Add coverage for **more cities** and regions
+- Add **worldwide** coverage
 - Include **Terminal Area Charts (TACs)** alongside sectionals
-- Highlight **interesting airports** and related resources (e.g. interestingairports.com–style curation)
 - Keep the site **free to use** as long as server and storage costs remain sustainable
 
-AeroMap is and will remain free to access as long as server and storage costs stay manageable. In the future, it may be necessary to introduce **aviation‑related ads** or sponsorships to help offset hosting costs.
+archive.aero is and will remain free to access as long as server and storage costs stay manageable. In the future, it may be necessary to introduce **aviation‑related ads** or sponsorships to help offset hosting costs.
 
 If you’d like to support the project and help keep it ad‑light (or ad‑free), please consider **donating to the project**.
