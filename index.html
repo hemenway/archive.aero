@@ -591,6 +591,13 @@
       box-shadow: 0 4px 12px rgba(30, 144, 255, 0.4);
     }
 
+    /* Hide keyboard shortcuts on mobile */
+    @media (max-width: 640px) {
+      #helpBtn {
+        display: none;
+      }
+    }
+
     /* Share Panel */
     .share-panel {
       position: absolute;
@@ -780,7 +787,8 @@
       }
 
       .opacity-control,
-      .share-panel {
+      .share-panel,
+      .map-tools-panel {
         top: auto;
         bottom: 140px;
         right: 16px;
@@ -977,7 +985,7 @@
     /* Location Search */
     .search-container {
       position: relative;
-      margin-right: 16px;
+      margin-right: 8px;
       width: 240px;
     }
 
@@ -1009,24 +1017,125 @@
       opacity: 0.6;
     }
 
-    .location-btn {
-      position: absolute;
-      right: 8px;
-      top: 50%;
-      transform: translateY(-50%);
-      background: transparent;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      padding: 4px;
-      border-radius: 4px;
-      display: none;
-      /* Hidden by default, shown if needed/wanted inside input? Design choice: user asked for search function. I'll put a separate button or inside. Let's put a subtle locate button inside right, replacing icon? or next to it. Let's keep icon static for query, and add locate button next to search box */
-    }
-
     /* Adjust header layout for search */
     .header-content {
       flex: 1;
+    }
+
+    /* Map Tools Panel */
+    .map-tools-panel {
+      position: absolute;
+      top: 160px;
+      right: 24px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 900;
+      min-width: 220px;
+      display: none;
+    }
+
+    .map-tools-panel.visible {
+      display: block;
+    }
+
+    .map-tools-panel h4 {
+      margin: 0 0 16px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-light);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .tool-section {
+      margin-bottom: 16px;
+      padding-bottom: 16px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .tool-section:last-child {
+      margin-bottom: 0;
+      padding-bottom: 0;
+      border-bottom: none;
+    }
+
+    .tool-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+      display: block;
+    }
+
+    .tool-button {
+      width: 100%;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 8px;
+      color: white;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s var(--transition-smooth);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .tool-button:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: var(--primary);
+    }
+
+    .tool-button.active {
+      background: var(--secondary);
+      border-color: var(--secondary);
+      box-shadow: 0 0 15px rgba(0, 212, 170, 0.4);
+    }
+
+    .tool-slider-container {
+      margin-top: 8px;
+    }
+
+    .tool-slider {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.2);
+      outline: none;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+
+    .tool-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--primary);
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+
+    .tool-slider::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--primary);
+      cursor: pointer;
+      border: none;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+
+    .tool-value {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 8px;
     }
 
     /* Warning Popup (Fixed Anchor) */
@@ -1058,9 +1167,12 @@
       <span class="search-icon">🔍</span>
     </div>
 
+    <!-- Location Crosshair Button -->
+    <button class="icon-btn" id="locateBtn" title="Center on My Location">🎯</button>
+
     <div class="header-actions">
+      <button class="icon-btn" id="mapToolsBtn" title="Map Tools">🛠️</button>
       <button class="icon-btn" id="shareBtn" title="Share (S)">🔗</button>
-      <button class="icon-btn" id="opacityBtn" title="Adjust Opacity">◐</button>
       <button class="icon-btn" id="fullscreenBtn" title="Fullscreen (F)">⛶</button>
       <button class="icon-btn" id="helpBtn" title="Keyboard Shortcuts (?)">?</button>
       <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="icon-btn" title="About Me">
@@ -1087,6 +1199,27 @@
     <h4>Chart Opacity</h4>
     <input type="range" class="opacity-slider" id="opacitySlider" min="0" max="100" value="100">
     <div class="opacity-value"><span id="opacityValue">100</span>%</div>
+  </div>
+
+  <!-- Map Tools Panel -->
+  <div class="map-tools-panel" id="mapToolsPanel">
+    <h4>🛠️ Map Tools</h4>
+
+    <div class="tool-section">
+      <span class="tool-label">Chart Opacity</span>
+      <div class="tool-slider-container">
+        <input type="range" class="tool-slider" id="toolOpacitySlider" min="0" max="100" value="100">
+        <div class="tool-value"><span id="toolOpacityValue">100</span>%</div>
+      </div>
+    </div>
+
+    <div class="tool-section">
+      <span class="tool-label">Split View</span>
+      <button class="tool-button" id="toolCompareBtn">
+        <span>Side-by-Side</span>
+        <span>◫</span>
+      </button>
+    </div>
   </div>
 
   <!-- Share Panel -->
@@ -1157,7 +1290,6 @@
   <div class="ui-layer">
     <div class="controls-card">
       <div class="jog-controls">
-        <button class="btn-compare" id="compareBtn" title="Toggle Split View">◫</button>
         <button class="btn-nav" id="prevBtn" title="Previous Timeframe (←)">←</button>
         <button class="btn-play" id="playBtn" title="Play/Pause (Space)">▶</button>
         <button class="btn-nav" id="nextBtn" title="Next Timeframe (→)">→</button>
@@ -1372,7 +1504,7 @@
           await Promise.all(newLayers.map(l => this.waitForLayer(l)));
         }
 
-        const opacityValue = parseFloat(document.getElementById('opacitySlider')?.value || 100) / 100;
+        const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
         requestAnimationFrame(() => {
           newLayers.forEach(l => l.setOpacity(opacityValue));
           this.activeLayers.forEach(l => { if (!newLayers.includes(l)) this.map.removeLayer(l); });
@@ -1486,7 +1618,30 @@
           Utils.toggleFullscreen();
         });
 
-        // Opacity control
+        // Map Tools Panel
+        const mapToolsBtn = document.getElementById('mapToolsBtn');
+        const mapToolsPanel = document.getElementById('mapToolsPanel');
+        const toolOpacitySlider = document.getElementById('toolOpacitySlider');
+        const toolOpacityValue = document.getElementById('toolOpacityValue');
+
+        mapToolsBtn?.addEventListener('click', () => {
+          const wasVisible = mapToolsPanel.classList.contains('visible');
+          this.hideAllPanels();
+          if (!wasVisible) mapToolsPanel.classList.add('visible');
+        });
+
+        toolOpacitySlider?.addEventListener('input', (e) => {
+          const value = e.target.value;
+          toolOpacityValue.textContent = value;
+          this.mapCtrl.setOpacity(value / 100);
+          // Sync with old opacity slider if it exists
+          const oldOpacitySlider = document.getElementById('opacitySlider');
+          const oldOpacityValue = document.getElementById('opacityValue');
+          if (oldOpacitySlider) oldOpacitySlider.value = value;
+          if (oldOpacityValue) oldOpacityValue.textContent = value;
+        });
+
+        // Legacy Opacity control (keep for backward compatibility)
         const opacityBtn = document.getElementById('opacityBtn');
         const opacityControl = document.getElementById('opacityControl');
         const opacitySlider = document.getElementById('opacitySlider');
@@ -1502,6 +1657,9 @@
           const value = e.target.value;
           opacityValue.textContent = value;
           this.mapCtrl.setOpacity(value / 100);
+          // Sync with new tool slider
+          if (toolOpacitySlider) toolOpacitySlider.value = value;
+          if (toolOpacityValue) toolOpacityValue.textContent = value;
         });
 
         // Share button
@@ -1559,7 +1717,7 @@
       }
 
       hideAllPanels(except = []) {
-        const panels = ['opacityControl', 'sharePanel'];
+        const panels = ['opacityControl', 'sharePanel', 'mapToolsPanel'];
         panels.forEach(id => {
           if (!except.includes(id)) {
             document.getElementById(id)?.classList.remove('visible');
@@ -1767,6 +1925,41 @@
         }
       }
 
+      // Location Crosshair Button - Request User's Geolocation
+      const locateBtn = document.getElementById('locateBtn');
+      locateBtn?.addEventListener('click', () => {
+        if ('geolocation' in navigator) {
+          Utils.toast('Getting your location...');
+          navigator.geolocation.getCurrentPosition(
+            (position) => {
+              const lat = position.coords.latitude;
+              const lng = position.coords.longitude;
+              mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
+              Utils.toast('Centered on your location');
+            },
+            (error) => {
+              console.error('Geolocation error:', error);
+              let message = 'Unable to get your location';
+              if (error.code === error.PERMISSION_DENIED) {
+                message = 'Location permission denied';
+              } else if (error.code === error.POSITION_UNAVAILABLE) {
+                message = 'Location unavailable';
+              } else if (error.code === error.TIMEOUT) {
+                message = 'Location request timed out';
+              }
+              Utils.toast(message);
+            },
+            {
+              enableHighAccuracy: true,
+              timeout: 10000,
+              maximumAge: 0
+            }
+          );
+        } else {
+          Utils.toast('Geolocation not supported by your browser');
+        }
+      });
+
       // Search Handler with rate limiting
       let lastSearchTime = 0;
       const SEARCH_COOLDOWN = 1000; // 1 second between searches
@@ -1812,7 +2005,8 @@
 
       // --- Side-by-Side Comparison Logic ---
       const mapCtrl2 = new MapController('map2');
-      const compareBtn = document.getElementById('compareBtn');
+      const compareBtn = document.getElementById('compareBtn'); // Old location (if exists)
+      const toolCompareBtn = document.getElementById('toolCompareBtn'); // New location in map tools
       const map2Controls = document.querySelector('.map2-controls');
       const map2TimeSelect = document.getElementById('map2TimeSelect');
       let isCompareMode = false;
@@ -1856,11 +2050,14 @@
       mapCtrl.map.on('moveend', () => syncMaps(mapCtrl.map, mapCtrl2.map));
       mapCtrl2.map.on('moveend', () => syncMaps(mapCtrl2.map, mapCtrl.map));
 
-      // Toggle Compare Mode
-      compareBtn.addEventListener('click', () => {
+      // Toggle Compare Mode Function
+      function toggleCompareMode() {
         isCompareMode = !isCompareMode;
         document.body.classList.toggle('split-view', isCompareMode);
-        compareBtn.classList.toggle('active', isCompareMode);
+
+        // Update both button states if they exist
+        if (compareBtn) compareBtn.classList.toggle('active', isCompareMode);
+        if (toolCompareBtn) toolCompareBtn.classList.toggle('active', isCompareMode);
 
         // Resize maps
         mapCtrl.map.invalidateSize();
@@ -1883,7 +2080,11 @@
           // Optional: clear map2 layers to save resources? 
           // For now, keep them.
         }
-      });
+      }
+
+      // Toggle Compare Mode - bind to both buttons
+      compareBtn?.addEventListener('click', toggleCompareMode);
+      toolCompareBtn?.addEventListener('click', toggleCompareMode);
     }
 
     document.addEventListener('DOMContentLoaded', initApp);
