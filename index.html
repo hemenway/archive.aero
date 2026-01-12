@@ -1552,7 +1552,7 @@
         const currentFrame = CONFIG.frames[index];
         const currentDate = new Date(currentFrame.date);
         const cutoffDate = new Date(currentDate);
-        cutoffDate.setDate(cutoffDate.getDate() - 140);
+        cutoffDate.setDate(cutoffDate.getDate() - 167);
 
         // Find all frames within the 140-day window, including the current frame
         // Sort by date ascending so oldest are drawn first (lower z-index)
