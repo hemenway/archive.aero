@@ -1544,21 +1544,63 @@
       }
 
       async showFrame(index) {
-        const frame = CONFIG.frames[index];
-        const loader = document.getElementById('loader');
+        const currentFrame = CONFIG.frames[index];
+        const currentDate = new Date(currentFrame.date);
+        const cutoffDate = new Date(currentDate);
+        cutoffDate.setDate(cutoffDate.getDate() - 140);
 
+        // Find all frames within the 140-day window, including the current frame
+        // Sort by date ascending so oldest are drawn first (lower z-index)
+        const activeFrames = CONFIG.frames.filter(f => {
+          const d = new Date(f.date);
+          return d >= cutoffDate && d <= currentDate;
+        }).sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
 
-        const layerDataList = await Promise.all(frame.files.map(f => this.getLayerData(f)));
+        // Collect all files from all active frames
+        // We'll manage z-index manually or by insertion order
+        const allFiles = [];
+        activeFrames.forEach(f => allFiles.push(...f.files));
+
+        // Remove duplicates if any (though typically files are unique per frame)
+        const uniqueFiles = [...new Set(allFiles)];
+
+        // Preload all
+        const layerDataList = await Promise.all(uniqueFiles.map(f => this.getLayerData(f)));
 
         const newLayers = [];
-        layerDataList.forEach(d => {
-          if (d && d.layer) {
-            if (!this.map.hasLayer(d.layer)) {
-              d.layer.setOpacity(0);
-              d.layer.addTo(this.map);
+
+        // Assign z-index based on frame index. Newer frames should be on top.
+        // Since we iterated activeFrames sorted by date ascending, we can use that order.
+        // We need to map file -> frame to determine z-index preference, or just use the order in uniqueFiles 
+        // if we constructed it carefully.
+        // Let's refine: iterate frames, get their files, add to a list. Last added (currentFrame) is effectively top.
+        // BUT Leaflet ordering depends on DOM order or zIndex option.
+
+        // Simplified approach: Set zIndex on the layer instance before adding
+        activeFrames.forEach((frame, frameIdx) => {
+          frame.files.forEach(filename => {
+            const data = layerDataList.find(d => d && d.layer && d.layer._url && d.layer._url.includes(encodeURIComponent(CONFIG.baseUrl + filename))); // Url matching is tricky if transformed
+            // Better: Map filename to data directly
+            const cached = this.cache[filename];
+            if (cached && cached.layer) {
+              // Set z-index: 10 base + frame index. 
+              // This ensures newer dates (higher frameIdx) are on top.
+              cached.layer.setZIndex(10 + frameIdx);
+              if (!newLayers.includes(cached.layer)) {
+                newLayers.push(cached.layer);
+              }
             }
-            newLayers.push(d.layer);
+          });
+        });
+
+        // Add to map
+        newLayers.forEach(l => {
+          if (!this.map.hasLayer(l)) {
+            l.setOpacity(0);
+            l.addTo(this.map);
           }
         });
 
@@ -1568,6 +1610,7 @@
         }
 
         const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
+
         requestAnimationFrame(() => {
           newLayers.forEach(l => l.setOpacity(opacityValue));
           this.activeLayers.forEach(l => { if (!newLayers.includes(l)) this.map.removeLayer(l); });
