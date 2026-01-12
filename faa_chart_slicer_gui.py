@@ -272,6 +272,7 @@ class ChartProcessor:
                 self.log(f"✗ Tile generation failed (Code {process.returncode})")
                 return False
                 
+        except Exception as e:
             self.log(f"✗ Error generating tiles: {e}")
             return False
 
@@ -434,71 +435,47 @@ class BatchProcessor:
         else: print(msg)
 
     def normalize_name(self, name):
-        """Normalize chart name."""
-        norm = name.lower().replace(' ', '_').replace('-', '_').replace('.', '')
+        """Normalize chart name consistently."""
+        # Replace spaces, dashes, dots with underscores
+        norm = name.strip().lower().replace(' ', '_').replace('-', '_').replace('.', '_')
+        # Clean up double underscores
+        while '__' in norm:
+            norm = norm.replace('__', '_')
         return self.abbreviations.get(norm, norm)
 
-    def parse_map_file(self, map_file: Path):
-        self.log(f"Parsing file map: {map_file.name}...")
+    def scan_source_dir(self, source_dir: Path):
+        """Recursively scan directory for charts and index them."""
+        self.log(f"Scanning directory: {source_dir}...")
         self.file_index = {}
-        stack = []
         
+        count = 0
         try:
-            with open(map_file, 'r', encoding='utf-8', errors='replace') as f:
-                lines = f.readlines()
-            
-            if not lines: return
+            for root, _, files in os.walk(source_dir):
+                for name in files:
+                    if name.lower().endswith(('.zip', '.tif', '.tiff')):
+                        current_path = Path(root) / name
+                        # Normalize the entire stem before splitting to handle "Seattle SEC 105.tif"
+                        stem = self.normalize_name(current_path.stem)
+                        parts = stem.split('_')
+                        
+                        if parts[-1].isdigit():
+                            edition = parts[-1]
+                            location = "_".join(parts[:-1])
+                            key = ('EDITION', location, edition)
+                            if key not in self.file_index: self.file_index[key] = []
+                            self.file_index[key].append(current_path)
+                            count += 1
+                        elif parts[0].isdigit() and len(parts[0]) >= 14:
+                            timestamp = parts[0]
+                            key = ('TS', timestamp)
+                            if key not in self.file_index: self.file_index[key] = []
+                            self.file_index[key].append(current_path)
+                            count += 1
 
-            match = re.search(r'(.+)', lines[0]) 
-            # First line often root. But if it's not a path, assume current dir or relative?
-            # User map file has absolute path.
-            if lines[0].strip().startswith('/'):
-               stack = [Path(lines[0].strip())]
-            else:
-               # Fallback
-               stack = [Path("/Volumes/projects/newrawtiffs")]
-
-            for line in lines[1:]:
-                match = re.search(r'([│\s├└─]+)(.+)', line)
-                if not match: continue
-                
-                prefix = match.group(1)
-                name = match.group(2).strip()
-                
-                depth = prefix.count('│') + prefix.count('├') + prefix.count('└')
-                
-                target_size = depth
-                if target_size < 1: target_size = 1
-                
-                while len(stack) > target_size:
-                    stack.pop()
-                
-                if not stack: 
-                   # Safety fallback
-                   stack = [Path("/")] 
-
-                current_path = stack[-1] / name
-                stack.append(current_path)
-                
-                if name.lower().endswith(('.zip', '.tif', '.tiff')):
-                    parts = Path(name).stem.split('_')
-                    
-                    if parts[-1].isdigit():
-                        edition = parts[-1]
-                        location = "_".join(parts[:-1])
-                        key = ('EDITION', self.normalize_name(location), edition)
-                        if key not in self.file_index: self.file_index[key] = []
-                        self.file_index[key].append(current_path)
-                    elif parts[0].isdigit() and len(parts[0]) >= 14:
-                        timestamp = parts[0]
-                        key = ('TS', timestamp)
-                        if key not in self.file_index: self.file_index[key] = []
-                        self.file_index[key].append(current_path)
-
-            self.log(f"Indexed {len(self.file_index)} keys.")
+            self.log(f"Indexed {count} files across {len(self.file_index)} unique keys.")
             
         except Exception as e:
-            self.log(f"Error parsing map: {e}")
+            self.log(f"Error scanning directory: {e}")
 
     def load_dole_data(self, csv_file: Path):
         self.log(f"Loading CSV: {csv_file.name}...")
@@ -530,25 +507,37 @@ class BatchProcessor:
             res = self.file_index.get(('TS', timestamp))
             if res: results.extend(res)
             
-        # 2. Try Edition matches (Exact Name)
+        # 2. Try variations of location
         norm_loc = self.normalize_name(location)
-        key = ('EDITION', norm_loc, edition)
-        res = self.file_index.get(key)
-        if res: results.extend(res)
         
-        # 3. Try Variants (North/South, East/West, etc) if nothing found OR to augment?
-        # Usually N/S are separate files but same logic.
-        # If we found nothing, let's look for suffixes.
-        if not results:
-            variants = ["north", "south", "east", "west"]
-            for v in variants:
-                # Try constructing name: Location_North
-                # normalize_name handles the underscores
-                var_loc = self.normalize_name(f"{location}_{v}")
-                key_var = ('EDITION', var_loc, edition)
-                res_var = self.file_index.get(key_var)
-                if res_var: results.extend(res_var)
-                
+        # Build variations to try
+        # 1. Exact match
+        # 2. With common suffixes
+        # 3. Primary suffixes (SEC, TAC)
+        # 4. Long forms (Sectional, Terminal)
+        candidate_locs = [
+            norm_loc,
+            f"{norm_loc}_sec",
+            f"{norm_loc}_tac",
+            f"{norm_loc}_sectional",
+            f"{norm_loc}_terminal",
+        ]
+        
+        # Also try variants (North/South) combined with suffixes
+        variants = ["north", "south", "east", "west"]
+        for v in variants:
+            var_base = f"{norm_loc}_{v}"
+            candidate_locs.append(var_base)
+            candidate_locs.append(f"{var_base}_sec")
+            candidate_locs.append(f"{var_base}_tac")
+
+        # Search each candidate
+        for loc in candidate_locs:
+            key = ('EDITION', loc, edition)
+            res = self.file_index.get(key)
+            if res:
+                results.extend(res)
+
         # Deduplicate
         return list(set(results))
         
@@ -562,39 +551,45 @@ class BatchProcessor:
             if norm_loc in shp_norm: return shp # Naive, handles east/west?
         return None
 
-    def unzip_file(self, zip_path: Path, output_dir: Path) -> Optional[Path]:
-        """Unzips and returns path to largest TIFF."""
+    def unzip_file(self, zip_path: Path, output_dir: Path) -> List[Path]:
+        """Unzips all TIFFs and TFWs, returns list of TIFF paths."""
+        extracted_tiffs = []
         try:
             if not zip_path.exists():
                 self.log(f"  [ERROR] Zip file not found: {zip_path}")
-                return None
+                return []
                 
             with zipfile.ZipFile(zip_path, 'r') as z:
-                # Find the tif file inside
+                # Find the tif files inside
                 tiffs = [n for n in z.namelist() if n.lower().endswith(('.tif', '.tiff'))]
                 if not tiffs: 
                     self.log(f"  [ERROR] No TIFFs found in {zip_path.name}")
-                    return None
+                    return []
                 
-                # Extract
-                # target = tiffs[0] # Assume first or largest?
-                # Sorting by size might be safer
-                target = sorted(tiffs, key=lambda x: z.getinfo(x).file_size, reverse=True)[0]
+                # We also want to extract .tfw files for these tiffs
+                # Usually name matches stem.
+                tfws = [n for n in z.namelist() if n.lower().endswith(('.tfw', '.tifw'))]
                 
                 extract_path = output_dir / zip_path.stem
                 extract_path.mkdir(parents=True, exist_ok=True)
                 
-                z.extract(target, path=extract_path)
-                
-                full_path = extract_path / target
-                if not full_path.exists():
-                     self.log(f"  [ERROR] Extracted file missing: {full_path}")
-                     return None
-                     
-                return full_path
+                for target in tiffs:
+                    z.extract(target, path=extract_path)
+                    full_path = extract_path / target
+                    if full_path.exists():
+                        extracted_tiffs.append(full_path)
+                        
+                        # Check for matching tfw and extract if exists
+                        target_stem = Path(target).stem
+                        for tfw in tfws:
+                            if Path(tfw).stem == target_stem:
+                                z.extract(tfw, path=extract_path)
+                                self.log(f"    Extracted companion world file: {tfw}")
+
+                return extracted_tiffs
         except Exception as e:
             self.log(f"Error unzipping {zip_path.name}: {e}")
-            return None
+            return []
 
 
 
@@ -817,7 +812,7 @@ class UnifiedAppGUI:
         self.log_queue = queue.Queue()
         
         # Batch vars
-        self.batch_map_file = tk.StringVar(value="newrawtiffs_map.txt")
+        self.batch_source_dir = tk.StringVar(value="/Volumes/projects/newrawtiffs")
         self.batch_csv_file = tk.StringVar(value="master_dole.csv")
         self.batch_shape_dir = tk.StringVar(value="shapefiles")
         self.batch_date_filter = tk.StringVar()
@@ -902,9 +897,9 @@ class UnifiedAppGUI:
         # File Inputs
         grid_opts = {'padx': 5, 'pady': 5, 'sticky': tk.W}
         
-        ttk.Label(frame, text="File Map (txt):").grid(row=0, column=0, **grid_opts)
-        ttk.Entry(frame, textvariable=self.batch_map_file, width=40).grid(row=0, column=1, **grid_opts)
-        ttk.Button(frame, text="...", command=lambda: self.browse_file(self.batch_map_file)).grid(row=0, column=2, **grid_opts)
+        ttk.Label(frame, text="Source Directory:").grid(row=0, column=0, **grid_opts)
+        ttk.Entry(frame, textvariable=self.batch_source_dir, width=40).grid(row=0, column=1, **grid_opts)
+        ttk.Button(frame, text="...", command=lambda: self.browse_dir(self.batch_source_dir)).grid(row=0, column=2, **grid_opts)
         
         ttk.Label(frame, text="Master Dole (csv):").grid(row=1, column=0, **grid_opts)
         ttk.Entry(frame, textvariable=self.batch_csv_file, width=40).grid(row=1, column=1, **grid_opts)
@@ -1175,6 +1170,11 @@ class UnifiedAppGUI:
                 self.safe_log("Creating Combined GeoTIFF...")
                 self.processor.create_combined_tiff(vrt_file, tiff_file)
 
+            if output_fmt in ["cog", "both"]:
+                cog_file = out_dir / "combined_cog.tif"
+                self.safe_log("Creating Optimized COG...")
+                self.processor.convert_to_cog(vrt_file, cog_file)
+
             if output_fmt in ["tiles", "both"]:
                 zoom = self.zoom_levels.get()
                 if zoom:
@@ -1201,7 +1201,7 @@ class UnifiedAppGUI:
         self.processing = True
         
         # Inputs
-        map_file = Path(self.batch_map_file.get())
+        source_dir = Path(self.batch_source_dir.get())
         csv_file = Path(self.batch_csv_file.get())
         shape_dir = Path(self.batch_shape_dir.get())
         out_root = Path(self.output_dir.get())
@@ -1210,17 +1210,17 @@ class UnifiedAppGUI:
         # Start a thread to PREPARE the data, then show UI
         thread = threading.Thread(
             target=self.prepare_batch_data, 
-            args=(map_file, csv_file, shape_dir, out_root, date_filter), 
+            args=(source_dir, csv_file, shape_dir, out_root, date_filter), 
             daemon=True
         )
         thread.start()
 
-    def prepare_batch_data(self, map_file, csv_file, shape_dir, out_root, date_filter):
+    def prepare_batch_data(self, source_dir, csv_file, shape_dir, out_root, date_filter):
         try:
             self.safe_log("Preparing batch data for review...")
             
-            # 1. Parse Data
-            self.batch_processor.parse_map_file(map_file)
+            # 1. Scan Data
+            self.batch_processor.scan_source_dir(source_dir)
             self.batch_processor.load_dole_data(csv_file)
             
             # 2. Build Review Data Dictionary
@@ -1292,31 +1292,33 @@ class UnifiedAppGUI:
                         
                     # Process EACH found file for this chart (e.g. North and South)
                     for f_path in files:
-                        self.safe_log(f"  File: {f_path.name}")
+                        self.safe_log(f"  Source: {f_path.name}")
                         
-                        # Unzip if needed
-                        tiff_path = f_path
+                        # Get list of TIFFs to process
+                        tiffs_to_process = []
                         if f_path.suffix.lower() == '.zip':
                             self.safe_log(f"    Unzipping...")
-                            tiff_path = self.batch_processor.unzip_file(f_path, date_out_dir / "temp_extract")
-                            if not tiff_path:
-                                continue
-
-                        # Warp
-                        # Unique name to avoid collisions if multiple files per chart
-                        # Optimization: Use VRT if enabled
-                        use_vrt = self.optimize_vrt.get()
-                        ext = ".vrt" if use_vrt else ".tif"
-                        fmt = "VRT" if use_vrt else "GTiff"
-                        
-                        out_name = f"{tiff_path.stem}_clipped{ext}"
-                        out_path = date_out_dir / "warped" / out_name
-                        
-                        self.safe_log(f"    Warping (Format: {fmt})...")
-                        if self.processor.warp_and_cut(tiff_path, shp_path, out_path, format=fmt):
-                            processed_tiffs.append(out_path)
+                            extracted = self.batch_processor.unzip_file(f_path, date_out_dir / "temp_extract")
+                            tiffs_to_process.extend(extracted)
                         else:
-                            self.safe_log(f"    Failed processing {f_path.name}")
+                            tiffs_to_process.append(f_path)
+                            
+                        for tiff_path in tiffs_to_process:
+                            self.safe_log(f"    Processing: {tiff_path.name}")
+                            
+                            # Warp
+                            use_vrt = self.optimize_vrt.get()
+                            ext = ".vrt" if use_vrt else ".tif"
+                            fmt = "VRT" if use_vrt else "GTiff"
+                            
+                            out_name = f"{tiff_path.stem}_clipped{ext}"
+                            out_path = date_out_dir / "warped" / out_name
+                            
+                            self.safe_log(f"    Warping (Format: {fmt})...")
+                            if self.processor.warp_and_cut(tiff_path, shp_path, out_path, format=fmt):
+                                processed_tiffs.append(out_path)
+                            else:
+                                self.safe_log(f"    Failed processing {tiff_path.name}")
 
                 if not processed_tiffs:
                     self.safe_log(f"Date {date}: No files processed successfully.")
