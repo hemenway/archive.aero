@@ -1429,6 +1429,17 @@
             document.exitFullscreen();
           }
         }
+      },
+      debounce: (func, wait) => {
+        let timeout;
+        return function executedFunction(...args) {
+          const later = () => {
+            clearTimeout(timeout);
+            func(...args);
+          };
+          clearTimeout(timeout);
+          timeout = setTimeout(later, wait);
+        };
       }
     };
 
@@ -1504,6 +1515,9 @@
 
         this.cache = {};
         this.activeLayers = [];
+
+        // Debounced version of showFrame for timeline scrubbing
+        this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), 250);
       }
 
       async getLayerData(filename) {
@@ -1521,7 +1535,9 @@
             tileSize: 256,
             opacity: 0,
             zIndex: 10,
-            keepBuffer: 2
+            keepBuffer: 2,
+            updateWhenIdle: true,
+            updateWhenZooming: false
           });
 
           this.cache[filename] = { layer, bounds: tileJson.bounds };
@@ -1924,7 +1940,7 @@
             if (diff < minDiff) { minDiff = diff; closestIdx = i; }
           });
 
-          if (closestIdx !== this.currentIndex) this.update(closestIdx);
+          if (closestIdx !== this.currentIndex) this.update(closestIdx, true);
         };
 
         let isDragging = false;
@@ -1943,7 +1959,7 @@
         window.addEventListener('touchend', endDrag);
       }
 
-      update(index) {
+      update(index, lazy = false) {
         this.currentIndex = index;
         const f = this.frames[index];
 
@@ -1958,7 +1974,11 @@
           if (i === index) tick.classList.add('active'); else tick.classList.remove('active');
         });
 
-        this.mapCtrl.showFrame(index);
+        if (lazy) {
+          this.mapCtrl.showFrameDebounced(index);
+        } else {
+          this.mapCtrl.showFrame(index);
+        }
       }
 
       step(dir) {
