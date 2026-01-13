@@ -1388,8 +1388,6 @@
   <script>
     /** CONFIGURATION **/
     const CONFIG = {
-      rdntEndpoint: 'https://tiles.rdnt.io/tiles',
-      rdntQuery: '&rgb=1,2,3',
       baseUrl: 'https://data.archive.aero/sectionals/',
       csvUrl: 'dates.csv', // Dynamic Source
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
@@ -1398,9 +1396,8 @@
 
     /** UTILITIES **/
     const Utils = {
-      buildCogUrl: (filename) => {
-        const encoded = encodeURIComponent(CONFIG.baseUrl + filename);
-        return `${CONFIG.rdntEndpoint}?url=${encoded}${CONFIG.rdntQuery}`;
+      buildTileUrl: (date) => {
+        return `${CONFIG.baseUrl}${date}/{z}/{x}/{y}.webp`;
       },
       toast: (msg, duration = 3000) => {
         const el = document.getElementById('toast');
@@ -1452,22 +1449,17 @@
           skipEmptyLines: true,
           complete: (results) => {
             try {
-              const framesMap = {};
+              const frames = [];
               results.data.forEach(row => {
-                if (!row.filename || !row.date_iso || row.date_iso === '?') return;
-                const date = row.date_iso;
-                if (!framesMap[date]) framesMap[date] = { date: date, files: [] };
-                const files = row.filename.split(',').map(s => s.trim()).filter(s => s.length > 0);
-                framesMap[date].files.push(...files);
+                if (!row.date_iso || row.date_iso === '?') return;
+                frames.push({
+                  id: Utils.formatDateId(row.date_iso),
+                  date: row.date_iso
+                });
               });
-              const framesList = Object.values(framesMap).sort((a, b) => {
+              CONFIG.frames = frames.sort((a, b) => {
                 return new Date(a.date) - new Date(b.date);
               });
-              CONFIG.frames = framesList.map(f => ({
-                id: Utils.formatDateId(f.date),
-                date: f.date,
-                files: f.files
-              }));
               resolve();
             } catch (e) {
               console.error("Data processing error", e);
@@ -1520,38 +1512,29 @@
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), 250);
       }
 
-      async getLayerData(filename) {
-        if (this.cache[filename]) return this.cache[filename];
-        try {
-          const url = Utils.buildCogUrl(filename);
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const tileJson = await res.json();
+      getLayerData(date) {
+        if (this.cache[date]) return this.cache[date];
 
-          const tileUrl = tileJson.tiles[0];
-          const layer = L.tileLayer(tileUrl, {
-            minZoom: tileJson.minzoom || 0,
-            maxZoom: 22,
-            tileSize: 256,
-            opacity: 0,
-            zIndex: 10,
-            keepBuffer: 2,
-            updateWhenIdle: true,
-            updateWhenZooming: false
-          });
+        const tileUrl = Utils.buildTileUrl(date);
+        const layer = L.tileLayer(tileUrl, {
+          minZoom: 0,
+          maxZoom: 22,
+          tileSize: 256,
+          opacity: 0,
+          zIndex: 10,
+          keepBuffer: 2,
+          updateWhenIdle: true,
+          updateWhenZooming: false
+        });
 
-          this.cache[filename] = { layer, bounds: tileJson.bounds };
-          return this.cache[filename];
-        } catch (e) {
-          console.error(`Failed to load ${filename}`, e);
-          return null;
-        }
+        this.cache[date] = { layer };
+        return this.cache[date];
       }
 
       async preloadFrame(index) {
         if (!CONFIG.frames[index]) return;
         setTimeout(() => {
-          CONFIG.frames[index].files.forEach(f => this.getLayerData(f));
+          this.getLayerData(CONFIG.frames[index].date);
         }, 200);
       }
 
@@ -1570,7 +1553,7 @@
         const cutoffDate = new Date(currentDate);
         cutoffDate.setDate(cutoffDate.getDate() - 167);
 
-        // Find all frames within the 140-day window, including the current frame
+        // Find all frames within the 167-day window, including the current frame
         // Sort by date ascending so oldest are drawn first (lower z-index)
         const activeFrames = CONFIG.frames.filter(f => {
           const d = new Date(f.date);
@@ -1580,41 +1563,17 @@
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
 
-        // Collect all files from all active frames
-        // We'll manage z-index manually or by insertion order
-        const allFiles = [];
-        activeFrames.forEach(f => allFiles.push(...f.files));
-
-        // Remove duplicates if any (though typically files are unique per frame)
-        const uniqueFiles = [...new Set(allFiles)];
-
-        // Preload all
-        const layerDataList = await Promise.all(uniqueFiles.map(f => this.getLayerData(f)));
-
         const newLayers = [];
 
-        // Assign z-index based on frame index. Newer frames should be on top.
-        // Since we iterated activeFrames sorted by date ascending, we can use that order.
-        // We need to map file -> frame to determine z-index preference, or just use the order in uniqueFiles 
-        // if we constructed it carefully.
-        // Let's refine: iterate frames, get their files, add to a list. Last added (currentFrame) is effectively top.
-        // BUT Leaflet ordering depends on DOM order or zIndex option.
-
-        // Simplified approach: Set zIndex on the layer instance before adding
+        // Get layer for each active frame and assign z-index based on date order
         activeFrames.forEach((frame, frameIdx) => {
-          frame.files.forEach(filename => {
-            const data = layerDataList.find(d => d && d.layer && d.layer._url && d.layer._url.includes(encodeURIComponent(CONFIG.baseUrl + filename))); // Url matching is tricky if transformed
-            // Better: Map filename to data directly
-            const cached = this.cache[filename];
-            if (cached && cached.layer) {
-              // Set z-index: 10 base + frame index. 
-              // This ensures newer dates (higher frameIdx) are on top.
-              cached.layer.setZIndex(10 + frameIdx);
-              if (!newLayers.includes(cached.layer)) {
-                newLayers.push(cached.layer);
-              }
-            }
-          });
+          const data = this.getLayerData(frame.date);
+          if (data && data.layer) {
+            // Set z-index: 10 base + frame index
+            // This ensures newer dates (higher frameIdx) are on top
+            data.layer.setZIndex(10 + frameIdx);
+            newLayers.push(data.layer);
+          }
         });
 
         // Add to map

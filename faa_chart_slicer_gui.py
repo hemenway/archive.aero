@@ -50,26 +50,34 @@ class ChartProcessor:
         try:
             self.log(f"Processing: {input_tiff.name}")
             self.log(f"  Shapefile: {shapefile.name}")
-            
+
             # Ensure output directory exists
             output_tiff.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Step 1: Expand to RGBA (in memory VRT) to allow high-quality resampling and color consistency
-            temp_vrt_name = f"/vsimem/{input_tiff.stem}_rgba.vrt"
+
+            # Step 1: Expand to RGBA
+            # If output is VRT, write temp VRT to disk (so it can be referenced)
+            # Otherwise use in-memory VRT
+            if format == "VRT":
+                temp_vrt_name = str(output_tiff.parent / f"{input_tiff.stem}_rgba_temp.vrt")
+                cleanup_temp = True
+            else:
+                temp_vrt_name = f"/vsimem/{input_tiff.stem}_rgba.vrt"
+                cleanup_temp = True
+
             translate_options = gdal.TranslateOptions(
                 format="VRT",
                 rgbExpand="rgba"
             )
-            
+
             # Create temp RGBA VRT
             ds_vrt = gdal.Translate(temp_vrt_name, str(input_tiff), options=translate_options)
             ds_vrt = None # Flush/Close
-            
+
             # Step 2: Warp with Cutline
             creation_opts = []
             if format == 'GTiff':
                  creation_opts = ['TILED=YES', 'COMPRESS=LZW', 'BIGTIFF=IF_NEEDED']
-            
+
             warp_options = gdal.WarpOptions(
                 format=format,
                 dstSRS='EPSG:3857',
@@ -80,12 +88,20 @@ class ChartProcessor:
                 creationOptions=creation_opts,
                 multithread=True
             )
-            
+
             ds = gdal.Warp(str(output_tiff), temp_vrt_name, options=warp_options)
-            
-            # Cleanup
-            gdal.Unlink(temp_vrt_name)
-            
+
+            # Cleanup temp VRT only if output is NOT VRT
+            # (VRT outputs reference the temp file, so we need to keep it)
+            if format != "VRT":
+                if temp_vrt_name.startswith("/vsimem/"):
+                    gdal.Unlink(temp_vrt_name)
+                else:
+                    try:
+                        Path(temp_vrt_name).unlink()
+                    except:
+                        pass
+
             if ds:
                 ds = None # Close dataset
                 self.log(f"✓ Created {output_tiff.name}")
@@ -93,39 +109,68 @@ class ChartProcessor:
             else:
                 self.log(f"✗ Failed to create {output_tiff.name}")
                 return False
-                
+
         except Exception as e:
             self.log(f"✗ Error processing {input_tiff.name}: {e}")
             # Try to cleanup if failed
-            try: gdal.Unlink(f"/vsimem/{input_tiff.stem}_rgba.vrt")
-            except: pass
+            try:
+                if temp_vrt_name.startswith("/vsimem/"):
+                    gdal.Unlink(temp_vrt_name)
+                else:
+                    Path(temp_vrt_name).unlink()
+            except:
+                pass
             return False
 
     def build_vrt(self, input_files: List[Path], output_vrt: Path) -> bool:
         """Combine multiple TIFFs into a single VRT."""
         try:
             self.log(f"Building VRT: {output_vrt.name}...")
-            
+            self.log(f"  Input files: {len(input_files)}")
+
+            # Check if all input files exist
+            missing = []
+            for f in input_files:
+                if not f.exists():
+                    missing.append(str(f))
+                else:
+                    self.log(f"  - {f.name} ✓")
+
+            if missing:
+                self.log(f"✗ Missing input files:")
+                for m in missing:
+                    self.log(f"  - {m}")
+                return False
+
             input_strs = [str(f) for f in input_files]
-            
+
+            # Ensure output directory exists
+            output_vrt.parent.mkdir(parents=True, exist_ok=True)
+
             # gdal.BuildVRT options
             vrt_options = gdal.BuildVRTOptions(
                 resampleAlg=gdal.GRA_Lanczos,
                 addAlpha=True,
             )
-            
+
             ds = gdal.BuildVRT(str(output_vrt), input_strs, options=vrt_options)
-            
+
             if ds:
                 ds = None
                 self.log(f"✓ VRT created.")
                 return True
             else:
-                self.log(f"✗ Failed to create VRT.")
+                self.log(f"✗ Failed to create VRT - GDAL returned None")
+                # Get last GDAL error
+                err = gdal.GetLastErrorMsg()
+                if err:
+                    self.log(f"  GDAL Error: {err}")
                 return False
-                
+
         except Exception as e:
             self.log(f"✗ Error building VRT: {e}")
+            import traceback
+            self.log(traceback.format_exc())
             return False
 
     def expand_vrt_to_rgba(self, input_vrt: Path, output_vrt: Path) -> bool:
@@ -199,7 +244,7 @@ class ChartProcessor:
                 '--webviewer=none',
                 '--exclude',
                 '--tiledriver=WEBP',
-                '--webp-quality=50',
+                '--webp-quality=90',
                 str(input_vrt),
                 str(output_dir)
             ]
@@ -1340,7 +1385,7 @@ class UnifiedAppGUI:
                     if output_fmt in ["tiles", "both"]:
                         zoom = self.zoom_levels.get()
                         self.safe_log(f"  Generating Tiles ({zoom})...")
-                        self.processor.generate_tiles(vrt_file, date_out_dir / "tiles", zoom)
+                        self.processor.generate_tiles(vrt_file, date_out_dir, zoom)
                 
                 # R2 Sync
                 if self.r2_enabled.get():
