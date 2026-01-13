@@ -19,6 +19,7 @@ import re
 import datetime
 import zipfile
 from collections import defaultdict
+import time
 
 try:
     from osgeo import gdal, ogr, osr
@@ -29,9 +30,48 @@ except ImportError:
     sys.exit(1)
 
 
+class ProgressTracker:
+    """Helper class to track progress and calculate ETA."""
+
+    def __init__(self, total_items):
+        self.total_items = total_items
+        self.completed_items = 0
+        self.start_time = time.time()
+
+    def update(self, completed):
+        """Update completed count."""
+        self.completed_items = completed
+
+    def get_eta_string(self):
+        """Calculate and format ETA."""
+        if self.completed_items == 0:
+            return "Calculating ETA..."
+
+        elapsed = time.time() - self.start_time
+        avg_time_per_item = elapsed / self.completed_items
+        remaining_items = self.total_items - self.completed_items
+        eta_seconds = avg_time_per_item * remaining_items
+
+        if eta_seconds < 60:
+            return f"ETA: {int(eta_seconds)}s"
+        elif eta_seconds < 3600:
+            minutes = int(eta_seconds / 60)
+            seconds = int(eta_seconds % 60)
+            return f"ETA: {minutes}m {seconds}s"
+        else:
+            hours = int(eta_seconds / 3600)
+            minutes = int((eta_seconds % 3600) / 60)
+            return f"ETA: {hours}h {minutes}m"
+
+    def get_progress_string(self):
+        """Get formatted progress string."""
+        percentage = (self.completed_items / self.total_items * 100) if self.total_items > 0 else 0
+        return f"{self.completed_items}/{self.total_items} ({percentage:.1f}%) - {self.get_eta_string()}"
+
+
 class ChartProcessor:
     """Core processing logic using GDAL."""
-    
+
     def __init__(self, log_callback=None):
         self.log_callback = log_callback
     
@@ -245,6 +285,7 @@ class ChartProcessor:
                 '--exclude',
                 '--tiledriver=WEBP',
                 '--webp-quality=90',
+                '--xyz',
                 str(input_vrt),
                 str(output_dir)
             ]
@@ -895,10 +936,20 @@ class UnifiedAppGUI:
         self.notebook.add(self.tab_cog, text="COG & Upload")
         self.setup_cog_tab()
         
+        # --- Progress Section ---
+        progress_frame = ttk.LabelFrame(main, text="Progress", padding="5")
+        progress_frame.pack(fill=tk.X, pady=(0, 5))
+
+        self.progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=400)
+        self.progress_bar.pack(fill=tk.X, pady=(0, 5))
+
+        self.progress_label = ttk.Label(progress_frame, text="Ready")
+        self.progress_label.pack(fill=tk.X)
+
         # --- Bottom Section: Log ---
         log_frame = ttk.LabelFrame(main, text="Log", padding="5")
         log_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         self.log_text = scrolledtext.ScrolledText(log_frame, height=10)
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
@@ -1033,7 +1084,26 @@ class UnifiedAppGUI:
         
     def safe_log(self, message):
         self.log_queue.put(message)
-    
+
+    def update_progress(self, current, total, status_text="Processing..."):
+        """Thread-safe progress update with ETA calculation."""
+        def _update():
+            if total > 0:
+                percentage = (current / total) * 100
+                self.progress_bar['value'] = percentage
+                self.progress_label['text'] = status_text
+            else:
+                self.progress_bar['value'] = 0
+                self.progress_label['text'] = status_text
+        self.root.after(0, _update)
+
+    def reset_progress(self):
+        """Reset progress bar to initial state."""
+        def _reset():
+            self.progress_bar['value'] = 0
+            self.progress_label['text'] = "Ready"
+        self.root.after(0, _reset)
+
     def check_log_queue(self):
         try:
             while True:
@@ -1146,7 +1216,7 @@ class UnifiedAppGUI:
 
     def start_processing(self):
         if self.processing: return
-        
+
         # Validation
         if not self.charts:
             messagebox.showwarning("Warning", "No charts added.")
@@ -1154,16 +1224,17 @@ class UnifiedAppGUI:
         if not self.output_dir.get():
             messagebox.showwarning("Warning", "Select output directory.")
             return
-            
+
         # Check all have shapefiles
         missing = [c['path'].name for c in self.charts if not c['shapefile']]
         if missing:
             messagebox.showwarning("Warning", f"Missing shapefiles for:\n{', '.join(missing)}")
             return
-            
+
         self.processing = True
         self.btn_process.config(state='disabled')
-        
+        self.reset_progress()  # Reset progress bar at start
+
         thread = threading.Thread(target=self.run_process_thread, daemon=True)
         thread.start()
         
@@ -1173,89 +1244,107 @@ class UnifiedAppGUI:
             temp_dir = out_dir / "warped_temp"
             tiles_dir = out_dir / "tiles"
             vrt_file = out_dir / "combined.vrt"
-            
+
             out_dir.mkdir(parents=True, exist_ok=True)
             temp_dir.mkdir(exist_ok=True)
-            
+
+            # Initialize progress tracker
+            total_steps = len(self.charts)
+            tracker = ProgressTracker(total_steps)
+
             # 1. Warp/Cut individual files
             processed_files = []
-            
+
             for i, chart in enumerate(self.charts):
                 chart['status'] = "Processing..."
-                # Update UI? (Requires thread safety for treeview, skipping dynamic updates for now or use after)
-                
+                tracker.update(i)
+                self.update_progress(i, total_steps, f"Processing charts - {tracker.get_progress_string()}")
+
                 out_name = f"{chart['path'].stem}_warped.tif"
                 out_path = temp_dir / out_name
-                
+
                 success = self.processor.warp_and_cut(chart['path'], chart['shapefile'], out_path)
-                
+
                 if success:
                     processed_files.append(out_path)
                     chart['status'] = "Done"
                 else:
                      chart['status'] = "Failed"
-                     
+
+            # Update to 100% for warping phase
+            tracker.update(total_steps)
+            self.update_progress(total_steps, total_steps, f"Chart warping complete - {tracker.get_progress_string()}")
+
             if not processed_files:
                 self.safe_log("No files processed successfully. Stopping.")
+                self.reset_progress()
                 return
 
             # 2. Build VRT
             self.safe_log("Building VRT...")
+            self.update_progress(0, 0, "Building VRT mosaic...")
             if self.processor.build_vrt(processed_files, vrt_file):
                 self.safe_log(f"VRT created at {vrt_file}")
             else:
                 self.safe_log("VRT creation failed. Stopping.")
+                self.reset_progress()
                 return
 
             # 3. Generate output based on selected format
             output_fmt = self.output_format.get()
-            
+
             if output_fmt in ["geotiff", "both"]:
                 tiff_file = out_dir / "combined.tif"
                 self.safe_log("Creating Combined GeoTIFF...")
+                self.update_progress(0, 0, "Creating combined GeoTIFF...")
                 self.processor.create_combined_tiff(vrt_file, tiff_file)
 
             if output_fmt in ["cog", "both"]:
                 cog_file = out_dir / "combined_cog.tif"
                 self.safe_log("Creating Optimized COG...")
+                self.update_progress(0, 0, "Creating COG...")
                 self.processor.convert_to_cog(vrt_file, cog_file)
 
             if output_fmt in ["tiles", "both"]:
                 zoom = self.zoom_levels.get()
                 if zoom:
                     self.safe_log(f"Generating Tiles ({zoom})...")
+                    self.update_progress(0, 0, f"Generating tiles (zoom {zoom})...")
                     self.processor.generate_tiles(vrt_file, tiles_dir, zoom)
                 else:
                     self.safe_log("Warning: No zoom levels specified for tile generation.")
-            
+
+            self.update_progress(100, 100, "Processing complete!")
             self.safe_log("ALL TASKS COMPLETED.")
             messagebox.showinfo("Done", "Processing Complete!")
-            
+
         except Exception as e:
             self.safe_log(f"CRITICAL ERROR: {e}")
             import traceback
             self.safe_log(traceback.format_exc())
-            
+
         finally:
             self.processing = False
             self.root.after(0, lambda: self.btn_process.config(state='normal'))
+            self.root.after(3000, self.reset_progress)  # Reset after 3 seconds
             # Clean up temp? Maybe keep for debugging.
 
     def start_batch_processing(self):
         if self.processing: return
         self.processing = True
-        
+        self.reset_progress()  # Reset progress bar at start
+
         # Inputs
         source_dir = Path(self.batch_source_dir.get())
         csv_file = Path(self.batch_csv_file.get())
         shape_dir = Path(self.batch_shape_dir.get())
         out_root = Path(self.output_dir.get())
         date_filter = self.batch_date_filter.get().strip()
-        
+
         # Start a thread to PREPARE the data, then show UI
         thread = threading.Thread(
-            target=self.prepare_batch_data, 
-            args=(source_dir, csv_file, shape_dir, out_root, date_filter), 
+            target=self.prepare_batch_data,
+            args=(source_dir, csv_file, shape_dir, out_root, date_filter),
             daemon=True
         )
         thread.start()
@@ -1314,31 +1403,42 @@ class UnifiedAppGUI:
 
     def run_batch_execution(self, review_data, out_root):
         try:
+            # Count total items to process
+            total_dates = len(review_data)
+            date_index = 0
+
             # Iterate Dates found in review data
             for date, items in review_data.items():
+                date_index += 1
                 self.safe_log(f"\nPROCESSING DATE: {date}")
-                
+                self.update_progress(date_index - 1, total_dates, f"Processing date {date_index}/{total_dates}: {date}")
+
                 date_out_dir = out_root / date
                 date_out_dir.mkdir(parents=True, exist_ok=True)
-                
+
                 processed_tiffs = [] # List of warped tiffs for this date
-                
+
+                # Count total files for this date
+                total_files = sum(len(item['files']) for item in items if item['files'] and item['shp'])
+                file_index = 0
+                tracker = ProgressTracker(total_files) if total_files > 0 else None
+
                 for item in items:
                     loc = item['loc']
                     files = item['files']
                     shp_path = item['shp']
-                    
+
                     if not files:
                         self.safe_log(f"  [SKIP] No files for {loc}")
                         continue
                     if not shp_path:
                         self.safe_log(f"  [SKIP] No shapefile for {loc}")
                         continue
-                        
+
                     # Process EACH found file for this chart (e.g. North and South)
                     for f_path in files:
                         self.safe_log(f"  Source: {f_path.name}")
-                        
+
                         # Get list of TIFFs to process
                         tiffs_to_process = []
                         if f_path.suffix.lower() == '.zip':
@@ -1347,18 +1447,27 @@ class UnifiedAppGUI:
                             tiffs_to_process.extend(extracted)
                         else:
                             tiffs_to_process.append(f_path)
-                            
+
                         for tiff_path in tiffs_to_process:
+                            file_index += 1
+                            if tracker:
+                                tracker.update(file_index)
+                                self.update_progress(
+                                    date_index - 1 + (file_index / total_files),
+                                    total_dates,
+                                    f"Date {date} - {tracker.get_progress_string()}"
+                                )
+
                             self.safe_log(f"    Processing: {tiff_path.name}")
-                            
+
                             # Warp
                             use_vrt = self.optimize_vrt.get()
                             ext = ".vrt" if use_vrt else ".tif"
                             fmt = "VRT" if use_vrt else "GTiff"
-                            
+
                             out_name = f"{tiff_path.stem}_clipped{ext}"
                             out_path = date_out_dir / "warped" / out_name
-                            
+
                             self.safe_log(f"    Warping (Format: {fmt})...")
                             if self.processor.warp_and_cut(tiff_path, shp_path, out_path, format=fmt):
                                 processed_tiffs.append(out_path)
@@ -1370,51 +1479,59 @@ class UnifiedAppGUI:
                     continue
 
                 # VRT & Combine
+                self.update_progress(date_index, total_dates, f"Date {date} - Building mosaic...")
                 vrt_file = date_out_dir / f"combined_{date}.vrt"
                 if self.processor.build_vrt(processed_tiffs, vrt_file):
                     output_fmt = self.output_format.get()
-                    
+
                     if output_fmt in ["geotiff", "both"]:
                          self.safe_log("  Creating Mosaic GeoTIFF...")
+                         self.update_progress(date_index, total_dates, f"Date {date} - Creating GeoTIFF...")
                          self.processor.create_combined_tiff(vrt_file, date_out_dir / f"mosaic_{date}.tif")
 
                     if output_fmt in ["cog", "both"]:
                          self.safe_log("  Creating Mosaic COG...")
+                         self.update_progress(date_index, total_dates, f"Date {date} - Creating COG...")
                          self.processor.convert_to_cog(vrt_file, date_out_dir / f"mosaic_{date}_cog.tif")
 
                     if output_fmt in ["tiles", "both"]:
                         zoom = self.zoom_levels.get()
                         self.safe_log(f"  Generating Tiles ({zoom})...")
+                        self.update_progress(date_index, total_dates, f"Date {date} - Generating tiles...")
                         self.processor.generate_tiles(vrt_file, date_out_dir, zoom)
-                
+
                 # R2 Sync
                 if self.r2_enabled.get():
                      # Sync the date folder
                      dest = self.r2_destination.get().rstrip('/') + f"/{date}"
                      self.safe_log(f"  Syncing to {dest}...")
-                     # If using COG mode, maybe we only want to sync the COG? 
+                     self.update_progress(date_index, total_dates, f"Date {date} - Uploading...")
+                     # If using COG mode, maybe we only want to sync the COG?
                      # For now sync entire date folder logic
                      self.processor.sync_to_r2(date_out_dir, dest)
 
+            self.update_progress(total_dates, total_dates, "Batch processing complete!")
             self.safe_log("\nBATCH PROCESSING COMPLETE.")
             messagebox.showinfo("Done", "Batch Processing Complete")
-            
+
         except Exception as e:
             self.safe_log(f"CRITICAL BATCH ERROR: {e}")
             import traceback
             self.safe_log(traceback.format_exc())
-            
+
         finally:
             self.processing = False
+            self.root.after(3000, self.reset_progress)  # Reset after 3 seconds
 
     def start_cog_pipeline(self):
         if self.processing: return
         self.processing = True
-        
+        self.reset_progress()  # Reset progress bar at start
+
         in_root = Path(self.cog_in_root.get())
         out_dir = Path(self.cog_out_dir.get())
         r2_dest = self.r2_destination.get()
-        
+
         thread = threading.Thread(
             target=self.run_cog_pipeline_thread,
             args=(in_root, out_dir, r2_dest),
@@ -1425,41 +1542,53 @@ class UnifiedAppGUI:
     def run_cog_pipeline_thread(self, in_root, out_dir, r2_dest):
         try:
             self.safe_log("Starting COG Pipeline...")
-            
+
             # 1. Scan and Convert
             out_dir.mkdir(parents=True, exist_ok=True)
             files = self.processor.scan_files(in_root)
-            
+
             if not files:
                  self.safe_log("No mosaic TIFFs found.")
+                 self.reset_progress()
             else:
                  self.safe_log(f"Found {len(files)} potential files.")
-                 
-                 for f in files:
+                 tracker = ProgressTracker(len(files))
+
+                 for i, f in enumerate(files):
+                     tracker.update(i)
+                     self.update_progress(i, len(files), f"Converting to COG - {tracker.get_progress_string()}")
+
                      # Calculate output name
                      iso = self.processor.extract_iso_date(f)
                      if iso:
                          out_name = f"{iso}.tif"
                      else:
                          out_name = f"{f.stem}.tif"
-                         
+
                      out_path = out_dir / out_name
-                     
+
                      self.processor.convert_to_cog(f, out_path)
-                     
+
+                 # Mark conversion complete
+                 tracker.update(len(files))
+                 self.update_progress(len(files), len(files), f"COG conversion complete - {tracker.get_progress_string()}")
+
             # 2. Sync
             self.safe_log("\nStarting Upload to R2...")
+            self.update_progress(0, 0, "Uploading to R2...")
             self.processor.sync_to_r2(out_dir, r2_dest)
-            
+
+            self.update_progress(100, 100, "Pipeline complete!")
             self.safe_log("\nPIPELINE COMPLETE.")
             messagebox.showinfo("Done", "COG & Upload Pipeline Complete")
-            
+
         except Exception as e:
              self.safe_log(f"CRITICAL ERROR: {e}")
              import traceback
              self.safe_log(traceback.format_exc())
         finally:
              self.processing = False
+             self.root.after(3000, self.reset_progress)  # Reset after 3 seconds
 
 
 def main():
