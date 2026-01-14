@@ -29,6 +29,26 @@ except ImportError:
     print("Install with: pip install gdal --break-system-packages")
     sys.exit(1)
 
+# Configure GDAL for optimal performance on multi-core systems
+import multiprocessing
+cpu_count = multiprocessing.cpu_count()
+
+# Set GDAL cache to use up to 50% of available RAM (minimum 512MB, maximum 4GB)
+try:
+    import psutil
+    available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
+    cache_size_mb = max(512, min(4096, available_ram_mb // 2))
+except ImportError:
+    cache_size_mb = 2048  # Default to 2GB if psutil not available
+
+gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
+gdal.SetConfigOption('GDAL_NUM_THREADS', str(cpu_count))
+gdal.SetConfigOption('GDAL_SWATH_SIZE', str(cache_size_mb))
+gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
+gdal.SetConfigOption('GDAL_TIFF_INTERNAL_MASK', 'YES')
+
+print(f"GDAL Performance Settings: {cpu_count} threads, {cache_size_mb}MB cache")
+
 
 class ProgressTracker:
     """Helper class to track progress and calculate ETA."""
@@ -271,18 +291,42 @@ class ChartProcessor:
             return False
 
     def create_combined_tiff(self, input_vrt: Path, output_tiff: Path) -> bool:
-        """Convert VRT to a single large GeoTIFF (BigTIFF)."""
+        """Convert VRT to a single large GeoTIFF (BigTIFF) with optimized parallel compression."""
         try:
             self.log(f"Creating Combined GeoTIFF: {output_tiff.name}...")
             self.log("This may take a while for large areas...")
-            
+
+            # Optimized creation options for M4 Mac and modern multi-core systems
+            # ZSTD is 2-3x faster than LZW with better compression
+            # NUM_THREADS=ALL_CPUS for parallel compression
+            # Larger block size (512) for better I/O performance on large files
+            creation_options = [
+                'TILED=YES',
+                'COMPRESS=ZSTD',           # Much faster than LZW
+                'ZSTD_LEVEL=6',            # Balance between speed and compression (1-22, default 9)
+                'BIGTIFF=YES',
+                'PREDICTOR=2',             # Horizontal differencing for better compression
+                'NUM_THREADS=ALL_CPUS',    # Use all available CPU cores
+                'BLOCKXSIZE=512',          # Larger blocks for better performance
+                'BLOCKYSIZE=512'
+            ]
+
+            # Progress callback for real-time feedback
+            def progress_callback(complete, message, user_data):
+                if complete > 0:
+                    percent = int(complete * 100)
+                    if percent % 10 == 0:  # Log every 10%
+                        self.log(f"  Progress: {percent}%")
+                return 1  # Return 1 to continue, 0 to cancel
+
             translate_options = gdal.TranslateOptions(
                 format='GTiff',
-                creationOptions=['TILED=YES', 'COMPRESS=LZW', 'BIGTIFF=YES', 'PREDICTOR=2']
+                creationOptions=creation_options,
+                callback=progress_callback
             )
-            
+
             ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
-            
+
             if ds:
                 ds = None
                 self.log(f"✓ Created Combined GeoTIFF.")
@@ -290,9 +334,33 @@ class ChartProcessor:
             else:
                 self.log(f"✗ Failed to create GeoTIFF.")
                 return False
-                
+
         except Exception as e:
             self.log(f"✗ Error creating GeoTIFF: {e}")
+            # If ZSTD not available, fallback to LZW with threading
+            if "ZSTD" in str(e):
+                self.log("ZSTD not available, falling back to LZW with multi-threading...")
+                try:
+                    creation_options = [
+                        'TILED=YES',
+                        'COMPRESS=LZW',
+                        'BIGTIFF=YES',
+                        'PREDICTOR=2',
+                        'NUM_THREADS=ALL_CPUS',
+                        'BLOCKXSIZE=512',
+                        'BLOCKYSIZE=512'
+                    ]
+                    translate_options = gdal.TranslateOptions(
+                        format='GTiff',
+                        creationOptions=creation_options
+                    )
+                    ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
+                    if ds:
+                        ds = None
+                        self.log(f"✓ Created Combined GeoTIFF with LZW.")
+                        return True
+                except Exception as e2:
+                    self.log(f"✗ Fallback also failed: {e2}")
             return False
 
     def generate_tiles(self, input_vrt: Path, output_dir: Path, zoom_levels: str = "", tile_size: int = 1024) -> bool:
@@ -426,7 +494,7 @@ class ChartProcessor:
         return None
 
     def convert_to_cog(self, input_path: Path, output_path: Path) -> bool:
-        """Convert VRT or TIFF to COG using GDAL."""
+        """Convert VRT or TIFF to COG using GDAL with optimized parallel compression."""
         try:
             # Check modification times if output exists
             if output_path.exists():
@@ -439,20 +507,36 @@ class ChartProcessor:
                         return True
 
             self.log(f"Converting to COG: {output_path.name}...")
-            
+
+            # Optimized COG creation options
+            # ZSTD is faster than DEFLATE with similar compression
+            # Use ALL_CPUS instead of hardcoded 8 threads
+            creation_options = [
+                'COMPRESS=ZSTD',
+                'ZSTD_LEVEL=6',
+                'PREDICTOR=2',
+                'BIGTIFF=IF_SAFER',
+                'NUM_THREADS=ALL_CPUS',
+                'BLOCKSIZE=512',
+                'RESAMPLING=LANCZOS'
+            ]
+
+            # Progress callback for real-time feedback
+            def progress_callback(complete, message, user_data):
+                if complete > 0:
+                    percent = int(complete * 100)
+                    if percent % 10 == 0:  # Log every 10%
+                        self.log(f"  Progress: {percent}%")
+                return 1
+
             translate_options = gdal.TranslateOptions(
                 format='COG',
-                creationOptions=[
-                    'COMPRESS=DEFLATE',
-                    'PREDICTOR=2',
-                    'BIGTIFF=IF_SAFER',
-                    'NUM_THREADS=8',
-                    'RESAMPLING=LANCZOS'
-                ]
+                creationOptions=creation_options,
+                callback=progress_callback
             )
-            
+
             ds = gdal.Translate(str(output_path), str(input_path), options=translate_options)
-            
+
             if ds:
                 ds = None
                 self.log(f"✓ COG Created.")
@@ -460,9 +544,32 @@ class ChartProcessor:
             else:
                 self.log(f"✗ COG Creation failed.")
                 return False
-                
+
         except Exception as e:
             self.log(f"✗ Error converting to COG: {e}")
+            # If ZSTD not available, fallback to DEFLATE with all cores
+            if "ZSTD" in str(e):
+                self.log("ZSTD not available, falling back to DEFLATE with multi-threading...")
+                try:
+                    creation_options = [
+                        'COMPRESS=DEFLATE',
+                        'PREDICTOR=2',
+                        'BIGTIFF=IF_SAFER',
+                        'NUM_THREADS=ALL_CPUS',
+                        'BLOCKSIZE=512',
+                        'RESAMPLING=LANCZOS'
+                    ]
+                    translate_options = gdal.TranslateOptions(
+                        format='COG',
+                        creationOptions=creation_options
+                    )
+                    ds = gdal.Translate(str(output_path), str(input_path), options=translate_options)
+                    if ds:
+                        ds = None
+                        self.log(f"✓ COG Created with DEFLATE.")
+                        return True
+                except Exception as e2:
+                    self.log(f"✗ Fallback also failed: {e2}")
             return False
 
     def generate_pmtiles(self, input_vrt: Path, output_pmtiles: Path, zoom_levels: str = "", tile_size: int = 1024) -> bool:
