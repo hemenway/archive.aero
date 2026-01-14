@@ -262,33 +262,39 @@ class ChartProcessor:
             self.log(f"✗ Error creating GeoTIFF: {e}")
             return False
 
-    def generate_tiles(self, input_vrt: Path, output_dir: Path, zoom_levels: str) -> bool:
+    def generate_tiles(self, input_vrt: Path, output_dir: Path, zoom_levels: str = "", tile_size: int = 1024) -> bool:
         """Generate tiles using gdal2tiles.py with real-time output capturing."""
         try:
-            self.log(f"Generating Tiles (Zoom: {zoom_levels})...")
+            zoom_info = f"Zoom: {zoom_levels}" if zoom_levels else "Zoom: auto"
+            self.log(f"Generating Tiles ({zoom_info}, Size: {tile_size})...")
             self.log("This may take a while. Progress will be shown below...")
-            
+
             # Check availability of gdal2tiles.py
             gdal2tiles_cmd = shutil.which("gdal2tiles.py")
             if not gdal2tiles_cmd:
-                gdal2tiles_cmd = "gdal2tiles.py" 
-            
+                gdal2tiles_cmd = "gdal2tiles.py"
+
             import multiprocessing
             # Reduce CPU count slightly to avoid locking up system
             cpu_count = max(1, multiprocessing.cpu_count() - 2)
-            
+
             cmd = [
                 gdal2tiles_cmd,
-                '--zoom', zoom_levels,
                 '--processes', str(cpu_count),
                 '--webviewer=none',
                 '--exclude',
                 '--tiledriver=WEBP',
                 '--webp-quality=90',
+                '--tilesize', str(tile_size),
                 '--xyz',
                 str(input_vrt),
                 str(output_dir)
             ]
+
+            # Only add zoom if specified (otherwise GDAL auto-determines)
+            if zoom_levels and zoom_levels.strip():
+                cmd.insert(1, '--zoom')
+                cmd.insert(2, zoom_levels)
             
             self.log(f"Running command: {' '.join(cmd)}")
             
@@ -424,6 +430,144 @@ class ChartProcessor:
                 
         except Exception as e:
             self.log(f"✗ Error converting to COG: {e}")
+            return False
+
+    def generate_pmtiles(self, input_vrt: Path, output_pmtiles: Path, zoom_levels: str = "", tile_size: int = 1024) -> bool:
+        """Generate PMTiles from a VRT using gdal2tiles and pmtiles convert."""
+        try:
+            self.log(f"Generating PMTiles: {output_pmtiles.name}...")
+            zoom_info = zoom_levels if zoom_levels else "auto"
+            self.log(f"  Zoom levels: {zoom_info}, Tile size: {tile_size}")
+
+            # Create a temporary directory for XYZ tiles
+            temp_tiles_dir = output_pmtiles.parent / f"_temp_tiles_{output_pmtiles.stem}"
+            temp_tiles_dir.mkdir(parents=True, exist_ok=True)
+
+            # Step 1: Generate XYZ tiles using gdal2tiles
+            self.log("  Step 1/2: Generating XYZ tiles...")
+            gdal2tiles_cmd = shutil.which("gdal2tiles.py")
+            if not gdal2tiles_cmd:
+                gdal2tiles_cmd = "gdal2tiles.py"
+
+            import multiprocessing
+            cpu_count = max(1, multiprocessing.cpu_count() - 2)
+
+            cmd_tiles = [
+                gdal2tiles_cmd,
+                '--processes', str(cpu_count),
+                '--webviewer=none',
+                '--exclude',
+                '--tiledriver=WEBP',
+                '--webp-quality=90',
+                '--tilesize', str(tile_size),
+                '--xyz',
+                str(input_vrt),
+                str(temp_tiles_dir)
+            ]
+
+            # Only add zoom if specified (otherwise GDAL auto-determines)
+            if zoom_levels and zoom_levels.strip():
+                cmd_tiles.insert(1, '--zoom')
+                cmd_tiles.insert(2, zoom_levels)
+
+            self.log(f"  Running: {' '.join(cmd_tiles)}")
+
+            # Run gdal2tiles with PTY for progress
+            import pty
+            import select
+            master, slave = pty.openpty()
+
+            process = subprocess.Popen(
+                cmd_tiles,
+                stdout=slave,
+                stderr=slave,
+                close_fds=True
+            )
+            os.close(slave)
+
+            output_buffer = ""
+            while True:
+                if process.poll() is not None:
+                    r, _, _ = select.select([master], [], [], 0.1)
+                    if not r:
+                        break
+
+                r, _, _ = select.select([master], [], [], 0.1)
+                if r:
+                    try:
+                        data = os.read(master, 1024).decode(errors='replace')
+                        if not data:
+                            break
+
+                        output_buffer += data
+                        while '\n' in output_buffer or '\r' in output_buffer:
+                            n_idx = output_buffer.find('\n')
+                            r_idx = output_buffer.find('\r')
+
+                            if n_idx != -1 and (r_idx == -1 or n_idx < r_idx):
+                                line = output_buffer[:n_idx]
+                                output_buffer = output_buffer[n_idx+1:]
+                                if line.strip():
+                                    self.log(f"    > {line.strip()}")
+                            elif r_idx != -1:
+                                line = output_buffer[:r_idx]
+                                output_buffer = output_buffer[r_idx+1:]
+                                if line.strip():
+                                    self.log(f"    > {line.strip()}")
+                    except OSError:
+                        break
+
+            os.close(master)
+            process.wait()
+
+            if process.returncode != 0:
+                self.log(f"✗ Tile generation failed (Code {process.returncode})")
+                return False
+
+            # Step 2: Convert XYZ tiles to PMTiles
+            self.log("  Step 2/2: Converting to PMTiles...")
+
+            pmtiles_cmd = shutil.which("pmtiles")
+            if not pmtiles_cmd:
+                self.log("✗ pmtiles CLI not found. Install with: go install github.com/protomaps/go-pmtiles/cmd/pmtiles@latest")
+                self.log("  Or: pip install pmtiles")
+                # Try Python pmtiles as fallback
+                try:
+                    from pmtiles.convert import convert_xyz_to_pmtiles
+                    self.log("  Using Python pmtiles package...")
+                    convert_xyz_to_pmtiles(str(temp_tiles_dir), str(output_pmtiles))
+                    self.log(f"✓ PMTiles created: {output_pmtiles.name}")
+                    # Cleanup temp tiles
+                    shutil.rmtree(temp_tiles_dir, ignore_errors=True)
+                    return True
+                except ImportError:
+                    self.log("✗ Python pmtiles package not found either.")
+                    return False
+
+            # Use pmtiles CLI
+            cmd_convert = [
+                pmtiles_cmd, 'convert',
+                str(temp_tiles_dir),
+                str(output_pmtiles)
+            ]
+
+            self.log(f"  Running: {' '.join(cmd_convert)}")
+
+            result = subprocess.run(cmd_convert, capture_output=True, text=True)
+
+            if result.returncode == 0:
+                self.log(f"✓ PMTiles created: {output_pmtiles.name}")
+                # Cleanup temp tiles directory
+                shutil.rmtree(temp_tiles_dir, ignore_errors=True)
+                return True
+            else:
+                self.log(f"✗ PMTiles conversion failed: {result.stderr}")
+                return False
+
+        except Exception as e:
+            self.log(f"✗ Error generating PMTiles: {e}")
+            import traceback
+            self.log(traceback.format_exc())
             return False
 
     def sync_to_r2(self, local_dir: Path, remote_dest: str) -> bool:
@@ -888,8 +1032,9 @@ class UnifiedAppGUI:
         # State
         self.charts: List[Dict] = [] # List of dicts: {'path': Path, 'shapefile': Path, 'status': str}
         self.output_dir = tk.StringVar(value="/Volumes/projects/trial")
-        self.zoom_levels = tk.StringVar(value="0-11")
-        self.output_format = tk.StringVar(value="geotiff")  # Options: 'tiles', 'geotiff', 'cog', 'both'
+        self.zoom_levels = tk.StringVar(value="")  # Blank = auto-determine by GDAL
+        self.tile_size = tk.StringVar(value="1024")  # Default tile size
+        self.output_format = tk.StringVar(value="geotiff")  # Options: 'tiles', 'geotiff', 'cog', 'both', 'pmtiles'
         self.optimize_vrt = tk.BooleanVar(value=True) # Pipeline optimization
         self.r2_enabled = tk.BooleanVar(value=False)
         self.r2_destination = tk.StringVar(value="r2:sectionals")
@@ -1024,7 +1169,14 @@ class UnifiedAppGUI:
         # Tiling Options
         ttk.Label(options_frame, text="Tile Zoom Levels:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         ttk.Entry(options_frame, textvariable=self.zoom_levels, width=20).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-        ttk.Label(options_frame, text="(e.g., 0-11)").grid(row=1, column=2, sticky=tk.W, padx=5)
+        ttk.Label(options_frame, text="(blank = auto, or e.g. 0-11)").grid(row=1, column=2, sticky=tk.W, padx=5)
+
+        # Tile Size Option
+        tile_size_frame = ttk.Frame(options_frame)
+        tile_size_frame.grid(row=1, column=3, sticky=tk.W, padx=15)
+        ttk.Label(tile_size_frame, text="Tile Size:").pack(side=tk.LEFT)
+        tile_size_combo = ttk.Combobox(tile_size_frame, textvariable=self.tile_size, values=["256", "512", "1024", "2048"], width=6)
+        tile_size_combo.pack(side=tk.LEFT, padx=5)
         
         # Output Format Options
         ttk.Label(options_frame, text="Output Format:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
@@ -1032,6 +1184,7 @@ class UnifiedAppGUI:
         format_frame.grid(row=2, column=1, columnspan=2, sticky=tk.W, padx=5, pady=5)
         
         ttk.Radiobutton(format_frame, text="Generate Tiles", variable=self.output_format, value="tiles").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(format_frame, text="PMTiles", variable=self.output_format, value="pmtiles").pack(side=tk.LEFT, padx=5)
         ttk.Radiobutton(format_frame, text="Combined GeoTIFF", variable=self.output_format, value="geotiff").pack(side=tk.LEFT, padx=5)
         ttk.Radiobutton(format_frame, text="COG (Optimized)", variable=self.output_format, value="cog").pack(side=tk.LEFT, padx=5)
         ttk.Radiobutton(format_frame, text="Both", variable=self.output_format, value="both").pack(side=tk.LEFT, padx=5)
@@ -1307,12 +1460,22 @@ class UnifiedAppGUI:
 
             if output_fmt in ["tiles", "both"]:
                 zoom = self.zoom_levels.get()
-                if zoom:
-                    self.safe_log(f"Generating Tiles ({zoom})...")
-                    self.update_progress(0, 0, f"Generating tiles (zoom {zoom})...")
-                    self.processor.generate_tiles(vrt_file, tiles_dir, zoom)
-                else:
-                    self.safe_log("Warning: No zoom levels specified for tile generation.")
+                tile_size = int(self.tile_size.get() or 1024)
+                zoom_info = zoom if zoom else "auto"
+                self.safe_log(f"Generating Tiles (zoom: {zoom_info}, size: {tile_size})...")
+                self.update_progress(0, 0, f"Generating tiles (zoom {zoom_info})...")
+                self.processor.generate_tiles(vrt_file, tiles_dir, zoom, tile_size)
+
+            if output_fmt == "pmtiles":
+                zoom = self.zoom_levels.get()
+                tile_size = int(self.tile_size.get() or 1024)
+                zoom_info = zoom if zoom else "auto"
+                pmtiles_dir = out_dir / "pmtiles"
+                pmtiles_dir.mkdir(parents=True, exist_ok=True)
+                pmtiles_file = pmtiles_dir / "combined.pmtiles"
+                self.safe_log(f"Generating PMTiles (zoom: {zoom_info}, size: {tile_size})...")
+                self.update_progress(0, 0, f"Generating PMTiles (zoom {zoom_info})...")
+                self.processor.generate_pmtiles(vrt_file, pmtiles_file, zoom, tile_size)
 
             self.update_progress(100, 100, "Processing complete!")
             self.safe_log("ALL TASKS COMPLETED.")
@@ -1407,8 +1570,16 @@ class UnifiedAppGUI:
             total_dates = len(review_data)
             date_index = 0
 
+            # Track all warped files by normalized location name and date for fallback
+            # Structure: {normalized_loc: [(date, path), ...]}
+            all_warped_files = defaultdict(list)
+
+            # Sort dates chronologically for proper fallback behavior
+            sorted_dates = sorted(review_data.keys())
+
             # Iterate Dates found in review data
-            for date, items in review_data.items():
+            for date in sorted_dates:
+                items = review_data[date]
                 date_index += 1
                 self.safe_log(f"\nPROCESSING DATE: {date}")
                 self.update_progress(date_index - 1, total_dates, f"Processing date {date_index}/{total_dates}: {date}")
@@ -1471,44 +1642,96 @@ class UnifiedAppGUI:
                             self.safe_log(f"    Warping (Format: {fmt})...")
                             if self.processor.warp_and_cut(tiff_path, shp_path, out_path, format=fmt):
                                 processed_tiffs.append(out_path)
+                                # Track for fallback - use tiff stem for unique location identification
+                                tiff_loc = self.batch_processor.normalize_name(tiff_path.stem.replace('_clipped', '').replace(' SEC', ''))
+                                all_warped_files[tiff_loc].append((date, out_path))
                             else:
                                 self.safe_log(f"    Failed processing {tiff_path.name}")
 
                 if not processed_tiffs:
                     self.safe_log(f"Date {date}: No files processed successfully.")
-                    continue
+                    # Don't skip - we may still need to build a mosaic with fallback imagery
 
-                # VRT & Combine
+                # Build mosaic for this date
+                output_fmt = self.output_format.get()
                 self.update_progress(date_index, total_dates, f"Date {date} - Building mosaic...")
-                vrt_file = date_out_dir / f"combined_{date}.vrt"
-                if self.processor.build_vrt(processed_tiffs, vrt_file):
-                    output_fmt = self.output_format.get()
 
-                    if output_fmt in ["geotiff", "both"]:
-                         self.safe_log("  Creating Mosaic GeoTIFF...")
-                         self.update_progress(date_index, total_dates, f"Date {date} - Creating GeoTIFF...")
-                         self.processor.create_combined_tiff(vrt_file, date_out_dir / f"mosaic_{date}.tif")
+                # For PMTiles mode, use fallback imagery (most recent for each location up to this date)
+                if output_fmt == "pmtiles":
+                    mosaic_files = []
+                    self.safe_log(f"  Collecting imagery for {date} (with fallback to earlier dates)...")
 
-                    if output_fmt in ["cog", "both"]:
-                         self.safe_log("  Creating Mosaic COG...")
-                         self.update_progress(date_index, total_dates, f"Date {date} - Creating COG...")
-                         self.processor.convert_to_cog(vrt_file, date_out_dir / f"mosaic_{date}_cog.tif")
+                    for loc, date_paths in all_warped_files.items():
+                        # Filter to dates <= current date and sort descending
+                        valid_paths = [(d, p) for d, p in date_paths if d <= date]
+                        if valid_paths:
+                            valid_paths.sort(key=lambda x: x[0], reverse=True)
+                            most_recent_date, most_recent_path = valid_paths[0]
+                            mosaic_files.append(most_recent_path)
+                            if most_recent_date != date:
+                                self.safe_log(f"    {loc}: fallback to {most_recent_date}")
 
-                    if output_fmt in ["tiles", "both"]:
+                    if not mosaic_files:
+                        self.safe_log(f"  No imagery available for {date}, skipping...")
+                        continue
+
+                    vrt_file = date_out_dir / f"combined_{date}.vrt"
+                    self.safe_log(f"  Building VRT with {len(mosaic_files)} charts...")
+
+                    if self.processor.build_vrt(mosaic_files, vrt_file):
                         zoom = self.zoom_levels.get()
-                        self.safe_log(f"  Generating Tiles ({zoom})...")
-                        self.update_progress(date_index, total_dates, f"Date {date} - Generating tiles...")
-                        self.processor.generate_tiles(vrt_file, date_out_dir, zoom)
+                        tile_size = int(self.tile_size.get() or 1024)
+                        zoom_info = zoom if zoom else "auto"
 
-                # R2 Sync
-                if self.r2_enabled.get():
-                     # Sync the date folder
-                     dest = self.r2_destination.get().rstrip('/') + f"/{date}"
-                     self.safe_log(f"  Syncing to {dest}...")
-                     self.update_progress(date_index, total_dates, f"Date {date} - Uploading...")
-                     # If using COG mode, maybe we only want to sync the COG?
-                     # For now sync entire date folder logic
-                     self.processor.sync_to_r2(date_out_dir, dest)
+                        pmtiles_dir = out_root / "pmtiles"
+                        pmtiles_dir.mkdir(parents=True, exist_ok=True)
+                        pmtiles_file = pmtiles_dir / f"{date}.pmtiles"
+
+                        self.safe_log(f"  Generating PMTiles (zoom: {zoom_info}, size: {tile_size})...")
+                        self.update_progress(date_index, total_dates, f"Date {date} - Generating PMTiles...")
+                        self.processor.generate_pmtiles(vrt_file, pmtiles_file, zoom, tile_size)
+
+                else:
+                    # Non-PMTiles formats: use only files from this date
+                    if not processed_tiffs:
+                        continue
+
+                    vrt_file = date_out_dir / f"combined_{date}.vrt"
+                    if self.processor.build_vrt(processed_tiffs, vrt_file):
+
+                        if output_fmt in ["geotiff", "both"]:
+                             self.safe_log("  Creating Mosaic GeoTIFF...")
+                             self.update_progress(date_index, total_dates, f"Date {date} - Creating GeoTIFF...")
+                             self.processor.create_combined_tiff(vrt_file, date_out_dir / f"mosaic_{date}.tif")
+
+                        if output_fmt in ["cog", "both"]:
+                             self.safe_log("  Creating Mosaic COG...")
+                             self.update_progress(date_index, total_dates, f"Date {date} - Creating COG...")
+                             self.processor.convert_to_cog(vrt_file, date_out_dir / f"mosaic_{date}_cog.tif")
+
+                        if output_fmt in ["tiles", "both"]:
+                            zoom = self.zoom_levels.get()
+                            tile_size = int(self.tile_size.get() or 1024)
+                            zoom_info = zoom if zoom else "auto"
+                            self.safe_log(f"  Generating Tiles (zoom: {zoom_info}, size: {tile_size})...")
+                            self.update_progress(date_index, total_dates, f"Date {date} - Generating tiles...")
+                            self.processor.generate_tiles(vrt_file, date_out_dir, zoom, tile_size)
+
+                    # R2 Sync for non-pmtiles
+                    if self.r2_enabled.get():
+                         dest = self.r2_destination.get().rstrip('/') + f"/{date}"
+                         self.safe_log(f"  Syncing to {dest}...")
+                         self.update_progress(date_index, total_dates, f"Date {date} - Uploading...")
+                         self.processor.sync_to_r2(date_out_dir, dest)
+
+            # R2 Sync for pmtiles folder
+            output_fmt = self.output_format.get()
+            if output_fmt == "pmtiles" and self.r2_enabled.get():
+                pmtiles_dir = out_root / "pmtiles"
+                if pmtiles_dir.exists():
+                    dest = self.r2_destination.get().rstrip('/') + "/pmtiles"
+                    self.safe_log(f"\nSyncing PMTiles to {dest}...")
+                    self.processor.sync_to_r2(pmtiles_dir, dest)
 
             self.update_progress(total_dates, total_dates, "Batch processing complete!")
             self.safe_log("\nBATCH PROCESSING COMPLETE.")

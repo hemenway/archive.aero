@@ -1384,20 +1384,31 @@
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js"></script>
+  <script src="https://unpkg.com/protomaps-leaflet@4.0.0/dist/protomaps-leaflet.min.js"></script>
 
   <script>
     /** CONFIGURATION **/
     const CONFIG = {
-      baseUrl: 'https://data.archive.aero/sectionals/',
+      baseUrl: 'https://data.archive.aero/sectionals/pmtiles/',
       csvUrl: 'dates.csv', // Dynamic Source
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       frames: [] // Will be populated dynamically
     };
 
+    // Register PMTiles protocol for fetch
+    const pmtilesProtocol = new pmtiles.Protocol();
+    pmtiles.leafletRasterLayer = function(url, options) {
+      return protomapsL.leafletLayer({
+        url: url,
+        ...options
+      });
+    };
+
     /** UTILITIES **/
     const Utils = {
-      buildTileUrl: (date) => {
-        return `${CONFIG.baseUrl}${date}/{z}/{x}/{y}.webp`;
+      buildPMTilesUrl: (date) => {
+        return `${CONFIG.baseUrl}${date}.pmtiles`;
       },
       toast: (msg, duration = 3000) => {
         const el = document.getElementById('toast');
@@ -1507,6 +1518,7 @@
 
         this.cache = {};
         this.activeLayers = [];
+        this.pmtilesInstances = {}; // Cache for PMTiles instances
 
         // Debounced version of showFrame for timeline scrubbing
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), 250);
@@ -1515,8 +1527,15 @@
       getLayerData(date) {
         if (this.cache[date]) return this.cache[date];
 
-        const tileUrl = Utils.buildTileUrl(date);
-        const layer = L.tileLayer(tileUrl, {
+        const pmtilesUrl = Utils.buildPMTilesUrl(date);
+
+        // Create a PMTiles-backed raster tile layer
+        // Using the pmtiles library to create a tile source
+        const p = new pmtiles.PMTiles(pmtilesUrl);
+        this.pmtilesInstances[date] = p;
+
+        // Create a Leaflet tile layer that fetches from PMTiles
+        const layer = L.tileLayer('', {
           minZoom: 0,
           maxZoom: 22,
           tileSize: 256,
@@ -1526,6 +1545,37 @@
           updateWhenIdle: true,
           updateWhenZooming: false
         });
+
+        // Override the getTileUrl method to use PMTiles
+        layer.createTile = function(coords, done) {
+          const tile = document.createElement('img');
+          tile.alt = '';
+          tile.setAttribute('role', 'presentation');
+
+          p.getZxy(coords.z, coords.x, coords.y).then(result => {
+            if (result && result.data) {
+              const blob = new Blob([result.data], { type: 'image/webp' });
+              tile.src = URL.createObjectURL(blob);
+              tile.onload = () => {
+                URL.revokeObjectURL(tile.src);
+                done(null, tile);
+              };
+              tile.onerror = () => {
+                done(new Error('Tile load error'), tile);
+              };
+            } else {
+              // No tile data - return transparent tile
+              tile.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+              done(null, tile);
+            }
+          }).catch(err => {
+            // Return transparent tile on error
+            tile.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+            done(null, tile);
+          });
+
+          return tile;
+        };
 
         this.cache[date] = { layer };
         return this.cache[date];
@@ -1549,57 +1599,44 @@
 
       async showFrame(index) {
         const currentFrame = CONFIG.frames[index];
-        const currentDate = new Date(currentFrame.date);
-        const cutoffDate = new Date(currentDate);
-        cutoffDate.setDate(cutoffDate.getDate() - 167);
-
-        // Find all frames within the 167-day window, including the current frame
-        // Sort by date ascending so oldest are drawn first (lower z-index)
-        const activeFrames = CONFIG.frames.filter(f => {
-          const d = new Date(f.date);
-          return d >= cutoffDate && d <= currentDate;
-        }).sort((a, b) => new Date(a.date) - new Date(b.date));
-
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
 
-        const newLayers = [];
+        // Get layer for the selected date only
+        const data = this.getLayerData(currentFrame.date);
+        if (!data || !data.layer) {
+          clearTimeout(spinnerTimeout);
+          loader.classList.remove('active');
+          return;
+        }
 
-        // Get layer for each active frame and assign z-index based on date order
-        activeFrames.forEach((frame, frameIdx) => {
-          const data = this.getLayerData(frame.date);
-          if (data && data.layer) {
-            // Set z-index: 10 base + frame index
-            // This ensures newer dates (higher frameIdx) are on top
-            data.layer.setZIndex(10 + frameIdx);
-            newLayers.push(data.layer);
-          }
-        });
+        const newLayer = data.layer;
+        newLayer.setZIndex(10);
 
-        // Add to map
-        newLayers.forEach(l => {
-          if (!this.map.hasLayer(l)) {
-            l.setOpacity(0);
-            l.addTo(this.map);
-          }
-        });
+        // Add to map if not already
+        if (!this.map.hasLayer(newLayer)) {
+          newLayer.setOpacity(0);
+          newLayer.addTo(this.map);
+        }
 
         const isMobile = window.innerWidth < 640;
         if (!isMobile) {
-          await Promise.all(newLayers.map(l => this.waitForLayer(l)));
+          await this.waitForLayer(newLayer);
         }
 
         const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
 
         requestAnimationFrame(() => {
-          newLayers.forEach(l => l.setOpacity(opacityValue));
-          this.activeLayers.forEach(l => { if (!newLayers.includes(l)) this.map.removeLayer(l); });
-          this.activeLayers = newLayers;
+          newLayer.setOpacity(opacityValue);
+          // Remove old layers
+          this.activeLayers.forEach(l => { if (l !== newLayer) this.map.removeLayer(l); });
+          this.activeLayers = [newLayer];
 
           clearTimeout(spinnerTimeout);
           loader.classList.remove('active');
         });
 
+        // Preload next frame
         const nextIdx = (index + 1) % CONFIG.frames.length;
         this.preloadFrame(nextIdx);
       }
