@@ -1407,7 +1407,8 @@
 
     /** UTILITIES **/
     const Utils = {
-      buildPMTilesUrl: (date) => {
+      buildPMTilesUrl: (date, customUrl) => {
+        if (customUrl) return customUrl;
         return `${CONFIG.baseUrl}${date}.pmtiles`;
       },
       toast: (msg, duration = 3000) => {
@@ -1465,7 +1466,8 @@
                 if (!row.date_iso || row.date_iso === '?') return;
                 frames.push({
                   id: Utils.formatDateId(row.date_iso),
-                  date: row.date_iso
+                  date: row.date_iso,
+                  url: row.url || null
                 });
               });
               CONFIG.frames = frames.sort((a, b) => {
@@ -1524,10 +1526,10 @@
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), 250);
       }
 
-      getLayerData(date) {
+      getLayerData(date, customUrl) {
         if (this.cache[date]) return this.cache[date];
 
-        const pmtilesUrl = Utils.buildPMTilesUrl(date);
+        const pmtilesUrl = Utils.buildPMTilesUrl(date, customUrl);
 
         // Create a PMTiles-backed raster tile layer
         // Using the pmtiles library to create a tile source
@@ -1582,9 +1584,9 @@
       }
 
       async preloadFrame(index) {
-        if (!CONFIG.frames[index]) return;
+        const frame = CONFIG.frames[index];
         setTimeout(() => {
-          this.getLayerData(CONFIG.frames[index].date);
+          this.getLayerData(frame.date, frame.url);
         }, 200);
       }
 
@@ -1603,7 +1605,7 @@
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
 
         // Get layer for the selected date only
-        const data = this.getLayerData(currentFrame.date);
+        const data = this.getLayerData(currentFrame.date, currentFrame.url);
         if (!data || !data.layer) {
           clearTimeout(spinnerTimeout);
           loader.classList.remove('active');

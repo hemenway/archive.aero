@@ -94,6 +94,21 @@ class ChartProcessor:
             # Ensure output directory exists
             output_tiff.parent.mkdir(parents=True, exist_ok=True)
 
+            # Get source resolution to preserve it
+            src_ds = gdal.Open(str(input_tiff))
+            if not src_ds:
+                self.log(f"✗ Could not open {input_tiff.name}")
+                return False
+
+            src_gt = src_ds.GetGeoTransform()
+            # Get approximate resolution in source CRS
+            src_res_x = abs(src_gt[1])
+            src_res_y = abs(src_gt[5])
+            src_width = src_ds.RasterXSize
+            src_height = src_ds.RasterYSize
+            self.log(f"  Source: {src_width}x{src_height} pixels, res: {src_res_x:.6f} x {src_res_y:.6f}")
+            src_ds = None
+
             # Step 1: Expand to RGBA
             # If output is VRT, write temp VRT to disk (so it can be referenced)
             # Otherwise use in-memory VRT
@@ -118,15 +133,25 @@ class ChartProcessor:
             if format == 'GTiff':
                  creation_opts = ['TILED=YES', 'COMPRESS=LZW', 'BIGTIFF=IF_NEEDED']
 
+            # Calculate target resolution in EPSG:3857 (meters)
+            # FAA charts are typically around 42 pixels per nautical mile
+            # For EPSG:3857, we want similar visual resolution
+            # Use approximately 4-5 meters per pixel for sectional charts
+            target_res = 5.0  # meters per pixel in EPSG:3857
+
             warp_options = gdal.WarpOptions(
                 format=format,
                 dstSRS='EPSG:3857',
                 cutlineDSName=str(shapefile),
+                cutlineSRS='EPSG:4326',  # Assume shapefile is in WGS84 (common for FAA)
                 cropToCutline=True,
                 dstAlpha=True,
-                resampleAlg=gdal.GRA_Lanczos, # Use high quality resampling
+                xRes=target_res,
+                yRes=target_res,
+                resampleAlg=gdal.GRA_Lanczos,
                 creationOptions=creation_opts,
-                multithread=True
+                multithread=True,
+                warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
             )
 
             ds = gdal.Warp(str(output_tiff), temp_vrt_name, options=warp_options)
@@ -143,11 +168,19 @@ class ChartProcessor:
                         pass
 
             if ds:
+                # Log output dimensions
+                out_width = ds.RasterXSize
+                out_height = ds.RasterYSize
+                self.log(f"  Output: {out_width}x{out_height} pixels")
                 ds = None # Close dataset
                 self.log(f"✓ Created {output_tiff.name}")
                 return True
             else:
                 self.log(f"✗ Failed to create {output_tiff.name}")
+                # Check for GDAL error
+                err = gdal.GetLastErrorMsg()
+                if err:
+                    self.log(f"  GDAL Error: {err}")
                 return False
 
         except Exception as e:
@@ -544,28 +577,196 @@ class ChartProcessor:
                     self.log("✗ Python pmtiles package not found either.")
                     return False
 
-            # Use pmtiles CLI
-            cmd_convert = [
-                pmtiles_cmd, 'convert',
-                str(temp_tiles_dir),
-                str(output_pmtiles)
-            ]
+            # For raster tiles (WEBP/PNG/JPEG), we need to go through MBTiles
+            # Note: tile-join from tippecanoe is for VECTOR tiles only, not raster!
 
-            self.log(f"  Running: {' '.join(cmd_convert)}")
+            # Use mb-util to create MBTiles from XYZ directory, then pmtiles convert
+            mb_util_cmd = shutil.which("mb-util")
+            if mb_util_cmd:
+                mbtiles_file = output_pmtiles.parent / f"{output_pmtiles.stem}.mbtiles"
 
-            result = subprocess.run(cmd_convert, capture_output=True, text=True)
+                # mb-util converts XYZ directory to MBTiles
+                # Note: mb-util expects TMS scheme by default, but gdal2tiles with --xyz uses XYZ scheme
+                # We need to use --scheme=xyz to match
+                cmd_mbtiles = [
+                    mb_util_cmd,
+                    str(temp_tiles_dir),
+                    str(mbtiles_file),
+                    '--image_format=webp',
+                    '--scheme=xyz'
+                ]
+                self.log(f"  Running: {' '.join(cmd_mbtiles)}")
+                result = subprocess.run(cmd_mbtiles, capture_output=True, text=True)
 
-            if result.returncode == 0:
-                self.log(f"✓ PMTiles created: {output_pmtiles.name}")
-                # Cleanup temp tiles directory
-                shutil.rmtree(temp_tiles_dir, ignore_errors=True)
-                return True
-            else:
-                self.log(f"✗ PMTiles conversion failed: {result.stderr}")
+                if result.returncode == 0:
+                    self.log(f"  MBTiles created, converting to PMTiles...")
+                    # Now convert MBTiles to PMTiles
+                    cmd_convert = [
+                        pmtiles_cmd, 'convert',
+                        str(mbtiles_file),
+                        str(output_pmtiles)
+                    ]
+                    self.log(f"  Running: {' '.join(cmd_convert)}")
+                    result = subprocess.run(cmd_convert, capture_output=True, text=True)
+
+                    # Cleanup intermediate MBTiles
+                    try:
+                        mbtiles_file.unlink()
+                    except:
+                        pass
+
+                    if result.returncode == 0:
+                        self.log(f"✓ PMTiles created: {output_pmtiles.name}")
+                        shutil.rmtree(temp_tiles_dir, ignore_errors=True)
+                        return True
+                    else:
+                        self.log(f"✗ PMTiles conversion failed: {result.stderr}")
+                        return False
+                else:
+                    self.log(f"✗ mb-util failed: {result.stderr}")
+                    self.log(f"  stdout: {result.stdout}")
+
+            # Final fallback: manual Python-based conversion
+            self.log("✗ mb-util not found. Attempting manual conversion...")
+            try:
+                return self._convert_xyz_to_pmtiles_manual(temp_tiles_dir, output_pmtiles)
+            except Exception as e:
+                self.log(f"✗ Manual conversion failed: {e}")
+                self.log("  Install mb-util: pip install mbutil")
                 return False
 
         except Exception as e:
             self.log(f"✗ Error generating PMTiles: {e}")
+            import traceback
+            self.log(traceback.format_exc())
+            return False
+
+    def _convert_xyz_to_pmtiles_manual(self, tiles_dir: Path, output_pmtiles: Path) -> bool:
+        """
+        Manual conversion of XYZ tile directory to PMTiles using Python.
+        This is a fallback when mb-util is not available.
+        """
+        import sqlite3
+        import json
+
+        self.log("  Creating MBTiles manually from XYZ tiles...")
+
+        # Create intermediate MBTiles file
+        mbtiles_file = output_pmtiles.parent / f"{output_pmtiles.stem}.mbtiles"
+
+        try:
+            # Create MBTiles database
+            conn = sqlite3.connect(str(mbtiles_file))
+            cursor = conn.cursor()
+
+            # Create tables
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS metadata (
+                    name TEXT,
+                    value TEXT
+                )
+            ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS tiles (
+                    zoom_level INTEGER,
+                    tile_column INTEGER,
+                    tile_row INTEGER,
+                    tile_data BLOB
+                )
+            ''')
+            cursor.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS tile_index ON tiles (zoom_level, tile_column, tile_row)
+            ''')
+
+            # Set metadata
+            cursor.execute("INSERT INTO metadata VALUES ('name', 'tiles')")
+            cursor.execute("INSERT INTO metadata VALUES ('type', 'overlay')")
+            cursor.execute("INSERT INTO metadata VALUES ('version', '1.0')")
+            cursor.execute("INSERT INTO metadata VALUES ('format', 'webp')")
+
+            # Find min/max zoom levels and bounds
+            min_zoom = 99
+            max_zoom = 0
+            tile_count = 0
+
+            # Scan for tiles and insert into database
+            for zoom_dir in tiles_dir.iterdir():
+                if not zoom_dir.is_dir() or not zoom_dir.name.isdigit():
+                    continue
+
+                zoom = int(zoom_dir.name)
+                min_zoom = min(min_zoom, zoom)
+                max_zoom = max(max_zoom, zoom)
+
+                for x_dir in zoom_dir.iterdir():
+                    if not x_dir.is_dir() or not x_dir.name.isdigit():
+                        continue
+
+                    x = int(x_dir.name)
+
+                    for tile_file in x_dir.iterdir():
+                        if not tile_file.is_file():
+                            continue
+
+                        # Extract y from filename (e.g., "123.webp" -> 123)
+                        y_str = tile_file.stem
+                        if not y_str.isdigit():
+                            continue
+
+                        y = int(y_str)
+
+                        # Read tile data
+                        tile_data = tile_file.read_bytes()
+
+                        # Convert from XYZ to TMS (flip y)
+                        # MBTiles uses TMS scheme where y=0 is at bottom
+                        tms_y = (2 ** zoom) - 1 - y
+
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO tiles VALUES (?, ?, ?, ?)",
+                            (zoom, x, tms_y, tile_data)
+                        )
+                        tile_count += 1
+
+                        if tile_count % 1000 == 0:
+                            self.log(f"    Processed {tile_count} tiles...")
+
+            # Update metadata with zoom levels
+            cursor.execute(f"INSERT INTO metadata VALUES ('minzoom', '{min_zoom}')")
+            cursor.execute(f"INSERT INTO metadata VALUES ('maxzoom', '{max_zoom}')")
+
+            conn.commit()
+            conn.close()
+
+            self.log(f"  MBTiles created with {tile_count} tiles (zoom {min_zoom}-{max_zoom})")
+
+            # Now convert to PMTiles
+            pmtiles_cmd = shutil.which("pmtiles")
+            if pmtiles_cmd:
+                cmd_convert = [pmtiles_cmd, 'convert', str(mbtiles_file), str(output_pmtiles)]
+                self.log(f"  Running: {' '.join(cmd_convert)}")
+                result = subprocess.run(cmd_convert, capture_output=True, text=True)
+
+                # Cleanup MBTiles
+                try:
+                    mbtiles_file.unlink()
+                except:
+                    pass
+
+                if result.returncode == 0:
+                    self.log(f"✓ PMTiles created: {output_pmtiles.name}")
+                    shutil.rmtree(tiles_dir, ignore_errors=True)
+                    return True
+                else:
+                    self.log(f"✗ PMTiles conversion failed: {result.stderr}")
+                    return False
+            else:
+                self.log("✗ pmtiles CLI not found")
+                self.log(f"  MBTiles file saved at: {mbtiles_file}")
+                return False
+
+        except Exception as e:
+            self.log(f"✗ Manual MBTiles creation failed: {e}")
             import traceback
             self.log(traceback.format_exc())
             return False
@@ -918,17 +1119,26 @@ class BatchReviewWindow(tk.Toplevel):
             
         # Sort dates
         dates = sorted(self.review_data.keys())
+        items_by_date = {}
+        for date in dates:
+            items_by_date[date] = {item['loc']: item for item in self.review_data[date]}
         
         for date in dates:
-            items = self.review_data[date]
-            items_by_loc = {item['loc']: item for item in items}
             values = [date]
             for col in self.location_columns:
-                item = items_by_loc.get(col["label"])
-                if item:
+                loc = col["label"]
+                item = items_by_date.get(date, {}).get(loc)
+                if item and item.get('files'):
                     values.append(self.format_files(item.get('files', [])))
+                    continue
+
+                fallback_item = self.find_fallback_item(dates, items_by_date, date, loc)
+                if fallback_item:
+                    fallback_date = fallback_item['date']
+                    files_str = self.format_files(fallback_item['item'].get('files', []))
+                    values.append(f"fallback {fallback_date}: {files_str}")
                 else:
-                    values.append("")
+                    values.append("MISSING")
             row_id = self.tree.insert("", tk.END, values=values)
             self.row_ids[date] = row_id
                 
@@ -1014,21 +1224,19 @@ class BatchReviewWindow(tk.Toplevel):
             self.menu.grab_release()
 
     def update_cell(self, date, loc):
-        row_id = self.row_ids.get(date)
-        col_id = self.location_id_by_label.get(loc)
-        if not row_id or not col_id:
-            return
-        items = self.review_data.get(date, [])
-        match = None
-        for item in items:
-            if item['loc'] == loc:
-                match = item
-                break
-        if match:
-            value = self.format_files(match.get('files', []))
-        else:
-            value = ""
-        self.tree.set(row_id, col_id, value)
+        self.populate_tree()
+
+    def find_fallback_item(self, dates, items_by_date, target_date, loc):
+        try:
+            idx = dates.index(target_date)
+        except ValueError:
+            return None
+        for i in range(idx - 1, -1, -1):
+            prev_date = dates[i]
+            prev_item = items_by_date.get(prev_date, {}).get(loc)
+            if prev_item and prev_item.get('files'):
+                return {"date": prev_date, "item": prev_item}
+        return None
 
     def run_batch(self):
         # Validation ?
