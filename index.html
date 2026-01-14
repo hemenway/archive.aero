@@ -1539,7 +1539,9 @@
         // Create a Leaflet tile layer that fetches from PMTiles
         const layer = L.tileLayer('', {
           minZoom: 0,
-          maxZoom: 22,
+          maxZoom: 18,
+          minNativeZoom: 0,
+          maxNativeZoom: 11,  // Tiles generated up to zoom 11, Leaflet will scale beyond
           tileSize: 256,
           opacity: 0,
           zIndex: 10,
