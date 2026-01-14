@@ -831,26 +831,35 @@ class BatchReviewWindow(tk.Toplevel):
         self.review_data = review_data # Dict: Date -> List of Items
         self.shape_dir = shape_dir
         self.process_callback = process_callback
+        self.columns = []
+        self.location_columns = []
+        self.location_by_id = {}
+        self.location_id_by_label = {}
+        self.row_ids = {}
+        self.current_cell = {}
         
         self.create_ui()
         
     def create_ui(self):
         # Top: Instructions
-        lbl = ttk.Label(self, text="Review the charts found for each date. You can add missing files or remove incorrect ones.", wraplength=800)
+        lbl = ttk.Label(
+            self,
+            text="Review charts by date (rows) and location (columns). Right-click a cell to add/remove files or change shapefiles.",
+            wraplength=800
+        )
         lbl.pack(pady=10)
         
         # Treeview
-        columns = ("item", "files", "shapefile", "status")
-        self.tree = ttk.Treeview(self, columns=columns, show="tree headings", selectmode="extended")
-        self.tree.heading("#0", text="Date/Chart")
-        self.tree.heading("files", text="Source Files (TIFF/ZIP)")
-        self.tree.heading("shapefile", text="Shapefile")
-        self.tree.heading("status", text="Status")
-        
-        self.tree.column("#0", width=250)
-        self.tree.column("files", width=350)
-        self.tree.column("shapefile", width=200)
-        self.tree.column("status", width=80)
+        self.build_location_columns()
+        self.columns = ["date"] + [col["id"] for col in self.location_columns]
+        self.tree = ttk.Treeview(self, columns=self.columns, show="headings", selectmode="browse")
+
+        self.tree.heading("date", text="Date")
+        self.tree.column("date", width=120, minwidth=100, stretch=False)
+
+        for col in self.location_columns:
+            self.tree.heading(col["id"], text=col["label"])
+            self.tree.column(col["id"], width=220, minwidth=140, stretch=True)
         
         # Scrollbars
         ysb = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.tree.yview)
@@ -873,6 +882,7 @@ class BatchReviewWindow(tk.Toplevel):
         
         self.tree.bind("<Button-2>", self.show_context_menu) # Mac Right Click
         self.tree.bind("<Button-3>", self.show_context_menu) # Windows/Linux Right Click
+        self.tree.bind("<Button-1>", self.capture_cell)
         
         # Bottom Buttons
         btn_frame = ttk.Frame(self)
@@ -881,95 +891,84 @@ class BatchReviewWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.RIGHT, padx=10)
         ttk.Button(btn_frame, text="RUN BATCH PROCESS", command=self.run_batch).pack(side=tk.RIGHT, padx=10)
 
+    def build_location_columns(self):
+        locations = sorted({
+            item['loc']
+            for items in self.review_data.values()
+            for item in items
+            if item.get('loc')
+        })
+        self.location_columns = []
+        for i, loc in enumerate(locations):
+            col_id = f"loc_{i}"
+            self.location_columns.append({"id": col_id, "label": loc})
+            self.location_by_id[col_id] = loc
+            self.location_id_by_label[loc] = col_id
+
+    def format_files(self, files):
+        if not files:
+            return "MISSING"
+        return ", ".join([f.name for f in files])
+
     def populate_tree(self):
         # Clear
         for i in self.tree.get_children():
             self.tree.delete(i)
+        self.row_ids = {}
             
         # Sort dates
         dates = sorted(self.review_data.keys())
         
         for date in dates:
-            date_node = self.tree.insert("", tk.END, text=date, open=True)
             items = self.review_data[date]
-            
-            for idx, item in enumerate(items):
-                # item is dict: {loc, ed, files, shp, ...}
-                loc = item['loc']
-                files = item['files']
-                shp = item['shp']
+            items_by_loc = {item['loc']: item for item in items}
+            values = [date]
+            for col in self.location_columns:
+                item = items_by_loc.get(col["label"])
+                if item:
+                    values.append(self.format_files(item.get('files', [])))
+                else:
+                    values.append("")
+            row_id = self.tree.insert("", tk.END, values=values)
+            self.row_ids[date] = row_id
                 
-                # Display text
-                files_str = f"{len(files)} files" if len(files) > 1 else (files[0].name if files else "MISSING")
-                shp_str = shp.name if shp else "MISSING"
-                status = "Ready" if (files and shp) else "Incomplete"
-                
-                # Insert Chart Node
-                chart_node = self.tree.insert(date_node, tk.END, text=loc, values=("", shp_str, status))
-                
-                # Insert File Nodes as children of Chart? Or just listed in column? 
-                # Better: Chart Node shows summary. Children show files.
-                for f in files:
-                    self.tree.insert(chart_node, tk.END, text="File", values=(f.name, "", ""))
-                
-                # Valid indicator color? (Not easy in standard Treeview without tags)
-                
-                # Store ref to data in tag or separate map? 
-                # We need to map tree item to self.review_data
-                # easy way: use tags or construct ID
-                # item_id = f"{date}|{idx}" 
-                # Setting item ID manually is cleaner.
-                
-                # Re-insert with ID
-                # self.tree.delete(chart_node) 
-                # Actually, let's keep a map.
-                
-    def get_selected_item(self):
-        sel = self.tree.selection()
-        if not sel: return None, None, None
-        
-        # Identify what was selected
-        # If it's a child (File), get parent
-        item_id = sel[0]
-        parent_id = self.tree.parent(item_id)
-        
-        if parent_id:
-            # Selected a file node, switch to parent Chart node
-            chart_node_id = parent_id
-            # But wait, parent of parent?
-            # Root -> Date -> Chart -> File
-            if self.tree.parent(chart_node_id): 
-                 # This is correct: root->date->chart->file
-                 pass
-            else:
-                 # Should not happen if structure matches
-                 pass
-        else:
-            chart_node_id = item_id
+    def capture_cell(self, event):
+        row_id = self.tree.identify_row(event.y)
+        col_id = self.tree.identify_column(event.x)
+        if row_id:
+            self.tree.selection_set(row_id)
+            self.current_cell = {"row_id": row_id, "col_id": col_id}
 
-        # Traverse up to find Date and Index
-        # We need a robust way to link tree node to data.
-        # Let's rely on text navigation for now since we didn't store IDs
-        # OR better: rebuilding the Populate method to store IDs is safer but complex edit.
-        # Simpler: Search review_data for the matching entry.
-        
-        # Let's try to parse the tree structure
-        # Chart Node text is "Location"
-        # Parent Node text is "Date"
-        
-        node_text = self.tree.item(chart_node_id, "text")
-        parent_id = self.tree.parent(chart_node_id)
-        if not parent_id: return None, None, None # Selected a Date node
-        
-        date_text = self.tree.item(parent_id, "text")
-        
-        # Find in data
-        if date_text in self.review_data:
-            items = self.review_data[date_text]
-            for item in items:
-                if item['loc'] == node_text:
-                    return date_text, item, chart_node_id
-        
+    def get_selected_item(self):
+        row_id = self.current_cell.get("row_id")
+        col_id = self.current_cell.get("col_id")
+        if not row_id or not col_id:
+            return None, None, None
+
+        if not col_id.startswith("#"):
+            return None, None, None
+
+        col_index = int(col_id.replace("#", "")) - 1
+        if col_index < 0 or col_index >= len(self.columns):
+            return None, None, None
+
+        col_key = self.columns[col_index]
+        if col_key == "date":
+            return None, None, None
+
+        values = self.tree.item(row_id, "values")
+        if not values:
+            return None, None, None
+        date_text = values[0]
+        loc = self.location_by_id.get(col_key)
+        if not loc:
+            return None, None, None
+
+        items = self.review_data.get(date_text, [])
+        for item in items:
+            if item['loc'] == loc:
+                return date_text, item, row_id
+
         return None, None, None
 
     def add_file(self):
@@ -980,11 +979,7 @@ class BatchReviewWindow(tk.Toplevel):
         if f:
             path = Path(f)
             item['files'].append(path)
-            # Update UI
-            # Simple refresh of children
-            self.tree.insert(node_id, tk.END, text="File", values=(path.name, "", "Manual"))
-            # Update status
-            self.tree.set(node_id, "status", "Modified")
+            self.update_cell(date, item['loc'])
 
     def change_shapefile(self):
         date, item, node_id = self.get_selected_item()
@@ -994,8 +989,7 @@ class BatchReviewWindow(tk.Toplevel):
         if f:
             path = Path(f)
             item['shp'] = path
-            self.tree.set(node_id, "shapefile", path.name)
-            self.tree.set(node_id, "status", "Modified")
+            self.update_cell(date, item['loc'])
 
     def remove_item(self):
         date, item, node_id = self.get_selected_item()
@@ -1005,15 +999,36 @@ class BatchReviewWindow(tk.Toplevel):
             
         if messagebox.askyesno("Confirm", f"Remove {item['loc']} from processing?"):
             self.review_data[date].remove(item)
-            self.tree.delete(node_id)
+            self.update_cell(date, item['loc'])
 
 
     def show_context_menu(self, event):
         try:
-            self.tree.selection_set(self.tree.identify_row(event.y))
+            row_id = self.tree.identify_row(event.y)
+            col_id = self.tree.identify_column(event.x)
+            if row_id:
+                self.tree.selection_set(row_id)
+                self.current_cell = {"row_id": row_id, "col_id": col_id}
             self.menu.tk_popup(event.x_root, event.y_root)
         finally:
             self.menu.grab_release()
+
+    def update_cell(self, date, loc):
+        row_id = self.row_ids.get(date)
+        col_id = self.location_id_by_label.get(loc)
+        if not row_id or not col_id:
+            return
+        items = self.review_data.get(date, [])
+        match = None
+        for item in items:
+            if item['loc'] == loc:
+                match = item
+                break
+        if match:
+            value = self.format_files(match.get('files', []))
+        else:
+            value = ""
+        self.tree.set(row_id, col_id, value)
 
     def run_batch(self):
         # Validation ?
