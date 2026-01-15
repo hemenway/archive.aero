@@ -1,8 +1,8 @@
 # File Specification Document (FSD)
 ## Archive.aero - Historical Aeronautical Chart Viewer System
 
-**Version:** 2.0
-**Last Updated:** 2026-01-13
+**Version:** 2.5
+**Last Updated:** 2026-01-15
 **Maintainer:** Ryan Hemenway
 
 ---
@@ -1046,9 +1046,9 @@ leafletRasterLayer(p).addTo(map);
 - CRS: EPSG:3857
 - Tiling: 256x256 internal tiles
 
-**Output COG:**
+**Output GeoTIFF:**
 - Format: Cloud Optimized GeoTIFF
-- Compression: DEFLATE with PREDICTOR=2
+- Compression: LZW with PREDICTOR=2
 - Bands: RGBA
 - CRS: EPSG:3857
 - Overviews: Built-in (power-of-2)
@@ -1204,7 +1204,7 @@ date,location,edition,download_link
 --webviewer=none         # Skip HTML viewer
 --exclude                # Skip fully transparent tiles
 --tiledriver=WEBP        # Output format
---webp-quality=90        # Quality (0-100)
+--webp-quality=50        # Quality (0-100, smaller files)
 --xyz                    # XYZ tile scheme (CRITICAL!)
 ```
 
@@ -1484,7 +1484,7 @@ plausible('Timeline Interaction', {
 1. **Warping (GDAL):**
    - CPU-intensive
    - Multi-threaded via GDAL options
-   - Lanczos resampling slower but higher quality
+   - Bilinear resampling (good balance of quality and speed)
 
 2. **Tile Generation (gdal2tiles):**
    - Most time-consuming operation
