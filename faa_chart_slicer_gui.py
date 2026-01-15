@@ -20,6 +20,7 @@ import datetime
 import zipfile
 from collections import defaultdict
 import time
+import json
 
 try:
     from osgeo import gdal, ogr, osr
@@ -516,7 +517,7 @@ class ChartProcessor:
                 'ZSTD_LEVEL=6',
                 'PREDICTOR=2',
                 'BIGTIFF=IF_SAFER',
-                'NUM_THREADS=ALL_CPUS',
+                'NUM_THREADS=8',
                 'BLOCKSIZE=512',
                 'RESAMPLING=LANCZOS'
             ]
@@ -555,7 +556,7 @@ class ChartProcessor:
                         'COMPRESS=DEFLATE',
                         'PREDICTOR=2',
                         'BIGTIFF=IF_SAFER',
-                        'NUM_THREADS=ALL_CPUS',
+                        'NUM_THREADS=8',
                         'BLOCKSIZE=512',
                         'RESAMPLING=LANCZOS'
                     ]
@@ -962,6 +963,8 @@ class BatchProcessor:
         self.log_callback = log_callback
         self.file_index = {} # Key -> Path
         self.dole_data = defaultdict(list)
+        self.vrt_library = {}  # {location: {date: {'vrt_path': Path, ...}}}
+        self.vrt_library_dir = None
         self.abbreviations = {
             "hawaiian_is": "hawaiian_islands",
             "dallas_ft_worth": "dallas_ft_worth", # Identity
@@ -1129,6 +1132,226 @@ class BatchProcessor:
             self.log(f"Error unzipping {zip_path.name}: {e}")
             return []
 
+    def build_vrt_library(self, source_dir: Path, shape_dir: Path, vrt_library_dir: Path, processor, progress_callback=None):
+        """
+        Build/update the VRT library by warping all source files with shapefiles.
+        Reuses existing VRTs and only creates missing ones.
+
+        Returns:
+            vrt_library dict structure
+        """
+        try:
+            self.vrt_library_dir = vrt_library_dir
+            vrt_library_dir.mkdir(parents=True, exist_ok=True)
+
+            # Try to load existing cache
+            cache_file = vrt_library_dir / "vrt_library_cache.json"
+            if cache_file.exists():
+                with open(cache_file, 'r') as f:
+                    cached_library = json.load(f)
+                self.vrt_library = self._deserialize_vrt_library(cached_library)
+                self.log(f"Loaded cached VRT library with {len(self.vrt_library)} locations")
+
+            # Count total items to process
+            total_items = sum(len(records) for records in self.dole_data.values())
+            current_item = 0
+
+            # Iterate through CSV data
+            for date, records in sorted(self.dole_data.items()):
+                for rec in records:
+                    location = rec.get('location', '')
+                    edition = rec.get('edition', '')
+                    timestamp = rec.get('wayback_ts')
+
+                    norm_loc = self.normalize_name(location)
+                    vrt_filename = f"{norm_loc}_{date}.vrt"
+                    vrt_path = vrt_library_dir / vrt_filename
+
+                    current_item += 1
+
+                    # Check if VRT already exists
+                    if vrt_path.exists():
+                        if norm_loc not in self.vrt_library:
+                            self.vrt_library[norm_loc] = {}
+                        self.vrt_library[norm_loc][date] = {
+                            'vrt_path': vrt_path,
+                            'source_files': [],
+                            'created': datetime.datetime.fromtimestamp(vrt_path.stat().st_mtime).isoformat(),
+                            'shapefile': ''
+                        }
+                        if progress_callback:
+                            progress_callback(current_item, total_items, f"Cached: {norm_loc} {date}")
+                        continue
+
+                    # Find shapefile
+                    shp_path = self.find_shapefile(location, shape_dir)
+                    if not shp_path:
+                        if progress_callback:
+                            progress_callback(current_item, total_items, f"Skip {norm_loc} {date} (no shapefile)")
+                        continue
+
+                    # Find source files
+                    found_files = self.find_files(location, edition, timestamp)
+                    if not found_files:
+                        if progress_callback:
+                            progress_callback(current_item, total_items, f"Skip {norm_loc} {date} (no files)")
+                        continue
+
+                    # Process files (handle ZIP extraction)
+                    temp_warped_files = []
+                    for src_file in found_files:
+                        if src_file.suffix.lower() == '.zip':
+                            temp_extract = vrt_library_dir / "temp_extract"
+                            extracted = self.unzip_file(src_file, temp_extract)
+                            tiffs_to_process = extracted
+                        else:
+                            tiffs_to_process = [src_file]
+
+                        # Warp each TIFF
+                        for tiff in tiffs_to_process:
+                            temp_vrt_name = f"{norm_loc}_{date}_{tiff.stem}_temp.vrt"
+                            temp_vrt_path = vrt_library_dir / temp_vrt_name
+
+                            if processor.warp_and_cut(tiff, shp_path, temp_vrt_path, format="VRT"):
+                                temp_warped_files.append(temp_vrt_path)
+
+                    # Combine or finalize VRT
+                    if len(temp_warped_files) > 1:
+                        # Multiple files (e.g., North/South), combine into single VRT
+                        if processor.build_vrt(temp_warped_files, vrt_path):
+                            # Clean up intermediate VRTs
+                            for temp_vrt in temp_warped_files:
+                                try:
+                                    temp_vrt.unlink()
+                                except:
+                                    pass
+                        else:
+                            if progress_callback:
+                                progress_callback(current_item, total_items, f"Error {norm_loc} {date} (VRT build failed)")
+                            continue
+                    elif len(temp_warped_files) == 1:
+                        # Single file, just rename
+                        try:
+                            temp_warped_files[0].rename(vrt_path)
+                        except Exception as e:
+                            self.log(f"  Error renaming VRT: {e}")
+                            continue
+                    else:
+                        if progress_callback:
+                            progress_callback(current_item, total_items, f"Error {norm_loc} {date} (no warped files)")
+                        continue
+
+                    # Add to library
+                    if norm_loc not in self.vrt_library:
+                        self.vrt_library[norm_loc] = {}
+                    self.vrt_library[norm_loc][date] = {
+                        'vrt_path': vrt_path,
+                        'source_files': [f.name for f in found_files],
+                        'created': datetime.datetime.now().isoformat(),
+                        'shapefile': shp_path.name
+                    }
+
+                    if progress_callback:
+                        progress_callback(current_item, total_items, f"Built: {norm_loc} {date}")
+
+            # Save cache
+            cache_data = self._serialize_vrt_library(self.vrt_library)
+            with open(cache_file, 'w') as f:
+                json.dump(cache_data, f, indent=2)
+
+            self.log(f"VRT library complete: {len(self.vrt_library)} locations")
+            return self.vrt_library
+
+        except Exception as e:
+            self.log(f"Error building VRT library: {e}")
+            import traceback
+            self.log(traceback.format_exc())
+            return {}
+
+    def build_date_matrix(self, shape_dir: Path):
+        """
+        Build date matrix with fallback logic.
+        For each date, find most recent VRT for each location (fallback if needed).
+
+        Returns:
+            date_matrix: {date: {location: {'vrt': Path, 'fallback': bool, 'actual_date': str, 'shp': Path}}}
+        """
+        try:
+            date_matrix = {}
+
+            # Get all unique dates from CSV (sorted)
+            all_dates = sorted(self.dole_data.keys())
+
+            # Get all locations from shapefiles
+            all_locations = []
+            for shp in shape_dir.glob("*.shp"):
+                norm_loc = self.normalize_name(shp.stem)
+                all_locations.append(norm_loc)
+
+            # Build matrix
+            for date in all_dates:
+                date_matrix[date] = {}
+
+                for location in all_locations:
+                    # Find shapefile
+                    shp_path = self.find_shapefile(location, shape_dir)
+                    if not shp_path:
+                        continue
+
+                    # Find most recent VRT where VRT_date <= current_date
+                    if location in self.vrt_library:
+                        available_dates = [
+                            d for d in self.vrt_library[location].keys()
+                            if d <= date
+                        ]
+
+                        if available_dates:
+                            # Get most recent
+                            most_recent = sorted(available_dates)[-1]
+                            vrt_info = self.vrt_library[location][most_recent]
+
+                            date_matrix[date][location] = {
+                                'vrt': vrt_info['vrt_path'],
+                                'fallback': (most_recent != date),
+                                'actual_date': most_recent,
+                                'shp': shp_path
+                            }
+
+            return date_matrix
+
+        except Exception as e:
+            self.log(f"Error building date matrix: {e}")
+            import traceback
+            self.log(traceback.format_exc())
+            return {}
+
+    def _serialize_vrt_library(self, library):
+        """Convert Path objects to strings for JSON serialization."""
+        result = {}
+        for loc, dates in library.items():
+            result[loc] = {}
+            for date, info in dates.items():
+                result[loc][date] = {
+                    'vrt_path': str(info['vrt_path']),
+                    'source_files': info.get('source_files', []),
+                    'created': info.get('created', ''),
+                    'shapefile': info.get('shapefile', '')
+                }
+        return result
+
+    def _deserialize_vrt_library(self, cache_data):
+        """Convert strings back to Path objects."""
+        result = {}
+        for loc, dates in cache_data.items():
+            result[loc] = {}
+            for date, info in dates.items():
+                result[loc][date] = {
+                    'vrt_path': Path(info['vrt_path']),
+                    'source_files': info.get('source_files', []),
+                    'created': info.get('created', ''),
+                    'shapefile': info.get('shapefile', '')
+                }
+        return result
 
 
 class BatchReviewWindow(tk.Toplevel):
@@ -1223,29 +1446,29 @@ class BatchReviewWindow(tk.Toplevel):
         for i in self.tree.get_children():
             self.tree.delete(i)
         self.row_ids = {}
-            
+
         # Sort dates
         dates = sorted(self.review_data.keys())
         items_by_date = {}
         for date in dates:
             items_by_date[date] = {item['loc']: item for item in self.review_data[date]}
-        
+
         for date in dates:
             values = [date]
             for col in self.location_columns:
                 loc = col["label"]
                 item = items_by_date.get(date, {}).get(loc)
                 if item and item.get('files'):
-                    values.append(self.format_files(item.get('files', [])))
-                    continue
-
-                fallback_item = self.find_fallback_item(dates, items_by_date, date, loc)
-                if fallback_item:
-                    fallback_date = fallback_item['date']
-                    files_str = self.format_files(fallback_item['item'].get('files', []))
-                    values.append(f"fallback {fallback_date}: {files_str}")
+                    # Check if this is a fallback
+                    if item.get('fallback', False):
+                        actual_date = item.get('actual_date', 'unknown')
+                        file_name = item['files'][0].name if item['files'] else 'unknown'
+                        display = f"⟳ {actual_date} [Fallback]"
+                    else:
+                        display = f"✓ {date} [Source]"
+                    values.append(display)
                 else:
-                    values.append("MISSING")
+                    values.append("—")  # No data
             row_id = self.tree.insert("", tk.END, values=values)
             self.row_ids[date] = row_id
                 
@@ -1373,9 +1596,10 @@ class UnifiedAppGUI:
         self.log_queue = queue.Queue()
         
         # Batch vars
-        self.batch_source_dir = tk.StringVar(value="/Volumes/projects/newrawtiffs")
+        self.batch_source_dir = tk.StringVar(value="/Volumes/drive/newrawtiffs")
         self.batch_csv_file = tk.StringVar(value="master_dole.csv")
         self.batch_shape_dir = tk.StringVar(value="shapefiles")
+        self.batch_vrt_lib_dir = tk.StringVar(value="/Volumes/projects/warped_vrts")
         self.batch_date_filter = tk.StringVar()
         
         self.batch_processor = BatchProcessor(log_callback=self.safe_log)
@@ -1480,9 +1704,13 @@ class UnifiedAppGUI:
         ttk.Entry(frame, textvariable=self.batch_shape_dir, width=40).grid(row=2, column=1, **grid_opts)
         ttk.Button(frame, text="...", command=lambda: self.browse_dir(self.batch_shape_dir)).grid(row=2, column=2, **grid_opts)
 
-        ttk.Label(frame, text="Filter Date (YYYY-MM-DD):").grid(row=3, column=0, **grid_opts)
-        ttk.Entry(frame, textvariable=self.batch_date_filter, width=20).grid(row=3, column=1, **grid_opts)
-        ttk.Label(frame, text="(Leave empty for all)").grid(row=3, column=2, **grid_opts)
+        ttk.Label(frame, text="VRT Library Dir:").grid(row=3, column=0, **grid_opts)
+        ttk.Entry(frame, textvariable=self.batch_vrt_lib_dir, width=40).grid(row=3, column=1, **grid_opts)
+        ttk.Button(frame, text="...", command=lambda: self.browse_dir(self.batch_vrt_lib_dir)).grid(row=3, column=2, **grid_opts)
+
+        ttk.Label(frame, text="Filter Date (YYYY-MM-DD):").grid(row=4, column=0, **grid_opts)
+        ttk.Entry(frame, textvariable=self.batch_date_filter, width=20).grid(row=4, column=1, **grid_opts)
+        ttk.Label(frame, text="(Leave empty for all)").grid(row=4, column=2, **grid_opts)
 
         self.setup_processing_options(self.tab_batch, self.start_batch_processing)
 
@@ -1832,56 +2060,80 @@ class UnifiedAppGUI:
         csv_file = Path(self.batch_csv_file.get())
         shape_dir = Path(self.batch_shape_dir.get())
         out_root = Path(self.output_dir.get())
+        vrt_library_dir = Path(self.batch_vrt_lib_dir.get())
         date_filter = self.batch_date_filter.get().strip()
 
         # Start a thread to PREPARE the data, then show UI
         thread = threading.Thread(
             target=self.prepare_batch_data,
-            args=(source_dir, csv_file, shape_dir, out_root, date_filter),
+            args=(source_dir, csv_file, shape_dir, out_root, date_filter, vrt_library_dir),
             daemon=True
         )
         thread.start()
 
-    def prepare_batch_data(self, source_dir, csv_file, shape_dir, out_root, date_filter):
+    def prepare_batch_data(self, source_dir, csv_file, shape_dir, out_root, date_filter, vrt_library_dir):
         try:
-            self.safe_log("Preparing batch data for review...")
-            
-            # 1. Scan Data
+            self.safe_log("=== PHASE 1: Building VRT Library ===")
+
+            # 1. Scan and Load Data
             self.batch_processor.scan_source_dir(source_dir)
             self.batch_processor.load_dole_data(csv_file)
-            
-            # 2. Build Review Data Dictionary
-            # Dict: Date -> List of { 'loc': str, 'ed': str, 'files': List[Path], 'shp': Path }
-            review_data = defaultdict(list)
-            
-            dates = sorted(self.batch_processor.dole_data.keys())
-            for date in dates:
-                if date_filter and date != date_filter: continue
-                
-                records = self.batch_processor.dole_data[date]
-                for rec in records:
-                    loc = rec['location']
-                    ed = rec['edition']
-                    ts = rec.get('wayback_ts')
-                    
-                    found_files = self.batch_processor.find_files(loc, ed, ts)
-                    shp_path = self.batch_processor.find_shapefile(loc, shape_dir)
-                    
-                    item = {
-                        'loc': loc,
-                        'ed': ed,
-                        'files': found_files,
-                        'shp': shp_path,
-                        'rec': rec
-                    }
-                    review_data[date].append(item)
-            
-            # Launch Review Window (on Main Thread)
+
+            # 2. Build/Update VRT Library
+            def vrt_progress(current, total, msg):
+                self.update_progress(current, total, f"VRT Library: {msg}")
+                self.safe_log(f"  [{current}/{total}] {msg}")
+
+            vrt_library = self.batch_processor.build_vrt_library(
+                source_dir=source_dir,
+                shape_dir=shape_dir,
+                vrt_library_dir=vrt_library_dir,
+                processor=self.processor,
+                progress_callback=vrt_progress
+            )
+
+            self.safe_log("\n=== PHASE 2: Building Date Matrix ===")
+
+            # 3. Build Date Matrix with Fallback
+            date_matrix = self.batch_processor.build_date_matrix(shape_dir)
+
+            # 4. Apply date filter if specified
+            if date_filter:
+                date_matrix = {date_filter: date_matrix[date_filter]} if date_filter in date_matrix else {}
+
+            # 5. Convert matrix to review_data format
+            review_data = self._convert_matrix_to_review_data(date_matrix)
+
+            self.safe_log(f"Matrix built: {len(review_data)} dates ready for review")
+
+            # 6. Launch Review Window (on Main Thread)
             self.root.after(0, lambda: BatchReviewWindow(self.root, review_data, shape_dir, self.execute_batch_from_review))
-            
+
         except Exception as e:
             self.safe_log(f"Error preparing batch: {e}")
+            import traceback
+            self.safe_log(traceback.format_exc())
             self.processing = False
+
+    def _convert_matrix_to_review_data(self, date_matrix):
+        """
+        Convert date_matrix to review_data format for BatchReviewWindow.
+        """
+        review_data = defaultdict(list)
+
+        for date, locations in date_matrix.items():
+            for loc, info in locations.items():
+                # VRT path becomes the "file"
+                review_data[date].append({
+                    'loc': loc,
+                    'files': [info['vrt']],  # VRT path
+                    'shp': info['shp'],
+                    'fallback': info['fallback'],
+                    'actual_date': info['actual_date'],
+                    'ed': ''
+                })
+
+        return dict(review_data)
 
     def execute_batch_from_review(self, review_data):
         self.safe_log("Review complete. Starting execution...")
@@ -1896,179 +2148,85 @@ class UnifiedAppGUI:
 
     def run_batch_execution(self, review_data, out_root):
         try:
-            # Count total items to process
+            self.safe_log("\n=== PHASE 3: Generating COGs ===")
+
             total_dates = len(review_data)
             date_index = 0
 
-            # Track all warped files by normalized location name and date for fallback
-            # Structure: {normalized_loc: [(date, path), ...]}
-            all_warped_files = defaultdict(list)
-
-            # Sort dates chronologically for proper fallback behavior
             sorted_dates = sorted(review_data.keys())
 
-            # Iterate Dates found in review data
             for date in sorted_dates:
                 items = review_data[date]
                 date_index += 1
-                self.safe_log(f"\nPROCESSING DATE: {date}")
-                self.update_progress(date_index - 1, total_dates, f"Processing date {date_index}/{total_dates}: {date}")
 
+                self.safe_log(f"\n--- Processing Date: {date} ({date_index}/{total_dates}) ---")
+                self.update_progress(date_index - 1, total_dates, f"Processing {date}")
+
+                # Collect all VRT paths for this date
+                vrt_files = []
+                for item in items:
+                    loc = item['loc']
+                    files = item.get('files', [])
+
+                    if not files:
+                        continue
+
+                    # files[0] is the VRT path from matrix
+                    vrt_path = files[0]
+
+                    if vrt_path.exists():
+                        vrt_files.append(vrt_path)
+
+                        # Log fallback info
+                        if item.get('fallback', False):
+                            actual_date = item.get('actual_date', 'unknown')
+                            self.safe_log(f"  {loc}: using {actual_date} [Fallback]")
+                        else:
+                            self.safe_log(f"  {loc}: using {date} [Source]")
+                    else:
+                        self.safe_log(f"  [ERROR] VRT not found: {vrt_path}")
+
+                if not vrt_files:
+                    self.safe_log(f"  [SKIP] No VRTs available for {date}")
+                    continue
+
+                # Create output directory
                 date_out_dir = out_root / date
                 date_out_dir.mkdir(parents=True, exist_ok=True)
 
-                processed_tiffs = [] # List of warped tiffs for this date
+                # Build mosaic VRT
+                self.update_progress(date_index - 0.7, total_dates, f"{date} - Building mosaic VRT")
+                mosaic_vrt = date_out_dir / f"mosaic_{date}.vrt"
+                self.safe_log(f"  Building mosaic VRT from {len(vrt_files)} locations...")
 
-                # Count total files for this date
-                total_files = sum(len(item['files']) for item in items if item['files'] and item['shp'])
-                file_index = 0
-                tracker = ProgressTracker(total_files) if total_files > 0 else None
+                if not self.processor.build_vrt(vrt_files, mosaic_vrt):
+                    self.safe_log(f"  [ERROR] Failed to build mosaic VRT for {date}")
+                    continue
 
-                for item in items:
-                    loc = item['loc']
-                    files = item['files']
-                    shp_path = item['shp']
+                # Convert to COG
+                self.update_progress(date_index - 0.5, total_dates, f"{date} - Converting to COG")
+                cog_output = date_out_dir / f"mosaic_{date}_cog.tif"
+                self.safe_log(f"  Converting to COG...")
 
-                    if not files:
-                        self.safe_log(f"  [SKIP] No files for {loc}")
-                        continue
-                    if not shp_path:
-                        self.safe_log(f"  [SKIP] No shapefile for {loc}")
-                        continue
-
-                    # Process EACH found file for this chart (e.g. North and South)
-                    for f_path in files:
-                        self.safe_log(f"  Source: {f_path.name}")
-
-                        # Get list of TIFFs to process
-                        tiffs_to_process = []
-                        if f_path.suffix.lower() == '.zip':
-                            self.safe_log(f"    Unzipping...")
-                            extracted = self.batch_processor.unzip_file(f_path, date_out_dir / "temp_extract")
-                            tiffs_to_process.extend(extracted)
-                        else:
-                            tiffs_to_process.append(f_path)
-
-                        for tiff_path in tiffs_to_process:
-                            file_index += 1
-                            if tracker:
-                                tracker.update(file_index)
-                                self.update_progress(
-                                    date_index - 1 + (file_index / total_files),
-                                    total_dates,
-                                    f"Date {date} - {tracker.get_progress_string()}"
-                                )
-
-                            self.safe_log(f"    Processing: {tiff_path.name}")
-
-                            # Warp
-                            use_vrt = self.optimize_vrt.get()
-                            ext = ".vrt" if use_vrt else ".tif"
-                            fmt = "VRT" if use_vrt else "GTiff"
-
-                            out_name = f"{tiff_path.stem}_clipped{ext}"
-                            out_path = date_out_dir / "warped" / out_name
-
-                            self.safe_log(f"    Warping (Format: {fmt})...")
-                            if self.processor.warp_and_cut(tiff_path, shp_path, out_path, format=fmt):
-                                processed_tiffs.append(out_path)
-                                # Track for fallback - use tiff stem for unique location identification
-                                tiff_loc = self.batch_processor.normalize_name(tiff_path.stem.replace('_clipped', '').replace(' SEC', ''))
-                                all_warped_files[tiff_loc].append((date, out_path))
-                            else:
-                                self.safe_log(f"    Failed processing {tiff_path.name}")
-
-                if not processed_tiffs:
-                    self.safe_log(f"Date {date}: No files processed successfully.")
-                    # Don't skip - we may still need to build a mosaic with fallback imagery
-
-                # Build mosaic for this date
-                output_fmt = self.output_format.get()
-                self.update_progress(date_index, total_dates, f"Date {date} - Building mosaic...")
-
-                # For PMTiles mode, use fallback imagery (most recent for each location up to this date)
-                if output_fmt == "pmtiles":
-                    mosaic_files = []
-                    self.safe_log(f"  Collecting imagery for {date} (with fallback to earlier dates)...")
-
-                    for loc, date_paths in all_warped_files.items():
-                        # Filter to dates <= current date and sort descending
-                        valid_paths = [(d, p) for d, p in date_paths if d <= date]
-                        if valid_paths:
-                            valid_paths.sort(key=lambda x: x[0], reverse=True)
-                            most_recent_date, most_recent_path = valid_paths[0]
-                            mosaic_files.append(most_recent_path)
-                            if most_recent_date != date:
-                                self.safe_log(f"    {loc}: fallback to {most_recent_date}")
-
-                    if not mosaic_files:
-                        self.safe_log(f"  No imagery available for {date}, skipping...")
-                        continue
-
-                    vrt_file = date_out_dir / f"combined_{date}.vrt"
-                    self.safe_log(f"  Building VRT with {len(mosaic_files)} charts...")
-
-                    if self.processor.build_vrt(mosaic_files, vrt_file):
-                        zoom = self.zoom_levels.get()
-                        tile_size = int(self.tile_size.get() or 1024)
-                        zoom_info = zoom if zoom else "auto"
-
-                        pmtiles_dir = out_root / "pmtiles"
-                        pmtiles_dir.mkdir(parents=True, exist_ok=True)
-                        pmtiles_file = pmtiles_dir / f"{date}.pmtiles"
-
-                        self.safe_log(f"  Generating PMTiles (zoom: {zoom_info}, size: {tile_size})...")
-                        self.update_progress(date_index, total_dates, f"Date {date} - Generating PMTiles...")
-                        self.processor.generate_pmtiles(vrt_file, pmtiles_file, zoom, tile_size)
-
+                if self.processor.convert_to_cog(mosaic_vrt, cog_output):
+                    self.safe_log(f"  ✓ COG created: {cog_output.name}")
                 else:
-                    # Non-PMTiles formats: use only files from this date
-                    if not processed_tiffs:
-                        continue
+                    self.safe_log(f"  [ERROR] COG creation failed for {date}")
+                    continue
 
-                    vrt_file = date_out_dir / f"combined_{date}.vrt"
-                    if self.processor.build_vrt(processed_tiffs, vrt_file):
-
-                        if output_fmt in ["geotiff", "both"]:
-                             self.safe_log("  Creating Mosaic GeoTIFF...")
-                             self.update_progress(date_index, total_dates, f"Date {date} - Creating GeoTIFF...")
-                             self.processor.create_combined_tiff(vrt_file, date_out_dir / f"mosaic_{date}.tif")
-
-                        if output_fmt in ["cog", "both"]:
-                             self.safe_log("  Creating Mosaic COG...")
-                             self.update_progress(date_index, total_dates, f"Date {date} - Creating COG...")
-                             self.processor.convert_to_cog(vrt_file, date_out_dir / f"mosaic_{date}_cog.tif")
-
-                        if output_fmt in ["tiles", "both"]:
-                            zoom = self.zoom_levels.get()
-                            tile_size = int(self.tile_size.get() or 1024)
-                            zoom_info = zoom if zoom else "auto"
-                            self.safe_log(f"  Generating Tiles (zoom: {zoom_info}, size: {tile_size})...")
-                            self.update_progress(date_index, total_dates, f"Date {date} - Generating tiles...")
-                            self.processor.generate_tiles(vrt_file, date_out_dir, zoom, tile_size)
-
-                    # R2 Sync for non-pmtiles
-                    if self.r2_enabled.get():
-                         dest = self.r2_destination.get().rstrip('/') + f"/{date}"
-                         self.safe_log(f"  Syncing to {dest}...")
-                         self.update_progress(date_index, total_dates, f"Date {date} - Uploading...")
-                         self.processor.sync_to_r2(date_out_dir, dest)
-
-            # R2 Sync for pmtiles folder
-            output_fmt = self.output_format.get()
-            if output_fmt == "pmtiles" and self.r2_enabled.get():
-                pmtiles_dir = out_root / "pmtiles"
-                if pmtiles_dir.exists():
-                    dest = self.r2_destination.get().rstrip('/') + "/pmtiles"
-                    self.safe_log(f"\nSyncing PMTiles to {dest}...")
-                    self.processor.sync_to_r2(pmtiles_dir, dest)
+                # Optional: R2 Sync
+                if self.r2_enabled.get():
+                    self.update_progress(date_index - 0.1, total_dates, f"{date} - Uploading")
+                    dest = self.r2_destination.get().rstrip('/') + f"/{date}"
+                    self.safe_log(f"  Syncing to R2: {dest}")
+                    self.processor.sync_to_r2(date_out_dir, dest)
 
             self.update_progress(total_dates, total_dates, "Batch processing complete!")
-            self.safe_log("\nBATCH PROCESSING COMPLETE.")
+            self.safe_log("\n=== BATCH PROCESSING COMPLETE ===")
             messagebox.showinfo("Done", "Batch Processing Complete")
 
         except Exception as e:
-            self.safe_log(f"CRITICAL BATCH ERROR: {e}")
+            self.safe_log(f"CRITICAL ERROR: {e}")
             import traceback
             self.safe_log(traceback.format_exc())
 
