@@ -203,9 +203,6 @@ constructor(mapId: String)
 
 **Layer Management Logic:**
 ```javascript
-// 167-day rolling window
-const cutoffDate = new Date(currentDate);
-cutoffDate.setDate(cutoffDate.getDate() - 167);
 
 // Filter frames within window
 const activeFrames = CONFIG.frames.filter(f => {
@@ -213,18 +210,6 @@ const activeFrames = CONFIG.frames.filter(f => {
   return d >= cutoffDate && d <= currentDate;
 });
 
-// Stack layers with z-index (older = lower)
-activeFrames.forEach((frame, frameIdx) => {
-  layer.setZIndex(10 + frameIdx);
-});
-```
-
-**`async preloadFrame(index: Number): void`**
-- Preloads next frame for smooth transitions
-- Called automatically after displaying current frame
-
-**`setOpacity(opacity: Number): void`**
-- Adjusts opacity of all active layers (0.0-1.0)
 
 **Tile URL Template:**
 ```
@@ -870,7 +855,7 @@ Consider adding `config.json` or `.ini` for:
 
 ### 5.1 Overview
 
-After newslicer.py generates GeoTIFF outputs, you can optionally convert them to PMTiles format for efficient web serving. PMTiles is a single-file archive format for tiled map data that enables serverless map hosting.
+After newslicer.py generates GeoTIFF outputs they are converted to PMTiles format for efficient web serving. PMTiles is a single-file archive format for tiled map data that enables serverless map hosting.
 
 ### 5.2 Conversion Pipeline
 
@@ -1016,15 +1001,14 @@ leafletRasterLayer(p).addTo(map);
 - Zoom 0-13: ~20,000-60,000 tiles per date
 
 **File Sizes:**
-- MBTiles: 300-800 MB per date (zoom 0-11)
-- PMTiles: 250-700 MB per date (zoom 0-11, ~10-15% smaller)
-- WebP tiles: 200-500 MB per date (zoom 0-11, directory structure)
+- MBTiles: 8GB MB per date (zoom 0-11)
+- PMTiles: 8GB per date (zoom 0-11, ~10-15% smaller)
 
 **Processing Time:**
-- GeoTIFF → MBTiles: 5-15 minutes (depends on size)
-- Adding overviews: 2-5 minutes
-- MBTiles → PMTiles: 1-3 minutes
-- **Total: 10-25 minutes per date**
+- GeoTIFF → MBTiles: 40 minutes (depends on size)
+- Adding overviews: 20 minutes
+- MBTiles → PMTiles: 10 minutes
+- **Total: 90 minutes per date**
 
 ---
 
