@@ -723,8 +723,9 @@ class ChartSlicer:
         # Track all warped VRTs per location-date
         vrt_library: Dict[str, Dict[str, Path]] = defaultdict(dict)
 
-        # Process each date (latest to earliest)
-        sorted_dates = sorted(self.dole_data.keys(), reverse=True)
+        # Process each date (earliest to latest)
+        # This ensures older data is available for fallback when newer dates are missing locations
+        sorted_dates = sorted(self.dole_data.keys())
         total_dates = len(sorted_dates)
 
         for date_idx, date in enumerate(sorted_dates, 1):
@@ -845,9 +846,13 @@ class ChartSlicer:
             date_matrix = {}
             for location in all_locations:
                 if location in vrt_library:
-                    available_dates = [d for d in vrt_library[location].keys() if d <= date]
-                    if available_dates:
-                        most_recent = sorted(available_dates)[-1]
+                    # Prefer exact date match, otherwise fall back to most recent available
+                    if date in vrt_library[location]:
+                        date_matrix[location] = vrt_library[location][date]
+                    elif vrt_library[location]:
+                        # Use most recent available date (works regardless of processing order)
+                        available_dates = sorted(vrt_library[location].keys())
+                        most_recent = available_dates[-1]
                         date_matrix[location] = vrt_library[location][most_recent]
 
             # Create mosaic VRT and output products
