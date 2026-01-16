@@ -13,7 +13,7 @@
 2. [Architecture](#architecture)
 3. [Frontend Specification (index.html)](#frontend-specification-indexhtml)
 4. [Backend Specification (newslicer.py)](#backend-specification-newslicerpy)
-5. [PMTiles Conversion](#pmtiles-conversion)
+5. [PMTiles Conversion](#pmtiles-conversion) (Note: See Section 4.9 for complete pipeline)
 6. [Data Specifications](#data-specifications)
 7. [Tile System Specification](#tile-system-specification)
 8. [Deployment](#deployment)
@@ -851,6 +851,440 @@ Consider adding `config.json` or `.ini` for:
 
 ---
 
+## 4.9 Processing Pipeline
+
+This section documents the complete end-to-end pipeline from raw chart TIFFs to final mosaic outputs, including exact GDAL commands and parallelization strategy.
+
+### 4.9.1 Pipeline Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         INPUT PHASE (Sequential)                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ 1. scan_source_dir(): Index all TIFFs/ZIPs by edition and timestamp         │
+│ 2. load_dole_data(): Load master_dole.csv with location/edition/date        │
+│ 3. find_shapefile(): Match 56 location names to .shp files                  │
+│                                                                               │
+│ Output: file_index dict, dole_data dict, shapefile paths                    │
+└──────────────────────────────┬──────────────────────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      PER-DATE PROCESSING LOOP                                │
+│                      (Processes dates: Latest → Earliest)                    │
+└──────────────────────────────┬──────────────────────────────────────────────┘
+                               ▼
+       ┌───────────────────────────────────────────────────┐
+       │         BRANCH: Shapefile-based locations         │
+       │              (52 locations: Seattle, Denver, etc) │
+       └───────────────────────┬───────────────────────────┘
+                               ▼
+       ┌─────────────────────────────────────────────────────────────────┐
+       │               EXTRACT PHASE (As needed)                          │
+       │ unzip_file(): Extract *.tif and *.tfw from ZIP archives         │
+       │ Output: List of TIFF paths in .temp/DATE/extract/               │
+       └──────────────────────────┬──────────────────────────────────────┘
+                                  ▼
+       ┌─────────────────────────────────────────────────────────────────┐
+       │           WARP PHASE (Parallel: 4 workers via ThreadPool)       │
+       ├─────────────────────────────────────────────────────────────────┤
+       │  WORKER 1 ┐                                                      │
+       │  WORKER 2 ├──→ warp_and_cut() for each TIFF:                   │
+       │  WORKER 3 │      • Expand to RGBA (/vsimem/ VRT)                │
+       │  WORKER 4 ┘      • Warp to EPSG:3857                           │
+       │                  • Crop with shapefile cutline                  │
+       │                  • Output: LOCATION_FILENAME.tif                │
+       │                                                                  │
+       │  Example: 51 TIFFs → 4 workers → ~13 batches                   │
+       │  Output: Warped TIFFs in .temp/DATE/                            │
+       └──────────────────────────┬──────────────────────────────────────┘
+                                  │
+       ┌──────────────────────────┴──────────────────────────┐
+       │         BRANCH: Shapefile-free locations            │
+       │    (4 locations: Hawaiian Islands, Western Aleutians,│
+       │     Mariana Islands, Samoan Islands)                │
+       └──────────────────────────┬──────────────────────────┘
+                                  ▼
+       ┌─────────────────────────────────────────────────────────────────┐
+       │  EXTRACT & WARP (Currently: Sequential, should be parallel)     │
+       │  • Extract ZIP to .temp/DATE/extract/                           │
+       │  • Warp to EPSG:3857 WITHOUT cutline (whole chart)             │
+       │  • Output: LOCATION_FILENAME_warped.tif                         │
+       │                                                                  │
+       │  NOTE: These skip shapefile cropping but MUST be reprojected   │
+       └──────────────────────────┬──────────────────────────────────────┘
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    VRT BUILD PHASE (Sequential per location)                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ For each location with multiple TIFFs:                                       │
+│   • build_vrt(): Combine all warped TIFFs for this location                 │
+│   • Output: LOCATION_DATE.vrt                                                │
+│   • Store in: vrt_library[location][date]                                   │
+│                                                                               │
+│ For locations with single TIFF:                                              │
+│   • Store TIFF path directly in vrt_library[location][date]                 │
+│                                                                               │
+│ Output: vrt_library dict with Path objects                                   │
+└──────────────────────────────┬───────────────────────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                  FALLBACK MATRIX BUILD (Sequential)                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ For each of 56 locations:                                                    │
+│   • Find all available dates ≤ current_date in vrt_library[location]       │
+│   • Select most recent: sorted(available_dates)[-1]                         │
+│   • Add to date_matrix[location] = vrt_path                                 │
+│                                                                               │
+│ Result: date_matrix with 56 entries (complete coverage via fallback)        │
+│ Example: 2015-06-25 mosaic uses Seattle from 2015-06-25,                    │
+│          Portland from 2015-04-10 (most recent available)                   │
+└──────────────────────────────┬───────────────────────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      MOSAIC VRT BUILD (Sequential)                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ build_vrt(date_matrix.values(), mosaic_DATE.vrt)                            │
+│   • Combines all 56 location VRTs into single virtual dataset              │
+│   • Uses bilinear resampling for smooth transitions                         │
+│   • Result: mosaic_DATE.vrt (~20 KB XML file)                               │
+└──────────────────────────────┬───────────────────────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       OUTPUT PHASE (Format-dependent)                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│ ┌─────────────────────────┐         ┌─────────────────────────┐            │
+│ │ IF format = 'geotiff'   │         │ IF format = 'tiles'     │            │
+│ │    or 'both'            │         │    or 'both'            │            │
+│ └────────────┬────────────┘         └────────────┬────────────┘            │
+│              ▼                                    ▼                          │
+│  ┌──────────────────────┐           ┌──────────────────────────────────┐   │
+│  │ create_geotiff()     │           │ generate_tiles()                 │   │
+│  │ • Translate VRT→TIF  │           │ • gdal2tiles.py with 14 workers │   │
+│  │ • LZW compression    │           │ • WebP format, quality 50       │   │
+│  │ • PREDICTOR=2        │           │ • Zoom 0-11                     │   │
+│  │ • BIGTIFF support    │           │ • Skip transparent tiles        │   │
+│  │                      │           │                                  │   │
+│  │ Output:              │           │ Output:                          │   │
+│  │ mosaic_DATE.tif      │           │ DATE/tiles/Z/X/Y.webp            │   │
+│  │ (~8 GB, 3 min)       │           │ (~5000 tiles, 20 min)            │   │
+│  └──────────────────────┘           └──────────────────────────────────┘   │
+│                                                                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+                               ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│               OPTIONAL: PMTILES CONVERSION (Manual/Script)                   │
+│               (See Section 5 for detailed workflow)                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Step 1: GeoTIFF → MBTiles (gdal_translate)                                  │
+│ Step 2: Add overviews (gdaladdo)                                             │
+│ Step 3: MBTiles → PMTiles (pmtiles convert)                                 │
+│                                                                               │
+│ Output: mosaic_DATE.pmtiles (~8 GB, 90 min total)                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.9.2 Exact Command-Line Equivalents
+
+The newslicer.py Python code uses GDAL bindings that execute operations equivalent to these bash commands. Each step can be replicated manually for debugging or custom workflows.
+
+**Step 1: Extract ZIP (if source is ZIP archive)**
+```bash
+# For charts distributed as ZIP files
+unzip -j /Volumes/drive/newrawtiffs/20251025040847_Hawaiian_Islands.zip \
+  "*.tif" "*.tfw" \
+  -d /Volumes/drive/sync/.temp/2025-10-02/extract/20251025040847_Hawaiian_Islands/
+```
+
+**Step 2: Expand to RGBA (in-memory VRT)**
+```bash
+# Creates RGBA VRT in memory (/vsimem/ is GDAL's virtual filesystem)
+gdal_translate \
+  -of VRT \
+  -expand rgba \
+  input_chart.tif \
+  /vsimem/temp_rgba.vrt
+```
+
+**Step 3a: Warp with shapefile cutline (locations with boundaries)**
+```bash
+# Reproject to Web Mercator, crop to shapefile boundary
+gdalwarp \
+  -of GTiff \
+  -t_srs EPSG:3857 \
+  -cutline /Users/ryanhemenway/archive.aero/shapefiles/seattle.shp \
+  -cutline_srs EPSG:4326 \
+  -crop_to_cutline \
+  -dstalpha \
+  -r bilinear \
+  -co TILED=YES \
+  -co COMPRESS=LZW \
+  -co BIGTIFF=YES \
+  -multi \
+  -wo CUTLINE_ALL_TOUCHED=TRUE \
+  /vsimem/temp_rgba.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/seattle_seattle_sec.tif
+```
+
+**Step 3b: Warp without cutline (shapefile-free locations)**
+```bash
+# Hawaiian Islands, Western Aleutians: reproject entire chart without cropping
+gdalwarp \
+  -of GTiff \
+  -t_srs EPSG:3857 \
+  -dstalpha \
+  -r bilinear \
+  -co TILED=YES \
+  -co COMPRESS=LZW \
+  -co BIGTIFF=YES \
+  -multi \
+  /vsimem/temp_rgba.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/hawaiian_islands_hawaiian_islands_sec_warped.tif
+```
+
+**Step 4: Combine multiple TIFFs per location (if needed)**
+```bash
+# For locations with multiple chart files (e.g., North/South/East/West variants)
+gdalbuildvrt \
+  -r bilinear \
+  /Volumes/drive/sync/.temp/2025-10-02/seattle_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/seattle_seattle_sec.tif \
+  /Volumes/drive/sync/.temp/2025-10-02/seattle_seattle_tac.tif
+```
+
+**Step 5: Build final mosaic VRT (all 56 locations)**
+```bash
+# Combine all location VRTs into single mosaic
+gdalbuildvrt \
+  -r bilinear \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/albuquerque_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/anchorage_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/atlanta_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/bethel_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/billings_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/brownsville_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/cape_lisburne_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/charlotte_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/cheyenne_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/chicago_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/cincinnati_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/cold_bay_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/dallas_ft_worth_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/dawson_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/denver_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/detroit_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/dutch_harbor_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/el_paso_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/fairbanks_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/great_falls_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/green_bay_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/halifax_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/hawaiian_islands_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/houston_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/jacksonville_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/juneau_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/kansas_city_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/ketchikan_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/klamath_falls_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/kodiak_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/lake_huron_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/las_vegas_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/los_angeles_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/mcgrath_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/memphis_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/miami_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/montreal_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/new_orleans_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/new_york_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/nome_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/omaha_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/phoenix_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/point_barrow_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/salt_lake_city_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/san_antonio_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/san_francisco_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/seattle_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/seward_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/st_louis_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/twin_cities_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/washington_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/western_aleutian_islands_2025-10-02.vrt \
+  /Volumes/drive/sync/.temp/2025-10-02/wichita_2025-10-02.vrt
+```
+
+**Step 6a: Create compressed GeoTIFF (if format='geotiff' or 'both')**
+```bash
+# Convert VRT to tiled, compressed GeoTIFF
+gdal_translate \
+  -of GTiff \
+  -co TILED=YES \
+  -co COMPRESS=LZW \
+  -co BIGTIFF=YES \
+  -co PREDICTOR=2 \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.vrt \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.tif
+```
+
+**Step 6b: Generate web tiles (if format='tiles' or 'both')**
+```bash
+# Generate WebP tiles from zoom 0-11 using 14 parallel workers
+gdal2tiles.py \
+  --zoom 0-11 \
+  --processes 14 \
+  --webviewer=none \
+  --exclude \
+  --tiledriver=WEBP \
+  --webp-quality=50 \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.vrt \
+  /Volumes/drive/sync/2025-10-02/tiles/
+```
+
+**Step 7: Convert to PMTiles (optional, manual step)**
+```bash
+# Step 7a: Convert GeoTIFF to MBTiles
+gdal_translate \
+  -of MBTILES \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.tif \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.mbtiles
+
+# Step 7b: Add pyramid overviews for efficient zooming
+gdaladdo \
+  -r bilinear \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.mbtiles \
+  2 4 8 16 32 64 128 256
+
+# Step 7c: Convert MBTiles to PMTiles (cloud-optimized format)
+pmtiles convert \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.mbtiles \
+  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.pmtiles
+
+# Optional: Remove temporary MBTiles file
+rm /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.mbtiles
+```
+
+### 4.9.3 Parallelization Strategy
+
+**Warp Phase (4 concurrent workers):**
+- Uses Python ThreadPoolExecutor (newslicer.py:810)
+- Maximum 4 concurrent warp operations
+- Each worker processes one TIFF file at a time
+- Jobs queued and distributed as workers become available
+- Example: 51 locations with TIFFs → 51 jobs → 4 workers → ~13 batches
+- Bottleneck: CPU-bound (projection calculations, resampling)
+
+**Tile Generation (CPU_COUNT - 2 workers):**
+- gdal2tiles.py --processes flag (newslicer.py:411)
+- Automatically parallelizes tile rendering across zoom levels and regions
+- On 16-core system: uses 14 workers
+- Reserves 2 cores for system responsiveness
+- Bottleneck: Mixed CPU (WebP encoding) + I/O (writing tiles)
+
+**Sequential Operations:**
+- **VRT Building** - Fast (<1s), metadata-only, no parallelization needed
+- **ZIP Extraction** - I/O bound, parallelization would have minimal benefit
+- **GeoTIFF Export** - Single large file, cannot parallelize
+- **Mosaic VRT** - Metadata-only (<1s)
+
+**Optimization Trade-offs:**
+- 4 warp workers chosen to balance CPU usage vs system responsiveness
+- Increasing to 8 workers: ~25% speedup, but diminishing returns
+- Memory usage scales with worker count: 4 workers ≈ 2-4 GB RAM
+
+### 4.9.4 Processing Time Estimates
+
+**Per-Date Processing (56 locations, zoom 0-11, 16-core system):**
+
+| Phase | Duration | Parallelization | Bottleneck | Notes |
+|-------|----------|-----------------|------------|-------|
+| Input/Scan | 10s | Sequential | I/O (directory scan) | One-time per run |
+| Load CSV | 2s | Sequential | I/O (read CSV) | One-time per run |
+| Extract ZIPs | 30s | As needed | I/O (disk read/write) | Only for ZIP sources |
+| **Warp (51 TIFFs)** | **15min** | **4 workers** | **CPU (reproject)** | **Main bottleneck** |
+| VRT Build (per loc) | 5s | Sequential | I/O (metadata) | Fast, minimal impact |
+| Fallback Matrix | 1s | Sequential | Memory (dict lookup) | Negligible |
+| Mosaic VRT | 1s | Sequential | I/O (write XML) | Negligible |
+| **GeoTIFF Export** | **3min** | **Sequential** | **I/O + CPU (compress)** | If format=geotiff |
+| **Tile Generation** | **20min** | **14 workers** | **CPU + I/O** | **Longest phase** |
+| PMTiles (Step 1) | 40min | Sequential | I/O + CPU | Manual, if desired |
+| PMTiles (Step 2) | 20min | Sequential | CPU (downsample) | Manual, if desired |
+| PMTiles (Step 3) | 10min | Sequential | I/O (reorganize) | Manual, if desired |
+| **Total (GeoTIFF)** | **~18min** | | | Without tiles |
+| **Total (Tiles)** | **~35min** | | | Without GeoTIFF |
+| **Total (Both)** | **~38min** | | | Both outputs |
+| **+PMTiles** | **~108min** | | | Full pipeline |
+
+**Scaling Factors:**
+- Warp time scales linearly with number of locations (51 TIFFs × 20s avg = 17min)
+- Tile time scales exponentially with zoom level (each level = 4× more tiles)
+- GeoTIFF export scales with mosaic size (~8 GB → 3 min with LZW compression)
+
+**Real-world Variation:**
+- Chart complexity affects warp time (±50%)
+- SSD vs HDD: 2-3× speed difference for I/O-bound phases
+
+### 4.9.5 Complete Example Workflow
+
+**Processing one date (2025-10-02) with both GeoTIFF and tiles:**
+
+```bash
+#!/bin/bash
+# Complete manual pipeline to replicate newslicer.py for one date
+
+DATE="2025-10-02"
+SOURCE="/Volumes/drive/newrawtiffs"
+OUTPUT="/Volumes/drive/sync"
+SHAPES="/Users/ryanhemenway/archive.aero/shapefiles"
+TEMP="$OUTPUT/.temp/$DATE"
+
+# 1. Create temp directory
+mkdir -p "$TEMP"
+
+# 2. Warp each location (example: Seattle)
+gdal_translate -of VRT -expand rgba \
+  "$SOURCE/seattle_sec.tif" /vsimem/seattle_rgba.vrt
+
+gdalwarp -of GTiff -t_srs EPSG:3857 \
+  -cutline "$SHAPES/seattle.shp" -cutline_srs EPSG:4326 \
+  -crop_to_cutline -dstalpha -r bilinear \
+  -co TILED=YES -co COMPRESS=LZW -co BIGTIFF=YES \
+  -multi -wo CUTLINE_ALL_TOUCHED=TRUE \
+  /vsimem/seattle_rgba.vrt "$TEMP/seattle_sec.tif"
+
+# 3. Repeat Step 2 for all 56 locations (or use parallel wrapper)
+
+# 4. Build mosaic VRT
+gdalbuildvrt -r bilinear \
+  "$OUTPUT/$DATE/mosaic_$DATE.vrt" \
+  "$TEMP"/*/*.vrt
+
+# 5. Create GeoTIFF
+gdal_translate -of GTiff \
+  -co TILED=YES -co COMPRESS=LZW -co BIGTIFF=YES -co PREDICTOR=2 \
+  "$OUTPUT/$DATE/mosaic_$DATE.vrt" \
+  "$OUTPUT/$DATE/mosaic_$DATE.tif"
+
+# 6. Generate tiles
+gdal2tiles.py \
+  --zoom 0-11 --processes 14 \
+  --webviewer=none --exclude \
+  --tiledriver=WEBP --webp-quality=50 \
+  "$OUTPUT/$DATE/mosaic_$DATE.vrt" \
+  "$OUTPUT/$DATE/tiles/"
+```
+
+**Using newslicer.py (equivalent, recommended):**
+```bash
+python newslicer.py \
+  -s /Volumes/drive/newrawtiffs \
+  -o /Volumes/drive/sync \
+  -c master_dole.csv \
+  -b /Users/ryanhemenway/archive.aero/shapefiles \
+  -f both -z 0-11
+```
+
+---
+
 ## 5. PMTiles Conversion
 
 ### 5.1 Overview
@@ -859,11 +1293,15 @@ After newslicer.py generates GeoTIFF outputs they are converted to PMTiles forma
 
 ### 5.2 Conversion Pipeline
 
-The conversion process has three steps:
+PMTiles conversion is an optional post-processing step performed after newslicer.py generates the GeoTIFF output (Section 4.9, Step 6a). The conversion has three sequential steps:
 
-1. **Convert GeoTIFF to MBTiles**
-2. **Add overviews to MBTiles**
-3. **Convert MBTiles to PMTiles**
+1. **Convert GeoTIFF to MBTiles** (gdal_translate)
+2. **Add pyramid overviews** (gdaladdo) - enables efficient multi-scale viewing
+3. **Convert MBTiles to PMTiles** (pmtiles convert) - optimizes for HTTP range requests
+
+**Input:** `mosaic_DATE.tif` from newslicer.py (format='geotiff' or 'both')
+**Output:** `mosaic_DATE.pmtiles` for cloud-optimized serving
+**Total Time:** ~90 minutes per date (see Section 4.9.4 for breakdown)
 
 ### 5.3 Step-by-Step Process
 
