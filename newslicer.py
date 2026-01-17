@@ -206,7 +206,7 @@ class ChartSlicer:
     def find_shapefile(self, location: str) -> Optional[Path]:
         """Find shapefile for location."""
         norm_loc = self.normalize_name(location)
-        candidates = list(self.shape_dir.glob("*.shp"))
+        candidates = list(self.shape_dir.glob("**/*.shp"))
         for shp in candidates:
             shp_norm = self.normalize_name(shp.stem)
             if shp_norm == norm_loc:
@@ -949,10 +949,10 @@ class ChartSlicer:
                 mosaic_vrts = list(date_matrix.values())
                 self.log(f"  Creating mosaic VRT from {len(mosaic_vrts)} locations...")
 
-                date_out_dir = self.output_dir / date
-                date_out_dir.mkdir(parents=True, exist_ok=True)
+                temp_dir = self.output_dir / ".temp" / date
+                temp_dir.mkdir(parents=True, exist_ok=True)
 
-                mosaic_vrt = date_out_dir / f"mosaic_{date}.vrt"
+                mosaic_vrt = temp_dir / f"mosaic_{date}.vrt"
                 if self.build_vrt(mosaic_vrts, mosaic_vrt):
                     self.log(f"  ✓ Mosaic VRT created")
 
@@ -961,12 +961,12 @@ class ChartSlicer:
                     zoom_levels = getattr(self, 'zoom_levels', '0-11')
 
                     if output_format in ['geotiff', 'both']:
-                        geotiff_path = date_out_dir / f"mosaic_{date}.tif"
+                        geotiff_path = self.output_dir / f"{date}.tif"
                         self.log(f"  Creating GeoTIFF (this may take several minutes)...")
                         self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
 
                     if output_format in ['tiles', 'both']:
-                        tiles_dir = date_out_dir / 'tiles'
+                        tiles_dir = temp_dir / 'tiles'
                         self.log(f"  Generating tiles...")
                         self.generate_tiles(mosaic_vrt, tiles_dir, zoom_levels)
 
