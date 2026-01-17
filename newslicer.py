@@ -18,7 +18,7 @@ import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
-    from osgeo import gdal
+    from osgeo import gdal, ogr
     gdal.UseExceptions()
 except ImportError:
     print("ERROR: GDAL is required but not installed.")
@@ -215,6 +215,25 @@ class ChartSlicer:
                 return shp
         return None
 
+    def get_shapefile_srs(self, shapefile: Path) -> str:
+        """Get the actual SRS of a shapefile in Proj4 format."""
+        try:
+            driver = ogr.GetDriverByName("ESRI Shapefile")
+            dataset = driver.Open(str(shapefile), 0)
+            if not dataset:
+                return 'EPSG:4326'  # Fallback to WGS84
+            layer = dataset.GetLayer(0)
+            srs = layer.GetSpatialRef()
+            dataset = None
+
+            if srs:
+                proj4 = srs.ExportToProj4()
+                return proj4 if proj4 else 'EPSG:4326'
+            else:
+                return 'EPSG:4326'  # Fallback
+        except Exception:
+            return 'EPSG:4326'  # Fallback on any error
+
     def unzip_file(self, zip_path: Path, output_dir: Path) -> List[Path]:
         """Extract TIFFs from ZIP file."""
         extracted_tiffs = []
@@ -303,13 +322,16 @@ class ChartSlicer:
             ds_vrt = gdal.Translate(temp_vrt_name, str(input_tiff), options=translate_options)
             ds_vrt = None
 
+            # Get the actual SRS of the shapefile (don't hardcode EPSG:4326)
+            shapefile_srs = self.get_shapefile_srs(shapefile)
+
             # Step 2: Warp with cutline to GTiff with BIGTIFF support
             # Note: Not specifying xRes/yRes allows GDAL to maintain source resolution during warp
             warp_options = gdal.WarpOptions(
                 format="GTiff",
                 dstSRS='EPSG:3857',
                 cutlineDSName=str(shapefile),
-                cutlineSRS='EPSG:4326',
+                cutlineSRS=shapefile_srs,
                 cropToCutline=True,
                 dstAlpha=True,
                 resampleAlg=gdal.GRA_Bilinear,
@@ -342,7 +364,23 @@ class ChartSlicer:
     def build_vrt(self, input_files: List[Path], output_vrt: Path) -> bool:
         """Combine multiple TIFFs/VRTs into a single VRT."""
         try:
-            input_strs = [str(f) for f in input_files]
+            # Validate input files before building VRT
+            valid_files = []
+            for f in input_files:
+                if not f.exists():
+                    self.log(f"      Warning: Input file not found: {f.name}")
+                    continue
+                file_size = f.stat().st_size
+                if file_size < 1024:  # Skip files smaller than 1KB (likely corrupt/empty)
+                    self.log(f"      Warning: Skipping {f.name} (too small: {file_size} bytes)")
+                    continue
+                valid_files.append(f)
+
+            if not valid_files:
+                self.log(f"      ✗ No valid input files for VRT")
+                return False
+
+            input_strs = [str(f) for f in valid_files]
             # Don't add alpha - input files already have alpha from warp_and_cut
             vrt_options = gdal.BuildVRTOptions(resampleAlg=gdal.GRA_Bilinear)
             ds = gdal.BuildVRT(str(output_vrt), input_strs, options=vrt_options)
@@ -385,6 +423,12 @@ class ChartSlicer:
                 return False
 
         except Exception as e:
+            error_str = str(e).lower()
+            # If ZSTD decompression fails, try with LZW compression instead
+            if compress == 'ZSTD' and ('zstd' in error_str or 'frame descriptor' in error_str or 'data corruption' in error_str):
+                self.log(f"    ZSTD decompression error detected, retrying with LZW compression...")
+                return self.create_geotiff(input_vrt, output_tiff, compress='LZW')
+
             self.log(f"    Error creating GeoTIFF: {e}")
             import traceback
             self.log(f"    {traceback.format_exc()}")
@@ -756,26 +800,67 @@ class ChartSlicer:
 
                     self.log(f"    {location} (shapefile-free, edition {edition}): Processing {len(found_files)} file(s)...")
 
-                    # Extract ZIPs if needed, add files directly to VRT library
+                    # Extract ZIPs if needed, then warp to EPSG:3857 for mosaic compatibility
+                    warped_files = []
                     for src_file in found_files:
                         if src_file.suffix.lower() == '.zip':
                             self.log(f"      Extracting {src_file.name}...")
                             extracted = self.unzip_file(src_file, temp_dir / "extract")
-                            tiffs_to_add = extracted
-                            self.log(f"      Extracted {len(tiffs_to_add)} TIFFs")
+                            tiffs_to_warp = extracted
+                            self.log(f"      Extracted {len(tiffs_to_warp)} TIFFs")
                         else:
-                            tiffs_to_add = [src_file]
+                            tiffs_to_warp = [src_file]
 
-                        # Add directly to vrt_library without warping
-                        if tiffs_to_add:
-                            if len(tiffs_to_add) > 1:
-                                # Build VRT for multiple files
-                                loc_vrt = temp_dir / f"{norm_loc}_{date}.vrt"
-                                if self.build_vrt(tiffs_to_add, loc_vrt):
-                                    vrt_library[norm_loc][date] = loc_vrt
-                            else:
-                                # Single file, use directly
-                                vrt_library[norm_loc][date] = tiffs_to_add[0]
+                        # Warp each file to EPSG:3857 without shapefile cutline
+                        for tiff in tiffs_to_warp:
+                            sanitized_stem = self.sanitize_filename(tiff.stem)
+                            warped_tiff = temp_dir / f"{norm_loc}_{sanitized_stem}_warped.tif"
+
+                            try:
+                                self.log(f"      Warping {tiff.name}...")
+
+                                # Expand to RGBA
+                                temp_vrt_name = f"/vsimem/{sanitized_stem}_rgba.vrt"
+                                translate_options = gdal.TranslateOptions(format="VRT", rgbExpand="rgba")
+                                ds_vrt = gdal.Translate(temp_vrt_name, str(tiff), options=translate_options)
+                                ds_vrt = None
+
+                                # Warp to EPSG:3857 (no cutline needed for these locations)
+                                warp_options = gdal.WarpOptions(
+                                    format="GTiff",
+                                    dstSRS='EPSG:3857',
+                                    dstAlpha=True,
+                                    resampleAlg=gdal.GRA_Bilinear,
+                                    creationOptions=['TILED=YES', f'COMPRESS={self.compression}', 'BIGTIFF=YES'],
+                                    multithread=True
+                                )
+
+                                ds = gdal.Warp(str(warped_tiff), temp_vrt_name, options=warp_options)
+
+                                # Cleanup
+                                try:
+                                    gdal.Unlink(temp_vrt_name)
+                                except:
+                                    pass
+
+                                if ds:
+                                    ds = None
+                                    file_size_mb = warped_tiff.stat().st_size / (1024 * 1024) if warped_tiff.exists() else 0
+                                    self.log(f"        ✓ Warped {tiff.name} ({file_size_mb:.1f} MB)")
+                                    warped_files.append(warped_tiff)
+                                else:
+                                    self.log(f"        ✗ Warp failed for {tiff.name}")
+                            except Exception as e:
+                                self.log(f"        ✗ Error warping {tiff.name}: {e}")
+
+                    # Build VRT from warped files
+                    if warped_files:
+                        if len(warped_files) > 1:
+                            loc_vrt = temp_dir / f"{norm_loc}_{date}.vrt"
+                            if self.build_vrt(warped_files, loc_vrt):
+                                vrt_library[norm_loc][date] = loc_vrt
+                        else:
+                            vrt_library[norm_loc][date] = warped_files[0]
 
                     location_metadata[norm_loc] = {'edition': edition}
                     continue  # Skip shapefile processing
@@ -818,11 +903,15 @@ class ChartSlicer:
                         except Exception as e:
                             self.log(f"    Error in parallel warp: {e}")
 
-                # Group results by location
+                # Group results by location (validate output files)
                 temp_warped_by_location = defaultdict(list)
                 for result in results:
-                    if result['success']:
-                        temp_warped_by_location[result['location']].append(result['output_tiff'])
+                    if result['success'] and result['output_tiff']:
+                        output_file = result['output_tiff']
+                        if output_file.exists() and output_file.stat().st_size > 1024:
+                            temp_warped_by_location[result['location']].append(output_file)
+                        else:
+                            self.log(f"      Warning: Skipping invalid warped file: {output_file.name}")
 
                 # Build VRTs for each location
                 location_count = 0
