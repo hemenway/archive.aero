@@ -42,3 +42,6 @@ debug_sort.py
 1georef_toolv9.py
 output.csv
 master_dole.csv
+rawlinks/NARAlist.csv
+.gitignore
+.gitignore
