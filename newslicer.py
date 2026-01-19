@@ -12,7 +12,7 @@ import argparse
 import zipfile
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -170,8 +170,63 @@ class ChartSlicer:
 
         self.log(f"Loaded {len(self.dole_data)} dates.")
 
-    def find_files(self, location: str, edition: str, timestamp: Optional[str]) -> List[Path]:
-        """Find files matching location, edition, and timestamp."""
+    def resolve_filename(self, filename: str) -> List[Tuple[Path, Optional[str]]]:
+        """
+        Resolve filename from CSV to actual file path(s).
+        Handles both standalone files and zip/internal_file format.
+        Returns: List of (file_path, internal_file_path) tuples
+        """
+        if not filename:
+            return []
+
+        results = []
+
+        # Handle zip/internal_file format: "zipname.zip/internal/path.tif"
+        if '/' in filename:
+            zip_part, internal_part = filename.split('/', 1)
+
+            # Search for zip file in source directory
+            for root, _, files in os.walk(self.source_dir):
+                for fname in files:
+                    if fname == zip_part:
+                        zip_path = Path(root) / fname
+                        # Verify the internal file actually exists in the zip
+                        try:
+                            with zipfile.ZipFile(zip_path, 'r') as z:
+                                if internal_part in z.namelist():
+                                    results.append((zip_path, internal_part))
+                        except:
+                            pass
+                        break
+        else:
+            # Standalone file
+            for root, _, files in os.walk(self.source_dir):
+                for fname in files:
+                    if fname == filename:
+                        file_path = Path(root) / fname
+                        results.append((file_path, None))
+                        break
+
+        return results
+
+    def find_files(self, location: str, edition: str, timestamp: Optional[str], filename: Optional[str] = None) -> List[Union[Path, Tuple[Path, str]]]:
+        """
+        Find files matching location, edition, and timestamp.
+        If filename is provided from CSV, use it directly.
+        Otherwise fall back to pattern-based discovery.
+
+        Returns:
+            - List of Path objects for standalone files or normal zip files
+            - List of (zip_path, internal_file) tuples for csv-specified zip/internal combos
+        """
+        # If filename is provided from CSV, use it
+        if filename:
+            resolved = self.resolve_filename(filename)
+            if resolved:
+                # Return tuples (path, internal_file) for zip/internal, or (path, None) for standalone
+                return resolved
+
+        # Fallback to pattern-based discovery (legacy behavior)
         results = []
 
         if timestamp:
@@ -201,7 +256,8 @@ class ChartSlicer:
             if res:
                 results.extend(res)
 
-        return list(set(results))
+        # Return as tuples with None internal_file for legacy compatibility
+        return [(r, None) if isinstance(r, Path) else r for r in list(set(results))]
 
     def find_shapefile(self, location: str) -> Optional[Path]:
         """Find shapefile for location."""
@@ -234,8 +290,12 @@ class ChartSlicer:
         except Exception:
             return 'EPSG:4326'  # Fallback on any error
 
-    def unzip_file(self, zip_path: Path, output_dir: Path) -> List[Path]:
-        """Extract TIFFs from ZIP file."""
+    def unzip_file(self, zip_path: Path, output_dir: Path, specific_file: Optional[str] = None) -> List[Path]:
+        """
+        Extract TIFFs from ZIP file.
+        If specific_file is provided, extract only that file (and its .tfw if available).
+        Otherwise extract all TIFFs.
+        """
         extracted_tiffs = []
         try:
             if not zip_path.exists():
@@ -243,10 +303,18 @@ class ChartSlicer:
                 return []
 
             with zipfile.ZipFile(zip_path, 'r') as z:
-                tiffs = [n for n in z.namelist() if n.lower().endswith(('.tif', '.tiff'))]
-                if not tiffs:
-                    self.log(f"  [ERROR] No TIFFs found in {zip_path.name}")
-                    return []
+                if specific_file:
+                    # Extract specific file from CSV
+                    if specific_file not in z.namelist():
+                        self.log(f"  [ERROR] Specific file '{specific_file}' not found in {zip_path.name}")
+                        return []
+                    tiffs = [specific_file]
+                else:
+                    # Extract all TIFFs
+                    tiffs = [n for n in z.namelist() if n.lower().endswith(('.tif', '.tiff'))]
+                    if not tiffs:
+                        self.log(f"  [ERROR] No TIFFs found in {zip_path.name}")
+                        return []
 
                 extract_path = output_dir / zip_path.stem
                 extract_path.mkdir(parents=True, exist_ok=True)
@@ -268,15 +336,25 @@ class ChartSlicer:
             self.log(f"  Error unzipping: {e}")
             return []
 
-    def _prepare_warp_job(self, src_file: Path, location: str, edition: str,
+    def _prepare_warp_job(self, src_file_info: Union[Path, Tuple[Path, Optional[str]]], location: str, edition: str,
                           shp_path: Path, temp_dir: Path, date: str) -> List[Dict]:
-        """Prepare warp job parameters for parallel processing."""
+        """
+        Prepare warp job parameters for parallel processing.
+        Handles both Path objects and (Path, internal_file) tuples from find_files.
+        """
         norm_loc = self.normalize_name(location)
         jobs = []
 
+        # Unpack the file info (could be Path or (Path, internal_file) tuple)
+        if isinstance(src_file_info, tuple):
+            src_file, internal_file = src_file_info
+        else:
+            src_file = src_file_info
+            internal_file = None
+
         # Handle ZIP extraction
         if src_file.suffix.lower() == '.zip':
-            extracted = self.unzip_file(src_file, temp_dir / "extract")
+            extracted = self.unzip_file(src_file, temp_dir / "extract", specific_file=internal_file)
             tiffs_to_warp = extracted
         else:
             tiffs_to_warp = [src_file]
@@ -673,11 +751,23 @@ class ChartSlicer:
                         shapefile_found = "YES" if shp_path else "NO"
 
                     # Find source files
-                    found_files = self.find_files(location, edition, timestamp)
+                    filename = rec.get('filename', '')
+                    found_files = self.find_files(location, edition, timestamp, filename)
 
                     if found_files:
                         vrt_library_sim[location][date] = True
-                        source_files_str = ', '.join([str(f.name) for f in found_files])
+                        # Handle both Path and (Path, internal_file) tuple formats
+                        file_names = []
+                        for f in found_files:
+                            if isinstance(f, tuple):
+                                path, internal = f
+                                if internal:
+                                    file_names.append(f"{path.name}/{internal}")
+                                else:
+                                    file_names.append(path.name)
+                            else:
+                                file_names.append(f.name)
+                        source_files_str = ', '.join(file_names)
                     else:
                         source_files_str = "NOT FOUND"
 
@@ -787,25 +877,33 @@ class ChartSlicer:
                 location = rec.get('location', '')
                 edition = rec.get('edition', '')
                 timestamp = rec.get('wayback_ts')
+                filename = rec.get('filename', '')  # Get filename from CSV
 
                 norm_loc = self.normalize_name(location)
 
                 # Check if this is a shapefile-free location
                 if norm_loc in self.SHAPEFILE_FREE_LOCATIONS:
                     # No shapefile needed - find source files directly
-                    found_files = self.find_files(location, edition, timestamp)
+                    found_files = self.find_files(location, edition, timestamp, filename)
                     if not found_files:
-                        self.log(f"    {location}: No source files found (edition {edition})")
+                        self.log(f"    {location}: No source files found (edition {edition}) [CSV: {filename if filename else 'no match'}]")
                         continue
 
-                    self.log(f"    {location} (shapefile-free, edition {edition}): Processing {len(found_files)} file(s)...")
+                    self.log(f"    {location} (shapefile-free, edition {edition}): {filename if filename else 'pattern match'}")
 
                     # Extract ZIPs if needed, then warp to EPSG:3857 for mosaic compatibility
                     warped_files = []
-                    for src_file in found_files:
+                    for src_file_info in found_files:
+                        # Unpack the file info (could be Path or (Path, internal_file) tuple)
+                        if isinstance(src_file_info, tuple):
+                            src_file, internal_file = src_file_info
+                        else:
+                            src_file = src_file_info
+                            internal_file = None
+
                         if src_file.suffix.lower() == '.zip':
                             self.log(f"      Extracting {src_file.name}...")
-                            extracted = self.unzip_file(src_file, temp_dir / "extract")
+                            extracted = self.unzip_file(src_file, temp_dir / "extract", specific_file=internal_file)
                             tiffs_to_warp = extracted
                             self.log(f"      Extracted {len(tiffs_to_warp)} TIFFs")
                         else:
@@ -872,17 +970,17 @@ class ChartSlicer:
                     self.log(f"    {location}: No shapefile found")
                     continue
 
-                # Find source files
-                found_files = self.find_files(location, edition, timestamp)
+                # Find source files (use filename from CSV if available)
+                found_files = self.find_files(location, edition, timestamp, filename)
                 if not found_files:
-                    self.log(f"    {location}: No source files found (edition {edition})")
+                    self.log(f"    {location}: No source files found (edition {edition}) [CSV: {filename if filename else 'no match'}]")
                     continue
 
-                self.log(f"    {location} (edition {edition}): Preparing {len(found_files)} file(s)...")
+                self.log(f"    {location} (edition {edition}): {filename if filename else 'pattern match'}")
 
                 # Prepare warp jobs for this location
-                for src_file in found_files:
-                    jobs = self._prepare_warp_job(src_file, location, edition, shp_path, temp_dir, date)
+                for src_file_info in found_files:
+                    jobs = self._prepare_warp_job(src_file_info, location, edition, shp_path, temp_dir, date)
                     warp_jobs.extend(jobs)
 
                 # Store location metadata
