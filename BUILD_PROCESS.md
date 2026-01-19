@@ -102,25 +102,16 @@ For each location in the CSV (56 locations total):
 **File resolution logic:**
 1. Check if `filename` column exists in CSV for this date+location
 2. If yes, resolve exact filename (handles both standalone and zip/internal format like `archive.zip/charts/houston.tif`)
-3. If no filename, fall back to pattern matching:
-   - Try timestamp-based: `(TS, '20130215143022')`
-   - Try edition-based: `(EDITION, 'albuquerque', '55')`
-   - Try variants: `albuquerque_sec`, `albuquerque_tac`, `albuquerque_north`, etc.
+
 
 #### Step 3.2: Shapefile Discovery
 
-For each location (except 4 special ones):
+For each location:
 
 ```
 [09:16:17]       Finding shapefile for albuquerque...
 [09:16:17]       Found: shapefiles/sectional/SEC_ALBUQUERQUE.shp
 ```
-
-**Shapefile-free locations** (no cutting needed):
-- `hawaiian_islands`
-- `mariana_islands`
-- `samoan_islands`
-- `western_aleutian_islands`
 
 **Search process:**
 - Only searches `shapefiles/sectional/` directory (avoids TAC, Terminal, Helicopter shapefiles)
@@ -170,17 +161,6 @@ For **shapefile-based locations** (52 locations):
              warpOptions=['CUTLINE_ALL_TOUCHED=TRUE'])
    ```
 
-**For shapefile-free locations** (4 locations):
-
-```
-[09:17:15]     hawaiian_islands (shapefile-free, edition 2): hawaiian_2.zip
-[09:17:16]       Extracting hawaiian_2.zip...
-[09:17:17]       Extracted 1 TIFFs
-[09:17:17]       Warping hawaiian_islands_sec.tif...
-[09:17:42]         ✓ Warped hawaiian_islands_sec.tif (156.2 MB)
-```
-
-Same process but **no shapefile cutline** applied - just warp to EPSG:3857.
 
 #### Step 3.4: VRT Building Per Location
 
@@ -509,7 +489,7 @@ python3 newslicer.py \
 - **Parallel warping**: 4 workers (ThreadPoolExecutor)
 - **Memory usage**: 75% of available RAM for GDAL cache (max 8GB)
 - **Disk I/O**: Heavy (multiple GB per location)
-- **Typical runtime**: 3-6 hours for 156 dates (depends on source data)
+- **Typical runtime**: 24 hours for 156 dates (depends on source data)
 
 ### pmandupload.sh
 - **Parallel processing**: 3 workers by default (tunable with JOBS env var)
