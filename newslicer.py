@@ -260,9 +260,16 @@ class ChartSlicer:
         return [(r, None) if isinstance(r, Path) else r for r in list(set(results))]
 
     def find_shapefile(self, location: str) -> Optional[Path]:
-        """Find shapefile for location."""
+        """Find shapefile for location - only searches sectional shapefiles."""
         norm_loc = self.normalize_name(location)
-        candidates = list(self.shape_dir.glob("**/*.shp"))
+        sectional_dir = self.shape_dir / "sectional"
+
+        # Only search sectional directory to avoid TAC, Terminal, Helicopter, etc.
+        if not sectional_dir.exists():
+            self.log(f"WARNING: Sectional shapefile directory not found at {sectional_dir}")
+            return None
+
+        candidates = list(sectional_dir.glob("**/*.shp"))
         for shp in candidates:
             shp_norm = self.normalize_name(shp.stem)
             if shp_norm == norm_loc:
