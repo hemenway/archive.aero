@@ -33,8 +33,8 @@ process_one() {
 
   echo "==> [$BASHPID] Processing: $in"
 
-  # TIFF -> MBTiles (multithreaded)
-  gdal_translate -of MBTILES --config GDAL_NUM_THREADS ALL_CPUS "$in" "$mb"
+  # TIFF -> MBTiles (multithreaded, WebP format for maximum compression)
+  gdal_translate -of MBTILES --config GDAL_NUM_THREADS ALL_CPUS -co COMPRESS=WEBP -co WEBP_LEVEL=90 "$in" "$mb"
 
   # Overviews (multithreaded)
   gdaladdo -r bilinear --config GDAL_NUM_THREADS ALL_CPUS "$mb" 2 4 8 16 32 64 128 256

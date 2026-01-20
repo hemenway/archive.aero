@@ -9,7 +9,6 @@ import sys
 import csv
 import re
 import argparse
-import zipfile
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
@@ -143,36 +142,37 @@ class ChartSlicer:
     def resolve_filename(self, filename: str) -> List[Tuple[Path, Optional[str]]]:
         """
         Resolve filename from CSV to actual file path(s).
-        Handles both standalone files and zip/internal_file format.
-        Returns: List of (file_path, internal_file_path) tuples
+
+        Supports:
+        1. Direct .tif files: "file.tif" → finds file.tif
+        2. Unzipped .zip directories: "file.zip" → finds all .tif files in file/ directory
+
+        Returns: List of (file_path, None) tuples (no internal_file needed for unzipped structure)
         """
         if not filename:
             return []
 
         results = []
 
-        # Handle zip/internal_file format: "zipname.zip/internal/path.tif"
-        if '/' in filename:
-            zip_part, internal_part = filename.split('/', 1)
+        # Case 1: .zip file (after unzipping, this becomes a directory)
+        if filename.endswith('.zip'):
+            # Remove .zip extension to get directory name
+            dir_name = filename[:-4]  # Remove '.zip'
 
-            # Search for zip file in source directory
-            for root, _, files in os.walk(self.source_dir):
-                for fname in files:
-                    if fname == zip_part:
-                        zip_path = Path(root) / fname
-                        # Verify the internal file actually exists in the zip
-                        try:
-                            with zipfile.ZipFile(zip_path, 'r') as z:
-                                if internal_part in z.namelist():
-                                    results.append((zip_path, internal_part))
-                        except:
-                            pass
-                        break
+            # Search for directory with this name
+            for root, dirs, files in os.walk(self.source_dir):
+                if dir_name in dirs:
+                    dir_path = Path(root) / dir_name
+                    # Find all TIF files in this directory
+                    for tif_file in dir_path.glob('**/*.tif'):
+                        if tif_file.is_file():
+                            results.append((tif_file, None))
+                    break
         else:
-            # Standalone file
+            # Case 2: Direct .tif file
             for root, _, files in os.walk(self.source_dir):
                 for fname in files:
-                    if fname == filename:
+                    if fname == filename and fname.endswith('.tif'):
                         file_path = Path(root) / fname
                         results.append((file_path, None))
                         break
@@ -242,74 +242,26 @@ class ChartSlicer:
         self.srs_cache[shapefile_key] = result
         return result
 
-    def unzip_file(self, zip_path: Path, output_dir: Path, specific_file: Optional[str] = None) -> List[Path]:
-        """
-        Extract TIFFs from ZIP file.
-        If specific_file is provided, extract only that file (and its .tfw if available).
-        Otherwise extract all TIFFs.
-        """
-        extracted_tiffs = []
-        try:
-            if not zip_path.exists():
-                self.log(f"  [ERROR] Zip file not found: {zip_path}")
-                return []
-
-            with zipfile.ZipFile(zip_path, 'r') as z:
-                if specific_file:
-                    # Extract specific file from CSV
-                    if specific_file not in z.namelist():
-                        self.log(f"  [ERROR] Specific file '{specific_file}' not found in {zip_path.name}")
-                        return []
-                    tiffs = [specific_file]
-                else:
-                    # Extract all TIFFs
-                    tiffs = [n for n in z.namelist() if n.lower().endswith(('.tif', '.tiff'))]
-                    if not tiffs:
-                        self.log(f"  [ERROR] No TIFFs found in {zip_path.name}")
-                        return []
-
-                extract_path = output_dir / zip_path.stem
-                extract_path.mkdir(parents=True, exist_ok=True)
-
-                for target in tiffs:
-                    z.extract(target, path=extract_path)
-                    full_path = extract_path / target
-                    if full_path.exists():
-                        extracted_tiffs.append(full_path)
-
-                        # Extract matching TFW if exists
-                        target_stem = Path(target).stem
-                        tfw_name = f"{target_stem}.tfw"
-                        if tfw_name in z.namelist():
-                            z.extract(tfw_name, path=extract_path)
-
-            return extracted_tiffs
-        except Exception as e:
-            self.log(f"  Error unzipping: {e}")
-            return []
-
     def _prepare_warp_job(self, src_file_info: Union[Path, Tuple[Path, Optional[str]]], location: str, edition: str,
                           shp_path: Path, temp_dir: Path, date: str) -> List[Dict]:
         """
         Prepare warp job parameters for parallel processing.
-        Handles both Path objects and (Path, internal_file) tuples from find_files.
+
+        With pre-unzipped files, src_file_info is always a direct Path to a .tif file.
+        No ZIP extraction needed.
         """
         norm_loc = self.normalize_name(location)
         jobs = []
 
-        # Unpack the file info (could be Path or (Path, internal_file) tuple)
+        # Unpack the file info (should always be (Path, None) from unzipped structure)
         if isinstance(src_file_info, tuple):
             src_file, internal_file = src_file_info
         else:
             src_file = src_file_info
             internal_file = None
 
-        # Handle ZIP extraction
-        if src_file.suffix.lower() == '.zip':
-            extracted = self.unzip_file(src_file, temp_dir / "extract", specific_file=internal_file)
-            tiffs_to_warp = extracted
-        else:
-            tiffs_to_warp = [src_file]
+        # With pre-unzipped files, src_file is always a direct TIF path
+        tiffs_to_warp = [src_file]
 
         # Create job entries for each TIFF
         for tiff in tiffs_to_warp:
@@ -433,16 +385,30 @@ class ChartSlicer:
             return False
 
     def create_geotiff(self, input_vrt: Path, output_tiff: Path, compress: str = 'LZW') -> bool:
-        """Convert VRT to optimized GeoTIFF (tiled, compressed)."""
-        try:
-            self.log(f"    Creating GeoTIFF with {compress} compression...")
+        """Convert VRT to optimized GeoTIFF using Warp with multithreading support.
 
-            translate_options = gdal.TranslateOptions(
+        Uses gdal.Warp instead of gdal.Translate because:
+        - Warp respects GDAL_NUM_THREADS configuration
+        - Warp supports multithread=True flag
+        - Expected 2-4x speedup vs single-threaded Translate
+
+        For VRT input (already correctly georeferenced), uses GRA_NearestNeighbour
+        to avoid unnecessary resampling.
+        """
+        try:
+            self.log(f"    Creating GeoTIFF with {compress} compression (multithreaded)...")
+
+            # Use gdal.Warp for better multithreading support
+            # VRT is already georeferenced, so use nearest neighbor to avoid resampling
+            warp_options = gdal.WarpOptions(
                 format='GTiff',
-                creationOptions=['TILED=YES', f'COMPRESS={compress}', 'BIGTIFF=YES', 'PREDICTOR=2']
+                resampleAlg=gdal.GRA_NearestNeighbour,  # VRT already has the data, just copying/compressing
+                creationOptions=['TILED=YES', f'COMPRESS={compress}', 'PREDICTOR=2', 'BIGTIFF=YES'],
+                multithread=True,  # Enable multithreading
+                warpMemoryLimit=0  # Use all available memory for warp buffer
             )
 
-            ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
+            ds = gdal.Warp(str(output_tiff), str(input_vrt), options=warp_options)
 
             if ds:
                 ds = None
@@ -844,26 +810,18 @@ class ChartSlicer:
 
                     self.log(f"    {location} (shapefile-free, edition {edition}): {filename if filename else 'pattern match'}")
 
-                    # Extract ZIPs if needed, then warp to EPSG:3857 for mosaic compatibility
+                    # Warp TIF files to EPSG:3857 for mosaic compatibility
+                    # (With pre-unzipped files, all found_files are direct TIF paths)
                     warped_files = []
                     for src_file_info in found_files:
-                        # Unpack the file info (could be Path or (Path, internal_file) tuple)
+                        # Unpack the file info (always (Path, None) with pre-unzipped structure)
                         if isinstance(src_file_info, tuple):
-                            src_file, internal_file = src_file_info
+                            src_file, _ = src_file_info
                         else:
                             src_file = src_file_info
-                            internal_file = None
 
-                        if src_file.suffix.lower() == '.zip':
-                            self.log(f"      Extracting {src_file.name}...")
-                            extracted = self.unzip_file(src_file, temp_dir / "extract", specific_file=internal_file)
-                            tiffs_to_warp = extracted
-                            self.log(f"      Extracted {len(tiffs_to_warp)} TIFFs")
-                        else:
-                            tiffs_to_warp = [src_file]
-
-                        # Warp each file to EPSG:3857 without shapefile cutline
-                        for tiff in tiffs_to_warp:
+                        # Warp each TIF file to EPSG:3857 without shapefile cutline
+                        for tiff in [src_file]:
                             sanitized_stem = self.sanitize_filename(tiff.stem)
                             warped_tiff = temp_dir / f"{norm_loc}_{sanitized_stem}_warped.tif"
 
@@ -1013,15 +971,28 @@ class ChartSlicer:
                     output_format = getattr(self, 'output_format', 'geotiff')
                     zoom_levels = getattr(self, 'zoom_levels', '0-11')
 
-                    if output_format in ['geotiff', 'both']:
-                        geotiff_path = self.output_dir / f"{date}.tif"
-                        self.log(f"  Creating GeoTIFF (this may take several minutes)...")
-                        self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
+                    geotiff_path = self.output_dir / f"{date}.tif"
+                    geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024  # At least 1 MB
 
-                    if output_format in ['tiles', 'both']:
-                        tiles_dir = temp_dir / 'tiles'
-                        self.log(f"  Generating tiles...")
-                        self.generate_tiles(mosaic_vrt, tiles_dir, zoom_levels)
+                    tiles_dir = self.output_dir / f"{date}_tiles" if output_format in ['tiles', 'both'] else None
+                    tiles_exist = tiles_dir and tiles_dir.exists() and list(tiles_dir.glob('**/*.webp'))
+
+                    # Check if this date is already complete
+                    if output_format == 'geotiff' and geotiff_exists:
+                        self.log(f"  ⊘ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
+                    elif output_format == 'tiles' and tiles_exist:
+                        self.log(f"  ⊘ Tiles already exist - skipping")
+                    elif output_format == 'both' and geotiff_exists and tiles_exist:
+                        self.log(f"  ⊘ GeoTIFF and tiles already exist - skipping")
+                    else:
+                        if output_format in ['geotiff', 'both'] and not geotiff_exists:
+                            self.log(f"  Creating GeoTIFF (this may take several minutes)...")
+                            self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
+
+                        if output_format in ['tiles', 'both'] and not tiles_exist:
+                            self.log(f"  Generating tiles...")
+                            tiles_output_dir = self.output_dir / f"{date}_tiles"
+                            self.generate_tiles(mosaic_vrt, tiles_output_dir, zoom_levels)
 
                     self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
                 else:
