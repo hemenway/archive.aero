@@ -2,11 +2,11 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-ROOT="/Volumes/drive/sync"
+ROOT="/Volumes/drive/upload"
 REMOTE="r2:charts/sectionals"
 
-# Parallel file workers (start with 2–4; tune upward if RAM/disk can handle it)
-JOBS="${JOBS:-3}"
+# Parallel file workers (reduced since GDAL now uses multiple threads per job)
+JOBS="${JOBS:-2}"
 
 # rclone tuning (your flags + sensible companions)
 RCLONE_FLAGS=(
@@ -33,11 +33,11 @@ process_one() {
 
   echo "==> [$BASHPID] Processing: $in"
 
-  # TIFF -> MBTiles
-  gdal_translate -of MBTILES "$in" "$mb"
+  # TIFF -> MBTiles (multithreaded)
+  gdal_translate -of MBTILES --config GDAL_NUM_THREADS ALL_CPUS "$in" "$mb"
 
-  # Overviews
-  gdaladdo -r bilinear "$mb" 2 4 8 16 32 64 128 256
+  # Overviews (multithreaded)
+  gdaladdo -r bilinear --config GDAL_NUM_THREADS ALL_CPUS "$mb" 2 4 8 16 32 64 128 256
 
   # MBTiles -> PMTiles
   pmtiles convert "$mb" "$pm"

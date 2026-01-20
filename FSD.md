@@ -1605,6 +1605,119 @@ date,location,edition,download_link
 
 **Encoding:** UTF-8
 
+### 6.4 URL to Filename Conversion Algorithm
+
+**Purpose:** Derive filesystem-compatible filenames from URLs while preserving URL information for traceability and uniqueness.
+
+**⚠️ CRITICAL: Algorithm Consistency**
+
+This algorithm MUST be applied consistently everywhere:
+- When renaming downloaded files
+- When updating `master_dole.csv`
+- When newslicer looks up files via `resolve_filename()`
+- Any other file discovery logic
+
+**If algorithms differ between file renaming and filename lookup, files will not be found.** See section 6.4.2 for common pitfalls.
+
+**Algorithm:**
+
+1. **Remove ALL occurrences of protocols** - Strip `https://` and `http://` (including embedded ones)
+2. **URL decode** - Convert percent-encoded characters (optional, for readability)
+3. **Replace invalid filename characters** with underscore `_`:
+   - `/` → `_` (path separators)
+   - `:` → `-` (colons in ports, timestamps)
+   - `?`, `#`, `&`, `=` → `_` (query string markers)
+   - `*`, `"`, `<`, `>`, `|`, `\` → `_` (filesystem-invalid)
+   - Whitespace and control characters → `_`
+4. **(Recommended) Collapse** consecutive underscores into single `_`
+5. **(Recommended) Trim** leading/trailing underscores
+6. **(Recommended) Enforce max length** of 255 characters
+
+**Canonical Python Implementation (REQUIRED):**
+
+```python
+def url_to_filename(url):
+    """Convert URL to filesystem-compatible filename.
+
+    IMPORTANT: This implementation removes ALL occurrences of https:// and http://,
+    including embedded protocols. This is critical for Wayback Machine URLs that
+    contain embedded protocols like:
+      https://web.archive.org/web/20111015213143/http://aeronav.faa.gov/...
+    """
+    # Remove ALL occurrences of https:// and http://
+    filename = url.replace('https://', '').replace('http://', '')
+
+    # Replace invalid characters
+    filename = filename.replace('/', '_').replace(':', '-')
+    filename = filename.replace('?', '_').replace('#', '_')
+    filename = filename.replace('&', '_').replace('=', '_')
+    filename = filename.replace('*', '_').replace('"', '_')
+    filename = filename.replace('<', '_').replace('>', '_')
+    filename = filename.replace('|', '_').replace('\\', '_')
+
+    # Replace whitespace and control characters
+    for i in range(32):
+        filename = filename.replace(chr(i), '_')
+    filename = filename.replace(' ', '_').replace('\t', '_')
+
+    # Collapse consecutive underscores
+    while '__' in filename:
+        filename = filename.replace('__', '_')
+
+    # Trim to 255 chars
+    filename = filename[:255]
+
+    return filename
+```
+
+**Examples:**
+
+| URL | Filename | Notes |
+|-----|----------|-------|
+| `https://web.archive.org/web/20111015213143/http://aeronav.faa.gov/content/aeronav/sectional_files/Albuquerque_87.zip` | `web.archive.org_web_20111015213143_aeronav.faa.gov_content_aeronav_sectional_files_Albuquerque_87.zip` | **Embedded protocol removed** |
+| `https://aeronav.faa.gov/visual/01-27-2022/sectional-files/Albuquerque.zip` | `aeronav.faa.gov_visual_01-27-2022_sectional-files_Albuquerque.zip` | Standard URL |
+| `https://s3.amazonaws.com/NARAprodstorage/lz/electronic-records/rg-237/VFR/2019-0060/Albuquerque_SEC_100.tif` | `s3.amazonaws.com_NARAprodstorage_lz_electronic-records_rg-237_VFR_2019-0060_Albuquerque_SEC_100.tif` | S3 path |
+
+### 6.4.1 Common Pitfalls
+
+**❌ WRONG: Only removes leading protocol**
+```python
+# This breaks Wayback URLs with embedded protocols!
+filename = re.sub(r'^https?://', '', url)
+# Result: web.archive.org_web_20111015213143_http_aeronav.faa.gov_...  ← WRONG
+```
+
+**✅ CORRECT: Removes all occurrences**
+```python
+# This handles embedded protocols correctly
+filename = url.replace('https://', '').replace('http://', '')
+# Result: web.archive.org_web_20111015213143_aeronav.faa.gov_...  ← CORRECT
+```
+
+### 6.4.2 Verification Checklist
+
+Before deployment, verify:
+
+1. **Consistency across codebase**: Grep for all uses of this algorithm
+2. **Test with Wayback Machine URLs**: URLs containing embedded protocols
+3. **Update `master_dole.csv`**: Regenerate if algorithm changed
+4. **Verify file matching**: Run `resolve_filename()` test against actual directory
+5. **Document any changes**: Update this section and FSD changelog
+
+**Advantages:**
+
+- **Preserves URL information** - Full download source is encoded in filename
+- **Guarantees uniqueness** - Different URLs always produce different filenames
+- **Filesystem compatible** - Works across Windows, macOS, Linux
+- **Human readable** - Can still identify domain, path, and resource
+- **Reversible** - Download source can be reconstructed from filename (with protocol prefix restoration)
+
+**Use Cases:**
+
+- Batch renaming downloaded files to match source URLs
+- Creating traceability records for archival systems
+- Organizing files by download source while maintaining unique names
+
 ---
 
 ## 7. Tile System Specification
@@ -2361,6 +2474,102 @@ rclone sync master_dole.csv backup:archive-aero-csv/
 - [ ] GPU acceleration (GDAL CUDA)
 - [ ] AI-powered chart enhancement
 
+### 13.2.1 Performance Monitoring & Optimization (newslicer.py)
+
+**Monitoring Framework:**
+
+The following monitoring capabilities should be added to identify and track optimization opportunities during runtime:
+
+**Real-time Metrics Collection:**
+- [ ] Built-in performance timer for each operation (warp, VRT build, GeoTIFF creation)
+- [ ] Per-operation throughput (files/second, MB/second)
+- [ ] Memory usage tracking (peak, average, per-operation)
+- [ ] CPU utilization (actual % vs theoretical max)
+- [ ] Disk I/O rate monitoring (read/write bytes per second)
+- [ ] Thread count and worker utilization reporting
+
+**Example Instrumentation:**
+```python
+# Add timing to critical operations
+start = time.time()
+self.warp_and_cut(...)  # warp operations
+elapsed = time.time() - start
+self.log(f"Warped {file_count} in {elapsed:.1f}s ({file_count/elapsed:.1f} files/sec)")
+
+# Track memory usage
+import psutil
+proc = psutil.Process()
+mem_peak = proc.memory_info().rss / (1024*1024)
+self.log(f"Peak memory: {mem_peak:.0f} MB")
+
+# Output statistics summary at end
+self.log(f"\n=== Performance Summary ===")
+self.log(f"Total time: {total_time:.1f}s")
+self.log(f"Files processed: {file_count}")
+self.log(f"Average throughput: {file_count/total_time:.1f} files/sec")
+```
+
+**Optimization Opportunities to Investigate:**
+
+1. **Parallelism Bottlenecks:**
+   - [ ] Monitor actual CPU usage during warp operations
+   - [ ] If CPU < 80% with workers=cpu_count-2, investigate:
+     - GIL contention in Python
+     - I/O blocking threads
+     - GDAL thread configuration not applying
+   - [ ] Consider subprocess-based workers instead of ThreadPoolExecutor for CPU-bound ops
+
+2. **I/O Optimization:**
+   - [ ] Monitor disk I/O rate (target: saturate available bandwidth)
+   - [ ] If I/O bound:
+     - Use ramdisk for temp directory (`/dev/shm` on Linux, `/var/tmp` on macOS)
+     - Reduce intermediate compression level (or disable during warp)
+     - Stream output directly instead of buffering
+   - [ ] If I/O spiky: implement write batching
+
+3. **Memory Optimization:**
+   - [ ] Monitor GDAL cache efficiency (hits vs misses)
+   - [ ] If cache misses high: increase `GDAL_CACHEMAX` up to 50% of available RAM
+   - [ ] If memory pressure: implement LRU eviction for VRT library
+
+4. **Compression Trade-offs:**
+   - [ ] Benchmark ZSTD vs LZW during warp (CPU vs file size)
+   - [ ] Add `--compress-level` flag for dynamic quality tuning
+   - [ ] Profile: does compression during warp save I/O vs adding CPU?
+
+5. **File System Effects:**
+   - [ ] Monitor stat() calls (expensive on network volumes)
+   - [ ] Batch file existence checks instead of per-file
+   - [ ] Cache shapefile lookups (already implemented in v2.6)
+
+6. **GDAL Configuration Tuning:**
+   - [ ] Benchmark different `GDAL_NUM_THREADS` values (currently dynamic)
+   - [ ] Test `GDAL_SWATH_SIZE` vs actual warp speed
+   - [ ] Profile `GDAL_CACHEMAX` impact on multi-date processing
+
+**Monitoring Commands (Add to Documentation):**
+```bash
+# Real-time CPU/memory while running
+watch -n 1 'ps aux | grep newslicer | grep -v grep | awk "{print \$3, \$6}"'
+
+# Disk I/O monitoring
+iostat -x 2
+
+# Temp directory growth
+watch -n 1 'du -sh /Volumes/drive/sync/.temp'
+
+# System calls tracing (advanced)
+dtrace -n 'syscall:::entry /execname == "python"/ { @[probefunc] = count(); }' -n 'tick-5s { print(@); }'
+```
+
+**Success Metrics:**
+
+- [ ] GeoTIFF creation < 5 minutes per date (goal: 2-3 minutes)
+- [ ] CPU utilization 80-100% during warp phase
+- [ ] Memory stays within configured GDAL cache limit
+- [ ] I/O rate consistent (no spikes indicating buffering)
+- [ ] Scaling efficiency: 2x workers = ~1.8x speedup (accounting for overhead)
+
 ### 13.3 Data Enhancements
 
 **Planned:**
@@ -2444,6 +2653,18 @@ rclone sync master_dole.csv backup:archive-aero-csv/
 ---
 
 ## 16. Changelog
+
+### Version 2.6 (2026-01-19)
+- **CRITICAL FIX:** URL to filename conversion algorithm now removes ALL protocol occurrences (including embedded), not just leading. Fixes file matching for Wayback Machine URLs with embedded protocols.
+- **BUG:** Previous version broke newslicer file discovery when CSV filenames didn't match actual renamed files (web.archive.org files were not found)
+- **FIX:** Regenerated master_dole.csv with correct algorithm; all 1,404 files now correctly match
+- **Documentation:** Added comprehensive algorithm specifications in section 6.4 with pitfall warnings and verification checklist
+- **Performance:** Removed unnecessary file_index scanning system in newslicer
+- **Performance:** Dynamic parallel workers (now uses cpu_count - 2 instead of hardcoded 4)
+- **Performance:** Added compression during warp operations (PREDICTOR=2)
+- **Feature:** Configurable resampling algorithm via `--resample` flag (nearest, bilinear, cubic, cubicspline)
+- **Performance:** Cached shapefile SRS lookups to eliminate redundant OGR calls
+- **Impact:** Expected 2-4x faster GeoTIFF creation with optimizations
 
 ### Version 2.5 (2026-01-15)
 - **Backend Overhaul:** Replaced GUI application with newslicer.py CLI tool

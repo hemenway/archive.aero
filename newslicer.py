@@ -72,8 +72,8 @@ class ChartSlicer:
         self.output_dir = output_dir
         self.csv_file = csv_file
         self.shape_dir = shape_dir
-        self.file_index = {}
         self.dole_data = defaultdict(list)
+        self.srs_cache = {}  # Cache for shapefile SRS lookups
         self.abbreviations = {
             "hawaiian_is": "hawaiian_islands",
             "dallas_ft_worth": "dallas_ft_worth",
@@ -116,36 +116,6 @@ class ChartSlicer:
             name = name.replace('__', '_')
         return name.lower()
 
-    def scan_source_dir(self):
-        """Recursively scan directory for charts and index them."""
-        self.log(f"Scanning directory: {self.source_dir}...")
-        self.file_index = {}
-
-        count = 0
-        for root, _, files in os.walk(self.source_dir):
-            for name in files:
-                if name.lower().endswith(('.zip', '.tif', '.tiff')):
-                    current_path = Path(root) / name
-                    stem = self.normalize_name(current_path.stem)
-                    parts = stem.split('_')
-
-                    if parts[-1].isdigit():
-                        edition = parts[-1]
-                        location = "_".join(parts[:-1])
-                        key = ('EDITION', location, edition)
-                        if key not in self.file_index:
-                            self.file_index[key] = []
-                        self.file_index[key].append(current_path)
-                        count += 1
-                    elif parts[0].isdigit() and len(parts[0]) >= 14:
-                        timestamp = parts[0]
-                        key = ('TS', timestamp)
-                        if key not in self.file_index:
-                            self.file_index[key] = []
-                        self.file_index[key].append(current_path)
-                        count += 1
-
-        self.log(f"Indexed {count} files across {len(self.file_index)} unique keys.")
 
     def load_dole_data(self):
         """Load CSV data."""
@@ -211,53 +181,18 @@ class ChartSlicer:
 
     def find_files(self, location: str, edition: str, timestamp: Optional[str], filename: Optional[str] = None) -> List[Union[Path, Tuple[Path, str]]]:
         """
-        Find files matching location, edition, and timestamp.
-        If filename is provided from CSV, use it directly.
-        Otherwise fall back to pattern-based discovery.
+        Find files from CSV filename.
+        Filename must be provided in master_dole.csv.
 
         Returns:
-            - List of Path objects for standalone files or normal zip files
-            - List of (zip_path, internal_file) tuples for csv-specified zip/internal combos
+            - List of (zip_path, internal_file) tuples for zip/internal combos
+            - List of (file_path, None) tuples for standalone files
         """
-        # If filename is provided from CSV, use it
-        if filename:
-            resolved = self.resolve_filename(filename)
-            if resolved:
-                # Return tuples (path, internal_file) for zip/internal, or (path, None) for standalone
-                return resolved
+        if not filename:
+            return []
 
-        # Fallback to pattern-based discovery (legacy behavior)
-        results = []
-
-        if timestamp:
-            res = self.file_index.get(('TS', timestamp))
-            if res:
-                results.extend(res)
-
-        norm_loc = self.normalize_name(location)
-        candidate_locs = [
-            norm_loc,
-            f"{norm_loc}_sec",
-            f"{norm_loc}_tac",
-            f"{norm_loc}_sectional",
-            f"{norm_loc}_terminal",
-        ]
-
-        variants = ["north", "south", "east", "west"]
-        for v in variants:
-            var_base = f"{norm_loc}_{v}"
-            candidate_locs.append(var_base)
-            candidate_locs.append(f"{var_base}_sec")
-            candidate_locs.append(f"{var_base}_tac")
-
-        for loc in candidate_locs:
-            key = ('EDITION', loc, edition)
-            res = self.file_index.get(key)
-            if res:
-                results.extend(res)
-
-        # Return as tuples with None internal_file for legacy compatibility
-        return [(r, None) if isinstance(r, Path) else r for r in list(set(results))]
+        resolved = self.resolve_filename(filename)
+        return resolved
 
     def find_shapefile(self, location: str) -> Optional[Path]:
         """Find shapefile for location - only searches sectional shapefiles."""
@@ -279,23 +214,33 @@ class ChartSlicer:
         return None
 
     def get_shapefile_srs(self, shapefile: Path) -> str:
-        """Get the actual SRS of a shapefile in Proj4 format."""
+        """Get the actual SRS of a shapefile in Proj4 format. Results are cached."""
+        # Check cache first
+        shapefile_key = str(shapefile)
+        if shapefile_key in self.srs_cache:
+            return self.srs_cache[shapefile_key]
+
         try:
             driver = ogr.GetDriverByName("ESRI Shapefile")
             dataset = driver.Open(str(shapefile), 0)
             if not dataset:
-                return 'EPSG:4326'  # Fallback to WGS84
-            layer = dataset.GetLayer(0)
-            srs = layer.GetSpatialRef()
-            dataset = None
-
-            if srs:
-                proj4 = srs.ExportToProj4()
-                return proj4 if proj4 else 'EPSG:4326'
+                result = 'EPSG:4326'  # Fallback to WGS84
             else:
-                return 'EPSG:4326'  # Fallback
+                layer = dataset.GetLayer(0)
+                srs = layer.GetSpatialRef()
+                dataset = None
+
+                if srs:
+                    proj4 = srs.ExportToProj4()
+                    result = proj4 if proj4 else 'EPSG:4326'
+                else:
+                    result = 'EPSG:4326'  # Fallback
         except Exception:
-            return 'EPSG:4326'  # Fallback on any error
+            result = 'EPSG:4326'  # Fallback on any error
+
+        # Cache the result
+        self.srs_cache[shapefile_key] = result
+        return result
 
     def unzip_file(self, zip_path: Path, output_dir: Path, specific_file: Optional[str] = None) -> List[Path]:
         """
@@ -412,6 +357,7 @@ class ChartSlicer:
 
             # Step 2: Warp with cutline to GTiff with BIGTIFF support
             # Note: Not specifying xRes/yRes allows GDAL to maintain source resolution during warp
+            # Compress during warp to reduce intermediate I/O
             warp_options = gdal.WarpOptions(
                 format="GTiff",
                 dstSRS='EPSG:3857',
@@ -419,8 +365,8 @@ class ChartSlicer:
                 cutlineSRS=shapefile_srs,
                 cropToCutline=True,
                 dstAlpha=True,
-                resampleAlg=gdal.GRA_Bilinear,
-                creationOptions=['TILED=YES', f'COMPRESS={self.compression}', 'BIGTIFF=YES'],
+                resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
+                creationOptions=['TILED=YES', f'COMPRESS={self.compression}', 'PREDICTOR=2', 'BIGTIFF=YES'],
                 multithread=True,
                 warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
             )
@@ -931,12 +877,13 @@ class ChartSlicer:
                                 ds_vrt = None
 
                                 # Warp to EPSG:3857 (no cutline needed for these locations)
+                                # Compress during warp to reduce intermediate I/O
                                 warp_options = gdal.WarpOptions(
                                     format="GTiff",
                                     dstSRS='EPSG:3857',
                                     dstAlpha=True,
-                                    resampleAlg=gdal.GRA_Bilinear,
-                                    creationOptions=['TILED=YES', f'COMPRESS={self.compression}', 'BIGTIFF=YES'],
+                                    resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
+                                    creationOptions=['TILED=YES', f'COMPRESS={self.compression}', 'PREDICTOR=2', 'BIGTIFF=YES'],
                                     multithread=True
                                 )
 
@@ -993,12 +940,13 @@ class ChartSlicer:
                 # Store location metadata
                 location_metadata[norm_loc] = {'edition': edition}
 
-            # Execute warp jobs in parallel (4 workers)
+            # Execute warp jobs in parallel
             if warp_jobs:
-                self.log(f"  Processing {len(warp_jobs)} warp jobs with 4 parallel workers...")
+                cpu_count_for_warp = max(2, cpu_count - 2)
+                self.log(f"  Processing {len(warp_jobs)} warp jobs with {cpu_count_for_warp} parallel workers...")
                 results = []
 
-                with ThreadPoolExecutor(max_workers=4) as executor:
+                with ThreadPoolExecutor(max_workers=cpu_count_for_warp) as executor:
                     futures = {executor.submit(self._warp_worker, job): job for job in warp_jobs}
 
                     for future in as_completed(futures):
@@ -1138,6 +1086,14 @@ Examples:
         help="Zoom levels for tile generation, e.g., '0-11' (default: 0-11)"
     )
 
+    parser.add_argument(
+        "-r", "--resample",
+        type=str,
+        choices=['nearest', 'bilinear', 'cubic', 'cubicspline'],
+        default='bilinear',
+        help="Resampling algorithm for warping (default: bilinear). Use 'nearest' for faster processing with charts"
+    )
+
     args = parser.parse_args()
 
     # Validate paths
@@ -1160,7 +1116,16 @@ Examples:
     slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles)
     slicer.output_format = args.format
     slicer.zoom_levels = args.zoom
-    slicer.scan_source_dir()
+
+    # Map resampling algorithm
+    resample_map = {
+        'nearest': gdal.GRA_NearestNeighbour,
+        'bilinear': gdal.GRA_Bilinear,
+        'cubic': gdal.GRA_Cubic,
+        'cubicspline': gdal.GRA_CubicSpline
+    }
+    slicer.resample_alg = resample_map[args.resample]
+
     slicer.load_dole_data()
 
     # Generate review report and get user confirmation
