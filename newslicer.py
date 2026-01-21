@@ -10,6 +10,9 @@ import csv
 import re
 import argparse
 import subprocess
+import zipfile
+import requests
+import time
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
@@ -66,13 +69,17 @@ class ChartSlicer:
             pass
         return False
 
-    def __init__(self, source_dir: Path, output_dir: Path, csv_file: Path, shape_dir: Path):
+    def __init__(self, source_dir: Path, output_dir: Path, csv_file: Path, shape_dir: Path,
+                 preview_mode: bool = False, download_delay: float = 8.0):
         self.source_dir = source_dir
         self.output_dir = output_dir
         self.csv_file = csv_file
         self.shape_dir = shape_dir
         self.dole_data = defaultdict(list)
         self.srs_cache = {}  # Cache for shapefile SRS lookups
+        self.preview_mode = preview_mode  # If True, only report what would be downloaded
+        self.download_delay = download_delay  # Seconds to wait between downloads (to avoid rate limiting)
+        self.last_download_time = 0  # Track last download time for throttling
         self.abbreviations = {
             "hawaiian_is": "hawaiian_islands",
             "dallas_ft_worth": "dallas_ft_worth",
@@ -139,15 +146,214 @@ class ChartSlicer:
 
         self.log(f"Loaded {len(self.dole_data)} dates.")
 
-    def resolve_filename(self, filename: str) -> List[Tuple[Path, Optional[str]]]:
+    def download_file(self, url: str, target_path: Path, timeout: int = 300, max_retries: int = 3) -> bool:
+        """
+        Download a file from URL to target path with throttling and retry logic.
+
+        Implements:
+        - Throttling to avoid rate limits (configurable download_delay)
+        - Exponential backoff retry logic on failure
+        - Progress reporting
+
+        Returns: True if successful, False otherwise
+        """
+        # Throttle downloads to avoid rate limiting
+        elapsed = time.time() - self.last_download_time
+        if elapsed < self.download_delay:
+            wait_time = self.download_delay - elapsed
+            self.log(f"    Waiting {wait_time:.1f}s to avoid rate limiting...")
+            time.sleep(wait_time)
+
+        retry_count = 0
+        backoff_delay = 5  # Start with 5 second backoff
+
+        while retry_count < max_retries:
+            try:
+                self.log(f"    Downloading: {url}")
+                response = requests.get(url, timeout=timeout, stream=True)
+                response.raise_for_status()
+
+                # Get total file size
+                total_size = int(response.headers.get('content-length', 0))
+
+                # Download with progress
+                downloaded = 0
+                with open(target_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=1024*1024):  # 1MB chunks
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                percent = (downloaded / total_size) * 100
+                                if percent % 10 < 1:  # Log every 10%
+                                    self.log(f"      Progress: {percent:.0f}%")
+
+                file_size_mb = target_path.stat().st_size / (1024 * 1024)
+                self.log(f"    ✓ Downloaded: {target_path.name} ({file_size_mb:.1f} MB)")
+
+                # Update last download time for throttling
+                self.last_download_time = time.time()
+                return True
+
+            except Exception as e:
+                retry_count += 1
+                error_str = str(e)
+                self.log(f"    ✗ Download failed (attempt {retry_count}/{max_retries}): {error_str[:100]}")
+
+                # Detect connection reset errors - server is rejecting us, slow down aggressively
+                if 'Connection reset' in error_str or 'Connection aborted' in error_str:
+                    # Increase global download delay to back off more for future requests
+                    old_delay = self.download_delay
+                    self.download_delay = max(self.download_delay * 1.5, self.download_delay + 5)
+                    self.log(f"    ⚠ Connection error detected - increasing delay from {old_delay:.1f}s to {self.download_delay:.1f}s")
+
+                if retry_count < max_retries:
+                    self.log(f"    Retrying in {backoff_delay} seconds...")
+                    time.sleep(backoff_delay)
+                    backoff_delay *= 2  # Exponential backoff
+                    # Remove partial file before retry
+                    if target_path.exists():
+                        target_path.unlink()
+                else:
+                    self.log(f"    Giving up after {max_retries} attempts")
+                    if target_path.exists():
+                        target_path.unlink()
+                    return False
+
+        return False
+
+    def extract_zip(self, zip_path: Path, extract_dir: Path) -> bool:
+        """
+        Extract ZIP file to a directory with the same name (minus .zip).
+
+        Returns: True if successful, False otherwise
+        """
+        try:
+            if extract_dir.exists():
+                self.log(f"    Directory already exists: {extract_dir.name}")
+                return True
+
+            self.log(f"    Extracting: {zip_path.name}")
+
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
+
+            # Count extracted files
+            tif_count = len(list(extract_dir.glob('**/*.tif')))
+            self.log(f"    ✓ Extracted {tif_count} files to: {extract_dir.name}")
+            return True
+
+        except Exception as e:
+            self.log(f"    ✗ Extraction failed: {e}")
+            if extract_dir.exists():
+                import shutil
+                shutil.rmtree(extract_dir)
+            return False
+
+    def _download_missing_files(self):
+        """
+        Preparation phase: Download all missing files upfront before processing begins.
+
+        This collects all files referenced in self.dole_data that don't exist locally,
+        then downloads them sequentially with proper throttling. This prevents burst
+        requests to web.archive.org when processing dates with many missing files.
+
+        Respects self.download_delay and self.preview_mode settings.
+        """
+        # Collect all files that need downloading
+        missing_files = []  # List of (filename, download_link, location, date, is_zip)
+
+        for date in self.dole_data:
+            for record in self.dole_data[date]:
+                filename = record.get('filename', '')
+                download_link = record.get('download_link', '')
+                location = record.get('location', '')
+
+                if not filename or not download_link:
+                    continue
+
+                # Check if file exists locally
+                if filename.endswith('.zip'):
+                    # ZIP files become directories after extraction
+                    dir_name = filename[:-4]
+                    dir_path = self.source_dir / dir_name
+                    if not dir_path.exists():
+                        missing_files.append((filename, download_link, location, date, True))
+                else:
+                    # Direct TIF files
+                    file_path = self.source_dir / filename
+                    if not file_path.exists():
+                        missing_files.append((filename, download_link, location, date, False))
+
+        if not missing_files:
+            self.log("No missing files to download.")
+            return
+
+        # Sort by date (latest first to match processing order)
+        missing_files.sort(key=lambda x: x[3], reverse=True)
+
+        self.log(f"Found {len(missing_files)} missing files to download (sorted latest→oldest)")
+        self.log(f"Download throttle: {self.download_delay}s between requests")
+
+        # Estimate total time
+        estimated_secs = len(missing_files) * self.download_delay
+        estimated_mins = estimated_secs / 60
+        self.log(f"Estimated time: ~{estimated_mins:.0f} minutes (assuming {self.download_delay}s per file)\n")
+
+        # Download each file
+        downloaded_count = 0
+        failed_count = 0
+
+        for idx, (filename, download_link, location, date, is_zip) in enumerate(missing_files, 1):
+            self.log(f"  [{idx}/{len(missing_files)}] {date} - {location}")
+
+            target_path = self.source_dir / filename
+
+            # Download the file
+            if self.download_file(download_link, target_path):
+                downloaded_count += 1
+
+                # If ZIP, extract it
+                if is_zip:
+                    dir_name = filename[:-4]
+                    extract_dir = self.source_dir / dir_name
+                    if self.extract_zip(target_path, extract_dir):
+                        self.log(f"    ✓ Downloaded and extracted: {filename}")
+                    else:
+                        self.log(f"    ⚠ Downloaded but extraction failed: {filename}")
+                        failed_count += 1
+                else:
+                    self.log(f"    ✓ Downloaded: {filename}")
+
+                # Add extra pause after successful download to avoid rate limits
+                # This is in addition to the throttling in download_file()
+                if idx < len(missing_files):  # Don't pause after last file
+                    self.log(f"    Pausing {self.download_delay}s before next request...")
+                    time.sleep(self.download_delay)
+            else:
+                self.log(f"    ✗ Failed to download: {filename}")
+                failed_count += 1
+                # Still pause before retry to avoid hammering the server
+                if idx < len(missing_files):
+                    time.sleep(self.download_delay)
+
+        # Summary
+        self.log(f"\n=== Download Preparation Complete ===")
+        self.log(f"Downloaded: {downloaded_count}/{len(missing_files)}")
+        if failed_count > 0:
+            self.log(f"Failed: {failed_count}")
+        self.log(f"Processing will now use these files as they're available locally.\n")
+
+    def resolve_filename(self, filename: str, download_link: str = '') -> List[Tuple[Path, Optional[str]]]:
         """
         Resolve filename from CSV to actual file path(s).
 
         Supports:
         1. Direct .tif files: "file.tif" → finds file.tif
         2. Unzipped .zip directories: "file.zip" → finds all .tif files in file/ directory
+        3. Auto-download if not found locally (when download_link provided)
 
-        Returns: List of (file_path, None) tuples (no internal_file needed for unzipped structure)
+        Returns: List of (file_path, None) tuples
         """
         if not filename:
             return []
@@ -167,7 +373,31 @@ class ChartSlicer:
                     for tif_file in dir_path.glob('**/*.tif'):
                         if tif_file.is_file():
                             results.append((tif_file, None))
+                    if results:
+                        return results  # Found and extracted, return early
                     break
+
+            # If not found, try to download (but not in preview mode)
+            if not results and download_link and not self.preview_mode:
+                self.log(f"    File not found locally: {filename}")
+                zip_path = self.source_dir / filename
+                extract_dir = self.source_dir / dir_name
+
+                # Download the ZIP file
+                if self.download_file(download_link, zip_path):
+                    # Extract it
+                    if self.extract_zip(zip_path, extract_dir):
+                        # Find extracted TIF files
+                        for tif_file in extract_dir.glob('**/*.tif'):
+                            if tif_file.is_file():
+                                results.append((tif_file, None))
+                        # Keep the ZIP file for reference
+                        return results
+                    else:
+                        self.log(f"    Failed to extract: {filename}")
+                else:
+                    self.log(f"    Failed to download: {download_link}")
+
         else:
             # Case 2: Direct .tif file
             for root, _, files in os.walk(self.source_dir):
@@ -175,23 +405,34 @@ class ChartSlicer:
                     if fname == filename and fname.endswith('.tif'):
                         file_path = Path(root) / fname
                         results.append((file_path, None))
-                        break
+                        return results
+
+            # If not found, try to download (but not in preview mode)
+            if not results and download_link and not self.preview_mode:
+                self.log(f"    File not found locally: {filename}")
+                tif_path = self.source_dir / filename
+
+                if self.download_file(download_link, tif_path):
+                    results.append((tif_path, None))
+                else:
+                    self.log(f"    Failed to download: {download_link}")
 
         return results
 
-    def find_files(self, location: str, edition: str, timestamp: Optional[str], filename: Optional[str] = None) -> List[Union[Path, Tuple[Path, str]]]:
+    def find_files(self, location: str, edition: str, timestamp: Optional[str], filename: Optional[str] = None, download_link: str = '') -> List[Union[Path, Tuple[Path, str]]]:
         """
         Find files from CSV filename.
         Filename must be provided in master_dole.csv.
 
+        If file not found locally and download_link provided, will attempt download and extract.
+
         Returns:
-            - List of (zip_path, internal_file) tuples for zip/internal combos
-            - List of (file_path, None) tuples for standalone files
+            - List of (file_path, None) tuples for files
         """
         if not filename:
             return []
 
-        resolved = self.resolve_filename(filename)
+        resolved = self.resolve_filename(filename, download_link)
         return resolved
 
     def find_shapefile(self, location: str) -> Optional[Path]:
@@ -671,7 +912,8 @@ class ChartSlicer:
 
                     # Find source files
                     filename = rec.get('filename', '')
-                    found_files = self.find_files(location, edition, timestamp, filename)
+                    download_link = rec.get('download_link', '')
+                    found_files = self.find_files(location, edition, timestamp, filename, download_link)
 
                     if found_files:
                         vrt_library_sim[location][date] = True
@@ -688,7 +930,14 @@ class ChartSlicer:
                                 file_names.append(f.name)
                         source_files_str = ', '.join(file_names)
                     else:
-                        source_files_str = "NOT FOUND"
+                        # Check if filename exists in CSV but just not on disk yet
+                        if filename:
+                            # File is in CSV but not on disk - will be downloaded during processing
+                            # Mark it as found so fallback logic doesn't trigger
+                            vrt_library_sim[location][date] = True
+                            source_files_str = f"📥 WILL DOWNLOAD: {filename}"
+                        else:
+                            source_files_str = "NOT IN CSV"
 
                     report_entry = {
                         'date': date,
@@ -755,6 +1004,88 @@ class ChartSlicer:
             else:
                 print("Please enter 'y' or 'n'")
 
+    def preview_downloads(self):
+        """
+        Preview what files will be needed for each date and location.
+        Shows as a pivot table: dates (rows) x locations (columns)
+        Cells show what file/folder will be looked for during processing.
+        """
+        self.log("\n=== Processing Preview - File Lookup Table ===")
+        self.log("Shows what files newslicer will look for when processing each date/location combo.\n")
+
+        # Build pivot table: date -> location -> filename
+        pivot = defaultdict(lambda: defaultdict(str))
+        all_locations = set()
+        missing_count = 0
+        found_count = 0
+
+        for date in sorted(self.dole_data.keys(), reverse=True):
+            records = self.dole_data[date]
+
+            for rec in records:
+                location = rec.get('location', '')
+                filename = rec.get('filename', '')
+                norm_loc = self.normalize_name(location)
+
+                if not location or not filename:
+                    continue
+
+                all_locations.add(norm_loc)
+
+                # Check if file exists locally
+                if filename.endswith('.zip'):
+                    dir_name = filename[:-4]
+                    local_path = self.source_dir / dir_name
+                else:
+                    local_path = self.source_dir / filename
+
+                # Show status: local file, remote URL, or missing
+                if local_path.exists():
+                    pivot[date][norm_loc] = f"✓ {filename[:40]}"
+                    found_count += 1
+                else:
+                    pivot[date][norm_loc] = f"📥 {filename[:40]}"  # Will download
+                    missing_count += 1
+
+        # Print pivot table (latest to oldest)
+        sorted_dates = sorted(pivot.keys(), reverse=True)
+        sorted_locations = sorted(all_locations)
+
+        # Header row
+        header = f"{'Date':<15} "
+        for loc in sorted_locations[:10]:  # Show first 10 locations
+            header += f"{loc[:18]:18} "
+        if len(sorted_locations) > 10:
+            header += f"... +{len(sorted_locations)-10} more"
+        self.log(header)
+        self.log("=" * 200)
+
+        # Data rows
+        for date in sorted_dates:
+            row = f"{date:<15} "
+            for loc in sorted_locations[:10]:
+                cell = pivot[date].get(loc, "---")
+                row += f"{cell:<18} "
+            self.log(row)
+
+        self.log("\n=== Legend ===")
+        self.log("✓ = File exists locally (no download needed)")
+        self.log("📥 = File needs to be downloaded")
+        self.log("--- = Not in CSV for this date/location combo")
+
+        self.log(f"\n=== Summary ===")
+        self.log(f"Total dates: {len(sorted_dates)}")
+        self.log(f"Total locations: {len(sorted_locations)}")
+        self.log(f"Files already local: {found_count}")
+        self.log(f"Files to download: {missing_count}")
+
+        if missing_count > 0:
+            self.log(f"\nWhen you run newslicer for real:")
+            self.log(f"- It will process each date in order")
+            self.log(f"- For each date, it will look for these files per location")
+            self.log(f"- If a file is missing, it will download with --download-delay {self.download_delay}s between requests")
+            self.log(f"- Estimated time: {missing_count * self.download_delay / 60:.0f} minutes at {self.download_delay}s delay")
+
     def process_all_dates(self):
         """Process all dates in CSV with fallback logic."""
         self.log("\n=== Starting Chart Processing ===")
@@ -773,11 +1104,15 @@ class ChartSlicer:
         shapefile_count = sum(1 for loc in all_locations if self.find_shapefile(loc))
         self.log(f"Found {len(all_locations)} locations from CSV ({shapefile_count} with shapefiles, {len(self.SHAPEFILE_FREE_LOCATIONS)} shapefile-free).")
 
+        # === PREPARATION PHASE: Download all missing files upfront ===
+        self.log("\n=== Preparing: Downloading missing files ===")
+        self._download_missing_files()
+
         # Track all warped VRTs per location-date
         vrt_library: Dict[str, Dict[str, Path]] = defaultdict(dict)
 
         # Process each date (earliest to latest)
-        # This ensures older data is available for fallback when newer dates are missing locations
+        # Fallback logic uses most_recent available date, so processing order doesn't matter
         sorted_dates = sorted(self.dole_data.keys())
         total_dates = len(sorted_dates)
 
@@ -803,7 +1138,8 @@ class ChartSlicer:
                 # Check if this is a shapefile-free location
                 if norm_loc in self.SHAPEFILE_FREE_LOCATIONS:
                     # No shapefile needed - find source files directly
-                    found_files = self.find_files(location, edition, timestamp, filename)
+                    download_link = rec.get('download_link', '')
+                    found_files = self.find_files(location, edition, timestamp, filename, download_link)
                     if not found_files:
                         self.log(f"    {location}: No source files found (edition {edition}) [CSV: {filename if filename else 'no match'}]")
                         continue
@@ -883,7 +1219,8 @@ class ChartSlicer:
                     continue
 
                 # Find source files (use filename from CSV if available)
-                found_files = self.find_files(location, edition, timestamp, filename)
+                download_link = rec.get('download_link', '')
+                found_files = self.find_files(location, edition, timestamp, filename, download_link)
                 if not found_files:
                     self.log(f"    {location}: No source files found (edition {edition}) [CSV: {filename if filename else 'no match'}]")
                     continue
@@ -1065,6 +1402,19 @@ Examples:
         help="Resampling algorithm for warping (default: bilinear). Use 'nearest' for faster processing with charts"
     )
 
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        help="Preview downloads without actually downloading (dry-run mode)"
+    )
+
+    parser.add_argument(
+        "--download-delay",
+        type=float,
+        default=8.0,
+        help="Seconds to wait between downloads to avoid rate limiting (default: 8.0, try 12.0-20.0 if hitting connection errors)"
+    )
+
     args = parser.parse_args()
 
     # Validate paths
@@ -1084,7 +1434,8 @@ Examples:
     args.output.mkdir(parents=True, exist_ok=True)
 
     # Process
-    slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles)
+    slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles,
+                         preview_mode=args.preview, download_delay=args.download_delay)
     slicer.output_format = args.format
     slicer.zoom_levels = args.zoom
 
@@ -1099,11 +1450,22 @@ Examples:
 
     slicer.load_dole_data()
 
-    # Generate review report and get user confirmation
+    # If preview mode, show what would be downloaded and exit
+    if args.preview:
+        slicer.preview_downloads()
+        sys.exit(0)
+
+    # During review phase, disable downloads (don't try to validate by downloading)
+    # This prevents rate limiting during the review report generation
+    slicer.preview_mode = True
+
+    # Generate review report and get user confirmation (without downloading)
     if not slicer.generate_review_report():
         print("Processing cancelled by user.")
         sys.exit(0)
 
+    # Now enable downloads for actual processing
+    slicer.preview_mode = False
     slicer.process_all_dates()
 
 
