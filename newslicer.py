@@ -87,17 +87,21 @@ class ChartSlicer:
         }
 
         # Determine compression method based on GDAL support
-        self.compression = 'ZSTD' if self._check_zstd_support() else 'LZW'
-        if self.compression == 'LZW':
-            # This will be logged when log() is called for the first time
-            self._compression_warning = True
+        # Default to NONE if GeoTIFF is intermediate (will be recompressed to WEBP/PMTiles)
+        # If you need compressed GeoTIFF for archival, use --compression flag
+        self.compression = 'NONE'  # Fastest for intermediate files
+        self._compression_warning = True
 
     def log(self, msg: str):
         """Print log message with timestamp."""
-        # Show compression warning on first log call
+        # Show compression info on first log call
         if hasattr(self, '_compression_warning') and self._compression_warning:
             timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-            print(f"[{timestamp}] WARNING: ZSTD not available, falling back to LZW compression")
+            if self.compression == 'NONE':
+                print(f"[{timestamp}] INFO: No GeoTIFF compression (10-20x faster). Final .pmtiles uses WEBP compression.")
+                print(f"[{timestamp}] INFO: Use --compression DEFLATE if you need compressed GeoTIFF for archival.")
+            else:
+                print(f"[{timestamp}] INFO: Using {self.compression} compression for GeoTIFF output")
             self._compression_warning = False
 
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
@@ -650,22 +654,36 @@ class ChartSlicer:
         - VRT is already georeferenced, no reprojection needed
         - Translate is faster for simple copy+compress operations
         - NUM_THREADS creation option enables parallel compression
+
+        Note: DEFLATE compression parallelizes better than LZW (60-80% CPU vs 30% CPU)
         """
         try:
             self.log(f"    Creating GeoTIFF with {compress} compression (multithreaded)...")
 
             # Use gdal.Translate - faster than Warp when no reprojection needed
+            creation_opts = [
+                'TILED=YES',
+                'BIGTIFF=YES',
+                'BLOCKXSIZE=512',
+                'BLOCKYSIZE=512',
+                'NUM_THREADS=ALL_CPUS'
+            ]
+
+            # Add compression options if not NONE
+            if compress != 'NONE':
+                creation_opts.append(f'COMPRESS={compress}')
+                creation_opts.append('PREDICTOR=2')  # Improves compression for most formats
+
+                # Add DEFLATE-specific options for better threading
+                if compress == 'DEFLATE':
+                    creation_opts.append('ZLEVEL=6')  # Balance speed vs compression (1=fast, 9=best)
+            else:
+                # No compression - fastest option for intermediate files
+                pass
+
             translate_options = gdal.TranslateOptions(
                 format='GTiff',
-                creationOptions=[
-                    'TILED=YES',
-                    f'COMPRESS={compress}',
-                    'PREDICTOR=2',
-                    'BIGTIFF=YES',
-                    'BLOCKXSIZE=512',
-                    'BLOCKYSIZE=512',
-                    'NUM_THREADS=ALL_CPUS'
-                ]
+                creationOptions=creation_opts
             )
 
             ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
@@ -1105,8 +1123,12 @@ class ChartSlicer:
             self.log(f"- If a file is missing, it will download with --download-delay {self.download_delay}s between requests")
             self.log(f"- Estimated time: {missing_count * self.download_delay / 60:.0f} minutes at {self.download_delay}s delay")
 
-    def process_all_dates(self):
-        """Process all dates in CSV with fallback logic."""
+    def process_all_dates(self, date_filter=None):
+        """Process all dates in CSV with fallback logic.
+
+        Args:
+            date_filter: Optional list of specific dates to process (e.g., ['2024-01-15', '2024-02-20'])
+        """
         self.log("\n=== Starting Chart Processing ===")
 
         # Get all locations from CSV (not shapefiles)
@@ -1118,6 +1140,17 @@ class ChartSlicer:
                     all_locations.add(norm_loc)
 
         all_locations = sorted(all_locations)
+
+        # Apply date filter if provided
+        if date_filter:
+            filtered_dates = [d for d in self.dole_data.keys() if d in date_filter]
+            if not filtered_dates:
+                self.log(f"WARNING: No dates matched filter {date_filter}")
+                return
+            self.log(f"Date filter active: Processing {len(filtered_dates)} of {len(self.dole_data)} dates")
+            # Temporarily filter dole_data to only include specified dates
+            original_dole_data = self.dole_data.copy()
+            self.dole_data = {k: v for k, v in self.dole_data.items() if k in date_filter}
 
         # Count how many have shapefiles
         shapefile_count = sum(1 for loc in all_locations if self.find_shapefile(loc))
@@ -1434,6 +1467,22 @@ Examples:
         help="Seconds to wait between downloads to avoid rate limiting (default: 8.0, try 12.0-20.0 if hitting connection errors)"
     )
 
+    parser.add_argument(
+        "--compression",
+        type=str,
+        choices=['ZSTD', 'DEFLATE', 'LZW', 'NONE'],
+        default=None,
+        help="Compression for GeoTIFF output (default: auto-detect ZSTD>DEFLATE>LZW). DEFLATE often has better multi-threading than LZW."
+    )
+
+    parser.add_argument(
+        "--date-filter",
+        type=str,
+        nargs='+',
+        default=None,
+        help="Process only specific dates (e.g., --date-filter 2024-01-15 2024-02-20). Useful for parallel processing."
+    )
+
     args = parser.parse_args()
 
     # Validate paths
@@ -1457,6 +1506,13 @@ Examples:
                          preview_mode=args.preview, download_delay=args.download_delay)
     slicer.output_format = args.format
     slicer.zoom_levels = args.zoom
+
+    # Override compression if specified
+    if args.compression:
+        slicer.compression = args.compression
+        print(f"Using compression: {args.compression} (user-specified)")
+    else:
+        print(f"Using compression: {slicer.compression} (auto-detected)")
 
     # Map resampling algorithm
     resample_map = {
@@ -1485,7 +1541,7 @@ Examples:
 
     # Now enable downloads for actual processing
     slicer.preview_mode = False
-    slicer.process_all_dates()
+    slicer.process_all_dates(date_filter=args.date_filter)
 
 
 if __name__ == '__main__':
