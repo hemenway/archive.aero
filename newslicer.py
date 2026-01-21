@@ -39,8 +39,8 @@ except ImportError:
     cache_size_mb = 2048
 
 gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
-gdal.SetConfigOption('GDAL_NUM_THREADS', '8')
-gdal.SetConfigOption('GDAL_SWATH_SIZE', str(cache_size_mb))
+gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
+gdal.SetConfigOption('GDAL_SWATH_SIZE', str(cache_size_mb * 1024 * 1024))  # Convert MB to bytes
 gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
 gdal.SetConfigOption('GDAL_TIFF_INTERNAL_MASK', 'YES')
 
@@ -178,15 +178,17 @@ class ChartSlicer:
 
                 # Download with progress
                 downloaded = 0
+                last_logged_percent = -10  # Track last logged percentage
                 with open(target_path, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=1024*1024):  # 1MB chunks
                         if chunk:
                             f.write(chunk)
                             downloaded += len(chunk)
                             if total_size > 0:
-                                percent = (downloaded / total_size) * 100
-                                if percent % 10 < 1:  # Log every 10%
-                                    self.log(f"      Progress: {percent:.0f}%")
+                                current_percent = int((downloaded / total_size) * 100)
+                                if current_percent >= last_logged_percent + 10:
+                                    self.log(f"      Progress: {current_percent}%")
+                                    last_logged_percent = current_percent
 
                 file_size_mb = target_path.stat().st_size / (1024 * 1024)
                 self.log(f"    ✓ Downloaded: {target_path.name} ({file_size_mb:.1f} MB)")
@@ -365,7 +367,16 @@ class ChartSlicer:
             # Remove .zip extension to get directory name
             dir_name = filename[:-4]  # Remove '.zip'
 
-            # Search for directory with this name
+            # Check direct path FIRST (fast path)
+            direct_path = self.source_dir / dir_name
+            if direct_path.exists() and direct_path.is_dir():
+                for tif_file in direct_path.glob('**/*.tif'):
+                    if tif_file.is_file():
+                        results.append((tif_file, None))
+                if results:
+                    return results
+
+            # Fall back to os.walk only if direct path doesn't exist
             for root, dirs, files in os.walk(self.source_dir):
                 if dir_name in dirs:
                     dir_path = Path(root) / dir_name
@@ -400,6 +411,13 @@ class ChartSlicer:
 
         else:
             # Case 2: Direct .tif file
+            # Check direct path FIRST (fast path)
+            direct_path = self.source_dir / filename
+            if direct_path.exists() and direct_path.is_file():
+                results.append((direct_path, None))
+                return results
+
+            # Fall back to os.walk only if direct path doesn't exist
             for root, _, files in os.walk(self.source_dir):
                 for fname in files:
                     if fname == filename and fname.endswith('.tif'):
@@ -626,30 +644,31 @@ class ChartSlicer:
             return False
 
     def create_geotiff(self, input_vrt: Path, output_tiff: Path, compress: str = 'LZW') -> bool:
-        """Convert VRT to optimized GeoTIFF using Warp with multithreading support.
+        """Convert VRT to optimized GeoTIFF using Translate with multithreading.
 
-        Uses gdal.Warp instead of gdal.Translate because:
-        - Warp respects GDAL_NUM_THREADS configuration
-        - Warp supports multithread=True flag
-        - Expected 2-4x speedup vs single-threaded Translate
-
-        For VRT input (already correctly georeferenced), uses GRA_NearestNeighbour
-        to avoid unnecessary resampling.
+        Uses gdal.Translate instead of gdal.Warp because:
+        - VRT is already georeferenced, no reprojection needed
+        - Translate is faster for simple copy+compress operations
+        - NUM_THREADS creation option enables parallel compression
         """
         try:
             self.log(f"    Creating GeoTIFF with {compress} compression (multithreaded)...")
 
-            # Use gdal.Warp for better multithreading support
-            # VRT is already georeferenced, so use nearest neighbor to avoid resampling
-            warp_options = gdal.WarpOptions(
+            # Use gdal.Translate - faster than Warp when no reprojection needed
+            translate_options = gdal.TranslateOptions(
                 format='GTiff',
-                resampleAlg=gdal.GRA_NearestNeighbour,  # VRT already has the data, just copying/compressing
-                creationOptions=['TILED=YES', f'COMPRESS={compress}', 'PREDICTOR=2', 'BIGTIFF=YES'],
-                multithread=True,  # Enable multithreading
-                warpMemoryLimit=0  # Use all available memory for warp buffer
+                creationOptions=[
+                    'TILED=YES',
+                    f'COMPRESS={compress}',
+                    'PREDICTOR=2',
+                    'BIGTIFF=YES',
+                    'BLOCKXSIZE=512',
+                    'BLOCKYSIZE=512',
+                    'NUM_THREADS=ALL_CPUS'
+                ]
             )
 
-            ds = gdal.Warp(str(output_tiff), str(input_vrt), options=warp_options)
+            ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
 
             if ds:
                 ds = None
