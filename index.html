@@ -107,6 +107,48 @@
       display: none;
     }
 
+    .donate-btn {
+      background: linear-gradient(135deg, #ff813f 0%, #ffdd00 100%);
+      color: #000;
+      padding: 8px 14px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s var(--transition-smooth);
+      box-shadow: 0 2px 8px rgba(255, 129, 63, 0.3);
+    }
+
+    .donate-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(255, 129, 63, 0.5);
+    }
+
+    .sources-link {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      color: var(--text-muted);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      text-decoration: none;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 1000;
+      transition: all 0.2s var(--transition-smooth);
+    }
+
+    .sources-link:hover {
+      color: var(--text-light);
+      border-color: var(--primary);
+    }
+
     .header-actions {
       display: flex;
       gap: 8px;
@@ -498,22 +540,6 @@
     .time-select::-webkit-calendar-picker-indicator {
       filter: invert(1);
       cursor: pointer;
-    }
-
-    /* Controls: Brand */
-
-    .leaflet-control.brand-badge {
-      background: var(--bg-glass);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 12px;
-      padding: 6px 12px;
-      font-weight: 800;
-      letter-spacing: 0.3px;
-      color: #fff;
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      user-select: none;
-      font-size: 13px;
     }
 
     /* Keyboard Shortcuts Overlay */
@@ -1271,6 +1297,9 @@
         ✈️ archive.aero
       </a>
       <span class="site-tagline">Historical Aviation Charts</span>
+      <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn" title="Support this project">
+        ☕ Support
+      </a>
     </div>
 
     <!-- Search Box -->
@@ -1403,6 +1432,9 @@
 
   <div id="map"></div>
   <div id="map2"></div>
+
+  <!-- Sources Link -->
+  <a href="sources.html" class="sources-link">Sources & Attribution</a>
 
   <div class="map2-controls">
     <input type="date" id="map2TimeSelect" class="time-select" aria-label="Select comparison timeframe">
@@ -1558,18 +1590,6 @@
           maxZoom: 20, opacity: 1, zIndex: 1,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; &copy; <a href="https://carto.com/attributions">CARTO</a>'
         }).addTo(this.map);
-
-        // --- Top-left brand badge: "AeroMap"
-        const BrandControl = L.Control.extend({
-          options: { position: 'topleft' },
-          onAdd: function () {
-            const div = L.DomUtil.create('div', 'leaflet-control brand-badge');
-            div.innerHTML = 'AeroMap';
-            L.DomEvent.disableClickPropagation(div);
-            return div;
-          }
-        });
-        this.map.addControl(new BrandControl());
 
         L.control.zoom({ position: 'topright' }).addTo(this.map);
 
@@ -1952,21 +1972,26 @@
           const selectedDate = this.ui.timeSelect.value;
           if (!selectedDate) return;
 
-          // Find the closest available frame to the selected date
+          // Find the most recent frame on or before the selected date (never round forward)
           const selectedTime = new Date(selectedDate).getTime();
-          let closestIdx = 0;
-          let minDiff = Infinity;
+          let bestIdx = 0;
+          let bestTime = -Infinity;
 
           this.frames.forEach((f, i) => {
             const frameTime = new Date(f.date).getTime();
-            const diff = Math.abs(frameTime - selectedTime);
-            if (diff < minDiff) {
-              minDiff = diff;
-              closestIdx = i;
+            // Only consider dates on or before selected date
+            if (frameTime <= selectedTime && frameTime > bestTime) {
+              bestTime = frameTime;
+              bestIdx = i;
             }
           });
 
-          this.update(closestIdx);
+          // If no date found on or before (user selected before earliest), use the first frame
+          if (bestTime === -Infinity) {
+            bestIdx = 0;
+          }
+
+          this.update(bestIdx);
         });
 
         // ticks with year labels
@@ -2226,23 +2251,27 @@
         const selectedDate = map2TimeSelect.value;
         if (!selectedDate) return;
 
-        // Find closest available frame
+        // Find the most recent frame on or before the selected date (never round forward)
         const selectedTime = new Date(selectedDate).getTime();
-        let closestIdx = 0;
-        let minDiff = Infinity;
+        let bestIdx = 0;
+        let bestTime = -Infinity;
 
         CONFIG.frames.forEach((f, i) => {
           const frameTime = new Date(f.date).getTime();
-          const diff = Math.abs(frameTime - selectedTime);
-          if (diff < minDiff) {
-            minDiff = diff;
-            closestIdx = i;
+          if (frameTime <= selectedTime && frameTime > bestTime) {
+            bestTime = frameTime;
+            bestIdx = i;
           }
         });
 
+        // If no date found on or before, use the first frame
+        if (bestTime === -Infinity) {
+          bestIdx = 0;
+        }
+
         // Update picker to show the actual available date
-        map2TimeSelect.value = CONFIG.frames[closestIdx].date;
-        mapCtrl2.showFrame(closestIdx);
+        map2TimeSelect.value = CONFIG.frames[bestIdx].date;
+        mapCtrl2.showFrame(bestIdx);
       });
 
       // Sync Maps Function with debouncing to prevent infinite loops
@@ -2307,9 +2336,6 @@
 
     document.addEventListener('DOMContentLoaded', initApp);
   </script>
-  <script data-name="BMC-Widget" data-cfasync="false" src="https://cdnjs.buymeacoffee.com/1.0.0/widget.prod.min.js"
-    data-id="ryanhemenway" data-description="Support me on Buy me a coffee!" data-message="Support the Project"
-    data-color="#40DCA5" data-position="Left" data-x_margin="18" data-y_margin="18"></script>
 </body>
 
 </html>

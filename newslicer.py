@@ -691,6 +691,40 @@ class ChartSlicer:
             self.log(f"    {traceback.format_exc()}")
             return False
 
+    def create_mbtiles(self, input_vrt: Path, output_mbtiles: Path) -> bool:
+        """Convert VRT to MBTiles with WEBP tiles.
+
+        Uses gdal.Translate to create MBTiles directly from VRT.
+        Tiles are stored as WEBP with quality 75.
+        """
+        try:
+            self.log(f"    Creating MBTiles with WEBP tiles...")
+
+            translate_options = gdal.TranslateOptions(
+                format='MBTiles',
+                creationOptions=[
+                    'TILE_FORMAT=WEBP',
+                    'QUALITY=75'
+                ]
+            )
+
+            ds = gdal.Translate(str(output_mbtiles), str(input_vrt), options=translate_options)
+
+            if ds:
+                ds = None
+                file_size_mb = output_mbtiles.stat().st_size / (1024 * 1024) if output_mbtiles.exists() else 0
+                self.log(f"      ✓ MBTiles created: {output_mbtiles.name} ({file_size_mb:.1f} MB)")
+                return True
+            else:
+                self.log(f"      ✗ Failed to create MBTiles")
+                return False
+
+        except Exception as e:
+            self.log(f"    Error creating MBTiles: {e}")
+            import traceback
+            self.log(f"    {traceback.format_exc()}")
+            return False
+
     def generate_tiles(self, input_vrt: Path, output_dir: Path, zoom_levels: str) -> bool:
         """Generate tiles using gdal2tiles.py."""
         try:
@@ -1330,12 +1364,17 @@ class ChartSlicer:
                     geotiff_path = self.output_dir / f"{date}.tif"
                     geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024  # At least 1 MB
 
+                    mbtiles_path = self.output_dir / f"{date}.mbtiles"
+                    mbtiles_exists = mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024  # At least 1 MB
+
                     tiles_dir = self.output_dir / f"{date}_tiles" if output_format in ['tiles', 'both'] else None
                     tiles_exist = tiles_dir and tiles_dir.exists() and list(tiles_dir.glob('**/*.webp'))
 
                     # Check if this date is already complete
                     if output_format == 'geotiff' and geotiff_exists:
                         self.log(f"  ⊘ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
+                    elif output_format == 'mbtiles' and mbtiles_exists:
+                        self.log(f"  ⊘ MBTiles already exists ({mbtiles_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
                     elif output_format == 'tiles' and tiles_exist:
                         self.log(f"  ⊘ Tiles already exist - skipping")
                     elif output_format == 'both' and geotiff_exists and tiles_exist:
@@ -1344,6 +1383,10 @@ class ChartSlicer:
                         if output_format in ['geotiff', 'both'] and not geotiff_exists:
                             self.log(f"  Creating GeoTIFF (this may take several minutes)...")
                             self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
+
+                        if output_format == 'mbtiles' and not mbtiles_exists:
+                            self.log(f"  Creating MBTiles (this may take several minutes)...")
+                            self.create_mbtiles(mosaic_vrt, mbtiles_path)
 
                         if output_format in ['tiles', 'both'] and not tiles_exist:
                             self.log(f"  Generating tiles...")
@@ -1401,9 +1444,9 @@ Examples:
     parser.add_argument(
         "-f", "--format",
         type=str,
-        choices=['geotiff', 'tiles', 'both'],
+        choices=['geotiff', 'mbtiles', 'tiles', 'both'],
         default='geotiff',
-        help="Output format: geotiff (LZW compressed), tiles (WEBP), or both (default: geotiff)"
+        help="Output format: geotiff (LZW compressed), mbtiles (WEBP tiles), tiles (WEBP), or both (default: geotiff)"
     )
 
     parser.add_argument(
