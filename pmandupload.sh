@@ -6,7 +6,7 @@ ROOT="/Volumes/drive/upload"
 REMOTE="r2:charts/sectionals"
 
 # Parallel file workers (reduced since GDAL now uses multiple threads per job)
-JOBS="${JOBS:-2}"
+JOBS="${JOBS:-4}"
 
 # rclone tuning (your flags + sensible companions)
 RCLONE_FLAGS=(
@@ -34,7 +34,7 @@ process_one() {
   echo "==> [$BASHPID] Processing: $in"
 
   # TIFF -> MBTiles (multithreaded, WebP format for maximum compression)
-  gdal_translate -of MBTILES --config GDAL_NUM_THREADS ALL_CPUS -co COMPRESS=WEBP -co WEBP_LEVEL=90 "$in" "$mb"
+  gdal_translate -of MBTILES --config GDAL_NUM_THREADS ALL_CPUS -co TILE_FORMAT=WEBP -co QUALITY=90 "$in" "$mb"
 
   # Overviews (multithreaded)
   gdaladdo -r bilinear --config GDAL_NUM_THREADS ALL_CPUS "$mb" 2 4 8 16 32 64 128 256

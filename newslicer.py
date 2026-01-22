@@ -624,7 +624,7 @@ class ChartSlicer:
 
             input_strs = [str(f) for f in valid_files]
             # Don't add alpha - input files already have alpha from warp_and_cut
-            vrt_options = gdal.BuildVRTOptions(resampleAlg=gdal.GRA_Bilinear)
+            vrt_options = gdal.BuildVRTOptions(resampleAlg=gdal.GRA_Bilinear, resolution='highest')
             ds = gdal.BuildVRT(str(output_vrt), input_strs, options=vrt_options)
 
             if ds:
