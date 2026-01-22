@@ -365,6 +365,90 @@ frames.forEach((f, i) => {
 - Silent fallback on failure
 - Only runs if no URL parameters present
 
+#### 3.5.5 Design Elements Library
+
+This section documents reusable UI components that are available but not currently active in the interface.
+
+##### Chart Info Popup
+
+A temporary notification popup for displaying chart metadata. Appears below the header bar and auto-dismisses.
+
+**DOM Structure:**
+```html
+<div class="chart-info" id="chartInfo">
+  <h3 id="chartTitle">Dallas-Fort Worth Sectional</h3>
+  <p id="chartDesc">Historical aeronautical sectional chart</p>
+</div>
+```
+
+**CSS:**
+```css
+.chart-info {
+  position: absolute;
+  top: 80px;
+  left: 24px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  z-index: 900;
+  max-width: 300px;
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: all 0.3s var(--transition-smooth);
+  pointer-events: none;
+}
+
+.chart-info.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.chart-info h3 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-light);
+}
+
+.chart-info p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+  .chart-info {
+    top: 70px;
+    left: 16px;
+    right: 16px;
+    max-width: none;
+  }
+}
+```
+
+**JavaScript (Auto-dismiss behavior):**
+```javascript
+// Show chart info for 5 seconds after page load
+setTimeout(() => {
+  document.getElementById('chartInfo').classList.add('visible');
+  setTimeout(() => {
+    document.getElementById('chartInfo').classList.remove('visible');
+  }, 5000);
+}, 1000);
+```
+
+**Usage Notes:**
+- Set `#chartTitle` and `#chartDesc` content before showing
+- Add `.visible` class to show, remove to hide
+- Auto-dismiss after 5 seconds (configurable)
+- Supports fade-in/fade-out animation via CSS transitions
+
 ### 3.6 Keyboard Shortcuts
 
 | Key | Action |

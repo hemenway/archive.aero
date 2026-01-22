@@ -31,6 +31,12 @@ process_one() {
   mb="$dir/${stem}.mbtiles"
   pm="$dir/${stem}.pmtiles"
 
+  # Skip if PMTiles already exists
+  if [[ -f "$pm" ]]; then
+    echo "⊘ [$BASHPID] Skipping (pmtiles exists): $in"
+    return 0
+  fi
+
   echo "==> [$BASHPID] Processing: $in"
 
   # TIFF -> MBTiles (multithreaded, WebP format for maximum compression)
@@ -55,8 +61,9 @@ export -f process_one
 export ROOT REMOTE
 export RCLONE_FLAGS
 
-# Find TIFFs, excluding any path containing '/.temp/'
-find "$ROOT" -type f \( -iname '*.tif' -o -iname '*.tiff' \) -not -path '*/.temp/*' -print0 \
-| xargs -0 -n 1 -P "$JOBS" bash -lc 'process_one "$0"'
+# Find TIFFs, sort by filename (earliest to latest since files are YYYY-MM-DD.tif)
+find "$ROOT" -type f \( -iname '*.tif' -o -iname '*.tiff' \) -not -path '*/.temp/*' \
+| sort \
+| xargs -n 1 -P "$JOBS" bash -lc 'process_one "$0"'
 
 
