@@ -17,8 +17,10 @@
                       │      mbtiles/tiles/both) │                                                                                                  
                       │  -z: zoom levels         │                                                                                                  
                       │  -r: resample algorithm  │                                                                                                  
-                      │  --preview: dry-run      │                                                                                                  
-                      │  --download-delay: secs  │                                                                                                  
+                      │  --preview: dry-run      │
+                      │  --download-delay: secs  │
+                      │  --parallel-mbtiles: N   │
+                      │      (default: 6)        │
                       └────────────┬─────────────┘                                                                                                  
                                    │                                                                                                                
                       ┌────────────▼─────────────┐                                                                                                  
@@ -307,10 +309,13 @@
            │   shapefiles, K shapefile-free)"         │                                                                                             
            └────────────────────┬─────────────────────┘                                                                                             
                                 │                                                                                                                   
-           ┌────────────────────▼─────────────────────┐                                                                                             
-           │ Initialize vrt_library:                  │                                                                                             
-           │ Dict[location][date] → Path to VRT/TIFF  │                                                                                             
-           │ (Used for fallback logic)                │                                                                                             
+           ┌────────────────────▼─────────────────────┐
+           │ Initialize vrt_library:                  │
+           │ Dict[location][date] → Path to VRT/TIFF  │
+           │ (Used for fallback logic)                │
+           │                                          │
+           │ Initialize mbtiles_jobs = []             │
+           │ (Queue for deferred MBTiles creation)    │
            └────────────────────┬─────────────────────┘                                                                                             
                                 │                                                                                                                   
            ┌────────────────────▼─────────────────────┐                                                                                             
@@ -682,44 +687,42 @@
       └────┬────────┘              └──────────┬──────────┘    └─────────┬───────┘                                                                   
            │                                  │                         │                                                                           
            │                                  │                         │                                                                           
-  ┌────────▼──────────┐          ┌────────────▼───────────┐  ┌──────────▼─────────┐                                                                 
-  │ create_geotiff(): │          │ create_mbtiles():      │  │ generate_tiles():  │                                                                 
-  │ (if not exists)   │          │ (if not exists)        │  │ (if not exists)    │                                                                 
-  └────────┬──────────┘          └────────────┬───────────┘  └──────────┬─────────┘                                                                 
-           │                                  │                         │                                                                           
-  ┌────────▼──────────────────────┐           │              ┌──────────▼──────────┐                                                                
-  │ gdal.Translate():             │           │              │ gdal2tiles.py       │                                                                
-  │ - input: mosaic VRT           │           │              │ subprocess call:    │                                                                
-  │ - output: date.tif            │           │              │ --zoom 0-11         │                                                                
-  │ - format: GTiff               │           │              │ --processes M       │                                                                
-  │ - creationOptions:            │           │              │ --webviewer=none    │                                                                
-  │   * TILED=YES                 │           │              │ --exclude           │                                                                
-  │   * COMPRESS={compression}    │           │              │ --tiledriver=WEBP   │                                                                
-  │   * PREDICTOR=2               │           │              │ --webp-quality=50   │                                                                
-  │   * BIGTIFF=YES               │           │              │ - timeout: 2 hours  │                                                                
-  │   * BLOCKXSIZE=512            │           │              │ Log ✓ Tiles         │                                                                
-  │   * BLOCKYSIZE=512            │           │              │ generated           │                                                                
-  │   * NUM_THREADS=ALL_CPUS      │           │              └─────────────────────┘                                                                
-  │ - Error handling for ZSTD     │           │                                                                                                     
-  │   corruption → retry with LZW │           │                                                                                                     
-  │ - Log ✓ GeoTIFF created       │           │                                                                                                     
-  │   with file size              │           │                                                                                                     
-  └───────────────────────────────┘           │                                                                                                     
-                                              │                                                                                                     
-                               ┌──────────────▼─────────────┐                                                                                       
-                               │ gdal.Translate():          │                                                                                       
-                               │ - input: mosaic VRT        │                                                                                       
-                               │ - output: date.mbtiles     │                                                                                       
-                               │ - format: MBTiles          │                                                                                       
-                               │ - creationOptions:         │                                                                                       
-                               │   * TILE_FORMAT=WEBP       │                                                                                       
-                               │   * QUALITY=85             │                                                                                       
-                               │   * ZOOM_LEVEL_STRATEGY=   │                                                                                       
-                               │     AUTO                   │                                                                                       
-                               │ - Log ✓ MBTiles created    │                                                                                       
-                               │   with file size           │                                                                                       
-                               └────────────────────────────┘                                                                                       
-                                            │                                                                                                       
+  ┌────────▼──────────┐          ┌────────────▼───────────┐  ┌──────────▼─────────┐
+  │ create_geotiff(): │          │ QUEUE MBTiles job      │  │ generate_tiles():  │
+  │ (if not exists)   │          │ (if not exists)        │  │ (if not exists)    │
+  └────────┬──────────┘          └────────────┬───────────┘  └──────────┬─────────┘
+           │                                  │                         │
+  ┌────────▼──────────────────────┐           │              ┌──────────▼──────────┐
+  │ gdal.Translate():             │           │              │ gdal2tiles.py       │
+  │ - input: mosaic VRT           │           │              │ subprocess call:    │
+  │ - output: date.tif            │           │              │ --zoom 0-11         │
+  │ - format: GTiff               │           │              │ --processes M       │
+  │ - creationOptions:            │           │              │ --webviewer=none    │
+  │   * TILED=YES                 │           │              │ --exclude           │
+  │   * COMPRESS={compression}    │           │              │ --tiledriver=WEBP   │
+  │   * PREDICTOR=2               │           │              │ --webp-quality=50   │
+  │   * BIGTIFF=YES               │           │              │ - timeout: 2 hours  │
+  │   * BLOCKXSIZE=512            │           │              │ Log ✓ Tiles         │
+  │   * BLOCKYSIZE=512            │           │              │ generated           │
+  │   * NUM_THREADS=ALL_CPUS      │           │              └─────────────────────┘
+  │ - Error handling for ZSTD     │           │
+  │   corruption → retry with LZW │           │
+  │ - Log ✓ GeoTIFF created       │           │
+  │   with file size              │           │
+  └───────────────────────────────┘           │
+                                              │
+                               ┌──────────────▼─────────────┐
+                               │ Append to mbtiles_jobs:    │
+                               │ (mosaic_vrt, mbtiles_path) │
+                               │                            │
+                               │ Log: "Queuing MBTiles      │
+                               │       creation..."         │
+                               │                            │
+                               │ (Actual creation deferred  │
+                               │  to batch processing phase │
+                               │  after ALL dates complete) │
+                               └────────────────────────────┘
+                                            │
            ┌────────────────────────────────┴────────────────────────────┘                                                                          
            │                                                                                                                                        
       ┌────▼──────────────┐                                                                                                                         
@@ -728,21 +731,79 @@
       └────┬──────────────┘                                                                                                                         
            │                                                                                                                                        
            │                                                                                                                                        
-      ┌────▼──────────────────────┐                                                                                                                 
-      │ CONTINUE to next date     │                                                                                                                 
-      │ (back to date loop)       │                                                                                                                 
-      └────┬──────────────────────┘                                                                                                                 
-           │                                                                                                                                        
-           │ (All dates processed)                                                                                                                  
-           │                                                                                                                                        
-      ┌────▼──────────────────────┐                                                                                                                 
-      │ Log: "=== Processing      │                                                                                                                 
-      │ Complete ==="             │                                                                                                                 
-      └────┬──────────────────────┘                                                                                                                 
-           │                                                                                                                                        
-      ┌────▼──────────────────────┐                                                                                                                 
-      │ EXIT                      │                                                                                                                 
-      └───────────────────────────┘                                                                                                                 
+      ┌────▼──────────────────────┐
+      │ CONTINUE to next date     │
+      │ (back to date loop)       │
+      └────┬──────────────────────┘
+           │
+           │ (All dates processed)
+           │
+  ╔════════▼══════════════════════════════════════════════════════════════════╗
+  ║                    PARALLEL MBTILES BATCH PROCESSING                      ║
+  ║           (ProcessPoolExecutor for true CPU parallelism)                  ║
+  ╚═════════════════════════════╤═════════════════════════════════════════════╝
+                                │
+           ┌────────────────────▼──────────────────┐
+           │ mbtiles_jobs list populated?          │
+           └────┬───────────────────────────┬──────┘
+                │YES                        │NO (skip)
+                │                           │
+   ┌────────────▼─────────────────┐         │
+   │ Get workers from CLI arg:    │         │
+   │ --parallel-mbtiles (def: 6)  │         │
+   │                              │         │
+   │ Log: "Processing N MBTiles   │         │
+   │       jobs in parallel       │         │
+   │       (M workers)"           │         │
+   └────────────┬─────────────────┘         │
+                │                           │
+   ┌────────────▼─────────────────┐         │
+   │ ProcessPoolExecutor:         │         │
+   │ max_workers = M              │         │
+   │                              │         │
+   │ For each job in mbtiles_jobs:│         │
+   │   Submit create_mbtiles_     │         │
+   │   worker(job)                │         │
+   └────────────┬─────────────────┘         │
+                │                           │
+   ┌────────────▼─────────────────┐         │
+   │ create_mbtiles_worker(args): │         │
+   │ (Module-level function for   │         │
+   │  multiprocessing pickle)     │         │
+   │                              │         │
+   │ 1. Re-import GDAL in process │         │
+   │    (required for subprocess) │         │
+   │ 2. gdal.Translate():         │         │
+   │    - input: mosaic VRT       │         │
+   │    - output: date.mbtiles    │         │
+   │    - format: MBTiles         │         │
+   │    - creationOptions:        │         │
+   │      * TILE_FORMAT=WEBP      │         │
+   │      * QUALITY=85            │         │
+   │      * ZOOM_LEVEL_STRATEGY=  │         │
+   │        AUTO                  │         │
+   │ 3. Return (success, path,    │         │
+   │    size_mb, error)           │         │
+   └────────────┬─────────────────┘         │
+                │                           │
+   ┌────────────▼─────────────────┐         │
+   │ as_completed() loop:         │         │
+   │ For each completed future:   │         │
+   │   [i/total] ✓ MBTiles        │         │
+   │   created: name (size MB)    │         │
+   │   OR                         │         │
+   │   [i/total] ✗ Failed: error  │         │
+   └────────────┬─────────────────┘         │
+                │                           │
+                └─────────────┬─────────────┘
+                              │
+      ┌───────────────────────▼───────────────┐
+      │ Log: "=== Processing Complete ==="    │
+      └───────────────────────┬───────────────┘
+                              │
+      ┌───────────────────────▼───────────────┐
+      │ EXIT                                  │
+      └───────────────────────────────────────┘                                                                                                                 
                                                                                                                                                     
                                                                                                                                                     
   ╔══════════════════════════════════════════════════════════════════════════════╗                                                                  
@@ -950,11 +1011,156 @@
   └─ processing_review_TIMESTAMP.csv : Review report matrix                                                                                         
                                                                                                                                                     
   Logs:                                                                                                                                             
-  └─ Console output with timestamps [HH:MM:SS]                                                                                                      
-                                                                                                                                                    
-  ╔══════════════════════════════════════════════════════════════════════════════╗                                                                  
-  ║                                  END                                         ║                                                                  
-  ╚══════════════════════════════════════════════════════════════════════════════╝                                                                  
-                                                                                                                                                    
-  This comprehensive ASCII logic map shows every major decision point, data flow, and processing step in newslicer.py from initialization through   
-  completion, including all error handling, fallback logic, and output generation paths.      
+  Logs:
+  └─ Console output with timestamps [HH:MM:SS]
+
+  ╔══════════════════════════════════════════════════════════════════════════════╗
+  ║                        PARALLELISM DIAGRAM                                  ║
+  ║              (Sequential vs Parallel Execution Flow)                        ║
+  ╚══════════════════════════════════════════════════════════════════════════════╝
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │                            TIME ────────────────────────────────────────►   │
+  └─────────────────────────────────────────────────────────────────────────────┘
+
+  PHASE 1: INITIALIZATION (Sequential)
+  ═════════════════════════════════════════════════════════════════════════════
+  ┌─────────┐   ┌─────────┐   ┌─────────┐   ┌─────────┐
+  │ Parse   │──►│ Validate│──►│ Load    │──►│ Review  │
+  │ CLI     │   │ Paths   │   │ CSV     │   │ Report  │
+  └─────────┘   └─────────┘   └─────────┘   └─────────┘
+       │             │             │             │
+  ─────┴─────────────┴─────────────┴─────────────┴─────────────────────────────►
+
+
+  PHASE 2: DOWNLOAD PREPARATION (Sequential with throttling)
+  ═════════════════════════════════════════════════════════════════════════════
+  ┌─────────┐       ┌─────────┐       ┌─────────┐       ┌─────────┐
+  │Download │──8s──►│Download │──8s──►│Download │──8s──►│Download │──►...
+  │ File 1  │ delay │ File 2  │ delay │ File 3  │ delay │ File N  │
+  └─────────┘       └─────────┘       └─────────┘       └─────────┘
+       │                 │                 │                 │
+  ─────┴─────────────────┴─────────────────┴─────────────────┴─────────────────►
+       │<─────────────── Sequential (rate-limited) ──────────────────────>│
+
+
+  PHASE 3: DATE PROCESSING (Sequential dates, Parallel warps)
+  ═════════════════════════════════════════════════════════════════════════════
+
+  DATE 1                          DATE 2                          DATE N
+  ──────────────────────────────  ──────────────────────────────  ────────────
+  ┌───────────────────────────┐   ┌───────────────────────────┐
+  │  Prepare Warp Jobs        │   │  Prepare Warp Jobs        │
+  └───────────┬───────────────┘   └───────────┬───────────────┘
+              │                               │
+              ▼                               ▼
+  ┌───────────────────────────┐   ┌───────────────────────────┐
+  │ ╔═══ThreadPoolExecutor═══╗│   │ ╔═══ThreadPoolExecutor═══╗│
+  │ ║ ┌─────┐┌─────┐┌─────┐ ║│   │ ║ ┌─────┐┌─────┐┌─────┐ ║│
+  │ ║ │Warp ││Warp ││Warp │ ║│   │ ║ │Warp ││Warp ││Warp │ ║│
+  │ ║ │Loc1 ││Loc2 ││Loc3 │ ║│   │ ║ │Loc1 ││Loc2 ││Loc3 │ ║│
+  │ ║ └──┬──┘└──┬──┘└──┬──┘ ║│   │ ║ └──┬──┘└──┬──┘└──┬──┘ ║│
+  │ ║    │      │      │    ║│   │ ║    │      │      │    ║│
+  │ ║ ┌─────┐┌─────┐       ║│   │ ║ ┌─────┐┌─────┐       ║│
+  │ ║ │Warp ││Warp │ ...   ║│   │ ║ │Warp ││Warp │ ...   ║│
+  │ ║ │Loc4 ││Loc5 │       ║│   │ ║ │Loc4 ││Loc5 │       ║│
+  │ ║ └─────┘└─────┘       ║│   │ ║ └─────┘└─────┘       ║│
+  │ ╚════════════════════════╝│   │ ╚════════════════════════╝│
+  │  (cpu_count - 2) workers  │   │  (cpu_count - 2) workers  │
+  └───────────┬───────────────┘   └───────────┬───────────────┘
+              │                               │
+              ▼                               ▼
+  ┌───────────────────────────┐   ┌───────────────────────────┐
+  │  Build Mosaic VRT         │   │  Build Mosaic VRT         │
+  └───────────┬───────────────┘   └───────────┬───────────────┘
+              │                               │
+              ▼                               ▼
+  ┌───────────────────────────┐   ┌───────────────────────────┐
+  │  Create GeoTIFF (if req)  │   │  Create GeoTIFF (if req)  │
+  │  Generate Tiles (if req)  │   │  Generate Tiles (if req)  │
+  │  QUEUE MBTiles job ◄──────┼───┼─────────────────────────► │
+  └───────────┬───────────────┘   └───────────┬───────────────┘
+              │                               │
+  ────────────┴───────────────────────────────┴────────────────────────────────►
+              │<───── Sequential (one date at a time) ─────>│
+
+
+  PHASE 4: MBTILES BATCH PROCESSING (Fully Parallel)
+  ═════════════════════════════════════════════════════════════════════════════
+
+  After ALL dates complete, process queued MBTiles jobs in parallel:
+
+  ╔═══════════════════════════ ProcessPoolExecutor ════════════════════════════╗
+  ║                      (--parallel-mbtiles workers, default: 6)              ║
+  ║                                                                            ║
+  ║  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐           ║
+  ║  │ Process 1  │  │ Process 2  │  │ Process 3  │  │ Process 4  │  ...      ║
+  ║  │            │  │            │  │            │  │            │           ║
+  ║  │ MBTiles    │  │ MBTiles    │  │ MBTiles    │  │ MBTiles    │           ║
+  ║  │ Date A     │  │ Date B     │  │ Date C     │  │ Date D     │           ║
+  ║  │            │  │            │  │            │  │            │           ║
+  ║  │ GDAL       │  │ GDAL       │  │ GDAL       │  │ GDAL       │           ║
+  ║  │ Translate  │  │ Translate  │  │ Translate  │  │ Translate  │           ║
+  ║  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘  └─────┬──────┘           ║
+  ║        │               │               │               │                  ║
+  ║        ▼               ▼               ▼               ▼                  ║
+  ║  ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌────────────┐           ║
+  ║  │ MBTiles    │  │ MBTiles    │  │ MBTiles    │  │ MBTiles    │           ║
+  ║  │ Date E     │  │ Date F     │  │ Date G     │  │ Date H     │  ...      ║
+  ║  └────────────┘  └────────────┘  └────────────┘  └────────────┘           ║
+  ║                                                                            ║
+  ╚════════════════════════════════════════════════════════════════════════════╝
+        │               │               │               │
+        ▼               ▼               ▼               ▼
+   [1/N] ✓         [2/N] ✓         [3/N] ✓         [4/N] ✓
+   complete        complete        complete        complete
+        │               │               │               │
+  ──────┴───────────────┴───────────────┴───────────────┴─────────────────────►
+        │<────────────── True Parallel (separate processes) ───────────────>│
+
+
+  ═════════════════════════════════════════════════════════════════════════════
+                            PARALLELISM SUMMARY
+  ═════════════════════════════════════════════════════════════════════════════
+
+  ┌────────────────────┬─────────────────────┬───────────────────────────────┐
+  │     OPERATION      │    EXECUTION TYPE   │           REASON              │
+  ├────────────────────┼─────────────────────┼───────────────────────────────┤
+  │ Downloads          │ Sequential          │ Rate limiting (8s delay)      │
+  │                    │ (throttled)         │ Avoid web.archive.org bans    │
+  ├────────────────────┼─────────────────────┼───────────────────────────────┤
+  │ Date Loop          │ Sequential          │ Fallback logic depends on     │
+  │                    │                     │ previous dates' VRTs          │
+  ├────────────────────┼─────────────────────┼───────────────────────────────┤
+  │ Warp Operations    │ ThreadPoolExecutor  │ GDAL I/O-bound, GIL released  │
+  │ (per date)         │ (parallel)          │ during GDAL operations        │
+  ├────────────────────┼─────────────────────┼───────────────────────────────┤
+  │ GeoTIFF Creation   │ Sequential          │ Heavy I/O, NUM_THREADS=       │
+  │                    │ (internal parallel) │ ALL_CPUS for compression      │
+  ├────────────────────┼─────────────────────┼───────────────────────────────┤
+  │ MBTiles Creation   │ ProcessPoolExecutor │ CPU-bound tile encoding       │
+  │ (BATCHED AT END)   │ (true parallel)     │ Bypasses GIL with multiproc   │
+  └────────────────────┴─────────────────────┴───────────────────────────────┘
+
+
+  Why ProcessPoolExecutor for MBTiles?
+  ────────────────────────────────────
+  • ThreadPoolExecutor: Threads share memory, GIL limits CPU parallelism
+  • ProcessPoolExecutor: Separate processes, true parallel CPU execution
+  • GDAL tile encoding is CPU-intensive → ProcessPoolExecutor is ideal
+  • Each worker re-imports GDAL (required for multiprocessing pickle)
+
+  Why Batch MBTiles at the End?
+  ─────────────────────────────
+  • Avoids process spawn overhead during date loop
+  • All VRT files remain valid (temp dirs not cleaned mid-loop)
+  • Maximum parallelism: N MBTiles processed simultaneously
+  • Progress reporting: [i/N] completed messages
+
+  ╔══════════════════════════════════════════════════════════════════════════════╗
+  ║                                  END                                         ║
+  ╚══════════════════════════════════════════════════════════════════════════════╝
+
+  This comprehensive ASCII logic map shows every major decision point, data flow,
+  and processing step in newslicer.py from initialization through completion,
+  including all error handling, fallback logic, and output generation paths.

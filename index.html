@@ -1910,12 +1910,6 @@
         return this.cache[date];
       }
 
-      async preloadFrame(index) {
-        const frame = CONFIG.frames[index];
-        setTimeout(() => {
-          this.getLayerData(frame.date, frame.url);
-        }, 200);
-      }
 
       waitForLayer(layer) {
         return new Promise(resolve => {
@@ -1941,33 +1935,83 @@
 
         const newLayer = data.layer;
         newLayer.setZIndex(10);
+        const oldLayers = [...this.activeLayers];
+        const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
 
-        // Add to map if not already
+        // Add new layer at opacity 0 (hidden)
         if (!this.map.hasLayer(newLayer)) {
           newLayer.setOpacity(0);
           newLayer.addTo(this.map);
         }
 
-        const isMobile = window.innerWidth < 640;
-        if (!isMobile) {
-          await this.waitForLayer(newLayer);
+        // Wait for first tile to load, then swap (prevents flash)
+        let didSwap = false;
+        const doSwap = () => {
+          if (didSwap) return;
+          didSwap = true;
+          newLayer.off('tileload', doSwap);
+
+          requestAnimationFrame(() => {
+            newLayer.setOpacity(opacityValue);
+            // Remove old layers AFTER new layer is visible
+            oldLayers.forEach(l => { if (l !== newLayer) this.map.removeLayer(l); });
+            this.activeLayers = [newLayer];
+
+            clearTimeout(spinnerTimeout);
+            loader.classList.remove('active');
+          });
+        };
+
+        newLayer.on('tileload', doSwap);
+
+        // Fallback timeout in case no tiles load (e.g., area with no coverage)
+        setTimeout(doSwap, 3000);
+
+        // Preload 3 frames before and 3 after, clean up others
+        this.manageCache(index);
+      }
+
+      manageCache(currentIndex) {
+        const BUFFER = 3; // Keep 3 before and 3 after
+        const totalFrames = CONFIG.frames.length;
+
+        // Calculate which indices to keep
+        const keepIndices = new Set();
+        for (let offset = -BUFFER; offset <= BUFFER; offset++) {
+          let idx = currentIndex + offset;
+          // Wrap around for circular navigation
+          if (idx < 0) idx = totalFrames + idx;
+          if (idx >= totalFrames) idx = idx - totalFrames;
+          keepIndices.add(idx);
         }
 
-        const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
-
-        requestAnimationFrame(() => {
-          newLayer.setOpacity(opacityValue);
-          // Remove old layers
-          this.activeLayers.forEach(l => { if (l !== newLayer) this.map.removeLayer(l); });
-          this.activeLayers = [newLayer];
-
-          clearTimeout(spinnerTimeout);
-          loader.classList.remove('active');
+        // Preload frames in the buffer
+        keepIndices.forEach(idx => {
+          if (idx !== currentIndex) {
+            const frame = CONFIG.frames[idx];
+            // Just create the layer data (doesn't add to map)
+            this.getLayerData(frame.date, frame.url);
+          }
         });
 
-        // Preload next frame
-        const nextIdx = (index + 1) % CONFIG.frames.length;
-        this.preloadFrame(nextIdx);
+        // Clean up frames outside the buffer
+        const frameDates = CONFIG.frames.map(f => f.date);
+        Object.keys(this.cache).forEach(date => {
+          const frameIndex = frameDates.indexOf(date);
+          if (frameIndex !== -1 && !keepIndices.has(frameIndex)) {
+            const cached = this.cache[date];
+            // Remove layer from map if mounted
+            if (cached.layer && this.map.hasLayer(cached.layer)) {
+              this.map.removeLayer(cached.layer);
+            }
+            // Clean up PMTiles instance
+            if (this.pmtilesInstances[date]) {
+              delete this.pmtilesInstances[date];
+            }
+            // Remove from cache
+            delete this.cache[date];
+          }
+        });
       }
 
       setOpacity(opacity) {

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
 import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 try:
     from osgeo import gdal, ogr
@@ -43,6 +43,38 @@ gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
 gdal.SetConfigOption('GDAL_SWATH_SIZE', str(cache_size_mb * 1024 * 1024))  # Convert MB to bytes
 gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
 gdal.SetConfigOption('GDAL_TIFF_INTERNAL_MASK', 'YES')
+
+
+def create_mbtiles_worker(args):
+    """Worker for parallel MBTiles creation."""
+    input_vrt, output_mbtiles = args
+    try:
+        from osgeo import gdal
+        gdal.UseExceptions()
+        
+        translate_options = gdal.TranslateOptions(
+            format='MBTiles',
+            creationOptions=[
+                'TILE_FORMAT=WEBP',
+                'QUALITY=85',
+                'ZOOM_LEVEL_STRATEGY=AUTO'
+            ]
+        )
+        
+        # Create parent directory if needed (should exist, but safety first)
+        output_mbtiles.parent.mkdir(parents=True, exist_ok=True)
+        
+        ds = gdal.Translate(str(output_mbtiles), str(input_vrt), options=translate_options)
+        
+        if ds:
+            ds = None
+            size_mb = output_mbtiles.stat().st_size / (1024 * 1024) if output_mbtiles.exists() else 0
+            return (True, output_mbtiles, size_mb, None)
+        else:
+            return (False, output_mbtiles, 0, "GDAL Translate failed")
+            
+    except Exception as e:
+        return (False, output_mbtiles, 0, str(e))
 
 
 class ChartSlicer:
@@ -1166,6 +1198,9 @@ class ChartSlicer:
         # Track all warped VRTs per location-date
         vrt_library: Dict[str, Dict[str, Path]] = defaultdict(dict)
 
+        # Queue for MBTiles jobs
+        mbtiles_jobs = []
+
         # Process each date (earliest to latest)
         # Fallback logic uses most_recent available date, so processing order doesn't matter
         sorted_dates = sorted(self.dole_data.keys())
@@ -1387,8 +1422,8 @@ class ChartSlicer:
                             self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
 
                         if output_format == 'mbtiles' and not mbtiles_exists:
-                            self.log(f"  Creating MBTiles (this may take several minutes)...")
-                            self.create_mbtiles(mosaic_vrt, mbtiles_path)
+                            self.log(f"  Queuing MBTiles creation...")
+                            mbtiles_jobs.append((mosaic_vrt, mbtiles_path))
 
                         if output_format in ['tiles', 'both'] and not tiles_exist:
                             self.log(f"  Generating tiles...")
@@ -1400,6 +1435,28 @@ class ChartSlicer:
                     self.log(f"  ✗ Mosaic creation failed")
             else:
                 self.log(f"  Skipping {date} - no data available")
+
+        # Process queued MBTiles jobs
+        if mbtiles_jobs:
+            workers = getattr(self, 'parallel_mbtiles', 6)
+            self.log(f"\n=== Processing {len(mbtiles_jobs)} MBTiles jobs in parallel ({workers} workers) ===")
+            
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                # Submit all jobs
+                futures = {executor.submit(create_mbtiles_worker, job): job for job in mbtiles_jobs}
+                
+                # Process results as they complete
+                for i, future in enumerate(as_completed(futures), 1):
+                    input_job = futures[future]
+                    output_path = input_job[1]
+                    try:
+                        success, path, size_mb, error = future.result()
+                        if success:
+                            self.log(f"[{i}/{len(mbtiles_jobs)}] ✓ MBTiles created: {path.name} ({size_mb:.1f} MB)")
+                        else:
+                            self.log(f"[{i}/{len(mbtiles_jobs)}] ✗ Failed: {path.name} - {error}")
+                    except Exception as e:
+                        self.log(f"[{i}/{len(mbtiles_jobs)}] ✗ Error processing {output_path.name}: {e}")
 
         self.log("\n=== Processing Complete ===")
 
@@ -1479,6 +1536,13 @@ Examples:
         help="Seconds to wait between downloads to avoid rate limiting (default: 8.0, try 12.0-20.0 if hitting connection errors)"
     )
 
+    parser.add_argument(
+        "--parallel-mbtiles",
+        type=int,
+        default=6,
+        help="Number of parallel MBTiles creation jobs (default: 6)"
+    )
+
     args = parser.parse_args()
 
     # Validate paths
@@ -1502,6 +1566,7 @@ Examples:
                          preview_mode=args.preview, download_delay=args.download_delay)
     slicer.output_format = args.format
     slicer.zoom_levels = args.zoom
+    slicer.parallel_mbtiles = args.parallel_mbtiles
 
     # Map resampling algorithm
     resample_map = {
