@@ -2487,44 +2487,46 @@
       let lastSearchTime = 0;
       const SEARCH_COOLDOWN = 1000; // 1 second between searches
 
-      searchInput.addEventListener('keydown', async (e) => {
-        if (e.key === 'Enter') {
-          const query = searchInput.value.trim();
-          if (!query) return;
+      if (searchInput) {
+        searchInput.addEventListener('keydown', async (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const query = searchInput.value.trim();
+            if (!query) return;
 
-          // Rate limiting check
-          const now = Date.now();
-          if (now - lastSearchTime < SEARCH_COOLDOWN) {
-            Utils.toast("Please wait before searching again");
-            return;
-          }
-          lastSearchTime = now;
-
-          try {
-            Utils.toast("Searching...");
-            // Use Nominatim with proper headers (respecting usage policy)
-            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`, {
-              headers: {
-                'User-Agent': 'AeroMap Historical Chart Viewer (https://archive.aero)'
-              }
-            });
-            const data = await res.json();
-
-            if (data && data.length > 0) {
-              const best = data[0];
-              const lat = parseFloat(best.lat);
-              const lon = parseFloat(best.lon);
-              mapCtrl.map.flyTo([lat, lon], 10, { duration: 1.5 });
-              searchInput.blur();
-            } else {
-              Utils.toast("Location not found");
+            // Rate limiting check
+            const now = Date.now();
+            if (now - lastSearchTime < SEARCH_COOLDOWN) {
+              Utils.toast("Please wait before searching again");
+              return;
             }
-          } catch (err) {
-            console.error(err);
-            Utils.toast("Search failed");
+            lastSearchTime = now;
+
+            try {
+              Utils.toast("Searching...");
+              // Use Nominatim geocoding API
+              const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+              const data = await res.json();
+
+              if (data && data.length > 0) {
+                const best = data[0];
+                const lat = parseFloat(best.lat);
+                const lon = parseFloat(best.lon);
+                mapCtrl.map.flyTo([lat, lon], 10, { duration: 1.5 });
+                searchInput.blur();
+                Utils.toast(`Found: ${best.display_name.split(',')[0]}`);
+              } else {
+                Utils.toast("Location not found");
+              }
+            } catch (err) {
+              console.error('Search error:', err);
+              Utils.toast("Search failed - try again");
+            }
           }
-        }
-      });
+        });
+      } else {
+        console.error('Search input element not found');
+      }
 
       // --- Side-by-Side Comparison Logic ---
       const mapCtrl2 = new MapController('map2');
