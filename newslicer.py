@@ -695,7 +695,8 @@ class ChartSlicer:
         """Convert VRT to MBTiles with WEBP tiles.
 
         Uses gdal.Translate to create MBTiles directly from VRT.
-        Tiles are stored as WEBP with quality 75.
+        Tiles are stored as WEBP with quality 85.
+        ZOOM_LEVEL_STRATEGY=AUTO lets GDAL determine optimal zoom levels.
         """
         try:
             self.log(f"    Creating MBTiles with WEBP tiles...")
@@ -704,7 +705,8 @@ class ChartSlicer:
                 format='MBTiles',
                 creationOptions=[
                     'TILE_FORMAT=WEBP',
-                    'QUALITY=75'
+                    'QUALITY=85',
+                    'ZOOM_LEVEL_STRATEGY=AUTO'
                 ]
             )
 

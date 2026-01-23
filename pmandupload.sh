@@ -6,7 +6,7 @@ ROOT="/Volumes/drive/upload"
 REMOTE="r2:charts/sectionals"
 
 # Parallel file workers (reduced since GDAL now uses multiple threads per job)
-JOBS="${JOBS:-4}"
+JOBS="${JOBS:-6}"
 
 # rclone tuning (your flags + sensible companions)
 RCLONE_FLAGS=(

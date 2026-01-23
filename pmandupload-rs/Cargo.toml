@@ -1,0 +1,21 @@
+[package]
+name = "pmandupload"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "pmandupload"
+path = "src/main.rs"
+
+[dependencies]
+rayon = "1.8"
+walkdir = "2.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+thiserror = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+log = "0.4"
+pmtiles = "0.19.1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+indicatif = { version = "0.17", features = ["rayon"] }

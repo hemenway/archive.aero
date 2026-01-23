@@ -9,6 +9,13 @@
     content="Explore historical aeronautical charts and sectional maps. View how aviation charts have evolved over time with AeroMap's interactive timeline viewer." />
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+
+  <!-- Preload critical resources -->
+  <link rel="preconnect" href="https://unpkg.com" crossorigin>
+  <link rel="preconnect" href="https://data.archive.aero" crossorigin>
+  <link rel="preconnect" href="https://basemaps.cartocdn.com" crossorigin>
+  <link rel="dns-prefetch" href="https://ipapi.co">
+
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     :root {
@@ -48,8 +55,79 @@
       }
     }
 
+    @keyframes slideUp {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @keyframes loadingPulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+
     body {
       animation: fadeIn 0.3s ease-in;
+    }
+
+    /* Loading Splash Screen */
+    .loading-splash {
+      position: fixed;
+      inset: 0;
+      background: var(--bg-dark);
+      z-index: 9999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      transition: opacity 0.5s var(--transition-smooth), visibility 0.5s;
+    }
+
+    .loading-splash.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .loading-logo {
+      font-size: 48px;
+      animation: loadingPulse 2s ease-in-out infinite;
+    }
+
+    .loading-title {
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: var(--text-light);
+    }
+
+    .loading-progress {
+      width: 200px;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .loading-progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--secondary));
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.3s var(--transition-smooth);
+    }
+
+    .loading-status {
+      font-size: 13px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
     }
 
     #map {
@@ -198,6 +276,55 @@
     .leaflet-fade-anim .leaflet-tile,
     .leaflet-zoom-anim .leaflet-zoom-animated {
       will-change: transform;
+    }
+
+    /* Leaflet Controls Styling - Dark Glass Theme */
+    .leaflet-control-zoom {
+      border: none !important;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4) !important;
+    }
+
+    .leaflet-control-zoom a {
+      background: var(--bg-glass) !important;
+      backdrop-filter: blur(12px) !important;
+      -webkit-backdrop-filter: blur(12px) !important;
+      color: var(--text-light) !important;
+      border: 1px solid rgba(255, 255, 255, 0.1) !important;
+      width: 36px !important;
+      height: 36px !important;
+      line-height: 36px !important;
+      font-size: 18px !important;
+      font-weight: 400 !important;
+      transition: all 0.2s var(--transition-smooth) !important;
+    }
+
+    .leaflet-control-zoom a:hover {
+      background: rgba(255, 255, 255, 0.15) !important;
+      border-color: var(--primary) !important;
+      color: var(--primary) !important;
+    }
+
+    .leaflet-control-zoom-in {
+      border-radius: 10px 10px 0 0 !important;
+    }
+
+    .leaflet-control-zoom-out {
+      border-radius: 0 0 10px 10px !important;
+      border-top: none !important;
+    }
+
+    .leaflet-control-attribution {
+      background: var(--bg-glass) !important;
+      backdrop-filter: blur(8px) !important;
+      -webkit-backdrop-filter: blur(8px) !important;
+      color: var(--text-muted) !important;
+      font-size: 10px !important;
+      padding: 4px 8px !important;
+      border-radius: 6px 0 0 0 !important;
+    }
+
+    .leaflet-control-attribution a {
+      color: var(--primary) !important;
     }
 
     /* Push map controls below the header bar */
@@ -1152,6 +1279,150 @@
       margin-top: 8px;
     }
 
+    /* Speed Control */
+    .speed-control {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 8px;
+    }
+
+    .speed-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      transition: all 0.2s var(--transition-smooth);
+    }
+
+    .speed-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: var(--text-light);
+    }
+
+    .speed-btn.active {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: white;
+    }
+
+    /* Chart Info Panel */
+    .chart-info-panel {
+      position: absolute;
+      top: 160px;
+      right: 24px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 900;
+      min-width: 260px;
+      display: none;
+      animation: slideUp 0.2s var(--transition-smooth);
+    }
+
+    .chart-info-panel.visible {
+      display: block;
+    }
+
+    .chart-info-panel h4 {
+      margin: 0 0 16px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-light);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .chart-info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+
+    .chart-info-row:last-child {
+      border-bottom: none;
+    }
+
+    .chart-info-label {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .chart-info-value {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-light);
+    }
+
+    .chart-badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .chart-badge.historical {
+      background: rgba(255, 165, 0, 0.2);
+      color: #ffa500;
+    }
+
+    .chart-badge.sectional {
+      background: rgba(30, 144, 255, 0.2);
+      color: var(--primary);
+    }
+
+    /* Empty State Message */
+    .empty-state {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      z-index: 800;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.3s var(--transition-smooth);
+    }
+
+    .empty-state.visible {
+      opacity: 1;
+    }
+
+    .empty-state-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .empty-state-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-light);
+      margin-bottom: 8px;
+    }
+
+    .empty-state-text {
+      font-size: 14px;
+      color: var(--text-muted);
+      max-width: 300px;
+    }
+
     /* Warning Popup (Fixed Anchor) */
 
     @media (max-width: 640px) {
@@ -1168,6 +1439,56 @@
         width: 100%;
         font-size: 16px;
       }
+
+      .speed-control {
+        display: none;
+      }
+
+      .chart-info-panel {
+        position: fixed;
+        top: auto;
+        bottom: 160px;
+        right: 12px;
+        left: 12px;
+        min-width: 0;
+      }
+
+      .loading-logo {
+        font-size: 36px;
+      }
+
+      .loading-title {
+        font-size: 22px;
+      }
+    }
+
+    /* Focus states for accessibility */
+    .icon-btn:focus-visible,
+    .btn-nav:focus-visible,
+    .btn-play:focus-visible,
+    .tool-button:focus-visible,
+    .time-select:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    /* Reduced motion preference */
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+
+    /* High contrast mode */
+    @media (prefers-contrast: high) {
+      :root {
+        --bg-glass: rgba(0, 0, 0, 0.95);
+        --text-muted: rgba(255, 255, 255, 0.8);
+      }
     }
   </style>
 
@@ -1181,6 +1502,16 @@
 </head>
 
 <body>
+
+  <!-- Loading Splash Screen -->
+  <div class="loading-splash" id="loadingSplash" role="status" aria-live="polite">
+    <div class="loading-logo" aria-hidden="true">✈️</div>
+    <div class="loading-title">archive.aero</div>
+    <div class="loading-progress">
+      <div class="loading-progress-bar" id="loadingProgressBar"></div>
+    </div>
+    <div class="loading-status" id="loadingStatus">Initializing...</div>
+  </div>
 
   <!-- Header Bar -->
   <div class="header-bar">
@@ -1203,12 +1534,13 @@
     <div class="header-actions">
       <!-- Map Tools -->
       <div class="btn-group">
-        <button class="icon-btn" id="mapToolsBtn" title="Map Tools">🛠️</button>
+        <button class="icon-btn" id="mapToolsBtn" title="Map Tools" aria-label="Open map tools panel">🛠️</button>
+        <button class="icon-btn" id="chartInfoBtn" title="Chart Info" aria-label="View chart information">📋</button>
       </div>
       <div class="btn-separator"></div>
       <!-- View Controls -->
       <div class="btn-group">
-        <button class="icon-btn" id="shareBtn" title="Share (S)">🔗</button>
+        <button class="icon-btn" id="shareBtn" title="Share (S)" aria-label="Share current view">🔗</button>
         <button class="icon-btn" id="fullscreenBtn" title="Fullscreen (F)">⛶</button>
         <button class="icon-btn" id="helpBtn" title="Keyboard Shortcuts (?)">?</button>
       </div>
@@ -1262,13 +1594,38 @@
   </div>
 
   <!-- Share Panel -->
-  <div class="share-panel" id="sharePanel">
-    <h4>Share This View</h4>
+  <div class="share-panel" id="sharePanel" role="dialog" aria-labelledby="sharePanelTitle">
+    <h4 id="sharePanelTitle">Share This View</h4>
     <div class="share-url-box">
-      <input type="text" class="share-url" id="shareUrl" readonly>
+      <input type="text" class="share-url" id="shareUrl" readonly aria-label="Share URL">
       <button class="copy-btn" id="copyBtn">Copy</button>
     </div>
     <div class="share-info">Share your current timeframe and map position</div>
+  </div>
+
+  <!-- Chart Info Panel -->
+  <div class="chart-info-panel" id="chartInfoPanel" role="dialog" aria-labelledby="chartInfoTitle">
+    <h4 id="chartInfoTitle">📋 Chart Information</h4>
+    <div class="chart-info-row">
+      <span class="chart-info-label">Date</span>
+      <span class="chart-info-value" id="chartInfoDate">—</span>
+    </div>
+    <div class="chart-info-row">
+      <span class="chart-info-label">Type</span>
+      <span class="chart-info-value"><span class="chart-badge sectional">Sectional</span></span>
+    </div>
+    <div class="chart-info-row">
+      <span class="chart-info-label">Format</span>
+      <span class="chart-info-value">PMTiles / WebP</span>
+    </div>
+    <div class="chart-info-row">
+      <span class="chart-info-label">Total Charts</span>
+      <span class="chart-info-value" id="chartInfoTotal">—</span>
+    </div>
+    <div class="chart-info-row">
+      <span class="chart-info-label">Status</span>
+      <span class="chart-badge historical">Historical Only</span>
+    </div>
   </div>
 
   <!-- Keyboard Shortcuts Overlay -->
@@ -1332,12 +1689,18 @@
   <div class="ui-layer">
     <div class="controls-card">
       <div class="jog-controls">
-        <button class="btn-nav" id="prevBtn" title="Previous Timeframe (←)">←</button>
-        <button class="btn-play" id="playBtn" title="Play/Pause (Space)">▶</button>
-        <button class="btn-nav" id="nextBtn" title="Next Timeframe (→)">→</button>
+        <button class="btn-nav" id="prevBtn" title="Previous Timeframe (←)" aria-label="Previous timeframe">←</button>
+        <button class="btn-play" id="playBtn" title="Play/Pause (Space)" aria-label="Play or pause animation">▶</button>
+        <button class="btn-nav" id="nextBtn" title="Next Timeframe (→)" aria-label="Next timeframe">→</button>
       </div>
 
-      <div class="loader" id="loader"></div>
+      <div class="speed-control" role="group" aria-label="Animation speed">
+        <button class="speed-btn" data-speed="0.5" title="Half speed">½×</button>
+        <button class="speed-btn active" data-speed="1" title="Normal speed" aria-pressed="true">1×</button>
+        <button class="speed-btn" data-speed="2" title="Double speed">2×</button>
+      </div>
+
+      <div class="loader" id="loader" role="status" aria-label="Loading"></div>
 
       <div class="timeline-track-wrapper" id="trackWrapper">
         <div class="timeline-track">
@@ -1626,6 +1989,7 @@
         this.currentIndex = 0;
         this.isPlaying = false;
         this.playInterval = null;
+        this.playbackSpeed = 1;
 
         this.ui = {
           prevBtn: document.getElementById('prevBtn'),
@@ -1794,11 +2158,44 @@
           this.togglePlay();
         });
 
+        // Speed Control
+        const speedBtns = document.querySelectorAll('.speed-btn');
+        speedBtns.forEach(btn => {
+          btn.addEventListener('click', () => {
+            const speed = parseFloat(btn.dataset.speed);
+            this.playbackSpeed = speed;
 
+            // Update active state and aria-pressed
+            speedBtns.forEach(b => {
+              b.classList.remove('active');
+              b.setAttribute('aria-pressed', 'false');
+            });
+            btn.classList.add('active');
+            btn.setAttribute('aria-pressed', 'true');
+
+            // Update interval if playing
+            if (this.isPlaying && this.playInterval) {
+              clearInterval(this.playInterval);
+              this.playInterval = setInterval(() => {
+                this.step(1);
+              }, 2000 / this.playbackSpeed);
+            }
+          });
+        });
+
+        // Chart Info Panel
+        const chartInfoBtn = document.getElementById('chartInfoBtn');
+        const chartInfoPanel = document.getElementById('chartInfoPanel');
+
+        chartInfoBtn?.addEventListener('click', () => {
+          const wasVisible = chartInfoPanel.classList.contains('visible');
+          this.hideAllPanels();
+          if (!wasVisible) chartInfoPanel.classList.add('visible');
+        });
       }
 
       hideAllPanels(except = []) {
-        const panels = ['opacityControl', 'sharePanel', 'mapToolsPanel'];
+        const panels = ['opacityControl', 'sharePanel', 'mapToolsPanel', 'chartInfoPanel'];
         panels.forEach(id => {
           if (!except.includes(id)) {
             document.getElementById(id)?.classList.remove('visible');
@@ -1821,12 +2218,14 @@
         if (this.isPlaying) {
           playBtn.textContent = '⏸';
           playBtn.title = 'Pause (Space)';
+          playBtn.setAttribute('aria-label', 'Pause animation');
           this.playInterval = setInterval(() => {
             this.step(1);
-          }, 2000);
+          }, 2000 / this.playbackSpeed);
         } else {
           playBtn.textContent = '▶';
           playBtn.title = 'Play (Space)';
+          playBtn.setAttribute('aria-label', 'Play animation');
           if (this.playInterval) {
             clearInterval(this.playInterval);
             this.playInterval = null;
@@ -1967,20 +2366,37 @@
 
     // Initialize Application
     async function initApp() {
+      // Loading progress elements
+      const loadingSplash = document.getElementById('loadingSplash');
+      const loadingProgressBar = document.getElementById('loadingProgressBar');
+      const loadingStatus = document.getElementById('loadingStatus');
+
+      const updateLoading = (percent, status) => {
+        loadingProgressBar.style.width = `${percent}%`;
+        loadingStatus.textContent = status;
+      };
+
+      updateLoading(10, 'Loading timeline data...');
+
       // Show warning banner temporarily
       const warningOverlay = document.getElementById('warningOverlay');
-      setTimeout(() => warningOverlay.classList.add('visible'), 1000);
+      setTimeout(() => warningOverlay.classList.add('visible'), 1500);
       setTimeout(() => warningOverlay.classList.remove('visible'), 8000);
 
       await loadData(); // Fetch and parse CSV first
+      updateLoading(40, 'Initializing map...');
 
       if (CONFIG.frames.length === 0) {
         Utils.toast("No valid frames found in CSV");
+        loadingSplash.classList.add('hidden');
         return;
       }
 
       const mapCtrl = new MapController('map');
+      updateLoading(70, 'Loading controls...');
+
       const timelineApp = new TimelineApp(mapCtrl);
+      updateLoading(90, 'Almost ready...');
 
       // Handle URL parameters for shared links
       const urlParams = new URLSearchParams(window.location.search);
@@ -2211,6 +2627,27 @@
       // Toggle Compare Mode - bind to both buttons
       compareBtn?.addEventListener('click', toggleCompareMode);
       toolCompareBtn?.addEventListener('click', toggleCompareMode);
+
+      // Update chart info panel with initial data
+      const chartInfoDate = document.getElementById('chartInfoDate');
+      const chartInfoTotal = document.getElementById('chartInfoTotal');
+      chartInfoTotal.textContent = CONFIG.frames.length.toString();
+
+      // Update chart info when frame changes
+      const originalUpdate = timelineApp.update.bind(timelineApp);
+      timelineApp.update = function(index, lazy) {
+        originalUpdate(index, lazy);
+        const frame = CONFIG.frames[index];
+        if (chartInfoDate && frame) {
+          chartInfoDate.textContent = Utils.formatDateId(frame.date);
+        }
+      };
+
+      // Hide loading splash
+      updateLoading(100, 'Ready!');
+      setTimeout(() => {
+        loadingSplash.classList.add('hidden');
+      }, 300);
     }
 
     document.addEventListener('DOMContentLoaded', initApp);
