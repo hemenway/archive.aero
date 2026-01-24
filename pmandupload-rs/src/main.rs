@@ -2,7 +2,6 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileType};
-use rayon::prelude::*;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -12,12 +11,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use walkdir::WalkDir;
+use rayon::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "pmandupload")]
-#[command(about = "Convert TIFFs to PMTiles and upload to R2", long_about = None)]
+#[command(about = "Add overviews to MBTiles, convert to PMTiles, and upload to R2", long_about = None)]
 struct Args {
-    /// Root directory containing TIFF files
+    /// Root directory containing MBTiles files
     #[arg(short, long, default_value = "/Volumes/drive/upload")]
     root: PathBuf,
 
@@ -26,8 +26,12 @@ struct Args {
     remote: String,
 
     /// Number of parallel workers
-    #[arg(short, long, default_value = "6")]
+    #[arg(short, long, default_value = "4")]
     jobs: usize,
+
+    /// Delete MBTiles after successful upload
+    #[arg(long, default_value = "false")]
+    cleanup: bool,
 }
 
 struct RcloneFlags;
@@ -53,18 +57,18 @@ fn main() -> Result<()> {
     // Verify required commands exist
     verify_dependencies()?;
 
-    // Find all TIFF files, sorted chronologically
-    let mut tiff_files = collect_tiff_files(&args.root)?;
-    tiff_files.sort();
+    // Find all MBTiles files, sorted chronologically
+    let mut mbtiles_files = collect_mbtiles_files(&args.root)?;
+    mbtiles_files.sort();
 
-    let total_files = tiff_files.len();
+    let total_files = mbtiles_files.len();
     if total_files == 0 {
-        println!("No TIFF files found in {}", args.root.display());
+        println!("No MBTiles files found in {}", args.root.display());
         return Ok(());
     }
 
     // Pre-count how many files need processing vs already exist
-    let (to_process, already_done): (Vec<_>, Vec<_>) = tiff_files.into_iter().partition(|p| {
+    let (to_process, already_done): (Vec<_>, Vec<_>) = mbtiles_files.into_iter().partition(|p| {
         let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
         let pmtiles_path = p.parent().map(|d| d.join(format!("{}.pmtiles", stem)));
         pmtiles_path.map(|p| !p.exists()).unwrap_or(true)
@@ -73,35 +77,75 @@ fn main() -> Result<()> {
     let skipped_count = already_done.len();
     let to_process_count = to_process.len();
 
-    println!("Found {} TIFF files ({} to process, {} already done)",
-        total_files, to_process_count, skipped_count);
-    println!("Using {} parallel workers\n", args.jobs);
+    // Print header
+    println!();
+    println!("╔═══════════════════════════════════════════════════════════╗");
+    println!("║            PMTiles Converter & R2 Uploader                ║");
+    println!("╚═══════════════════════════════════════════════════════════╝");
+    println!();
+    println!("  Source:     {}", args.root.display());
+    println!("  Remote:     {}", args.remote);
+    println!("  Workers:    {}", args.jobs);
+    println!("  Cleanup:    {}", if args.cleanup { "Yes" } else { "No" });
+    println!();
+    println!("  Total:      {} MBTiles files", total_files);
+    println!("  To process: {}", to_process_count);
+    println!("  Skipped:    {} (PMTiles exists)", skipped_count);
+    println!();
 
     // Print skipped files
-    for path in &already_done {
-        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
-        println!("⊘ Skipped (exists): {}", stem);
+    if !already_done.is_empty() {
+        println!("─── Skipped (already converted) ───");
+        for path in &already_done {
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
+            println!("  ⊘ {}", stem);
+        }
+        println!();
     }
 
     if to_process_count == 0 {
-        println!("\nAll files already processed!");
+        println!("All files already processed!");
         return Ok(());
     }
+
+    println!("─── Processing ───");
+    println!();
 
     // Set up progress tracking
     let multi_progress = MultiProgress::new();
     let completed_count = Arc::new(AtomicU64::new(0));
     let start_time = Instant::now();
 
-    // Main progress bar - only for files that need processing
-    let main_style = ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) | ETA: {eta}")
+    // Overall progress bar (at the top)
+    let overall_style = ProgressStyle::default_bar()
+        .template("  {spinner:.green} Overall  [{bar:30.green/dim}] {pos}/{len} files ({percent}%) | Elapsed: {elapsed} | ETA: {eta}")
         .unwrap()
-        .progress_chars("█▓▒░  ");
+        .progress_chars("━━╺");
 
-    let main_pb = multi_progress.add(ProgressBar::new(to_process_count as u64));
-    main_pb.set_style(main_style);
-    main_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+    let overall_pb = multi_progress.add(ProgressBar::new(to_process_count as u64));
+    overall_pb.set_style(overall_style);
+    overall_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    // Stage progress bar (shows current stage distribution)
+    let stage_style = ProgressStyle::default_bar()
+        .template("  {spinner:.cyan} Stage    [{bar:30.cyan/dim}] {msg}")
+        .unwrap()
+        .progress_chars("━━╺");
+
+    let stage_pb = multi_progress.add(ProgressBar::new(100));
+    stage_pb.set_style(stage_style);
+    stage_pb.set_message("Starting...");
+    stage_pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    // Spacer
+    multi_progress.println("")?;
+
+    // Track stage counts for stage progress bar
+    let stage_counts = Arc::new([
+        AtomicU64::new(0), // Overviews
+        AtomicU64::new(0), // Convert
+        AtomicU64::new(0), // Upload
+    ]);
 
     // Configure rayon thread pool
     let errors: Vec<_> = rayon::ThreadPoolBuilder::new()
@@ -110,37 +154,45 @@ fn main() -> Result<()> {
         .install(|| {
             to_process
                 .par_iter()
-                .filter_map(|tiff_path| {
+                .filter_map(|mbtiles_path| {
                     let result = process_one_with_progress(
-                        tiff_path,
+                        mbtiles_path,
                         &args.remote,
+                        args.cleanup,
                         &multi_progress,
                         &completed_count,
+                        &stage_counts,
+                        &stage_pb,
                     );
 
-                    main_pb.inc(1);
+                    overall_pb.inc(1);
 
                     match result {
                         Ok(_) => None,
                         Err(e) => {
-                            main_pb.println(format!("❌ Error: {} - {}", tiff_path.display(), e));
-                            Some((tiff_path.clone(), e))
+                            multi_progress.println(format!("  ❌ {} - {}",
+                                mbtiles_path.file_stem().and_then(|s| s.to_str()).unwrap_or("?"),
+                                e
+                            )).ok();
+                            Some((mbtiles_path.clone(), e))
                         }
                     }
                 })
                 .collect()
         });
 
-    main_pb.finish_and_clear();
+    overall_pb.finish_and_clear();
+    stage_pb.finish_and_clear();
 
     // Final summary
     let elapsed = start_time.elapsed();
     let completed = completed_count.load(Ordering::Relaxed);
 
     println!();
-    println!("═══════════════════════════════════════════════════════════");
-    println!("                      PROCESSING COMPLETE                   ");
-    println!("═══════════════════════════════════════════════════════════");
+    println!("╔═══════════════════════════════════════════════════════════╗");
+    println!("║                    PROCESSING COMPLETE                    ║");
+    println!("╚═══════════════════════════════════════════════════════════╝");
+    println!();
     println!("  Total files:     {}", total_files);
     println!("  Processed:       {}", completed);
     println!("  Skipped:         {} (already existed)", skipped_count);
@@ -152,10 +204,10 @@ fn main() -> Result<()> {
             elapsed.as_secs_f64() / completed as f64
         );
     }
-    println!("═══════════════════════════════════════════════════════════");
+    println!();
 
     if !errors.is_empty() {
-        println!("\nFailed files:");
+        println!("─── Failed Files ───");
         for (path, err) in &errors {
             eprintln!("  {} - {}", path.display(), err);
         }
@@ -166,7 +218,7 @@ fn main() -> Result<()> {
 }
 
 fn verify_dependencies() -> Result<()> {
-    let commands = ["gdal_translate", "gdaladdo", "rclone"];
+    let commands = ["gdaladdo", "rclone"];
 
     for cmd in &commands {
         if !command_exists(cmd) {
@@ -185,7 +237,7 @@ fn command_exists(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn collect_tiff_files(root: &Path) -> Result<Vec<PathBuf>> {
+fn collect_mbtiles_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
     for entry in WalkDir::new(root)
@@ -194,8 +246,7 @@ fn collect_tiff_files(root: &Path) -> Result<Vec<PathBuf>> {
         .filter(|e| {
             let path = e.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                (name.ends_with(".tif") || name.ends_with(".tiff"))
-                    && !path.to_string_lossy().contains(".temp")
+                name.ends_with(".mbtiles") && !path.to_string_lossy().contains(".temp")
             } else {
                 false
             }
@@ -207,16 +258,43 @@ fn collect_tiff_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
+fn update_stage_progress(
+    stage_counts: &[AtomicU64; 3],
+    stage_pb: &ProgressBar,
+    total: u64,
+) {
+    let overviews = stage_counts[0].load(Ordering::Relaxed);
+    let convert = stage_counts[1].load(Ordering::Relaxed);
+    let upload = stage_counts[2].load(Ordering::Relaxed);
+
+    let msg = format!(
+        "Overviews: {} | Converting: {} | Uploading: {}",
+        overviews, convert, upload
+    );
+    stage_pb.set_message(msg);
+
+    // Calculate overall stage progress (weighted)
+    let progress = if total > 0 {
+        ((overviews * 33 + convert * 33 + upload * 34) / total).min(100)
+    } else {
+        0
+    };
+    stage_pb.set_position(progress);
+}
+
 fn process_one_with_progress(
-    tiff_path: &Path,
+    mbtiles_path: &Path,
     remote: &str,
+    cleanup: bool,
     multi_progress: &MultiProgress,
     completed_count: &Arc<AtomicU64>,
+    stage_counts: &Arc<[AtomicU64; 3]>,
+    stage_pb: &ProgressBar,
 ) -> Result<()> {
-    let dir = tiff_path
+    let dir = mbtiles_path
         .parent()
         .ok_or_else(|| anyhow!("Failed to get parent directory"))?;
-    let filename = tiff_path
+    let filename = mbtiles_path
         .file_name()
         .ok_or_else(|| anyhow!("Failed to get filename"))?
         .to_str()
@@ -227,75 +305,67 @@ fn process_one_with_progress(
         .to_str()
         .ok_or_else(|| anyhow!("Invalid UTF-8 in stem"))?;
 
-    let mbtiles_path = dir.join(format!("{}.mbtiles", stem));
     let pmtiles_path = dir.join(format!("{}.pmtiles", stem));
 
-    // Create a spinner for this file's stages (better for subprocess work)
-    let spinner_style = ProgressStyle::default_spinner()
-        .template("  {spinner:.cyan} {prefix:.bold.white} {msg:.dim}")
-        .unwrap();
+    // Create a progress bar for this file
+    let file_style = ProgressStyle::default_bar()
+        .template("  {spinner:.yellow} {prefix:<12.bold} [{bar:20.yellow/dim}] {msg}")
+        .unwrap()
+        .progress_chars("━━╺");
 
-    let file_pb = multi_progress.add(ProgressBar::new_spinner());
-    file_pb.set_style(spinner_style);
+    let file_pb = multi_progress.add(ProgressBar::new(100));
+    file_pb.set_style(file_style);
     file_pb.set_prefix(stem.to_string());
     file_pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
     let start_time = Instant::now();
 
-    // Stage 1: TIFF -> MBTiles
-    file_pb.set_message("[1/4] TIFF → MBTiles (WebP)...");
-    tiff_to_mbtiles(tiff_path, &mbtiles_path)?;
+    // Stage 1: Add overviews
+    file_pb.set_position(0);
+    file_pb.set_message("[1/3] Adding overviews...");
+    stage_counts[0].fetch_add(1, Ordering::Relaxed);
+    update_stage_progress(stage_counts, stage_pb, 1);
 
-    // Stage 2: Add overviews
-    file_pb.set_message("[2/4] Adding overviews...");
-    add_overviews(&mbtiles_path)?;
+    add_overviews(mbtiles_path)?;
 
-    // Stage 3: MBTiles -> PMTiles
-    file_pb.set_message("[3/4] MBTiles → PMTiles...");
-    mbtiles_to_pmtiles_with_progress(&mbtiles_path, &pmtiles_path, &file_pb)?;
+    stage_counts[0].fetch_sub(1, Ordering::Relaxed);
+    file_pb.set_position(33);
 
-    // Remove MBTiles
-    fs::remove_file(&mbtiles_path)?;
+    // Stage 2: MBTiles -> PMTiles
+    file_pb.set_message("[2/3] Converting to PMTiles...");
+    stage_counts[1].fetch_add(1, Ordering::Relaxed);
+    update_stage_progress(stage_counts, stage_pb, 1);
 
-    // Stage 4: Upload
-    file_pb.set_message("[4/4] Uploading to R2...");
+    mbtiles_to_pmtiles_with_progress(mbtiles_path, &pmtiles_path, &file_pb)?;
+
+    stage_counts[1].fetch_sub(1, Ordering::Relaxed);
+    file_pb.set_position(66);
+
+    // Stage 3: Upload
+    file_pb.set_message("[3/3] Uploading to R2...");
+    stage_counts[2].fetch_add(1, Ordering::Relaxed);
+    update_stage_progress(stage_counts, stage_pb, 1);
+
     upload_pmtiles(&pmtiles_path, remote)?;
 
+    stage_counts[2].fetch_sub(1, Ordering::Relaxed);
+    file_pb.set_position(100);
+
+    // Cleanup if requested
+    if cleanup {
+        fs::remove_file(mbtiles_path).ok();
+    }
+
     let elapsed = start_time.elapsed();
+    let size_mb = pmtiles_path.metadata().map(|m| m.len() as f64 / 1024.0 / 1024.0).unwrap_or(0.0);
+
     file_pb.finish_and_clear();
 
     completed_count.fetch_add(1, Ordering::Relaxed);
-    multi_progress.println(format!("✔ {} ({:.1}s)", stem, elapsed.as_secs_f64()))?;
-
-    Ok(())
-}
-
-fn tiff_to_mbtiles(tiff_path: &Path, mbtiles_path: &Path) -> Result<()> {
-    let mut cmd = Command::new("gdal_translate");
-
-    cmd.args([
-        "-of",
-        "MBTILES",
-        "-co",
-        "TILE_FORMAT=WEBP",
-        "-co",
-        "QUALITY=85",
-        "-co",
-        "ZOOM_LEVEL_STRATEGY=AUTO",
-        "-q", // quiet mode
-    ])
-    .arg("--config")
-    .arg("GDAL_NUM_THREADS")
-    .arg("ALL_CPUS")
-    .arg(tiff_path)
-    .arg(mbtiles_path);
-
-    let output = cmd.output()?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow!("gdal_translate failed: {}", stderr.trim()));
-    }
+    multi_progress.println(format!(
+        "  ✔ {:<12} {:>6.1} MB  ({:.1}s)",
+        stem, size_mb, elapsed.as_secs_f64()
+    ))?;
 
     Ok(())
 }
@@ -365,7 +435,7 @@ fn get_tile_count(conn: &Connection) -> Result<u64> {
 fn mbtiles_to_pmtiles_with_progress(
     mbtiles_path: &Path,
     pmtiles_path: &Path,
-    stage_pb: &ProgressBar,
+    file_pb: &ProgressBar,
 ) -> Result<()> {
     // Open MBTiles database
     let conn =
@@ -425,13 +495,15 @@ fn mbtiles_to_pmtiles_with_progress(
 
         tile_count += 1;
 
-        // Update progress every 1000 tiles
-        if tile_count % 1000 == 0 {
-            let progress = 60 + ((tile_count as f64 / total_tiles as f64) * 25.0) as u64;
-            stage_pb.set_position(progress.min(85));
-            stage_pb.set_message(format!(
-                "MBTiles → PMTiles ({}/{})",
-                tile_count, total_tiles
+        // Update progress every 5000 tiles
+        if tile_count % 5000 == 0 {
+            // Map tile progress to 33-66% range (stage 2)
+            let tile_pct = (tile_count as f64 / total_tiles as f64 * 100.0) as u64;
+            let overall_pct = 33 + (tile_pct * 33 / 100);
+            file_pb.set_position(overall_pct.min(65));
+            file_pb.set_message(format!(
+                "[2/3] Converting... {}%",
+                tile_pct
             ));
         }
     }

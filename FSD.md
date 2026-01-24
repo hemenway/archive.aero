@@ -2543,6 +2543,38 @@ rclone sync master_dole.csv backup:archive-aero-csv/
 - [ ] Flight path animation
 - [ ] Change detection highlighting
 
+**VFRMap-Inspired Features (Reference: vfrmap.com):**
+
+These features are based on analysis of VFRMap.com's implementation. Source files analyzed: `map.js`, `vfrmap-index.html`.
+
+- [ ] **LocalStorage Persistence** - Save and restore user session (map center, zoom, current timeline date). VFRMap saves `lat`, `lon`, `zoom`, `map_type` on every `moveend` event and restores on page load.
+
+- [ ] **Enhanced Airport Search** - Improve search to recognize aviation-specific queries:
+  - FAA/ICAO codes: `BFI`, `KBFI`, `KSEA`
+  - Airport names: `Boeing Field`, `Paine Field`
+  - Pattern detection: If input is 3-4 uppercase letters, treat as airport code
+  - Data sources: OpenAIP API (free), FAA NASR database, or static JSON of US airports
+
+- [ ] **Airport Info Panel** - When an airport is found/clicked, show an info panel with:
+  - Airport name and identifier
+  - Link to AirNav.com: `https://airnav.com/airport/{code}`
+  - Link to SkyVector: `https://skyvector.com/airport/{code}`
+  - Current METAR from aviationweather.gov (optional)
+  - VFRMap uses a sliding `#inset` panel that toggles between `inset_hidden` and `inset_visible` classes
+
+- [ ] **Quick Links Dropdown** - Add dropdown/panel with aviation resources:
+  - Current FAA charts (faa.gov)
+  - AirNav airport search
+  - SkyVector
+  - Aviation Weather (aviationweather.gov)
+  - 1800wxbrief.com
+
+- [ ] **Airport Markers on Map** - Display airport markers within viewport (most complex):
+  - Requires airport lat/lng data source (FAA NASR or OpenAIP)
+  - Dynamic loading based on viewport bounds (VFRMap uses `/fe?req=get_airports&bounds=`)
+  - Click handlers to show airport info panel
+  - Different marker colors for selected vs unselected airports
+
 ### 13.2 Backend Improvements
 
 **Planned:**

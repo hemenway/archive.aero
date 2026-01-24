@@ -47,18 +47,43 @@ gdal.SetConfigOption('GDAL_TIFF_INTERNAL_MASK', 'YES')
 
 def create_mbtiles_worker(args):
     """Worker for parallel MBTiles creation."""
-    input_vrt, output_mbtiles = args
+    input_vrt, output_mbtiles, zoom_levels, cache_size_mb = args
     try:
         from osgeo import gdal
         gdal.UseExceptions()
+        
+        # Set cache size for this worker
+        gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
+        
+        # Parse zoom levels to get max zoom
+        max_zoom = 11  # Default
+        try:
+            if '-' in zoom_levels:
+                max_zoom = int(zoom_levels.split('-')[1])
+            else:
+                max_zoom = int(zoom_levels)
+        except:
+            pass
+
+        # Define a simple progress callback
+        def progress_cb(complete, message, callback_data):
+            # Only print occasionally to avoid spamming
+            # We use 10% increments roughly
+            pct = int(complete * 100)
+            if pct % 10 == 0 and pct != getattr(progress_cb, 'last_pct', -1):
+                timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+                print(f"[{timestamp}] [MBTiles {output_mbtiles.name}] Progress: {pct}%")
+                progress_cb.last_pct = pct
+            return 1
         
         translate_options = gdal.TranslateOptions(
             format='MBTiles',
             creationOptions=[
                 'TILE_FORMAT=WEBP',
                 'QUALITY=85',
-                'ZOOM_LEVEL_STRATEGY=AUTO'
-            ]
+                f'MAXZOOM={max_zoom}'
+            ],
+            callback=progress_cb
         )
         
         # Create parent directory if needed (should exist, but safety first)
@@ -1173,9 +1198,93 @@ class ChartSlicer:
             self.log(f"- If a file is missing, it will download with --download-delay {self.download_delay}s between requests")
             self.log(f"- Estimated time: {missing_count * self.download_delay / 60:.0f} minutes at {self.download_delay}s delay")
 
+    def _process_mbtiles_only(self):
+        """Process MBTiles from existing VRT files (resume mode).
+
+        Scans output directory for .vrt files and creates MBTiles for any
+        that don't already have a valid .mbtiles file (>1MB).
+        """
+        self.log("\n=== MBTiles-Only Mode (Resume) ===")
+        self.log(f"Scanning {self.output_dir} for existing VRT files...")
+
+        # Find all VRT files in output directory
+        vrt_files = sorted(self.output_dir.glob("*.vrt"))
+        self.log(f"Found {len(vrt_files)} VRT files")
+
+        if not vrt_files:
+            self.log("No VRT files found. Run without --mbtiles-only first to create VRTs.")
+            return
+
+        # Build list of MBTiles jobs (VRTs without valid MBTiles)
+        mbtiles_jobs = []
+        skipped = 0
+
+        for vrt_path in vrt_files:
+            date = vrt_path.stem  # e.g., "2013-09-05"
+            mbtiles_path = self.output_dir / f"{date}.mbtiles"
+
+            # Skip if MBTiles exists and is valid (>1MB)
+            if mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024:
+                self.log(f"  ⊘ Skipping {date} (MBTiles exists: {mbtiles_path.stat().st_size / (1024*1024):.1f} MB)")
+                skipped += 1
+                continue
+
+            # Queue for processing
+            mbtiles_jobs.append((vrt_path, mbtiles_path))
+
+        self.log(f"\nTo process: {len(mbtiles_jobs)} | Skipped: {skipped}")
+
+        if not mbtiles_jobs:
+            self.log("All MBTiles already exist. Nothing to do.")
+            return
+
+        # Process MBTiles jobs in parallel (same logic as process_all_dates)
+        workers = getattr(self, 'parallel_mbtiles', 6)
+
+        # Calculate memory per worker
+        try:
+            import psutil
+            total_ram_mb = psutil.virtual_memory().total // (1024 * 1024)
+            available_for_workers = max(4096, total_ram_mb - 2048)
+            cache_per_worker = available_for_workers // workers
+            cache_per_worker = max(256, min(4096, cache_per_worker))
+        except:
+            cache_per_worker = 1024
+
+        self.log(f"\n=== Processing {len(mbtiles_jobs)} MBTiles jobs in parallel ({workers} workers) ===")
+        self.log(f"Configuring {cache_per_worker}MB cache per worker")
+
+        # Add zoom levels and cache size to job args
+        zoom_levels = getattr(self, 'zoom_levels', '0-11')
+        mbtiles_jobs_with_args = []
+        for job in mbtiles_jobs:
+            mbtiles_jobs_with_args.append(job + (zoom_levels, cache_per_worker))
+
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(create_mbtiles_worker, job): job for job in mbtiles_jobs_with_args}
+
+            for i, future in enumerate(as_completed(futures), 1):
+                input_job = futures[future]
+                output_path = input_job[1]
+                try:
+                    success, path, size_mb, error = future.result()
+                    if success:
+                        self.log(f"[{i}/{len(mbtiles_jobs)}] ✓ MBTiles created: {path.name} ({size_mb:.1f} MB)")
+                    else:
+                        self.log(f"[{i}/{len(mbtiles_jobs)}] ✗ Failed: {path.name} - {error}")
+                except Exception as e:
+                    self.log(f"[{i}/{len(mbtiles_jobs)}] ✗ Error processing {output_path.name}: {e}")
+
+        self.log("\n=== MBTiles Processing Complete ===")
+
     def process_all_dates(self):
         """Process all dates in CSV with fallback logic."""
         self.log("\n=== Starting Chart Processing ===")
+
+        # Check for mbtiles-only mode (resume from existing VRTs)
+        if getattr(self, 'mbtiles_only', False):
+            self._process_mbtiles_only()
+            return
 
         # Get all locations from CSV (not shapefiles)
         all_locations = set()
@@ -1208,6 +1317,39 @@ class ChartSlicer:
 
         for date_idx, date in enumerate(sorted_dates, 1):
             self.log(f"\n[{date_idx}/{total_dates}] Processing date: {date}")
+
+            # Check if output artifacts already exist to skip expensive processing
+            output_format = getattr(self, 'output_format', 'geotiff')
+            
+            geotiff_path = self.output_dir / f"{date}.tif"
+            geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024
+
+            mbtiles_path = self.output_dir / f"{date}.mbtiles"
+            mbtiles_exists = mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024
+
+            tiles_dir = self.output_dir / f"{date}_tiles"
+            tiles_exist = False
+            if tiles_dir.exists():
+                try:
+                    # quick check for any webp file
+                    next(tiles_dir.glob('**/*.webp'))
+                    tiles_exist = True
+                except StopIteration:
+                    pass
+
+            is_complete = False
+            if output_format == 'geotiff':
+                is_complete = geotiff_exists
+            elif output_format == 'mbtiles':
+                is_complete = mbtiles_exists
+            elif output_format == 'tiles':
+                is_complete = tiles_exist
+            elif output_format == 'both':
+                is_complete = geotiff_exists and tiles_exist
+            
+            if is_complete:
+                 self.log(f"  ✓ Output for {date} already exists - skipping processing")
+                 continue
 
             records = self.dole_data[date]
             temp_dir = self.output_dir / ".temp" / date
@@ -1439,11 +1581,30 @@ class ChartSlicer:
         # Process queued MBTiles jobs
         if mbtiles_jobs:
             workers = getattr(self, 'parallel_mbtiles', 6)
-            self.log(f"\n=== Processing {len(mbtiles_jobs)} MBTiles jobs in parallel ({workers} workers) ===")
             
+            # Calculate memory per worker
+            # Reserve 2GB for system/main process, split remainder among workers
+            try:
+                import psutil
+                total_ram_mb = psutil.virtual_memory().total // (1024 * 1024)
+                available_for_workers = max(4096, total_ram_mb - 2048)
+                cache_per_worker = available_for_workers // workers
+                cache_per_worker = max(256, min(4096, cache_per_worker)) # Clamp between 256MB and 4GB
+            except:
+                cache_per_worker = 1024
+                
+            self.log(f"\n=== Processing {len(mbtiles_jobs)} MBTiles jobs in parallel ({workers} workers) ===")
+            self.log(f"Configuring {cache_per_worker}MB cache per worker")
+            
+            # Add zoom levels and cache size to job args
+            zoom_levels = getattr(self, 'zoom_levels', '0-11')
+            mbtiles_jobs_with_args = []
+            for job in mbtiles_jobs:
+                mbtiles_jobs_with_args.append(job + (zoom_levels, cache_per_worker))
+
             with ProcessPoolExecutor(max_workers=workers) as executor:
                 # Submit all jobs
-                futures = {executor.submit(create_mbtiles_worker, job): job for job in mbtiles_jobs}
+                futures = {executor.submit(create_mbtiles_worker, job): job for job in mbtiles_jobs_with_args}
                 
                 # Process results as they complete
                 for i, future in enumerate(as_completed(futures), 1):
@@ -1519,8 +1680,8 @@ Examples:
         "-r", "--resample",
         type=str,
         choices=['nearest', 'bilinear', 'cubic', 'cubicspline'],
-        default='bilinear',
-        help="Resampling algorithm for warping (default: bilinear). Use 'nearest' for faster processing with charts"
+        default='nearest',
+        help="Resampling algorithm for warping (default: nearest). Use 'nearest' for faster processing with charts"
     )
 
     parser.add_argument(
@@ -1541,6 +1702,12 @@ Examples:
         type=int,
         default=6,
         help="Number of parallel MBTiles creation jobs (default: 6)"
+    )
+
+    parser.add_argument(
+        "--mbtiles-only",
+        action="store_true",
+        help="Skip VRT/GeoTIFF creation, only process MBTiles from existing VRTs (for resuming)"
     )
 
     args = parser.parse_args()
@@ -1567,6 +1734,7 @@ Examples:
     slicer.output_format = args.format
     slicer.zoom_levels = args.zoom
     slicer.parallel_mbtiles = args.parallel_mbtiles
+    slicer.mbtiles_only = args.mbtiles_only
 
     # Map resampling algorithm
     resample_map = {
