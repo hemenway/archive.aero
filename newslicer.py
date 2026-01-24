@@ -1207,8 +1207,17 @@ class ChartSlicer:
         self.log("\n=== MBTiles-Only Mode (Resume) ===")
         self.log(f"Scanning {self.output_dir} for existing VRT files...")
 
-        # Find all VRT files in output directory
-        vrt_files = sorted(self.output_dir.glob("*.vrt"))
+        # Find all VRT files - first check .temp subdirectories, then top-level for backwards compatibility
+        temp_base = self.output_dir / ".temp"
+        vrt_files = []
+        
+        if temp_base.exists():
+            vrt_files = sorted(temp_base.glob("*/mosaic_*.vrt"))
+        
+        # Fallback to top-level directory for backwards compatibility
+        if not vrt_files:
+            vrt_files = sorted(self.output_dir.glob("*.vrt"))
+        
         self.log(f"Found {len(vrt_files)} VRT files")
 
         if not vrt_files:
@@ -1220,7 +1229,13 @@ class ChartSlicer:
         skipped = 0
 
         for vrt_path in vrt_files:
-            date = vrt_path.stem  # e.g., "2013-09-05"
+            # Extract date from filename (handle both "mosaic_2013-09-05.vrt" and "2013-09-05.vrt")
+            stem = vrt_path.stem
+            if stem.startswith("mosaic_"):
+                date = stem[7:]  # Remove "mosaic_" prefix
+            else:
+                date = stem
+            
             mbtiles_path = self.output_dir / f"{date}.mbtiles"
 
             # Skip if MBTiles exists and is valid (>1MB)
