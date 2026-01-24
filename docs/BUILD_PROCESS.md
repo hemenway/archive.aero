@@ -34,10 +34,15 @@ python3 newslicer.py \
 
 - `-s, --source`: Source directory containing raw TIFF/ZIP files (default: /Volumes/drive/newrawtiffs)
 - `-o, --output`: Output directory for processed GeoTIFFs (default: /Volumes/drive/sync)
-- `-c, --csv`: Master CSV file mapping dates to chart files (default: master_dole.csv)
-- `-b, --shapefiles`: Directory containing sectional shapefiles for cutting (default: shapefiles/)
-- `-f, --format`: Output format - 'geotiff', 'tiles', or 'both' (default: geotiff)
+- `-c, --csv`: Master CSV file mapping dates to chart files (default: /Users/ryanhemenway/archive.aero/master_dole.csv)
+- `-b, --shapefiles`: Directory containing sectional shapefiles for cutting (default: /Users/ryanhemenway/archive.aero/shapefiles)
+- `-f, --format`: Output format - 'geotiff', 'mbtiles', 'tiles', or 'both' (default: geotiff)
 - `-z, --zoom`: Zoom levels for tile generation (default: 0-11)
+- `-r, --resample`: Resampling algorithm for warping - 'nearest', 'bilinear', 'cubic', or 'cubicspline' (default: nearest)
+- `--preview`: Preview downloads without actually downloading (dry-run mode)
+- `--download-delay`: Seconds to wait between downloads to avoid rate limiting (default: 8.0)
+- `--parallel-mbtiles`: Number of parallel MBTiles creation jobs (default: 6)
+- `--mbtiles-only`: Skip VRT/GeoTIFF creation, only process MBTiles from existing VRTs (for resuming)
 
 ---
 
@@ -301,15 +306,16 @@ Converts the final GeoTIFFs to PMTiles format and uploads them to cloud storage 
 
 Or with custom parallel workers:
 ```bash
-JOBS=4 ./pmandupload.sh
+JOBS=6 ./pmandupload.sh
 ```
 
 ### Environment Configuration
 
 ```bash
-ROOT="/Volumes/drive/sync"          # Where GeoTIFFs are located
+ROOT="/Volumes/drive/upload"        # Where GeoTIFFs are located
 REMOTE="r2:charts/sectionals"       # rclone remote destination
-JOBS="${JOBS:-3}"                   # Number of parallel workers (default: 3)
+JOBS="${JOBS:-6}"                   # Number of parallel workers (default: 6)
+QUALITY="${QUALITY:-90}"            # WebP quality for tile generation (default: 90)
 ```
 
 ### Processing Steps for 2013-02-15.tif
@@ -341,24 +347,23 @@ Each file is processed by `process_one()` function in parallel:
 
 ##### Step 2.1: Convert to MBTiles
 
-```bash
-gdal_translate -of MBTILES \
-  /Volumes/drive/sync/2013-02-15.tif \
-  /Volumes/drive/sync/2013-02-15.mbtiles
-```
+  # TIFF -> MBTiles
+  echo -e "  ${DIM}├─ Converting to MBTiles...${NC}"
+  gdal_translate -q -of MBTILES --config GDAL_NUM_THREADS ALL_CPUS -co TILE_FORMAT=WEBP -co QUALITY="$QUALITY" "$in" "$mb"
 
 **What this does:**
 - Converts GeoTIFF to MBTiles format (SQLite-based tile storage)
-- Generates base zoom level tiles
+- Generates WEBP tiles with configurable quality (default: 90)
+- Uses all available CPU threads (GDAL_NUM_THREADS=ALL_CPUS)
 - Preserves georeferencing
 
-**Output:** `/Volumes/drive/sync/2013-02-15.mbtiles`
+**Output:** `/Volumes/drive/upload/2013-02-15.mbtiles`
 
 ##### Step 2.2: Generate Overviews
 
 ```bash
-gdaladdo -r bilinear \
-  /Volumes/drive/sync/2013-02-15.mbtiles \
+gdaladdo -q -r bilinear --config GDAL_NUM_THREADS ALL_CPUS \
+  /Volumes/drive/upload/2013-02-15.mbtiles \
   2 4 8 16 32 64 128 256
 ```
 
@@ -366,14 +371,16 @@ gdaladdo -r bilinear \
 - Adds pyramid/overview levels to MBTiles
 - Uses bilinear resampling for smooth scaling
 - Creates 8 overview levels (2x, 4x, 8x, ... 256x reduction)
+- Uses all available CPU threads (GDAL_NUM_THREADS=ALL_CPUS)
+- Runs in quiet mode (-q) to reduce output
 - Enables efficient zooming at different scales
 
 ##### Step 2.3: Convert to PMTiles
 
 ```bash
 pmtiles convert \
-  /Volumes/drive/sync/2013-02-15.mbtiles \
-  /Volumes/drive/sync/2013-02-15.pmtiles
+  /Volumes/drive/upload/2013-02-15.mbtiles \
+  /Volumes/drive/upload/2013-02-15.pmtiles
 ```
 
 **What this does:**
@@ -381,12 +388,12 @@ pmtiles convert \
 - PMTiles supports HTTP range requests for efficient streaming
 - No server-side tile serving required
 
-**Output:** `/Volumes/drive/sync/2013-02-15.pmtiles`
+**Output:** `/Volumes/drive/upload/2013-02-15.pmtiles`
 
 ##### Step 2.4: Cleanup Intermediate Files
 
 ```bash
-rm -f /Volumes/drive/sync/2013-02-15.mbtiles
+rm -f /Volumes/drive/upload/2013-02-15.mbtiles
 ```
 
 Removes the MBTiles file to save disk space (only PMTiles needed).
@@ -395,7 +402,7 @@ Removes the MBTiles file to save disk space (only PMTiles needed).
 
 ```bash
 rclone copyto \
-  /Volumes/drive/sync/2013-02-15.pmtiles \
+  /Volumes/drive/upload/2013-02-15.pmtiles \
   r2:charts/sectionals/2013-02-15.pmtiles \
   -P \
   --s3-upload-concurrency 16 \
@@ -415,18 +422,18 @@ rclone copyto \
 **Final URL:** `https://data.archive.aero/sectionals/2013-02-15.pmtiles`
 
 ```
-✔ [12847] Done: /Volumes/drive/sync/2013-02-15.tif
+✔ [12847] Done: /Volumes/drive/upload/2013-02-15.tif
 ```
 
 #### Step 3: Parallel Processing Continues
 
-While 2013-02-15 is being uploaded, 2 other workers process other dates:
+While 2013-02-15 is being uploaded, 5 other workers process other dates:
 
 ```
-==> [12848] Processing: /Volumes/drive/sync/2013-04-04.tif
-==> [12849] Processing: /Volumes/drive/sync/2013-05-02.tif
-✔ [12848] Done: /Volumes/drive/sync/2013-04-04.tif
-==> [12850] Processing: /Volumes/drive/sync/2013-06-27.tif
+==> [12848] Processing: /Volumes/drive/upload/2013-04-04.tif
+==> [12849] Processing: /Volumes/drive/upload/2013-05-02.tif
+✔ [12848] Done: /Volumes/drive/upload/2013-04-04.tif
+==> [12850] Processing: /Volumes/drive/upload/2013-06-27.tif
 ...
 ```
 
@@ -446,6 +453,10 @@ python3 newslicer.py \
   -f geotiff
 
 # Output: /Volumes/drive/sync/2013-02-15.tif (8.9 GB)
+
+# Move to upload directory for Stage 2
+# (or configure pmandupload.sh ROOT to point to sync directory)
+mv /Volumes/drive/sync/*.tif /Volumes/drive/upload/
 
 # Stage 2: Convert to PMTiles and upload
 ./pmandupload.sh
@@ -472,7 +483,7 @@ python3 newslicer.py \
 ### Compression
 - **Primary**: ZSTD (modern, high compression ratio)
 - **Fallback**: LZW (older, wider compatibility)
-- **Tile format**: WEBP (for gdal2tiles, not used in current geotiff-only mode)
+- **Tile format**: WEBP with configurable quality (default: 90)
 
 ### File Formats
 - **Input**: TIFF, ZIP (containing TIFFs)
@@ -492,9 +503,10 @@ python3 newslicer.py \
 - **Typical runtime**: 24 hours for 156 dates (depends on source data)
 
 ### pmandupload.sh
-- **Parallel processing**: 3 workers by default (tunable with JOBS env var)
+- **Parallel processing**: 6 workers by default (tunable with JOBS env var)
 - **Upload concurrency**: 16 concurrent S3 streams per file
 - **Chunk size**: 128MB
+- **WebP quality**: 90 (tunable with QUALITY env var)
 - **Typical runtime**: 2-4 hours for 156 files (depends on network speed)
 
 ---
@@ -604,16 +616,18 @@ archive.aero/
 │   ├── albuquerque_55.zip
 │   ├── 20130215143022_houston.tif
 │   └── ...
-└── sync/                                 # Output: Processed GeoTIFFs & PMTiles
-    ├── 2013-02-15.tif                   # GeoTIFF (after Stage 1)
-    ├── 2013-02-15.pmtiles               # PMTiles (after Stage 2)
-    ├── processing_review_*.csv          # Review reports
-    └── .temp/                            # Temporary processing files
-        └── 2013-02-15/
-            ├── extract/                  # Extracted ZIPs
-            ├── *_warped.tif             # Per-location warped files
-            ├── *_2013-02-15.vrt         # Per-location VRTs
-            └── mosaic_2013-02-15.vrt    # Final mosaic VRT
+├── sync/                                 # Output: Processed GeoTIFFs (Stage 1)
+│   ├── 2013-02-15.tif                   # GeoTIFF (after Stage 1)
+│   ├── processing_review_*.csv          # Review reports
+│   └── .temp/                            # Temporary processing files
+│       └── 2013-02-15/
+│           ├── extract/                  # Extracted ZIPs
+│           ├── *_warped.tif             # Per-location warped files
+│           ├── *_2013-02-15.vrt         # Per-location VRTs
+│           └── mosaic_2013-02-15.vrt    # Final mosaic VRT
+└── upload/                               # Stage 2 input/output
+    ├── 2013-02-15.tif                   # Input TIFFs for conversion
+    └── 2013-02-15.pmtiles               # PMTiles (after Stage 2)
 ```
 
 ---
