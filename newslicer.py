@@ -1230,7 +1230,7 @@ class ChartSlicer:
             # For top-level *.vrt format: use stem as-is
             filename = vrt_path.stem
             if filename.startswith("mosaic_"):
-                date = filename[7:]  # Remove "mosaic_" prefix
+                date = filename.removeprefix("mosaic_")
             else:
                 date = filename
             
