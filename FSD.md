@@ -1,8 +1,8 @@
 # File Specification Document (FSD)
 ## Archive.aero - Historical Aeronautical Chart Viewer System
 
-**Version:** 2.5
-**Last Updated:** 2026-01-15
+**Version:** 2.6.1
+**Last Updated:** 2026-01-24
 **Maintainer:** Ryan Hemenway
 
 ---
@@ -802,8 +802,13 @@ python newslicer.py [OPTIONS]
 | `--output` | `-o` | Path | `/Volumes/drive/sync` | Output directory for COGs/tiles |
 | `--csv` | `-c` | Path | `~/archive.aero/master_dole.csv` | Master Dole CSV file with chart metadata |
 | `--shapefiles` | `-b` | Path | `~/archive.aero/shapefiles` | Directory containing shapefiles |
-| `--format` | `-f` | String | `geotiff` | Output format: `geotiff`, `tiles`, or `both` |
+| `--format` | `-f` | String | `geotiff` | Output format: `geotiff`, `mbtiles`, `tiles`, or `both` |
 | `--zoom` | `-z` | String | `0-11` | Zoom levels for tile generation (e.g., `0-11`) |
+| `--resample` | `-r` | String | `nearest` | Resampling algorithm: `nearest`, `bilinear`, `cubic`, or `cubicspline` |
+| `--preview` | | Flag | `false` | Preview downloads without downloading (dry-run mode) |
+| `--download-delay` | | Float | `8.0` | Seconds to wait between downloads to avoid rate limiting |
+| `--parallel-mbtiles` | | Integer | `6` | Number of parallel MBTiles creation jobs |
+| `--mbtiles-only` | | Flag | `false` | Skip VRT/GeoTIFF creation, only process MBTiles from existing VRTs (for resuming) |
 
 **Usage Examples:**
 
@@ -811,14 +816,23 @@ python newslicer.py [OPTIONS]
 # Process all dates with default paths, output GeoTIFF
 python newslicer.py
 
-# Custom paths, output both GeoTIFF and tiles
+# Custom paths, output both GeoTIFF and MBTiles
 python newslicer.py -s /path/to/charts -o /path/to/output -c master_dole.csv -b shapefiles -f both
 
-# Output only WebP tiles with custom zoom range
-python newslicer.py -f tiles -z 0-13
+# Output only MBTiles with custom zoom range
+python newslicer.py -f mbtiles -z 0-13
 
-# Process with higher zoom for detailed terminal charts
-python newslicer.py -f both -z 0-13
+# Preview mode (dry-run) to check what would be downloaded
+python newslicer.py --preview
+
+# Process with custom download delay to avoid rate limiting
+python newslicer.py --download-delay 12.0
+
+# Resume processing: only create MBTiles from existing VRTs
+python newslicer.py --mbtiles-only -f mbtiles
+
+# Process with higher zoom for detailed terminal charts and custom parallelism
+python newslicer.py -f both -z 0-13 --parallel-mbtiles 8
 ```
 
 **Output Structure:**
@@ -847,12 +861,12 @@ newslicer automatically configures GDAL for optimal performance:
 ```python
 # Dynamic cache sizing (uses psutil if available)
 available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
-cache_size_mb = max(512, min(4096, available_ram_mb // 2))
+cache_size_mb = max(512, min(8192, available_ram_mb * 3 // 4))  # 75% of RAM, max 8GB
 
 # GDAL options
-GDAL_CACHEMAX = cache_size_mb          # 512-4096 MB cache
-GDAL_NUM_THREADS = 8                   # 8 threads for operations
-GDAL_SWATH_SIZE = cache_size_mb        # Swath size for warping
+GDAL_CACHEMAX = cache_size_mb          # 512-8192 MB cache (75% available RAM)
+GDAL_NUM_THREADS = ALL_CPUS            # Uses all available CPU threads
+GDAL_SWATH_SIZE = cache_size_mb * 1024 * 1024  # Swath size for warping (bytes)
 COMPRESS_OVERVIEW = DEFLATE            # Overview compression
 GDAL_TIFF_INTERNAL_MASK = YES          # Internal alpha masks
 ```
@@ -2870,6 +2884,19 @@ Both approaches work identically. Time: ~30-60 minutes (one-time setup)
 ---
 
 ## 16. Changelog
+
+### Version 2.6.1 (2026-01-24)
+- **Documentation:** Updated BUILD_PROCESS.md with accurate parameter values and missing arguments
+  - Fixed default JOBS value (was 3, now 6) for pmandupload.sh
+  - Added missing newslicer.py arguments: --mbtiles-only, --download-delay, --parallel-mbtiles, --resample
+  - Updated directory paths to reflect actual usage (sync vs upload directories)
+  - Added QUALITY parameter documentation for WebP quality settings
+  - Corrected GDAL configuration documentation (cache size now 75% RAM up to 8GB, not 50% up to 4GB)
+  - Updated parallel worker count references throughout documentation
+- **Documentation:** Updated FSD.md command-line arguments table to include all available options
+  - Added missing format option 'mbtiles'
+  - Documented --resample, --preview, --download-delay, --parallel-mbtiles, --mbtiles-only flags
+- **Documentation:** Updated map.txt to include --mbtiles-only argument in CLI arguments list
 
 ### Version 2.6 (2026-01-19)
 - **CRITICAL FIX:** URL to filename conversion algorithm now removes ALL protocol occurrences (including embedded), not just leading. Fixes file matching for Wayback Machine URLs with embedded protocols.

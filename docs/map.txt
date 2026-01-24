@@ -21,6 +21,8 @@
                       │  --download-delay: secs  │
                       │  --parallel-mbtiles: N   │
                       │      (default: 6)        │
+                      │  --mbtiles-only: skip    │
+                      │      VRT/GeoTIFF         │
                       └────────────┬─────────────┘                                                                                                  
                                    │                                                                                                                
                       ┌────────────▼─────────────┐                                                                                                  
