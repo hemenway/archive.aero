@@ -543,7 +543,7 @@ curl -I https://data.archive.aero/sectionals/2013-02-15.pmtiles
 ### Required Software
 - **Python 3.7+** with GDAL bindings
 - **GDAL 3.0+** (gdal-bin package)
-- **PMTiles CLI** (https://github.com/protomaps/go-pmtiles)
+- **PMTiles CLI** (https://github.com/protomaps/go-pmtiles) - Required for pmandupload.sh only; not needed for pmandupload-rs which has native conversion
 - **rclone** (for R2 uploads)
 - **psutil** (Python package, optional but recommended)
 
@@ -555,8 +555,12 @@ brew install gdal python3 rclone
 # Install Python packages
 pip3 install gdal psutil
 
-# Install PMTiles
+# Install PMTiles (only if using pmandupload.sh)
 go install github.com/protomaps/go-pmtiles/cmd/pmtiles@latest
+
+# Or use pmandupload-rs (Rust version with native PMTiles conversion, no CLI needed)
+cd pmandupload-rs
+cargo build --release
 ```
 
 ---
