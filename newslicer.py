@@ -48,58 +48,87 @@ gdal.SetConfigOption('GDAL_TIFF_INTERNAL_MASK', 'YES')
 def create_mbtiles_worker(args):
     """Worker for parallel MBTiles creation."""
     input_vrt, output_mbtiles, zoom_levels, cache_size_mb = args
-    try:
-        from osgeo import gdal
-        gdal.UseExceptions()
-        
-        # Set cache size for this worker
-        gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
-        
-        # Parse zoom levels to get max zoom
-        max_zoom = 11  # Default
+    
+    max_retries = 3
+    import time
+    
+    for attempt in range(1, max_retries + 1):
         try:
-            if '-' in zoom_levels:
-                max_zoom = int(zoom_levels.split('-')[1])
-            else:
-                max_zoom = int(zoom_levels)
-        except:
-            pass
-
-        # Define a simple progress callback
-        def progress_cb(complete, message, callback_data):
-            # Only print occasionally to avoid spamming
-            # We use 10% increments roughly
-            pct = int(complete * 100)
-            if pct % 10 == 0 and pct != getattr(progress_cb, 'last_pct', -1):
-                timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-                print(f"[{timestamp}] [MBTiles {output_mbtiles.name}] Progress: {pct}%")
-                progress_cb.last_pct = pct
-            return 1
-        
-        translate_options = gdal.TranslateOptions(
-            format='MBTiles',
-            creationOptions=[
-                'TILE_FORMAT=WEBP',
-                'QUALITY=85',
-                f'MAXZOOM={max_zoom}'
-            ],
-            callback=progress_cb
-        )
-        
-        # Create parent directory if needed (should exist, but safety first)
-        output_mbtiles.parent.mkdir(parents=True, exist_ok=True)
-        
-        ds = gdal.Translate(str(output_mbtiles), str(input_vrt), options=translate_options)
-        
-        if ds:
-            ds = None
-            size_mb = output_mbtiles.stat().st_size / (1024 * 1024) if output_mbtiles.exists() else 0
-            return (True, output_mbtiles, size_mb, None)
-        else:
-            return (False, output_mbtiles, 0, "GDAL Translate failed")
+            from osgeo import gdal
+            gdal.UseExceptions()
             
-    except Exception as e:
-        return (False, output_mbtiles, 0, str(e))
+            # Set cache size for this worker
+            gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
+            
+            # CRITICAL: Force single-threaded compression per worker to avoid I/O saturation
+            # We are already running parallel processes, so internal threading causes thrashing
+            gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
+            
+            # Parse zoom levels to get max zoom
+            max_zoom = 11  # Default
+            try:
+                if '-' in zoom_levels:
+                    max_zoom = int(zoom_levels.split('-')[1])
+                else:
+                    max_zoom = int(zoom_levels)
+            except:
+                pass
+    
+            # Define a simple progress callback
+            def progress_cb(complete, message, callback_data):
+                # Only print occasionally to avoid spamming
+                pct = int(complete * 100)
+                # Use a unique attribute for this function instance to track state
+                if not hasattr(progress_cb, 'last_pct'):
+                    progress_cb.last_pct = -1
+                
+                if pct % 10 == 0 and pct != progress_cb.last_pct:
+                    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+                    retry_suffix = f" (Attempt {attempt})" if attempt > 1 else ""
+                    print(f"[{timestamp}] [MBTiles {output_mbtiles.name}]{retry_suffix} Progress: {pct}%")
+                    progress_cb.last_pct = pct
+                return 1
+            
+            translate_options = gdal.TranslateOptions(
+                format='MBTiles',
+                creationOptions=[
+                    'TILE_FORMAT=WEBP',
+                    'QUALITY=85',
+                    f'MAXZOOM={max_zoom}'
+                ],
+                callback=progress_cb
+            )
+            
+            # Create parent directory if needed
+            output_mbtiles.parent.mkdir(parents=True, exist_ok=True)
+            
+            # If retrying, ensure we start fresh
+            if attempt > 1 and output_mbtiles.exists():
+                try:
+                    output_mbtiles.unlink()
+                except:
+                    pass
+            
+            ds = gdal.Translate(str(output_mbtiles), str(input_vrt), options=translate_options)
+            
+            if ds:
+                ds = None
+                size_mb = output_mbtiles.stat().st_size / (1024 * 1024) if output_mbtiles.exists() else 0
+                return (True, output_mbtiles, size_mb, None)
+            else:
+                raise Exception("GDAL Translate returned None")
+                
+        except Exception as e:
+            error_msg = str(e)
+            # Check for locking/IO errors that might be transient
+            is_transient = "database is locked" in error_msg or "disk I/O error" in error_msg or "readonly database" in error_msg
+            
+            if attempt < max_retries and is_transient:
+                wait_time = attempt * 5 + (attempt ** 2)  # 6s, 14s, etc.
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [MBTiles {output_mbtiles.name}] Failed attempt {attempt}/{max_retries}: {error_msg}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                return (False, output_mbtiles, 0, error_msg)
 
 
 class ChartSlicer:
@@ -1713,8 +1742,8 @@ Examples:
     parser.add_argument(
         "--parallel-mbtiles",
         type=int,
-        default=6,
-        help="Number of parallel MBTiles creation jobs (default: 6)"
+        default=2,
+        help="Number of parallel MBTiles creation jobs (default: 2, reduced from 6 to avoid I/O errors)"
     )
 
     parser.add_argument(
