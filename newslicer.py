@@ -1232,7 +1232,7 @@ class ChartSlicer:
             # Extract date from filename (handle both "mosaic_2013-09-05.vrt" and "2013-09-05.vrt")
             stem = vrt_path.stem
             if stem.startswith("mosaic_"):
-                date = stem[7:]  # Remove "mosaic_" prefix
+                date = stem[len("mosaic_"):]  # Remove "mosaic_" prefix
             else:
                 date = stem
             
