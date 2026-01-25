@@ -47,7 +47,12 @@ gdal.SetConfigOption('GDAL_TIFF_INTERNAL_MASK', 'YES')
 
 def create_mbtiles_worker(args):
     """Worker for parallel MBTiles creation."""
-    input_vrt, output_mbtiles, zoom_levels, cache_size_mb = args
+    try:
+        input_vrt, output_mbtiles, zoom_levels, cache_size_mb, total_workers, tile_format = args
+    except ValueError:
+        # Backwards compatibility for old args unpacking
+        input_vrt, output_mbtiles, zoom_levels, cache_size_mb, total_workers = args
+        tile_format = 'PNG'
     
     max_retries = 3
     import time
@@ -60,9 +65,13 @@ def create_mbtiles_worker(args):
             # Set cache size for this worker
             gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
             
-            # CRITICAL: Force single-threaded compression per worker to avoid I/O saturation
-            # We are already running parallel processes, so internal threading causes thrashing
-            gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
+            # Optimize threading: Single worker gets all CPUs, multiple workers get throttled
+            if total_workers <= 1:
+                gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
+            else:
+                # CRITICAL: Force single-threaded compression per worker to avoid I/O saturation
+                # We are already running parallel processes, so internal threading causes thrashing
+                gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
             
             # Parse zoom levels to get max zoom
             max_zoom = 11  # Default
@@ -73,7 +82,7 @@ def create_mbtiles_worker(args):
                     max_zoom = int(zoom_levels)
             except:
                 pass
-    
+
             # Define a simple progress callback
             def progress_cb(complete, message, callback_data):
                 # Only print occasionally to avoid spamming
@@ -92,8 +101,7 @@ def create_mbtiles_worker(args):
             translate_options = gdal.TranslateOptions(
                 format='MBTiles',
                 creationOptions=[
-                    'TILE_FORMAT=WEBP',
-                    'QUALITY=85',
+                    f'TILE_FORMAT={tile_format}',
                     f'MAXZOOM={max_zoom}'
                 ],
                 callback=progress_cb
@@ -134,14 +142,6 @@ def create_mbtiles_worker(args):
 class ChartSlicer:
     """Process FAA charts and create COGs."""
 
-    # Locations that don't require shapefile cutting
-    SHAPEFILE_FREE_LOCATIONS = {
-        'hawaiian_islands',
-        'mariana_islands',
-        'samoan_islands',
-        'western_aleutian_islands'
-    }
-
     @staticmethod
     def _check_zstd_support() -> bool:
         """Check if GDAL supports ZSTD compression."""
@@ -177,6 +177,9 @@ class ChartSlicer:
         if self.compression == 'LZW':
             # This will be logged when log() is called for the first time
             self._compression_warning = True
+
+        # MBTiles output directory (defaults to output_dir if not set)
+        self.mbtiles_output_dir = None  # Set via attribute after init
 
     def log(self, msg: str):
         """Print log message with timestamp."""
@@ -654,7 +657,7 @@ class ChartSlicer:
 
             # Step 2: Warp with cutline to GTiff with BIGTIFF support
             # Note: Not specifying xRes/yRes allows GDAL to maintain source resolution during warp
-            # Compress during warp to reduce intermediate I/O
+            # Don't compress intermediates to reduce CPU load and improve parallel performance
             warp_options = gdal.WarpOptions(
                 format="GTiff",
                 dstSRS='EPSG:3857',
@@ -663,7 +666,7 @@ class ChartSlicer:
                 cropToCutline=True,
                 dstAlpha=True,
                 resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
-                creationOptions=['TILED=YES', f'COMPRESS={self.compression}', 'PREDICTOR=2', 'BIGTIFF=YES'],
+                creationOptions=['TILED=YES', 'BIGTIFF=YES'],
                 multithread=True,
                 warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
             )
@@ -777,21 +780,19 @@ class ChartSlicer:
             self.log(f"    {traceback.format_exc()}")
             return False
 
-    def create_mbtiles(self, input_vrt: Path, output_mbtiles: Path) -> bool:
-        """Convert VRT to MBTiles with WEBP tiles.
+    def create_mbtiles(self, input_vrt: Path, output_mbtiles: Path, tile_format: str = 'PNG') -> bool:
+        """Convert VRT to MBTiles with specified tile format (PNG/JPEG/WEBP).
 
         Uses gdal.Translate to create MBTiles directly from VRT.
-        Tiles are stored as WEBP with quality 85.
         ZOOM_LEVEL_STRATEGY=AUTO lets GDAL determine optimal zoom levels.
         """
         try:
-            self.log(f"    Creating MBTiles with WEBP tiles...")
+            self.log(f"    Creating MBTiles with {tile_format} tiles...")
 
             translate_options = gdal.TranslateOptions(
                 format='MBTiles',
                 creationOptions=[
-                    'TILE_FORMAT=WEBP',
-                    'QUALITY=85',
+                    f'TILE_FORMAT={tile_format}',
                     'ZOOM_LEVEL_STRATEGY=AUTO'
                 ]
             )
@@ -1043,13 +1044,9 @@ class ChartSlicer:
                     edition = rec.get('edition', '')
                     timestamp = rec.get('wayback_ts')
 
-                    # Find shapefile (not needed for special locations)
-                    if location in self.SHAPEFILE_FREE_LOCATIONS:
-                        shapefile_found = "NOT NEEDED"
-                        shp_path = None
-                    else:
-                        shp_path = self.find_shapefile(location)
-                        shapefile_found = "YES" if shp_path else "NO"
+                    # Find shapefile
+                    shp_path = self.find_shapefile(location)
+                    shapefile_found = "YES" if shp_path else "NO"
 
                     # Find source files
                     filename = rec.get('filename', '')
@@ -1263,7 +1260,8 @@ class ChartSlicer:
             else:
                 date = filename
             
-            mbtiles_path = self.output_dir / f"{date}.mbtiles"
+            mbtiles_out_dir = self.mbtiles_output_dir or self.output_dir
+            mbtiles_path = mbtiles_out_dir / f"{date}.mbtiles"
 
             # Skip if MBTiles exists and is valid (>1MB)
             if mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024:
@@ -1298,9 +1296,10 @@ class ChartSlicer:
 
         # Add zoom levels and cache size to job args
         zoom_levels = getattr(self, 'zoom_levels', '0-11')
+        tile_format = getattr(self, 'tile_format', 'PNG')
         mbtiles_jobs_with_args = []
         for job in mbtiles_jobs:
-            mbtiles_jobs_with_args.append(job + (zoom_levels, cache_per_worker))
+            mbtiles_jobs_with_args.append(job + (zoom_levels, cache_per_worker, workers, tile_format))
 
         with ProcessPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(create_mbtiles_worker, job): job for job in mbtiles_jobs_with_args}
@@ -1340,7 +1339,7 @@ class ChartSlicer:
 
         # Count how many have shapefiles
         shapefile_count = sum(1 for loc in all_locations if self.find_shapefile(loc))
-        self.log(f"Found {len(all_locations)} locations from CSV ({shapefile_count} with shapefiles, {len(self.SHAPEFILE_FREE_LOCATIONS)} shapefile-free).")
+        self.log(f"Found {len(all_locations)} locations from CSV ({shapefile_count} with shapefiles).")
 
         # === PREPARATION PHASE: Download all missing files upfront ===
         self.log("\n=== Preparing: Downloading missing files ===")
@@ -1366,7 +1365,8 @@ class ChartSlicer:
             geotiff_path = self.output_dir / f"{date}.tif"
             geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024
 
-            mbtiles_path = self.output_dir / f"{date}.mbtiles"
+            mbtiles_out_dir = self.mbtiles_output_dir or self.output_dir
+            mbtiles_path = mbtiles_out_dir / f"{date}.mbtiles"
             mbtiles_exists = mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024
 
             tiles_dir = self.output_dir / f"{date}_tiles"
@@ -1409,83 +1409,6 @@ class ChartSlicer:
 
                 norm_loc = self.normalize_name(location)
 
-                # Check if this is a shapefile-free location
-                if norm_loc in self.SHAPEFILE_FREE_LOCATIONS:
-                    # No shapefile needed - find source files directly
-                    download_link = rec.get('download_link', '')
-                    found_files = self.find_files(location, edition, timestamp, filename, download_link)
-                    if not found_files:
-                        self.log(f"    {location}: No source files found (edition {edition}) [CSV: {filename if filename else 'no match'}]")
-                        continue
-
-                    self.log(f"    {location} (shapefile-free, edition {edition}): {filename if filename else 'pattern match'}")
-
-                    # Warp TIF files to EPSG:3857 for mosaic compatibility
-                    # (With pre-unzipped files, all found_files are direct TIF paths)
-                    warped_files = []
-                    for src_file_info in found_files:
-                        # Unpack the file info (always (Path, None) with pre-unzipped structure)
-                        if isinstance(src_file_info, tuple):
-                            src_file, _ = src_file_info
-                        else:
-                            src_file = src_file_info
-
-                        # Warp each TIF file to EPSG:3857 without shapefile cutline
-                        for tiff in [src_file]:
-                            sanitized_stem = self.sanitize_filename(tiff.stem)
-                            warped_tiff = temp_dir / f"{norm_loc}_{sanitized_stem}_warped.tif"
-
-                            try:
-                                self.log(f"      Warping {tiff.name}...")
-
-                                # Expand to RGBA
-                                temp_vrt_name = f"/vsimem/{sanitized_stem}_rgba.vrt"
-                                translate_options = gdal.TranslateOptions(format="VRT", rgbExpand="rgba")
-                                ds_vrt = gdal.Translate(temp_vrt_name, str(tiff), options=translate_options)
-                                ds_vrt = None
-
-                                # Warp to EPSG:3857 (no cutline needed for these locations)
-                                # Compress during warp to reduce intermediate I/O
-                                warp_options = gdal.WarpOptions(
-                                    format="GTiff",
-                                    dstSRS='EPSG:3857',
-                                    dstAlpha=True,
-                                    resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
-                                    creationOptions=['TILED=YES', f'COMPRESS={self.compression}', 'PREDICTOR=2', 'BIGTIFF=YES'],
-                                    multithread=True
-                                )
-
-                                ds = gdal.Warp(str(warped_tiff), temp_vrt_name, options=warp_options)
-
-                                # Cleanup
-                                try:
-                                    gdal.Unlink(temp_vrt_name)
-                                except:
-                                    pass
-
-                                if ds:
-                                    ds = None
-                                    file_size_mb = warped_tiff.stat().st_size / (1024 * 1024) if warped_tiff.exists() else 0
-                                    self.log(f"        ✓ Warped {tiff.name} ({file_size_mb:.1f} MB)")
-                                    warped_files.append(warped_tiff)
-                                else:
-                                    self.log(f"        ✗ Warp failed for {tiff.name}")
-                            except Exception as e:
-                                self.log(f"        ✗ Error warping {tiff.name}: {e}")
-
-                    # Build VRT from warped files
-                    if warped_files:
-                        if len(warped_files) > 1:
-                            loc_vrt = temp_dir / f"{norm_loc}_{date}.vrt"
-                            if self.build_vrt(warped_files, loc_vrt):
-                                vrt_library[norm_loc][date] = loc_vrt
-                        else:
-                            vrt_library[norm_loc][date] = warped_files[0]
-
-                    location_metadata[norm_loc] = {'edition': edition}
-                    continue  # Skip shapefile processing
-
-                # Normal shapefile-based processing
                 # Find shapefile
                 shp_path = self.find_shapefile(location)
                 if not shp_path:
@@ -1585,7 +1508,8 @@ class ChartSlicer:
                     geotiff_path = self.output_dir / f"{date}.tif"
                     geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024  # At least 1 MB
 
-                    mbtiles_path = self.output_dir / f"{date}.mbtiles"
+                    mbtiles_out_dir = self.mbtiles_output_dir or self.output_dir
+                    mbtiles_path = mbtiles_out_dir / f"{date}.mbtiles"
                     mbtiles_exists = mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024  # At least 1 MB
 
                     tiles_dir = self.output_dir / f"{date}_tiles" if output_format in ['tiles', 'both'] else None
@@ -1640,9 +1564,10 @@ class ChartSlicer:
             
             # Add zoom levels and cache size to job args
             zoom_levels = getattr(self, 'zoom_levels', '0-11')
+            tile_format = getattr(self, 'tile_format', 'PNG')
             mbtiles_jobs_with_args = []
             for job in mbtiles_jobs:
-                mbtiles_jobs_with_args.append(job + (zoom_levels, cache_per_worker))
+                mbtiles_jobs_with_args.append(job + (zoom_levels, cache_per_worker, workers, tile_format))
 
             with ProcessPoolExecutor(max_workers=workers) as executor:
                 # Submit all jobs
@@ -1678,15 +1603,15 @@ Examples:
     parser.add_argument(
         "-s", "--source",
         type=Path,
-        default=Path("/Volumes/drive/newrawtiffs"),
-        help="Source directory containing TIFF/ZIP files (default: /Volumes/drive/newrawtiffs)"
+        default=Path("/Volumes/projects/newrawtiffs"),
+        help="Source directory containing TIFF/ZIP files (default: /Volumes/projects/newrawtiffs)"
     )
 
     parser.add_argument(
         "-o", "--output",
         type=Path,
-        default=Path("/Volumes/drive/sync"),
-        help="Output directory for COGs (default: /Volumes/drive/sync)"
+        default=Path("/Volumes/projects/sync"),
+        help="Output directory for COGs (default: /Volumes/projects/sync)"
     )
 
     parser.add_argument(
@@ -1708,7 +1633,7 @@ Examples:
         type=str,
         choices=['geotiff', 'mbtiles', 'tiles', 'both'],
         default='geotiff',
-        help="Output format: geotiff (LZW compressed), mbtiles (WEBP tiles), tiles (WEBP), or both (default: geotiff)"
+        help="Output format: geotiff (LZW compressed), mbtiles (PNG tiles), tiles (WEBP), or both (default: geotiff)"
     )
 
     parser.add_argument(
@@ -1752,6 +1677,21 @@ Examples:
         help="Skip VRT/GeoTIFF creation, only process MBTiles from existing VRTs (for resuming)"
     )
 
+    parser.add_argument(
+        "--mbtiles-output",
+        type=Path,
+        default=None,
+        help="Output directory for MBTiles files (default: same as --output)"
+    )
+
+    parser.add_argument(
+        "--tile-format",
+        type=str,
+        choices=['PNG', 'JPEG', 'WEBP'],
+        default='PNG',
+        help="Tile format for MBTiles: PNG, JPEG, or WEBP (default: PNG). WEBP requires GDAL with WebP support."
+    )
+
     args = parser.parse_args()
 
     # Validate paths
@@ -1770,6 +1710,10 @@ Examples:
     # Create output directory
     args.output.mkdir(parents=True, exist_ok=True)
 
+    # Create MBTiles output directory if specified
+    if args.mbtiles_output:
+        args.mbtiles_output.mkdir(parents=True, exist_ok=True)
+
     # Process
     slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles,
                          preview_mode=args.preview, download_delay=args.download_delay)
@@ -1777,6 +1721,8 @@ Examples:
     slicer.zoom_levels = args.zoom
     slicer.parallel_mbtiles = args.parallel_mbtiles
     slicer.mbtiles_only = args.mbtiles_only
+    slicer.mbtiles_output_dir = args.mbtiles_output
+    slicer.tile_format = args.tile_format
 
     # Map resampling algorithm
     resample_map = {

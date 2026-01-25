@@ -108,10 +108,10 @@
                        └───┬──────────────────────┬─────┘                                                                                           
                            │YES                   │NO                                                                                               
                            │                      │                                                                                                 
-           ┌───────────────▼──────────┐      ┌────▼──────────────┐                                                                                  
-           │ Check shapefile needed?  │      │ Mark as NOT FOUND │                                                                                  
-           │ - SHAPEFILE_FREE? → N/A  │      │ edition: N/A      │                                                                                  
-           │ - Else: find_shapefile() │      │ shapefile: N/A    │                                                                                  
+           ┌───────────────▼──────────┐      ┌────▼──────────────┐
+           │ find_shapefile():        │      │ Mark as NOT FOUND │
+           │ Search sectional/*.shp   │      │ edition: N/A      │
+           │ Normalize & match names  │      │ shapefile: N/A    │                                                                                  
            └───────────┬──────────────┘      │ source: NOT FOUND │                                                                                  
                        │                     │ fallback: NO      │                                                                                  
            ┌───────────▼──────────────┐      └───────────────────┘                                                                                  
@@ -302,13 +302,13 @@
   ╚═════════════════════════════╤═══════════════════════════════════════════════╝                                                                   
                                 │                                                                                                                   
            ┌────────────────────▼─────────────────────┐                                                                                             
-           │ Get all_locations from CSV               │                                                                                             
-           │ - Extract unique normalized location     │                                                                                             
-           │   names from all dates                   │                                                                                             
-           │ - Sort alphabetically                    │                                                                                             
-           │ - Count shapefiles available             │                                                                                             
-           │ - Log: "Found N locations (M with        │                                                                                             
-           │   shapefiles, K shapefile-free)"         │                                                                                             
+           │ Get all_locations from CSV               │
+           │ - Extract unique normalized location     │
+           │   names from all dates                   │
+           │ - Sort alphabetically                    │
+           │ - Count shapefiles available             │
+           │ - Log: "Found N locations (M with        │
+           │   shapefiles)"                           │                                                                                             
            └────────────────────┬─────────────────────┘                                                                                             
                                 │                                                                                                                   
            ┌────────────────────▼─────────────────────┐
@@ -337,73 +337,8 @@
            │   Get: location, edition, timestamp,     │                                                                                             
            │        filename, download_link           │                                                                                             
            │   norm_loc = normalize_name(location)    │                                                                                             
-           └────────────────────┬─────────────────────┘                                                                                             
-                                │                                                                                                                   
-                ┌───────────────▼───────────────┐                                                                                                   
-                │ Is shapefile-free location?   │                                                                                                   
-                │ (hawaiian_islands,             │                                                                                                  
-                │  mariana_islands, etc.)        │                                                                                                  
-                └───┬───────────────────────┬────┘                                                                                                  
-                    │YES                    │NO                                                                                                     
-                    │                       │                                                                                                       
-      ┌─────────────▼──────────┐           │                                                                                                        
-      │ SHAPEFILE-FREE PATH    │           │                                                                                                        
-      └─────────────┬──────────┘           │                                                                                                        
-                    │                       │                                                                                                       
-      ┌─────────────▼──────────────────┐   │                                                                                                        
-      │ find_files():                  │   │                                                                                                        
-      │   resolve_filename()           │   │                                                                                                        
-      │   - Check .zip dir or .tif     │   │                                                                                                        
-      │   - Return list of TIF paths   │   │                                                                                                        
-      └─────────────┬──────────────────┘   │                                                                                                        
-                    │                       │                                                                                                       
-        ┌───────────▼────────┐              │                                                                                                       
-        │ Files found?       │              │                                                                                                       
-        └───┬──────────┬─────┘              │                                                                                                       
-            │NO        │YES                 │                                                                                                       
-            │          │                    │                                                                                                       
-      ┌─────▼────┐    │                    │                                                                                                        
-      │ Log:     │    │                    │                                                                                                        
-      │ "No src  │    │                    │                                                                                                        
-      │ files"   │    │                    │                                                                                                        
-      │ CONTINUE │    │                    │                                                                                                        
-      └──────────┘    │                    │                                                                                                        
-                      │                    │                                                                                                        
-      ┌───────────────▼─────────────┐      │                                                                                                        
-      │ For each source TIF:        │      │                                                                                                        
-      │   Create temp warped file   │      │                                                                                                        
-      └───────────────┬─────────────┘      │                                                                                                        
-                      │                    │                                                                                                        
-      ┌───────────────▼─────────────┐      │                                                                                                        
-      │ Manual Warp (no shapefile): │      │                                                                                                        
-      │ 1. Expand to RGBA (VRT)     │      │                                                                                                        
-      │    gdal.Translate(rgbExpand)│      │                                                                                                        
-      │ 2. Warp to EPSG:3857        │      │                                                                                                        
-      │    gdal.Warp():             │      │                                                                                                        
-      │    - dstSRS: EPSG:3857      │      │                                                                                                        
-      │    - dstAlpha: True         │      │                                                                                                        
-      │    - COMPRESS={compression} │      │                                                                                                        
-      │    - TILED=YES, BIGTIFF=YES │      │                                                                                                        
-      │    - PREDICTOR=2            │      │                                                                                                        
-      │    - multithread: True      │      │                                                                                                        
-      │ 3. Cleanup /vsimem VRT      │      │                                                                                                        
-      │ 4. Log ✓ Warped (size MB)   │      │                                                                                                        
-      └───────────────┬─────────────┘      │                                                                                                        
-                      │                    │                                                                                                        
-      ┌───────────────▼─────────────┐      │                                                                                                        
-      │ Build VRT from warped files │      │                                                                                                        
-      │ - If >1 file: build_vrt()   │      │                                                                                                        
-      │ - If 1 file: use directly   │      │                                                                                                        
-      │ Store in vrt_library        │      │                                                                                                        
-      │ [norm_loc][date] = vrt_path │      │                                                                                                        
-      │ CONTINUE to next record     │      │                                                                                                        
-      └─────────────────────────────┘      │                                                                                                        
-                                           │                                                                                                        
-                          ┌────────────────▼────────────────┐                                                                                       
-                          │ SHAPEFILE-BASED PATH            │                                                                                       
-                          │ (Normal sectional processing)   │                                                                                       
-                          └────────────────┬────────────────┘                                                                                       
-                                           │                                                                                                        
+           └────────────────────┬─────────────────────┘
+                                │
                           ┌────────────────▼────────────────┐                                                                                       
                           │ find_shapefile(location):       │                                                                                       
                           │ - Search sectional/*.shp        │                                                                                       
@@ -502,27 +437,26 @@
            └────────────┬────────────────┘         │                                                                                                
                         │                          │                                                                                                
            ┌────────────▼────────────────────────┐ │                                                                                                
-           │ warp_and_cut():                     │ │                                                                                                
-           │ 1. Expand to RGBA:                  │ │                                                                                                
-           │    - Create /vsimem VRT             │ │                                                                                                
-           │    - gdal.Translate(rgbExpand=rgba) │ │                                                                                                
-           │ 2. Get shapefile SRS:               │ │                                                                                                
-           │    - get_shapefile_srs() [cached]   │ │                                                                                                
-           │    - OGR read layer.GetSpatialRef() │ │                                                                                                
-           │    - Export to Proj4 format         │ │                                                                                                
-           │ 3. Warp with cutline:               │ │                                                                                                
-           │    gdal.Warp():                     │ │                                                                                                
-           │    - format: GTiff                  │ │                                                                                                
-           │    - dstSRS: EPSG:3857              │ │                                                                                                
-           │    - cutlineDSName: shapefile       │ │                                                                                                
-           │    - cutlineSRS: shapefile_srs      │ │                                                                                                
-           │    - cropToCutline: True            │ │                                                                                                
-           │    - dstAlpha: True                 │ │                                                                                                
-           │    - resampleAlg: user choice       │ │                                                                                                
-           │    - COMPRESS={compression}         │ │                                                                                                
-           │    - TILED=YES, BIGTIFF=YES         │ │                                                                                                
-           │    - PREDICTOR=2                    │ │                                                                                                
-           │    - multithread: True              │ │                                                                                                
+           │ warp_and_cut():                     │ │
+           │ 1. Expand to RGBA:                  │ │
+           │    - Create /vsimem VRT             │ │
+           │    - gdal.Translate(rgbExpand=rgba) │ │
+           │ 2. Get shapefile SRS:               │ │
+           │    - get_shapefile_srs() [cached]   │ │
+           │    - OGR read layer.GetSpatialRef() │ │
+           │    - Export to Proj4 format         │ │
+           │ 3. Warp with cutline:               │ │
+           │    gdal.Warp():                     │ │
+           │    - format: GTiff                  │ │
+           │    - dstSRS: EPSG:3857              │ │
+           │    - cutlineDSName: shapefile       │ │
+           │    - cutlineSRS: shapefile_srs      │ │
+           │    - cropToCutline: True            │ │
+           │    - dstAlpha: True                 │ │
+           │    - resampleAlg: user choice       │ │
+           │    - TILED=YES, BIGTIFF=YES         │ │
+           │    - NO COMPRESSION (intermediates) │ │
+           │    - multithread: True              │ │
            │    - CUTLINE_ALL_TOUCHED=TRUE       │ │                                                                                                
            │ 4. Cleanup /vsimem VRT              │ │                                                                                                
            │ 5. Return success/failure           │ │                                                                                                
@@ -850,25 +784,6 @@
   └─ Fallback: 'EPSG:4326'                                                                                                                          
                                                                                                                                                     
   ╔══════════════════════════════════════════════════════════════════════════════╗                                                                  
-  ║                         SPECIAL LOCATION HANDLING                            ║                                                                  
-  ╚══════════════════════════════════════════════════════════════════════════════╝                                                                  
-                                                                                                                                                    
-  SHAPEFILE_FREE_LOCATIONS = {                                                                                                                      
-    'hawaiian_islands',                                                                                                                             
-    'mariana_islands',                                                                                                                              
-    'samoan_islands',                                                                                                                               
-    'western_aleutian_islands'                                                                                                                      
-  }                                                                                                                                                 
-                                                                                                                                                    
-  These locations:                                                                                                                                  
-  ├─ Skip shapefile lookup                                                                                                                          
-  ├─ Skip shapefile cutting                                                                                                                         
-  ├─ Manual warp to EPSG:3857 without cutline                                                                                                       
-  ├─ Marked as "NOT NEEDED" in review report                                                                                                        
-  └─ Still included in final mosaic                                                                                                                 
-                                                                                                                                                    
-                                                                                                                                                    
-  ╔══════════════════════════════════════════════════════════════════════════════╗                                                                  
   ║                            FALLBACK LOGIC                                    ║                                                                  
   ╚══════════════════════════════════════════════════════════════════════════════╝                                                                  
                                                                                                                                                     
@@ -897,11 +812,13 @@
   ├─ Set self.compression = 'ZSTD' or 'LZW'                                                                                                         
   └─ Log warning on first log() if using LZW fallback                                                                                               
                                                                                                                                                     
-  GeoTIFF Creation:                                                                                                                                 
-  ├─ Use self.compression in creation options                                                                                                       
-  ├─ If ZSTD decompression error during create_geotiff():                                                                                           
-  │  └─ Automatically retry with LZW compression                                                                                                    
-  └─ Used in both warp_and_cut() and create_geotiff()                                                                                               
+  Compression Usage:
+  ├─ Intermediate files (warp_and_cut): NO COMPRESSION
+  │  └─ Reduces CPU load and improves parallel performance
+  ├─ Final GeoTIFF (create_geotiff): Uses self.compression (ZSTD or LZW)
+  ├─ If ZSTD decompression error during create_geotiff():
+  │  └─ Automatically retry with LZW compression
+  └─ Only final output is compressed to optimize CPU and I/O balance                                                                                               
                                                                                                                                                     
   ╔══════════════════════════════════════════════════════════════════════════════╗                                                                  
   ║                          PERFORMANCE OPTIMIZATIONS                           ║                                                                  
@@ -919,9 +836,10 @@
      ├─ All warp jobs for a date submitted in parallel                                                                                              
      └─ Results collected via as_completed()                                                                                                        
                                                                                                                                                     
-  3. Compression During Warp:                                                                                                                       
-     ├─ Intermediate warped files compressed                                                                                                        
-     └─ Reduces I/O for large files                                                                                                                 
+  3. No Compression During Warp:
+     ├─ Intermediate warped files NOT compressed
+     ├─ Reduces CPU load during parallel operations
+     └─ Trades disk I/O for better CPU utilization                                                                                                                 
                                                                                                                                                     
   4. File Resolution Fast Paths:                                                                                                                    
      ├─ Check direct path first before os.walk()                                                                                                    
