@@ -1724,6 +1724,15 @@
   <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js"></script>
 
   <script>
+    // Guard against Leaflet tile callbacks firing after a layer was removed
+    if (L && L.TileLayer && L.TileLayer.prototype._tileReady) {
+      const originalTileReady = L.TileLayer.prototype._tileReady;
+      L.TileLayer.prototype._tileReady = function(error, tile) {
+        if (!this._map) return;
+        return originalTileReady.call(this, error, tile);
+      };
+    }
+
     /** CONFIGURATION **/
     const CONFIG = {
       baseUrl: 'https://data.archive.aero/sectionals/pmtiles/',
@@ -1873,6 +1882,9 @@
           tile.setAttribute('role', 'presentation');
 
           p.getZxy(coords.z, coords.x, coords.y).then(result => {
+            // If layer was removed before data arrived, abort
+            if (!layer._map) return;
+
             if (result && result.data) {
               const blob = new Blob([result.data], { type: 'image/webp' });
               tile.src = URL.createObjectURL(blob);
@@ -1889,11 +1901,13 @@
             } else {
               // No tile data - return transparent tile
               tile.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+              if (!layer._map) return;
               done(null, tile);
             }
           }).catch(err => {
             // Return transparent tile on error
             tile.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+            if (!layer._map) return;
             done(null, tile);
           });
 
