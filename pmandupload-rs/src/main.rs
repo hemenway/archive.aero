@@ -2,6 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use pmtiles::{Compression, PmTilesWriter, TileCoord, TileType};
+use rayon::prelude::*;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -11,7 +12,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use walkdir::WalkDir;
-use rayon::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "pmandupload")]
@@ -146,6 +146,7 @@ fn main() -> Result<()> {
         AtomicU64::new(0), // Convert
         AtomicU64::new(0), // Upload
     ]);
+    update_stage_progress(stage_counts.as_ref(), &stage_pb);
 
     // Configure rayon thread pool
     let errors: Vec<_> = rayon::ThreadPoolBuilder::new()
@@ -170,10 +171,16 @@ fn main() -> Result<()> {
                     match result {
                         Ok(_) => None,
                         Err(e) => {
-                            multi_progress.println(format!("  ❌ {} - {}",
-                                mbtiles_path.file_stem().and_then(|s| s.to_str()).unwrap_or("?"),
-                                e
-                            )).ok();
+                            multi_progress
+                                .println(format!(
+                                    "  ❌ {} - {}",
+                                    mbtiles_path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("?"),
+                                    e
+                                ))
+                                .ok();
                             Some((mbtiles_path.clone(), e))
                         }
                     }
@@ -258,14 +265,11 @@ fn collect_mbtiles_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-fn update_stage_progress(
-    stage_counts: &[AtomicU64; 3],
-    stage_pb: &ProgressBar,
-    total: u64,
-) {
+fn update_stage_progress(stage_counts: &[AtomicU64; 3], stage_pb: &ProgressBar) {
     let overviews = stage_counts[0].load(Ordering::Relaxed);
     let convert = stage_counts[1].load(Ordering::Relaxed);
     let upload = stage_counts[2].load(Ordering::Relaxed);
+    let active = overviews + convert + upload;
 
     let msg = format!(
         "Overviews: {} | Converting: {} | Uploading: {}",
@@ -273,12 +277,14 @@ fn update_stage_progress(
     );
     stage_pb.set_message(msg);
 
-    // Calculate overall stage progress (weighted)
-    let progress = if total > 0 {
-        ((overviews * 33 + convert * 33 + upload * 34) / total).min(100)
-    } else {
-        0
-    };
+    if active == 0 {
+        stage_pb.set_position(0);
+        return;
+    }
+
+    // Weighted average of in-flight work across the three pipeline stages
+    let weighted = overviews * 33 + convert * 66 + upload * 100;
+    let progress = (weighted / active).min(100);
     stage_pb.set_position(progress);
 }
 
@@ -324,31 +330,34 @@ fn process_one_with_progress(
     file_pb.set_position(0);
     file_pb.set_message("[1/3] Adding overviews...");
     stage_counts[0].fetch_add(1, Ordering::Relaxed);
-    update_stage_progress(stage_counts, stage_pb, 1);
+    update_stage_progress(stage_counts, stage_pb);
 
     add_overviews(mbtiles_path)?;
 
     stage_counts[0].fetch_sub(1, Ordering::Relaxed);
+    update_stage_progress(stage_counts, stage_pb);
     file_pb.set_position(33);
 
     // Stage 2: MBTiles -> PMTiles
     file_pb.set_message("[2/3] Converting to PMTiles...");
     stage_counts[1].fetch_add(1, Ordering::Relaxed);
-    update_stage_progress(stage_counts, stage_pb, 1);
+    update_stage_progress(stage_counts, stage_pb);
 
     mbtiles_to_pmtiles_with_progress(mbtiles_path, &pmtiles_path, &file_pb)?;
 
     stage_counts[1].fetch_sub(1, Ordering::Relaxed);
+    update_stage_progress(stage_counts, stage_pb);
     file_pb.set_position(66);
 
     // Stage 3: Upload
     file_pb.set_message("[3/3] Uploading to R2...");
     stage_counts[2].fetch_add(1, Ordering::Relaxed);
-    update_stage_progress(stage_counts, stage_pb, 1);
+    update_stage_progress(stage_counts, stage_pb);
 
     upload_pmtiles(&pmtiles_path, remote)?;
 
     stage_counts[2].fetch_sub(1, Ordering::Relaxed);
+    update_stage_progress(stage_counts, stage_pb);
     file_pb.set_position(100);
 
     // Cleanup if requested
@@ -357,14 +366,19 @@ fn process_one_with_progress(
     }
 
     let elapsed = start_time.elapsed();
-    let size_mb = pmtiles_path.metadata().map(|m| m.len() as f64 / 1024.0 / 1024.0).unwrap_or(0.0);
+    let size_mb = pmtiles_path
+        .metadata()
+        .map(|m| m.len() as f64 / 1024.0 / 1024.0)
+        .unwrap_or(0.0);
 
     file_pb.finish_and_clear();
 
     completed_count.fetch_add(1, Ordering::Relaxed);
     multi_progress.println(format!(
         "  ✔ {:<12} {:>6.1} MB  ({:.1}s)",
-        stem, size_mb, elapsed.as_secs_f64()
+        stem,
+        size_mb,
+        elapsed.as_secs_f64()
     ))?;
 
     Ok(())
@@ -438,8 +452,7 @@ fn mbtiles_to_pmtiles_with_progress(
     file_pb: &ProgressBar,
 ) -> Result<()> {
     // Open MBTiles database
-    let conn =
-        Connection::open(mbtiles_path).context("Failed to open MBTiles database")?;
+    let conn = Connection::open(mbtiles_path).context("Failed to open MBTiles database")?;
 
     // Read metadata
     let metadata = read_mbtiles_metadata(&conn)?;
@@ -451,8 +464,7 @@ fn mbtiles_to_pmtiles_with_progress(
     let total_tiles = get_tile_count(&conn)?;
 
     // Create PMTiles writer
-    let file =
-        File::create(pmtiles_path).context("Failed to create PMTiles file")?;
+    let file = File::create(pmtiles_path).context("Failed to create PMTiles file")?;
 
     let mut writer = PmTilesWriter::new(tile_type)
         .tile_compression(Compression::Gzip)
@@ -501,10 +513,7 @@ fn mbtiles_to_pmtiles_with_progress(
             let tile_pct = (tile_count as f64 / total_tiles as f64 * 100.0) as u64;
             let overall_pct = 33 + (tile_pct * 33 / 100);
             file_pb.set_position(overall_pct.min(65));
-            file_pb.set_message(format!(
-                "[2/3] Converting... {}%",
-                tile_pct
-            ));
+            file_pb.set_message(format!("[2/3] Converting... {}%", tile_pct));
         }
     }
 

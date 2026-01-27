@@ -30,7 +30,7 @@ except ImportError:
 import multiprocessing
 cpu_count = multiprocessing.cpu_count()
 
-# Set GDAL options
+# Set minimal GDAL global defaults (defer thread decisions to phase-specific config)
 try:
     import psutil
     available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
@@ -38,11 +38,47 @@ try:
 except ImportError:
     cache_size_mb = 2048
 
+# Only set cache at global level - thread settings will be phase-specific
 gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
-gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
-gdal.SetConfigOption('GDAL_SWATH_SIZE', str(cache_size_mb * 1024 * 1024))  # Convert MB to bytes
 gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
 gdal.SetConfigOption('GDAL_TIFF_INTERNAL_MASK', 'YES')
+
+
+def _configure_gdal_for_phase(phase: str, workers: int = 1, available_ram_mb: int = None):
+    """
+    Configure GDAL settings for specific processing phases.
+
+    Args:
+        phase: One of 'warp', 'mbtiles', 'geotiff'
+        workers: Number of parallel workers
+        available_ram_mb: Available RAM in MB (auto-detect if None)
+    """
+    if available_ram_mb is None:
+        try:
+            import psutil
+            available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
+        except ImportError:
+            available_ram_mb = 4096
+
+    if phase == 'warp':
+        # Warp phase: single-threaded per worker to prevent oversubscription
+        gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
+        cache_per_worker = max(256, available_ram_mb // workers)
+        gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_per_worker))
+
+    elif phase == 'mbtiles':
+        # MBTiles phase: single worker gets all CPUs, multiple workers throttled
+        if workers > 1:
+            gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
+        else:
+            gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
+        cache_per_worker = max(256, min(4096, available_ram_mb // workers))
+        gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_per_worker))
+
+    elif phase == 'geotiff':
+        # GeoTIFF phase: single-process translate with full CPU
+        gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
+        gdal.SetConfigOption('GDAL_CACHEMAX', str(max(512, min(8192, available_ram_mb * 3 // 4))))
 
 
 def create_mbtiles_worker(args):
@@ -61,17 +97,9 @@ def create_mbtiles_worker(args):
         try:
             from osgeo import gdal
             gdal.UseExceptions()
-            
-            # Set cache size for this worker
-            gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
-            
-            # Optimize threading: Single worker gets all CPUs, multiple workers get throttled
-            if total_workers <= 1:
-                gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
-            else:
-                # CRITICAL: Force single-threaded compression per worker to avoid I/O saturation
-                # We are already running parallel processes, so internal threading causes thrashing
-                gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
+
+            # Configure GDAL for MBTiles phase with phase-specific settings
+            _configure_gdal_for_phase('mbtiles', workers=total_workers, available_ram_mb=cache_size_mb * total_workers)
             
             # Parse zoom levels to get max zoom
             max_zoom = 11  # Default
@@ -156,11 +184,12 @@ class ChartSlicer:
         return False
 
     def __init__(self, source_dir: Path, output_dir: Path, csv_file: Path, shape_dir: Path,
-                 preview_mode: bool = False, download_delay: float = 8.0):
+                 preview_mode: bool = False, download_delay: float = 8.0, temp_dir: Path = None):
         self.source_dir = source_dir
         self.output_dir = output_dir
         self.csv_file = csv_file
         self.shape_dir = shape_dir
+        self.temp_dir = temp_dir if temp_dir else output_dir / ".temp"  # Default to output_dir/.temp for backward compatibility
         self.dole_data = defaultdict(list)
         self.srs_cache = {}  # Cache for shapefile SRS lookups
         self.preview_mode = preview_mode  # If True, only report what would be downloaded
@@ -172,6 +201,11 @@ class ChartSlicer:
             "mariana_islands_inset": "mariana_islands",
         }
 
+        # File index caches for O(1) lookups
+        self.files_by_name: Dict[str, Path] = {}  # Direct TIFs and ZIPs
+        self.tifs_by_dir: Dict[str, List[Path]] = {}  # Extracted folder -> TIF list
+        self.shapefile_index: Dict[str, Path] = {}  # Normalized location -> shapefile path
+
         # Determine compression method based on GDAL support
         self.compression = 'ZSTD' if self._check_zstd_support() else 'LZW'
         if self.compression == 'LZW':
@@ -180,6 +214,11 @@ class ChartSlicer:
 
         # MBTiles output directory (defaults to output_dir if not set)
         self.mbtiles_output_dir = None  # Set via attribute after init
+
+        # GeoTIFF ETA tracking
+        self.geotiff_total_planned = 0
+        self.geotiff_completed = 0
+        self.geotiff_times = []
 
     def log(self, msg: str):
         """Print log message with timestamp."""
@@ -235,6 +274,65 @@ class ChartSlicer:
 
         self.log(f"Loaded {len(self.dole_data)} dates.")
 
+    def _build_source_index(self):
+        """
+        Build file index for O(1) lookups instead of repeated os.walk calls.
+
+        Creates:
+        - files_by_name: Dict[str, Path] for direct TIFs and ZIPs
+        - tifs_by_dir: Dict[str, List[Path]] keyed by extracted folder (ZIP stem)
+        """
+        self.log("Building source file index...")
+
+        # Walk source_dir once and cache all files
+        for root, dirs, files in os.walk(self.source_dir):
+            root_path = Path(root)
+
+            for filename in files:
+                file_path = root_path / filename
+
+                # Cache direct TIF and ZIP files by name
+                if filename.endswith('.tif') or filename.endswith('.zip'):
+                    self.files_by_name[filename] = file_path
+
+                # For TIFs inside extracted directories, also index by parent directory name
+                if filename.endswith('.tif'):
+                    parent_dir = root_path.name
+                    # Only index if parent is not source_dir itself
+                    if root_path != self.source_dir:
+                        if parent_dir not in self.tifs_by_dir:
+                            self.tifs_by_dir[parent_dir] = []
+                        self.tifs_by_dir[parent_dir].append(file_path)
+
+        self.log(f"  Indexed {len(self.files_by_name)} files and {len(self.tifs_by_dir)} directories")
+
+    def _build_shapefile_index(self):
+        """
+        Build shapefile index for O(1) lookups instead of repeated globbing.
+
+        Creates shapefile_index: Dict[str, Path] keyed by normalized location name.
+        """
+        self.log("Building shapefile index...")
+
+        sectional_dir = self.shape_dir / "sectional"
+        if not sectional_dir.exists():
+            self.log(f"  WARNING: Sectional shapefile directory not found at {sectional_dir}")
+            return
+
+        # One controlled glob to find all shapefiles
+        candidates = list(sectional_dir.glob("**/*.shp"))
+
+        for shp in candidates:
+            # Normalize the shapefile name once
+            shp_norm = self.normalize_name(shp.stem)
+            # Store with normalized key
+            self.shapefile_index[shp_norm] = shp
+
+            # Also check for partial matches (for locations that might be substrings)
+            # We'll do exact matches first in find_shapefile, then partial matches
+
+        self.log(f"  Indexed {len(self.shapefile_index)} shapefiles")
+
     def download_file(self, url: str, target_path: Path, timeout: int = 300, max_retries: int = 3) -> bool:
         """
         Download a file from URL to target path with throttling and retry logic.
@@ -281,6 +379,9 @@ class ChartSlicer:
 
                 file_size_mb = target_path.stat().st_size / (1024 * 1024)
                 self.log(f"    ✓ Downloaded: {target_path.name} ({file_size_mb:.1f} MB)")
+
+                # Update file index with newly downloaded file
+                self.files_by_name[target_path.name] = target_path
 
                 # Update last download time for throttling
                 self.last_download_time = time.time()
@@ -329,8 +430,18 @@ class ChartSlicer:
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_dir)
 
-            # Count extracted files
-            tif_count = len(list(extract_dir.glob('**/*.tif')))
+            # Count extracted files and update index
+            tif_files = list(extract_dir.glob('**/*.tif'))
+            tif_count = len(tif_files)
+
+            # Update tifs_by_dir index with newly extracted files
+            dir_name = extract_dir.name
+            self.tifs_by_dir[dir_name] = tif_files
+
+            # Also add individual TIF files to files_by_name
+            for tif_file in tif_files:
+                self.files_by_name[tif_file.name] = tif_file
+
             self.log(f"    ✓ Extracted {tif_count} files to: {extract_dir.name}")
             return True
 
@@ -437,7 +548,7 @@ class ChartSlicer:
 
     def resolve_filename(self, filename: str, download_link: str = '') -> List[Tuple[Path, Optional[str]]]:
         """
-        Resolve filename from CSV to actual file path(s).
+        Resolve filename from CSV to actual file path(s) using index cache.
 
         Supports:
         1. Direct .tif files: "file.tif" → finds file.tif
@@ -456,26 +567,24 @@ class ChartSlicer:
             # Remove .zip extension to get directory name
             dir_name = filename[:-4]  # Remove '.zip'
 
-            # Check direct path FIRST (fast path)
+            # Check index FIRST (O(1) lookup)
+            if dir_name in self.tifs_by_dir:
+                # Found in index - return cached list
+                for tif_file in self.tifs_by_dir[dir_name]:
+                    results.append((tif_file, None))
+                return results
+
+            # Not in index - check if directory exists but wasn't indexed
             direct_path = self.source_dir / dir_name
             if direct_path.exists() and direct_path.is_dir():
-                for tif_file in direct_path.glob('**/*.tif'):
+                tif_files = list(direct_path.glob('**/*.tif'))
+                # Update index for future lookups
+                self.tifs_by_dir[dir_name] = tif_files
+                for tif_file in tif_files:
                     if tif_file.is_file():
                         results.append((tif_file, None))
                 if results:
                     return results
-
-            # Fall back to os.walk only if direct path doesn't exist
-            for root, dirs, files in os.walk(self.source_dir):
-                if dir_name in dirs:
-                    dir_path = Path(root) / dir_name
-                    # Find all TIF files in this directory
-                    for tif_file in dir_path.glob('**/*.tif'):
-                        if tif_file.is_file():
-                            results.append((tif_file, None))
-                    if results:
-                        return results  # Found and extracted, return early
-                    break
 
             # If not found, try to download (but not in preview mode)
             if not results and download_link and not self.preview_mode:
@@ -485,13 +594,12 @@ class ChartSlicer:
 
                 # Download the ZIP file
                 if self.download_file(download_link, zip_path):
-                    # Extract it
+                    # Extract it (this will update the index)
                     if self.extract_zip(zip_path, extract_dir):
-                        # Find extracted TIF files
-                        for tif_file in extract_dir.glob('**/*.tif'):
-                            if tif_file.is_file():
+                        # Get the updated index entry
+                        if dir_name in self.tifs_by_dir:
+                            for tif_file in self.tifs_by_dir[dir_name]:
                                 results.append((tif_file, None))
-                        # Keep the ZIP file for reference
                         return results
                     else:
                         self.log(f"    Failed to extract: {filename}")
@@ -500,19 +608,18 @@ class ChartSlicer:
 
         else:
             # Case 2: Direct .tif file
-            # Check direct path FIRST (fast path)
-            direct_path = self.source_dir / filename
-            if direct_path.exists() and direct_path.is_file():
-                results.append((direct_path, None))
+            # Check index FIRST (O(1) lookup)
+            if filename in self.files_by_name:
+                results.append((self.files_by_name[filename], None))
                 return results
 
-            # Fall back to os.walk only if direct path doesn't exist
-            for root, _, files in os.walk(self.source_dir):
-                for fname in files:
-                    if fname == filename and fname.endswith('.tif'):
-                        file_path = Path(root) / fname
-                        results.append((file_path, None))
-                        return results
+            # Not in index - check if file exists but wasn't indexed
+            direct_path = self.source_dir / filename
+            if direct_path.exists() and direct_path.is_file():
+                # Update index for future lookups
+                self.files_by_name[filename] = direct_path
+                results.append((direct_path, None))
+                return results
 
             # If not found, try to download (but not in preview mode)
             if not results and download_link and not self.preview_mode:
@@ -543,22 +650,18 @@ class ChartSlicer:
         return resolved
 
     def find_shapefile(self, location: str) -> Optional[Path]:
-        """Find shapefile for location - only searches sectional shapefiles."""
+        """Find shapefile for location using index cache (O(1) lookup)."""
         norm_loc = self.normalize_name(location)
-        sectional_dir = self.shape_dir / "sectional"
 
-        # Only search sectional directory to avoid TAC, Terminal, Helicopter, etc.
-        if not sectional_dir.exists():
-            self.log(f"WARNING: Sectional shapefile directory not found at {sectional_dir}")
-            return None
+        # Check for exact match first (O(1))
+        if norm_loc in self.shapefile_index:
+            return self.shapefile_index[norm_loc]
 
-        candidates = list(sectional_dir.glob("**/*.shp"))
-        for shp in candidates:
-            shp_norm = self.normalize_name(shp.stem)
-            if shp_norm == norm_loc:
-                return shp
+        # Check for partial matches (substring search)
+        for shp_norm, shp_path in self.shapefile_index.items():
             if norm_loc in shp_norm:
-                return shp
+                return shp_path
+
         return None
 
     def get_shapefile_srs(self, shapefile: Path) -> str:
@@ -611,10 +714,14 @@ class ChartSlicer:
         # With pre-unzipped files, src_file is always a direct TIF path
         tiffs_to_warp = [src_file]
 
+        # Decide intermediate format for warp output (TIFF default, VRT optional)
+        warp_out = getattr(self, 'warp_output', 'tif').lower()
+        suffix = '.vrt' if warp_out == 'vrt' else '.tif'
+
         # Create job entries for each TIFF
         for tiff in tiffs_to_warp:
             sanitized_stem = self.sanitize_filename(tiff.stem)
-            temp_tif = temp_dir / f"{norm_loc}_{sanitized_stem}.tif"
+            temp_tif = temp_dir / f"{norm_loc}_{sanitized_stem}{suffix}"
             jobs.append({
                 'input_tiff': tiff,
                 'shapefile': shp_path,
@@ -627,6 +734,9 @@ class ChartSlicer:
 
     def _warp_worker(self, job: Dict) -> Dict:
         """Worker function for parallel warping operations."""
+        # Configure GDAL for warp phase (single-threaded per worker)
+        _configure_gdal_for_phase('warp', workers=1)
+
         success = self.warp_and_cut(
             job['input_tiff'],
             job['shapefile'],
@@ -641,13 +751,25 @@ class ChartSlicer:
         }
 
     def warp_and_cut(self, input_tiff: Path, shapefile: Path, output_tiff: Path) -> bool:
-        """Warp and cut TIFF using shapefile as cutline."""
+        """Warp and cut TIFF using shapefile as cutline.
+
+        If self.warp_output is set to "vrt", write a VRT instead of a TIFF
+        to avoid the intermediate write/read of warped GeoTIFFs.
+        """
         try:
-            self.log(f"    Warping {input_tiff.name}...")
+            warp_out = getattr(self, 'warp_output', 'tif').lower()
+            to_vrt = warp_out == 'vrt'
+            self.log(f"    Warping {input_tiff.name} to {'VRT' if to_vrt else 'TIFF'}...")
 
             # Step 1: Expand to RGBA
             sanitized_stem = self.sanitize_filename(input_tiff.stem)
-            temp_vrt_name = f"/vsimem/{sanitized_stem}_rgba.vrt"
+            # Keep the RGBA VRT on disk when outputting VRT so downstream VRTs
+            # can reference a persistent source (vsimem would disappear).
+            if to_vrt:
+                temp_vrt_path = output_tiff.parent / f"{sanitized_stem}_rgba.vrt"
+                temp_vrt_name = str(temp_vrt_path)
+            else:
+                temp_vrt_name = f"/vsimem/{sanitized_stem}_rgba.vrt"
             translate_options = gdal.TranslateOptions(format="VRT", rgbExpand="rgba")
             ds_vrt = gdal.Translate(temp_vrt_name, str(input_tiff), options=translate_options)
             ds_vrt = None
@@ -655,18 +777,18 @@ class ChartSlicer:
             # Get the actual SRS of the shapefile (don't hardcode EPSG:4326)
             shapefile_srs = self.get_shapefile_srs(shapefile)
 
-            # Step 2: Warp with cutline to GTiff with BIGTIFF support
+            # Step 2: Warp with cutline. Write GTiff (default) or VRT when requested
             # Note: Not specifying xRes/yRes allows GDAL to maintain source resolution during warp
             # Don't compress intermediates to reduce CPU load and improve parallel performance
             warp_options = gdal.WarpOptions(
-                format="GTiff",
+                format="VRT" if to_vrt else "GTiff",
                 dstSRS='EPSG:3857',
                 cutlineDSName=str(shapefile),
                 cutlineSRS=shapefile_srs,
                 cropToCutline=True,
                 dstAlpha=True,
                 resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
-                creationOptions=['TILED=YES', 'BIGTIFF=YES'],
+                creationOptions=None if to_vrt else ['TILED=YES', 'BIGTIFF=YES'],
                 multithread=True,
                 warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
             )
@@ -674,15 +796,17 @@ class ChartSlicer:
             ds = gdal.Warp(str(output_tiff), temp_vrt_name, options=warp_options)
 
             # Cleanup
-            try:
-                gdal.Unlink(temp_vrt_name)
-            except:
-                pass
+            if not to_vrt and temp_vrt_name.startswith("/vsimem/"):
+                try:
+                    gdal.Unlink(temp_vrt_name)
+                except:
+                    pass
 
             if ds:
                 ds = None
                 file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
-                self.log(f"      ✓ Created {output_tiff.name} ({file_size_mb:.1f} MB)")
+                size_label = f"{file_size_mb:.1f} MB" if not to_vrt else f"{output_tiff.stat().st_size} bytes"
+                self.log(f"      ✓ Created {output_tiff.name} ({size_label})")
                 return True
             else:
                 self.log(f"      ✗ Warp failed for {input_tiff.name}")
@@ -732,7 +856,7 @@ class ChartSlicer:
             self.log(f"      {traceback.format_exc()}")
             return False
 
-    def create_geotiff(self, input_vrt: Path, output_tiff: Path, compress: str = 'LZW') -> bool:
+    def create_geotiff(self, input_vrt: Path, output_tiff: Path, compress: str = 'LZW') -> Tuple[bool, Optional[float]]:
         """Convert VRT to optimized GeoTIFF using Translate with multithreading.
 
         Uses gdal.Translate instead of gdal.Warp because:
@@ -741,20 +865,71 @@ class ChartSlicer:
         - NUM_THREADS creation option enables parallel compression
         """
         try:
-            self.log(f"    Creating GeoTIFF with {compress} compression (multithreaded)...")
+            # Log compression status
+            num_threads = getattr(self, 'num_threads', '4')
+            if compress == 'NONE':
+                self.log(f"    Creating GeoTIFF with no compression ({num_threads} threads)...")
+            else:
+                self.log(f"    Creating GeoTIFF with {compress} compression ({num_threads} threads)...")
+
+            # Configure GDAL for single-process GeoTIFF creation (use all CPUs)
+            _configure_gdal_for_phase('geotiff', workers=1)
+
+            # Build creation options based on compression
+            creation_opts = [
+                'TILED=YES',
+                'BIGTIFF=YES',
+                'BLOCKXSIZE=512',
+                'BLOCKYSIZE=512',
+                f'NUM_THREADS={num_threads}'
+            ]
+
+            if compress != 'NONE':
+                creation_opts.extend([
+                    f'COMPRESS={compress}',
+                    'PREDICTOR=2'
+                ])
+
+            # Optional clipping window (projWin) if user supplied --clip-projwin
+            projwin = getattr(self, 'clip_projwin', None)
+            if projwin:
+                ulx, uly, lrx, lry = projwin
+                self.log(f"    Applying projWin clip: UL({ulx}, {uly}) LR({lrx}, {lry})")
+
+            # Simple progress reporter for long translates (logs every 5%)
+            start_time = time.time()
+            progress_state = {'last_pct': -5}
+
+            def progress_cb(complete, message, cb_data):
+                pct = int(complete * 100)
+                if pct - progress_state['last_pct'] >= 5:
+                    progress_state['last_pct'] = pct
+                    elapsed = time.time() - start_time
+                    # Per-job ETA
+                    if pct > 0:
+                        est_total = elapsed * 100 / pct
+                        eta_sec = max(0, est_total - elapsed)
+                        eta_min = eta_sec / 60
+                        self.log(f"      GeoTIFF progress: {pct}% | ETA {eta_min:.1f} min")
+                    else:
+                        self.log(f"      GeoTIFF progress: {pct}%")
+
+                    # Overall ETA (based on completed GeoTIFFs)
+                    remaining_jobs = max(0, getattr(self, 'geotiff_total_planned', 0) - getattr(self, 'geotiff_completed', 0) - 1)
+                    durations = getattr(self, 'geotiff_times', [])
+                    if durations:
+                        avg = sum(durations) / len(durations)
+                        overall_sec = eta_sec + remaining_jobs * avg if pct > 0 else remaining_jobs * avg
+                        overall_min = overall_sec / 60
+                        self.log(f"      Overall ETA: {overall_min:.1f} min remaining for GeoTIFFs")
+                return 1
 
             # Use gdal.Translate - faster than Warp when no reprojection needed
             translate_options = gdal.TranslateOptions(
                 format='GTiff',
-                creationOptions=[
-                    'TILED=YES',
-                    f'COMPRESS={compress}',
-                    'PREDICTOR=2',
-                    'BIGTIFF=YES',
-                    'BLOCKXSIZE=512',
-                    'BLOCKYSIZE=512',
-                    'NUM_THREADS=ALL_CPUS'
-                ]
+                creationOptions=creation_opts,
+                projWin=projwin if projwin else None,
+                callback=progress_cb
             )
 
             ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
@@ -762,11 +937,13 @@ class ChartSlicer:
             if ds:
                 ds = None
                 file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
-                self.log(f"      ✓ GeoTIFF created: {output_tiff.name} ({file_size_mb:.1f} MB)")
-                return True
+                elapsed = time.time() - start_time
+                rate = file_size_mb / elapsed if elapsed > 0 else 0
+                self.log(f"      ✓ GeoTIFF created: {output_tiff.name} ({file_size_mb:.1f} MB in {elapsed:.1f}s, {rate:.1f} MB/s)")
+                return True, elapsed
             else:
                 self.log(f"      ✗ Failed to create GeoTIFF")
-                return False
+                return False, None
 
         except Exception as e:
             error_str = str(e).lower()
@@ -1227,18 +1404,20 @@ class ChartSlicer:
     def _process_mbtiles_only(self):
         """Process MBTiles from existing VRT files (resume mode).
 
-        Scans output directory for .vrt files and creates MBTiles for any
+        Scans temp directory for .vrt files and creates MBTiles for any
         that don't already have a valid .mbtiles file (>1MB).
         """
         self.log("\n=== MBTiles-Only Mode (Resume) ===")
-        self.log(f"Scanning {self.output_dir} for existing VRT files...")
+        self.log(f"Scanning {self.temp_dir} for existing VRT files...")
 
-        # Find all VRT files - first check .temp subdirectories, then fall back to top-level
-        vrt_files = sorted(self.output_dir.glob(".temp/*/mosaic_*.vrt"))
-        
-        # Fall back to top-level directory for backwards compatibility
+        # Find all VRT files in temp directory subdirectories
+        vrt_files = sorted(self.temp_dir.glob("*/mosaic_*.vrt"))
+
+        # Fall back to output directory for backwards compatibility
         if not vrt_files:
-            vrt_files = sorted(self.output_dir.glob("*.vrt"))
+            vrt_files = sorted(self.output_dir.glob(".temp/*/mosaic_*.vrt"))
+            if not vrt_files:
+                vrt_files = sorted(self.output_dir.glob("*.vrt"))
             
         self.log(f"Found {len(vrt_files)} VRT files")
 
@@ -1355,13 +1534,12 @@ class ChartSlicer:
         # Fallback logic uses most_recent available date, so processing order doesn't matter
         sorted_dates = sorted(self.dole_data.keys())
         total_dates = len(sorted_dates)
+        output_format = getattr(self, 'output_format', 'geotiff')
 
         for date_idx, date in enumerate(sorted_dates, 1):
             self.log(f"\n[{date_idx}/{total_dates}] Processing date: {date}")
 
             # Check if output artifacts already exist to skip expensive processing
-            output_format = getattr(self, 'output_format', 'geotiff')
-            
             geotiff_path = self.output_dir / f"{date}.tif"
             geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024
 
@@ -1394,7 +1572,7 @@ class ChartSlicer:
                  continue
 
             records = self.dole_data[date]
-            temp_dir = self.output_dir / ".temp" / date
+            temp_dir = self.temp_dir / date
             temp_dir.mkdir(parents=True, exist_ok=True)
 
             # Collect warp jobs for parallel processing
@@ -1494,7 +1672,7 @@ class ChartSlicer:
                 mosaic_vrts = list(date_matrix.values())
                 self.log(f"  Creating mosaic VRT from {len(mosaic_vrts)} locations...")
 
-                temp_dir = self.output_dir / ".temp" / date
+                temp_dir = self.temp_dir / date
                 temp_dir.mkdir(parents=True, exist_ok=True)
 
                 mosaic_vrt = temp_dir / f"mosaic_{date}.vrt"
@@ -1527,7 +1705,10 @@ class ChartSlicer:
                     else:
                         if output_format in ['geotiff', 'both'] and not geotiff_exists:
                             self.log(f"  Creating GeoTIFF (this may take several minutes)...")
-                            self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
+                            success, elapsed = self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
+                            if success and elapsed:
+                                self.geotiff_completed += 1
+                                self.geotiff_times.append(elapsed)
 
                         if output_format == 'mbtiles' and not mbtiles_exists:
                             self.log(f"  Queuing MBTiles creation...")
@@ -1603,8 +1784,8 @@ Examples:
     parser.add_argument(
         "-s", "--source",
         type=Path,
-        default=Path("/Volumes/projects/newrawtiffs"),
-        help="Source directory containing TIFF/ZIP files (default: /Volumes/projects/newrawtiffs)"
+        default=Path("/Volumes/drive/newrawtiffs"),
+        help="Source directory containing TIFF/ZIP files (default: /Volumes/drive/newrawtiffs)"
     )
 
     parser.add_argument(
@@ -1629,6 +1810,13 @@ Examples:
     )
 
     parser.add_argument(
+        "-t", "--temp-dir",
+        type=Path,
+        default=Path("/Volumes/projects/.temp"),
+        help="Temporary directory for intermediate files (default: /Volumes/projects/.temp)"
+    )
+
+    parser.add_argument(
         "-f", "--format",
         type=str,
         choices=['geotiff', 'mbtiles', 'tiles', 'both'],
@@ -1649,6 +1837,39 @@ Examples:
         choices=['nearest', 'bilinear', 'cubic', 'cubicspline'],
         default='nearest',
         help="Resampling algorithm for warping (default: nearest). Use 'nearest' for faster processing with charts"
+    )
+
+    parser.add_argument(
+        "--warp-output",
+        type=str,
+        choices=['tif', 'vrt'],
+        default='tif',
+        help="Intermediate warp output format: 'tif' (default) writes cutlines to disk, 'vrt' keeps them virtual to reduce I/O"
+    )
+
+    parser.add_argument(
+        "--clip-projwin",
+        type=float,
+        nargs=4,
+        metavar=('ULX', 'ULY', 'LRX', 'LRY'),
+        default=None,
+        help="Optional projWin window (in target CRS, EPSG:3857) applied at VRT→GeoTIFF translate. "
+             "Order: ULX ULY LRX LRY. Example for CONUS approx: --clip-projwin -13914936 6446276 -7347086 2753408"
+    )
+
+    parser.add_argument(
+        "--compression",
+        type=str,
+        choices=['AUTO', 'ZSTD', 'LZW', 'DEFLATE', 'NONE'],
+        default='AUTO',
+        help="Compression for GeoTIFF output: AUTO (detect best), ZSTD, LZW, DEFLATE, or NONE (default: AUTO)"
+    )
+
+    parser.add_argument(
+        "--num-threads",
+        type=str,
+        default='4',
+        help="Number of threads for GeoTIFF compression: a number (e.g., '4') or 'ALL_CPUS' (default: 4). Lower values reduce mutex contention on network drives."
     )
 
     parser.add_argument(
@@ -1710,19 +1931,26 @@ Examples:
     # Create output directory
     args.output.mkdir(parents=True, exist_ok=True)
 
+    # Create temp directory
+    args.temp_dir.mkdir(parents=True, exist_ok=True)
+
     # Create MBTiles output directory if specified
     if args.mbtiles_output:
         args.mbtiles_output.mkdir(parents=True, exist_ok=True)
 
     # Process
     slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles,
-                         preview_mode=args.preview, download_delay=args.download_delay)
+                         preview_mode=args.preview, download_delay=args.download_delay,
+                         temp_dir=args.temp_dir)
     slicer.output_format = args.format
     slicer.zoom_levels = args.zoom
     slicer.parallel_mbtiles = args.parallel_mbtiles
     slicer.mbtiles_only = args.mbtiles_only
     slicer.mbtiles_output_dir = args.mbtiles_output
     slicer.tile_format = args.tile_format
+    slicer.warp_output = args.warp_output
+    slicer.clip_projwin = tuple(args.clip_projwin) if args.clip_projwin else None
+    slicer.num_threads = args.num_threads
 
     # Map resampling algorithm
     resample_map = {
@@ -1733,7 +1961,15 @@ Examples:
     }
     slicer.resample_alg = resample_map[args.resample]
 
+    # Override compression if specified
+    if args.compression != 'AUTO':
+        slicer.compression = args.compression
+
     slicer.load_dole_data()
+
+    # Build indexes for O(1) lookups (after loading CSV data)
+    slicer._build_source_index()
+    slicer._build_shapefile_index()
 
     # If preview mode, show what would be downloaded and exit
     if args.preview:
