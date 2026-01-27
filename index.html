@@ -1722,7 +1722,6 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
   <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js"></script>
-  <script src="https://unpkg.com/protomaps-leaflet@4.0.0/dist/protomaps-leaflet.min.js"></script>
 
   <script>
     /** CONFIGURATION **/
@@ -1731,15 +1730,6 @@
       csvUrl: 'dates.csv', // Dynamic Source
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       frames: [] // Will be populated dynamically
-    };
-
-    // Register PMTiles protocol for fetch
-    const pmtilesProtocol = new pmtiles.Protocol();
-    pmtiles.leafletRasterLayer = function(url, options) {
-      return protomapsL.leafletLayer({
-        url: url,
-        ...options
-      });
     };
 
     /** UTILITIES **/
@@ -1888,9 +1878,12 @@
               tile.src = URL.createObjectURL(blob);
               tile.onload = () => {
                 URL.revokeObjectURL(tile.src);
+                // Skip callback if layer is no longer on a map to avoid Leaflet null _map errors
+                if (!layer._map) return;
                 done(null, tile);
               };
               tile.onerror = () => {
+                if (!layer._map) return;
                 done(new Error('Tile load error'), tile);
               };
             } else {
@@ -1974,6 +1967,7 @@
           // Ignore stale requests
           if (requestId !== this.requestCounter) {
             removeIfInactive();
+            stopSpinner();
             return;
           }
 
@@ -1988,6 +1982,7 @@
         const bailOut = (notify = true) => {
           if (requestId !== this.requestCounter) {
             removeIfInactive();
+            stopSpinner();
             return;
           }
           removeIfInactive();
