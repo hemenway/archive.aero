@@ -1846,6 +1846,7 @@
         this.cache = {};
         this.activeLayers = [];
         this.pmtilesInstances = {}; // Cache for PMTiles instances
+        this.requestCounter = 0; // Track most recent frame request
 
         // Debounced version of showFrame for timeline scrubbing
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), 250);
@@ -1924,6 +1925,7 @@
         const currentFrame = CONFIG.frames[index];
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
+        const requestId = ++this.requestCounter;
 
         // Get layer for the selected date only
         const data = this.getLayerData(currentFrame.date, currentFrame.url);
@@ -1938,34 +1940,93 @@
         const oldLayers = [...this.activeLayers];
         const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
 
+        // If we're already displaying this layer, just sync opacity and return
+        if (this.activeLayers[0] === newLayer) {
+          newLayer.setOpacity(opacityValue);
+          clearTimeout(spinnerTimeout);
+          loader.classList.remove('active');
+          return;
+        }
+
         // Add new layer at opacity 0 (hidden)
         if (!this.map.hasLayer(newLayer)) {
           newLayer.setOpacity(0);
           newLayer.addTo(this.map);
         }
 
-        // Wait for first tile to load, then swap (prevents flash)
-        let didSwap = false;
-        const doSwap = () => {
-          if (didSwap) return;
-          didSwap = true;
-          newLayer.off('tileload', doSwap);
+        const tilesReady = () => {
+          const tiles = newLayer._tiles;
+          return tiles && Object.keys(tiles).length > 0 && Object.values(tiles).every(t => t.loaded);
+        };
+
+        const stopSpinner = () => {
+          clearTimeout(spinnerTimeout);
+          loader.classList.remove('active');
+        };
+
+        const removeIfInactive = () => {
+          if (!this.activeLayers.includes(newLayer) && this.map.hasLayer(newLayer)) {
+            this.map.removeLayer(newLayer);
+          }
+        };
+
+        const finalizeSwap = () => {
+          // Ignore stale requests
+          if (requestId !== this.requestCounter) {
+            removeIfInactive();
+            return;
+          }
 
           requestAnimationFrame(() => {
             newLayer.setOpacity(opacityValue);
-            // Remove old layers AFTER new layer is visible
-            oldLayers.forEach(l => { if (l !== newLayer) this.map.removeLayer(l); });
+            oldLayers.forEach(l => { if (l !== newLayer && this.map.hasLayer(l)) this.map.removeLayer(l); });
             this.activeLayers = [newLayer];
-
-            clearTimeout(spinnerTimeout);
-            loader.classList.remove('active');
+            stopSpinner();
           });
         };
 
-        newLayer.on('tileload', doSwap);
+        const bailOut = (notify = true) => {
+          if (requestId !== this.requestCounter) {
+            removeIfInactive();
+            return;
+          }
+          removeIfInactive();
+          stopSpinner();
+          if (notify) Utils.toast('Chart failed to load; keeping previous map');
+        };
 
-        // Fallback timeout in case no tiles load (e.g., area with no coverage)
-        setTimeout(doSwap, 3000);
+        const cleanupListeners = (onLoadFn, onErrorFn) => {
+          newLayer.off('load', onLoadFn);
+          newLayer.off('tileerror', onErrorFn);
+        };
+
+        // If tiles already cached and ready, swap immediately
+        if (tilesReady()) {
+          finalizeSwap();
+        } else {
+          const onLoad = () => {
+            cleanupListeners(onLoad, onError);
+            finalizeSwap();
+          };
+
+          const onError = () => {
+            cleanupListeners(onLoad, onError);
+            bailOut();
+          };
+
+          newLayer.on('load', onLoad);
+          newLayer.on('tileerror', onError);
+
+          // Fallback: if layer still isn't ready after timeout, keep current map to avoid flicker
+          setTimeout(() => {
+            cleanupListeners(onLoad, onError);
+            if (tilesReady()) {
+              finalizeSwap();
+            } else {
+              bailOut(false);
+            }
+          }, 10000);
+        }
 
         // Preload 3 frames before and 3 after, clean up others
         this.manageCache(index);
