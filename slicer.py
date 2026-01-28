@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
 import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 
 try:
     from osgeo import gdal, ogr
@@ -69,6 +69,112 @@ def _configure_gdal_for_phase(phase: str, workers: int = 1, available_ram_mb: in
         # GeoTIFF phase: single-process translate with full CPU
         gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
         gdal.SetConfigOption('GDAL_CACHEMAX', str(max(512, min(8192, available_ram_mb * 3 // 4))))
+
+
+def create_geotiff_worker(args):
+    """Worker for parallel GeoTIFF creation."""
+    try:
+        input_vrt, output_tiff, date, compress, num_threads, clip_projwin, cache_size_mb = args
+    except ValueError:
+        input_vrt, output_tiff, date, compress, num_threads, clip_projwin = args
+        cache_size_mb = None
+
+    start_time = time.time()
+    output_tiff = Path(output_tiff)
+
+    try:
+        from osgeo import gdal
+        gdal.UseExceptions()
+    except Exception as e:
+        return {
+            'success': False,
+            'date': date,
+            'output_tiff': str(output_tiff),
+            'error': f"GDAL import failed: {e}"
+        }
+
+    try:
+        if cache_size_mb:
+            gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
+        if num_threads:
+            gdal.SetConfigOption('GDAL_NUM_THREADS', str(num_threads))
+    except Exception:
+        pass
+
+    output_tiff.parent.mkdir(parents=True, exist_ok=True)
+
+    attempted_lzw = False
+    current_compress = compress
+
+    while True:
+        try:
+            creation_opts = [
+                'TILED=YES',
+                'BIGTIFF=YES',
+                'BLOCKXSIZE=1024',
+                'BLOCKYSIZE=1024',
+                f'NUM_THREADS={num_threads}'
+            ]
+
+            if current_compress != 'NONE':
+                creation_opts.extend([
+                    f'COMPRESS={current_compress}',
+                    'PREDICTOR=2'
+                ])
+
+            translate_options = gdal.TranslateOptions(
+                format='GTiff',
+                creationOptions=creation_opts,
+                projWin=clip_projwin if clip_projwin else None
+            )
+
+            ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
+
+            if ds:
+                ds = None
+                file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
+                elapsed = time.time() - start_time
+                rate = file_size_mb / elapsed if elapsed > 0 else 0
+                return {
+                    'success': True,
+                    'date': date,
+                    'output_tiff': str(output_tiff),
+                    'elapsed': elapsed,
+                    'file_size_mb': file_size_mb,
+                    'rate': rate,
+                    'compress': current_compress
+                }
+
+            return {
+                'success': False,
+                'date': date,
+                'output_tiff': str(output_tiff),
+                'error': 'gdal.Translate returned None'
+            }
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if current_compress == 'ZSTD' and not attempted_lzw and (
+                'zstd' in error_str or 'frame descriptor' in error_str or 'data corruption' in error_str
+            ):
+                attempted_lzw = True
+                current_compress = 'LZW'
+                try:
+                    if output_tiff.exists():
+                        output_tiff.unlink()
+                except Exception:
+                    pass
+                continue
+
+            import traceback
+            return {
+                'success': False,
+                'date': date,
+                'output_tiff': str(output_tiff),
+                'error': str(e),
+                'traceback': traceback.format_exc(),
+                'compress': current_compress
+            }
 
 
 class ChartSlicer:
@@ -780,8 +886,8 @@ class ChartSlicer:
             creation_opts = [
                 'TILED=YES',
                 'BIGTIFF=YES',
-                'BLOCKXSIZE=512',
-                'BLOCKYSIZE=512',
+                'BLOCKXSIZE=1024',
+                'BLOCKYSIZE=1024',
                 f'NUM_THREADS={num_threads}'
             ]
 
@@ -863,7 +969,7 @@ class ChartSlicer:
             self.log(f"    Error creating GeoTIFF: {e}")
             import traceback
             self.log(f"    {traceback.format_exc()}")
-            return False
+            return False, None
 
     def _save_review_csv(self, report_data: List[Dict], output_path: Path) -> None:
         """Save review report to CSV file in matrix format (dates × locations)."""
@@ -1243,7 +1349,7 @@ class ChartSlicer:
         vrt_library = self._rebuild_vrt_library(all_locations)
 
         # Process each date (earliest to latest)
-        # Fallback logic uses most_recent available date, so processing order doesn't matter
+        # Fallback logic uses most_recent available date <= current date
         sorted_dates = sorted(self.dole_data.keys())
         total_dates = len(sorted_dates)
 
@@ -1258,6 +1364,8 @@ class ChartSlicer:
         self.geotiff_times = []
         if dates_needing_geotiff > 0:
             self.log(f"GeoTIFFs to create: {dates_needing_geotiff} (skipping {total_dates - dates_needing_geotiff} existing)")
+
+        geotiff_jobs = []
 
         for date_idx, date in enumerate(sorted_dates, 1):
             self.log(f"\n[{date_idx}/{total_dates}] Processing date: {date}")
@@ -1356,10 +1464,11 @@ class ChartSlicer:
                     if date in vrt_library[location]:
                         date_matrix[location] = vrt_library[location][date]
                     elif vrt_library[location]:
-                        # Use most recent available date (works regardless of processing order)
-                        available_dates = sorted(vrt_library[location].keys())
-                        most_recent = available_dates[-1]
-                        date_matrix[location] = vrt_library[location][most_recent]
+                        # Use most recent available date <= current date to avoid future data
+                        available_dates = [d for d in vrt_library[location].keys() if d <= date]
+                        if available_dates:
+                            most_recent = max(available_dates)
+                            date_matrix[location] = vrt_library[location][most_recent]
 
             # Create mosaic VRT and output GeoTIFF
             if date_matrix:
@@ -1372,17 +1481,113 @@ class ChartSlicer:
                 if self.build_vrt(mosaic_vrts, mosaic_vrt):
                     self.log(f"  ✓ Mosaic VRT created")
 
-                    self.log(f"  Creating GeoTIFF (this may take several minutes)...")
-                    success, elapsed = self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
-                    if success and elapsed:
-                        self.geotiff_completed += 1
-                        self.geotiff_times.append(elapsed)
-
-                    self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
+                    geotiff_jobs.append((mosaic_vrt, geotiff_path, date))
+                    self.log(f"  Queued GeoTIFF creation")
+                    self.log(f"  ✓✓✓ {date.upper()} VRT COMPLETE")
                 else:
                     self.log(f"  ✗ Mosaic creation failed")
             else:
                 self.log(f"  Skipping {date} - no data available")
+
+        if geotiff_jobs:
+            # Determine GeoTIFF worker count (conservative by default)
+            requested_workers = getattr(self, 'parallel_geotiff', None)
+            if not requested_workers or requested_workers < 1:
+                requested_workers = min(cpu_count, len(geotiff_jobs))
+            geo_workers = max(1, min(requested_workers, len(geotiff_jobs)))
+
+            try:
+                import psutil
+                available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
+            except ImportError:
+                available_ram_mb = 4096
+
+            cache_per_worker = max(256, min(4096, available_ram_mb // geo_workers))
+
+            # Cap per-worker threads to avoid oversubscription
+            threads_cap = max(1, cpu_count // geo_workers)
+            requested_threads = getattr(self, 'num_threads', '4')
+            if isinstance(requested_threads, str) and requested_threads.upper() == 'ALL_CPUS':
+                worker_threads = threads_cap
+            else:
+                try:
+                    requested_int = int(requested_threads)
+                except (TypeError, ValueError):
+                    requested_int = threads_cap
+                worker_threads = max(1, min(requested_int, threads_cap))
+
+            self.geotiff_total_planned = len(geotiff_jobs)
+            self.geotiff_completed = 0
+            self.geotiff_times = []
+
+            self.log(f"\n=== Processing {len(geotiff_jobs)} GeoTIFFs in parallel ({geo_workers} workers) ===")
+            self.log(f"GeoTIFF threads/worker: {worker_threads} (requested {requested_threads}), cache/worker: {cache_per_worker}MB")
+
+            geotiff_jobs_with_args = []
+            for input_vrt, output_tiff, date in geotiff_jobs:
+                geotiff_jobs_with_args.append((
+                    input_vrt,
+                    output_tiff,
+                    date,
+                    self.compression,
+                    worker_threads,
+                    getattr(self, 'clip_projwin', None),
+                    cache_per_worker
+                ))
+
+            failed_jobs = []
+            with ProcessPoolExecutor(max_workers=geo_workers) as executor:
+                futures = {executor.submit(create_geotiff_worker, job): job for job in geotiff_jobs_with_args}
+
+                for future in as_completed(futures):
+                    job = futures[future]
+                    date = job[2]
+                    try:
+                        result = future.result()
+                    except Exception as e:
+                        self.log(f"  ✗ GeoTIFF worker crashed for {date}: {e}")
+                        failed_jobs.append(job)
+                        continue
+
+                    if result.get('success'):
+                        self.geotiff_completed += 1
+                        elapsed = result.get('elapsed')
+                        if elapsed:
+                            self.geotiff_times.append(elapsed)
+                        file_size_mb = result.get('file_size_mb', 0)
+                        rate = result.get('rate', 0)
+                        compress_used = result.get('compress', self.compression)
+                        if elapsed:
+                            self.log(f"  ✓ GeoTIFF created: {Path(result['output_tiff']).name} ({file_size_mb:.1f} MB in {elapsed:.1f}s, {rate:.1f} MB/s, {compress_used})")
+                        else:
+                            self.log(f"  ✓ GeoTIFF created: {Path(result['output_tiff']).name} ({file_size_mb:.1f} MB, {compress_used})")
+                        self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
+                    else:
+                        self.log(f"  ✗ GeoTIFF failed for {date}: {result.get('error', 'unknown error')}")
+                        failed_jobs.append(job)
+
+                    remaining_jobs = max(0, self.geotiff_total_planned - self.geotiff_completed)
+                    if self.geotiff_times and remaining_jobs > 0:
+                        avg_sec = sum(self.geotiff_times) / len(self.geotiff_times)
+                        overall_sec = remaining_jobs * avg_sec
+                        overall_hours = overall_sec / 3600
+                        if overall_hours >= 1:
+                            self.log(f"  Overall ETA: {overall_hours:.1f} hours ({remaining_jobs} GeoTIFFs remaining)")
+                        else:
+                            self.log(f"  Overall ETA: {overall_sec/60:.1f} min ({remaining_jobs} GeoTIFFs remaining)")
+
+            if failed_jobs:
+                self.log(f"\nRetrying {len(failed_jobs)} GeoTIFFs sequentially...")
+                for job in failed_jobs:
+                    input_vrt, output_tiff, date, compress, _, _, _ = job
+                    self.log(f"  Retrying {date} sequentially...")
+                    success, elapsed = self.create_geotiff(Path(input_vrt), Path(output_tiff), compress=compress)
+                    if success and elapsed:
+                        self.geotiff_completed += 1
+                        self.geotiff_times.append(elapsed)
+                        self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
+                    else:
+                        self.log(f"  ✗ GeoTIFF failed after retry: {date}")
 
         self.log("\n=== Processing Complete ===")
 
@@ -1475,6 +1680,13 @@ Examples:
     )
 
     parser.add_argument(
+        "--parallel-geotiff",
+        type=int,
+        default=3,
+        help="Number of parallel GeoTIFF creation jobs (default: 3, tuned for 10-core/16GB systems)"
+    )
+
+    parser.add_argument(
         "--download-delay",
         type=float,
         default=8.0,
@@ -1509,6 +1721,7 @@ Examples:
     slicer.warp_output = args.warp_output
     slicer.clip_projwin = tuple(args.clip_projwin) if args.clip_projwin else None
     slicer.num_threads = args.num_threads
+    slicer.parallel_geotiff = args.parallel_geotiff
 
     # Map resampling algorithm
     resample_map = {
