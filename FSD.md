@@ -1,69 +1,78 @@
 # File Specification Document (FSD)
 ## Archive.aero - Historical Aeronautical Chart Viewer System
 
-**Version:** 2.6.1
-**Last Updated:** 2026-01-24
+**Version:** 3.0.0
+**Last Updated:** 2026-01-28
 **Maintainer:** Ryan Hemenway
 
 ---
 
 ## Table of Contents
 
-1. [System Overview](#system-overview)
-2. [Architecture](#architecture)
-3. [Frontend Specification (index.html)](#frontend-specification-indexhtml)
-4. [Backend Specification (newslicer.py)](#backend-specification-newslicerpy)
-5. [PMTiles Conversion](#pmtiles-conversion) (Note: See Section 4.9 for complete pipeline)
-6. [Data Specifications](#data-specifications)
-7. [Tile System Specification](#tile-system-specification)
-8. [Deployment](#deployment)
-9. [Performance Considerations](#performance-considerations)
-10. [Security Considerations](#security-considerations)
-11. [Testing & Quality Assurance](#testing--quality-assurance)
-12. [Maintenance & Operations](#maintenance--operations)
-13. [Future Enhancements](#future-enhancements)
-14. [Glossary](#glossary)
-15. [References](#references)
-16. [Changelog](#changelog)
-17. [License & Attribution](#license--attribution)
+1. [System Overview](#1-system-overview)
+2. [Architecture](#2-architecture)
+3. [Frontend Specification (index.html)](#3-frontend-specification-indexhtml)
+4. [Backend Specification (newslicer.py)](#4-backend-specification-newslicerpy)
+5. [PMTiles Conversion Pipeline](#5-pmtiles-conversion-pipeline)
+6. [Data Specifications](#6-data-specifications)
+7. [Deployment](#7-deployment)
 
 ---
 
 ## 1. System Overview
 
 ### 1.1 Purpose
-The Archive.aero system provides interactive visualization of historical FAA aeronautical sectional charts spanning from 2011 to present. The system consists of two main components:
 
-1. **Frontend Viewer** (`index.html`) - Web-based interactive map interface
-2. **Backend Processor** (`newslicer.py`) - Python CLI tool for chart processing, COG/tile generation, and PMTiles conversion
+Archive.aero provides interactive visualization of historical FAA aeronautical sectional charts spanning from 2011 to present. The system functions as a "ForeFlight Time Machine" allowing users to see how aviation charts and airspace have evolved over time.
 
-### 1.2 Technology Stack
+### 1.2 Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| **Frontend Viewer** | `index.html` | Web-based interactive map with timeline |
+| **Backend Processor** | `newslicer.py` | CLI tool for chart processing and output generation |
+| **PMTiles Converter** | `pmandupload.sh` / `pmandupload-rs` | MBTiles to PMTiles conversion and R2 upload |
+
+### 1.3 Technology Stack
 
 **Frontend:**
 - HTML5/CSS3/JavaScript (ES6+)
 - Leaflet.js 1.9.4 (mapping library)
+- PMTiles library (tile fetching from single-file archives)
 - PapaParse 5.4.1 (CSV parsing)
-- Plausible Analytics (privacy-friendly analytics)
 
 **Backend:**
 - Python 3.7+
 - GDAL/OGR (geospatial processing)
 - gdal2tiles.py (tile generation)
-- PMTiles (vector tile format conversion)
+- Requests (HTTP downloads)
+- psutil (optional, for RAM detection)
 
-### 1.3 Data Flow
+### 1.4 Data Flow
 
 ```
-Raw Chart TIFFs → newslicer.py → COG/GeoTIFF/Web Tiles → PMTiles (optional)
-                        ↓                                      ↓
-                dates.csv metadata                             ↓
-                        ↓                                      ↓
-                    index.html viewer ←───────────────────────┘
-
-PMTiles Conversion Pipeline (optional):
-  input_cog.tif → gdal_translate -of MBTILES → out.mbtiles
-  out.mbtiles → gdaladdo -r bilinear → out.mbtiles (with overviews)
-  out.mbtiles → pmtiles convert → out.pmtiles
+Raw Chart TIFFs/ZIPs (from Internet Archive)
+         │
+         ▼
+    newslicer.py ──────────────────────────────┐
+         │                                      │
+         ├─► VRT (virtual raster mosaic)       │
+         │                                      │
+         ├─► GeoTIFF (compressed, optional)    │
+         │                                      │
+         └─► MBTiles (tiled, optional)         │
+                      │                         │
+                      ▼                         │
+             pmandupload.sh/rs                  │
+                      │                         │
+                      ▼                         │
+                 PMTiles ◄──────────────────────┘
+                      │
+                      ▼
+            Cloudflare R2 (CDN)
+                      │
+                      ▼
+              index.html viewer
 ```
 
 ---
@@ -73,75 +82,68 @@ PMTiles Conversion Pipeline (optional):
 ### 2.1 System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     User's Web Browser                       │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │              index.html (Frontend)                    │   │
-│  │  - Leaflet Map Engine                                 │   │
-│  │  - Timeline Controller                                │   │
-│  │  - UI Components                                      │   │
-│  └──────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                           ↓ HTTPS
-┌─────────────────────────────────────────────────────────────┐
-│              CDN / Static File Server                        │
-│                                                              │
-│  /dates.csv          - Timeline metadata                    │
-│  /2011-10-15/        - Tile directory for date              │
-│    ├── 0/0/0.webp    - Zoom 0 tiles                        │
-│    ├── 1/0/0.webp    - Zoom 1 tiles                        │
-│    └── ...                                                  │
-│                                                              │
-│  Origin: https://data.archive.aero/sectionals/              │
-└─────────────────────────────────────────────────────────────┘
-                           ↑
-                    Generated by
-                           ↓
-┌─────────────────────────────────────────────────────────────┐
-│              newslicer.py (Backend Processor)                │
-│                                                              │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   │
-│  │   Chart      │   │     GDAL     │   │    Output    │   │
-│  │  Processor   │→→→│   Warping    │→→→│  Generator   │   │
-│  │              │   │  & Mosaicking │   │ (COG/Tiles)  │   │
-│  └──────────────┘   └──────────────┘   └──────────────┘   │
-│                                                              │
-│  Input: Raw TIFFs + Shapefiles + CSV                        │
-│  Output: COG/GeoTIFF/WebP Tiles                             │
-└─────────────────────────────────────────────────────────────┘
-                           ↓ (optional)
-┌─────────────────────────────────────────────────────────────┐
-│              PMTiles Conversion Pipeline                     │
-│                                                              │
-│  gdal_translate -of MBTILES → gdaladdo → pmtiles convert    │
-│  Input: COG/GeoTIFF                                          │
-│  Output: PMTiles                                             │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                       User's Web Browser                         │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │                  index.html (Frontend)                     │  │
+│  │  - Leaflet Map with PMTiles tile source                   │  │
+│  │  - Timeline Controller with playback                      │  │
+│  │  - Location search (Nominatim)                            │  │
+│  └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                              │ HTTPS
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  CDN / Static File Server                        │
+│                                                                  │
+│  /dates.csv                  - Timeline metadata                 │
+│  /sectionals/pmtiles/        - PMTiles directory                │
+│    └── YYYY-MM-DD.pmtiles    - Single-file tile archives        │
+│                                                                  │
+│  Origin: https://data.archive.aero/sectionals/pmtiles/          │
+└─────────────────────────────────────────────────────────────────┘
+                              ▲
+                        Uploaded via rclone
+                              │
+┌─────────────────────────────────────────────────────────────────┐
+│                    Processing Pipeline                           │
+│                                                                  │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐        │
+│  │ newslicer.py │──►│  MBTiles     │──►│ pmandupload  │        │
+│  │              │   │  (per date)  │   │  (convert +  │        │
+│  │  - Warp      │   │              │   │   upload)    │        │
+│  │  - Mosaic    │   └──────────────┘   └──────────────┘        │
+│  │  - Output    │                                               │
+│  └──────────────┘                                               │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 Directory Structure
 
 ```
 archive.aero/
-├── index.html                    # Frontend viewer
-├── dates.csv                     # Timeline metadata
-├── master_dole.csv              # Backend metadata (chart locations/editions)
+├── index.html                    # Frontend viewer (single-page app)
+├── dates.csv                     # Timeline metadata for frontend
+├── master_dole.csv               # Chart source metadata (locations/editions/URLs)
 ├── FSD.md                        # This document
-├── newslicer.py                 # Backend processor (CLI)
-├── shapefiles/                   # Chart boundary definitions (56 locations)
-│   ├── seattle.shp
-│   ├── dallas_ft_worth.shp
-│   └── ...
-└── output/                       # Generated output
-    ├── 2011-10-15/
-    │   ├── .temp/                # Temporary warped files
-    │   ├── mosaic_2011-10-15.vrt
-    │   ├── mosaic_2011-10-15.tif # GeoTIFF output (if selected)
-    │   └── tiles/                # Tile output (if selected)
-    │       ├── 0/0/0.webp
-    │       └── ...
-    └── 2025-08-07/
-        └── ...
+├── newslicer.py                  # Backend processor CLI
+├── pmandupload.sh                # PMTiles conversion shell script
+├── pmandupload-rs/               # Rust PMTiles converter (faster)
+│   └── src/main.rs
+├── shapefiles/                   # Chart boundary definitions
+│   └── sectional/                # 56 FAA sectional boundaries
+│       ├── SEC_ALBUQUERQUE.shp
+│       ├── SEC_ANCHORAGE.shp
+│       └── ...
+├── docs/
+│   └── map.txt                   # newslicer.py logic flow diagram
+└── output/                       # Generated outputs (example)
+    ├── .temp/                    # Temporary processing directory
+    │   └── YYYY-MM-DD/
+    │       ├── location_file.tif # Warped individual charts
+    │       └── mosaic_YYYY-MM-DD.vrt
+    ├── YYYY-MM-DD.tif            # GeoTIFF output (if format=geotiff)
+    └── YYYY-MM-DD.mbtiles        # MBTiles output (if format=mbtiles)
 ```
 
 ---
@@ -150,34 +152,24 @@ archive.aero/
 
 ### 3.1 Overview
 
-Single-page application (SPA) that provides an interactive timeline-based map viewer for historical aeronautical charts.
+Single-page application providing an interactive timeline-based map viewer for historical aeronautical charts using PMTiles format.
 
 ### 3.2 Global Configuration
 
 ```javascript
 const CONFIG = {
-  baseUrl: 'https://data.archive.aero/sectionals/',
+  baseUrl: 'https://data.archive.aero/sectionals/pmtiles/',
   csvUrl: 'dates.csv',
   initialView: { center: [32.7767, -96.7970], zoom: 10 },
-  frames: []  // Populated from CSV
+  frames: []  // Populated dynamically from CSV
 };
 ```
-
-**Configuration Parameters:**
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `baseUrl` | String | Base URL for tile data |
-| `csvUrl` | String | Path to timeline metadata CSV |
-| `initialView.center` | Array[2] | Initial map center [lat, lng] |
-| `initialView.zoom` | Number | Initial zoom level (0-22) |
-| `frames` | Array | Timeline frames (populated dynamically) |
 
 ### 3.3 Core Classes
 
 #### 3.3.1 MapController
 
-**Purpose:** Manages Leaflet map instance and chart layer rendering.
+**Purpose:** Manages Leaflet map instance and PMTiles-backed tile layers.
 
 **Constructor:**
 ```javascript
@@ -188,78 +180,55 @@ constructor(mapId: String)
 - `map` - Leaflet map instance
 - `cache` - Object storing layer data by date
 - `activeLayers` - Array of currently displayed layers
+- `pmtilesInstances` - Cache for PMTiles instances
+- `requestCounter` - Tracks most recent frame request (prevents stale updates)
 
-**Methods:**
+**Key Methods:**
 
-**`getLayerData(date: String): Object`**
-- Returns cached layer data or creates new tile layer
-- Returns: `{ layer: L.TileLayer }`
+| Method | Description |
+|--------|-------------|
+| `getLayerData(date, customUrl)` | Returns cached layer or creates new PMTiles-backed tile layer |
+| `showFrame(index)` | Displays chart for specified frame index with smooth transitions |
+| `waitForLayer(layer)` | Returns Promise that resolves when layer tiles are loaded |
+| `setOpacity(value)` | Sets opacity for all active layers |
 
-**`async showFrame(index: Number): void`**
-- Displays charts for the specified frame index
-- Implements 167-day rolling window
-- Manages layer z-index for proper stacking
-- Updates opacity based on UI settings
-
-**Layer Management Logic:**
+**PMTiles Tile Layer:**
 ```javascript
-
-// Filter frames within window
-const activeFrames = CONFIG.frames.filter(f => {
-  const d = new Date(f.date);
-  return d >= cutoffDate && d <= currentDate;
-});
-
-
-**Tile URL Template:**
+// Custom createTile method fetches tiles from PMTiles archive
+layer.createTile = function(coords, done) {
+  const tile = document.createElement('img');
+  p.getZxy(coords.z, coords.x, coords.y).then(result => {
+    if (!layer._map) return; // Guard against stale callbacks
+    if (result && result.data) {
+      const blob = new Blob([result.data], { type: 'image/webp' });
+      tile.src = URL.createObjectURL(blob);
+      // ... handle load/error
+    }
+  });
+  return tile;
+};
 ```
-https://data.archive.aero/sectionals/{date}/{z}/{x}/{y}.webp
-```
-
-**Coordinate System:**
-- Projection: Web Mercator (EPSG:3857)
-- Tile Scheme: XYZ (standard web tiles)
-- Tile Size: 256x256 pixels
-- Format: WebP
 
 #### 3.3.2 TimelineApp
 
 **Purpose:** Controls timeline UI and user interactions.
 
-**Constructor:**
-```javascript
-constructor(mapController: MapController)
-```
-
 **Properties:**
 - `mapCtrl` - Reference to MapController
-- `frames` - Array of timeline frames
+- `frames` - Array of timeline frames with date and percentage position
 - `currentIndex` - Current frame index
 - `isPlaying` - Boolean playback state
-- `playInterval` - Interval timer for playback
-- `ui` - Object containing DOM element references
+- `playbackSpeed` - Playback speed multiplier
 
-**Methods:**
+**Key Methods:**
 
-**`update(index: Number, lazy: Boolean = false): void`**
-- Updates timeline to specified index
-- If `lazy=true`, uses debounced version for scrubbing
-- Updates handle position, progress bar, active tick
-
-**`step(direction: Number): void`**
-- Steps timeline forward (+1) or backward (-1)
-- Wraps around at boundaries
-
-**`togglePlay(): void`**
-- Toggles playback mode
-- Playback interval: 2000ms per frame
-
-**`updateShareUrl(): void`**
-- Generates shareable URL with current state
-- Format: `?date={date}&lat={lat}&lng={lng}&zoom={zoom}`
-
-**`hideAllPanels(except: Array = []): void`**
-- Closes all overlay panels except specified IDs
+| Method | Description |
+|--------|-------------|
+| `update(index, lazy)` | Updates timeline to specified index |
+| `step(direction)` | Steps timeline forward (+1) or backward (-1) |
+| `togglePlay()` | Toggles playback mode (2000ms per frame) |
+| `updateShareUrl()` | Generates shareable URL with current state |
+| `hideAllPanels(except)` | Closes all overlay panels except specified |
 
 ### 3.4 Data Loading
 
@@ -274,182 +243,23 @@ date_iso
 
 **Loading Process:**
 ```javascript
-async function loadData() {
-  // Parse CSV using PapaParse
-  Papa.parse(CONFIG.csvUrl, {
-    download: true,
-    header: true,
-    skipEmptyLines: true,
-    complete: (results) => {
-      // Build frames array
-      CONFIG.frames = results.data
-        .filter(row => row.date_iso && row.date_iso !== '?')
-        .map(row => ({
-          id: Utils.formatDateId(row.date_iso),  // "Jan 2011"
-          date: row.date_iso                      // "2011-01-15"
-        }))
-        .sort((a, b) => new Date(a.date) - new Date(b.date));
-    }
-  });
-}
-```
-
-### 3.5 UI Components
-
-#### 3.5.1 Timeline Track
-
-**DOM Structure:**
-```html
-<div class="timeline-track-wrapper">
-  <div class="timeline-track">
-    <div class="timeline-progress"></div>
-    <div id="ticksContainer"></div>
-    <div class="handle"></div>
-  </div>
-</div>
-```
-
-**Interaction:**
-- Click/Touch: Jump to frame
-- Drag handle: Scrub through timeline
-- Debounced: 250ms for smooth scrubbing
-
-**Tick Generation:**
-```javascript
-frames.forEach((f, i) => {
-  const tick = document.createElement('div');
-  tick.className = 'tick';
-  tick.style.left = `${f.pct}%`;  // Percentage position
-
-  // Major ticks for years divisible by 5
-  const year = parseInt(f.date.split('-')[0]);
-  if (year % 5 === 0 || i === 0 || i === frames.length - 1) {
-    tick.classList.add('major');
-    // Add year label
+Papa.parse(CONFIG.csvUrl, {
+  download: true,
+  header: true,
+  skipEmptyLines: true,
+  complete: (results) => {
+    CONFIG.frames = results.data
+      .filter(row => row.date_iso && row.date_iso !== '?')
+      .map(row => ({
+        id: Utils.formatDateId(row.date_iso),
+        date: row.date_iso
+      }))
+      .sort((a, b) => new Date(a.date) - new Date(b.date));
   }
 });
 ```
 
-#### 3.5.2 Navigation Controls
-
-**Jog Controls:**
-- Previous (←): `step(-1)`
-- Play/Pause (Space): `togglePlay()`
-- Next (→): `step(+1)`
-
-**Time Select Dropdown:**
-- Populated from frames array
-- Change event: `update(index)`
-
-#### 3.5.3 Map Tools Panel
-
-**Opacity Control:**
-- Range slider: 0-100
-- Updates all active layers in real-time
-
-**Split View (Side-by-Side Comparison):**
-- Creates second map instance
-- Synchronized pan/zoom
-- Independent timeline selection
-
-#### 3.5.4 Location Search
-
-**Geocoding Service:**
-- Provider: OpenStreetMap Nominatim
-- Endpoint: `https://nominatim.openstreetmap.org/search`
-- Rate Limit: 1 request per second
-- User-Agent: `AeroMap Historical Chart Viewer (https://archive.aero)`
-
-**Auto-Location:**
-- IP-based geolocation via `ipapi.co/json/`
-- Silent fallback on failure
-- Only runs if no URL parameters present
-
-#### 3.5.5 Design Elements Library
-
-This section documents reusable UI components that are available but not currently active in the interface.
-
-##### Chart Info Popup
-
-A temporary notification popup for displaying chart metadata. Appears below the header bar and auto-dismisses.
-
-**DOM Structure:**
-```html
-<div class="chart-info" id="chartInfo">
-  <h3 id="chartTitle">Dallas-Fort Worth Sectional</h3>
-  <p id="chartDesc">Historical aeronautical sectional chart</p>
-</div>
-```
-
-**CSS:**
-```css
-.chart-info {
-  position: absolute;
-  top: 80px;
-  left: 24px;
-  background: var(--bg-glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  padding: 12px 16px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  z-index: 900;
-  max-width: 300px;
-  opacity: 0;
-  transform: translateY(-10px);
-  transition: all 0.3s var(--transition-smooth);
-  pointer-events: none;
-}
-
-.chart-info.visible {
-  opacity: 1;
-  transform: translateY(0);
-  pointer-events: auto;
-}
-
-.chart-info h3 {
-  margin: 0 0 4px 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-light);
-}
-
-.chart-info p {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-
-/* Mobile responsive */
-@media (max-width: 768px) {
-  .chart-info {
-    top: 70px;
-    left: 16px;
-    right: 16px;
-    max-width: none;
-  }
-}
-```
-
-**JavaScript (Auto-dismiss behavior):**
-```javascript
-// Show chart info for 5 seconds after page load
-setTimeout(() => {
-  document.getElementById('chartInfo').classList.add('visible');
-  setTimeout(() => {
-    document.getElementById('chartInfo').classList.remove('visible');
-  }, 5000);
-}, 1000);
-```
-
-**Usage Notes:**
-- Set `#chartTitle` and `#chartDesc` content before showing
-- Add `.visible` class to show, remove to hide
-- Auto-dismiss after 5 seconds (configurable)
-- Supports fade-in/fade-out animation via CSS transitions
-
-### 3.6 Keyboard Shortcuts
+### 3.5 Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
@@ -461,69 +271,19 @@ setTimeout(() => {
 | `?` | Show keyboard shortcuts |
 | `Esc` | Close overlays |
 
-### 3.7 URL Parameters
+### 3.6 URL Parameters
 
 **Shareable Link Format:**
 ```
 https://archive.aero/?date=2015-06-25&lat=32.7767&lng=-96.7970&zoom=10
 ```
 
-**Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `date` | String (ISO) | No | Initial date (YYYY-MM-DD) |
-| `lat` | Float | No | Initial latitude |
-| `lng` | Float | No | Initial longitude |
-| `zoom` | Integer | No | Initial zoom level (0-22) |
-
-### 3.8 Performance Optimizations
-
-**Tile Layer Options:**
-```javascript
-L.tileLayer(tileUrl, {
-  minZoom: 0,
-  maxZoom: 22,
-  tileSize: 256,
-  opacity: 0,           // Fade in after load
-  zIndex: 10 + frameIdx,
-  keepBuffer: 2,        // Keep 2 tile rows around viewport
-  updateWhenIdle: true, // Update only when map stops moving
-  updateWhenZooming: false
-});
-```
-
-**Debounced Timeline Scrubbing:**
-- 250ms debounce prevents excessive rendering during drag
-- Only final position triggers full layer update
-
-**Layer Caching:**
-- Tile layers cached by date in `MapController.cache`
-- Prevents recreation of L.TileLayer instances
-- Memory cleared automatically by Leaflet when layers removed
-
-**Mobile Optimizations:**
-- Skip `waitForLayer` on mobile (width < 640px)
-- Instant layer swaps without waiting for tile loads
-- Reduces perceived lag on slower devices
-
-### 3.9 Browser Compatibility
-
-**Minimum Requirements:**
-- ES6 support (Arrow functions, template literals, async/await)
-- CSS Grid and Flexbox
-- Fetch API
-- Clipboard API (for share functionality)
-
-**Tested Browsers:**
-- Chrome 90+
-- Firefox 88+
-- Safari 14+
-- Edge 90+
-
-**Fallbacks:**
-- Clipboard API: Falls back to `document.execCommand('copy')`
-- Backdrop filter: Degrades gracefully without blur effect
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `date` | String (ISO) | Initial date (YYYY-MM-DD) |
+| `lat` | Float | Initial latitude |
+| `lng` | Float | Initial longitude |
+| `zoom` | Integer | Initial zoom level (0-18) |
 
 ---
 
@@ -531,2439 +291,369 @@ L.tileLayer(tileUrl, {
 
 ### 4.1 Overview
 
-Python CLI tool for processing FAA aeronautical charts into Cloud Optimized GeoTIFFs (COGs), standard GeoTIFFs, or WebP tile sets. The newslicer processes all dates in a master CSV file, applying a sophisticated fallback system to ensure all 56 chart locations are represented in each date's output using the most recent available data.
+Python CLI tool for processing FAA aeronautical charts into GeoTIFFs or MBTiles with sophisticated fallback logic ensuring all 56 chart locations are represented in each date's output.
 
 ### 4.2 System Requirements
 
 **Required:**
 - Python 3.7+
-- GDAL 3.0+ with Python bindings
+- GDAL 3.0+ with Python bindings (`osgeo`)
 - gdal2tiles.py (included with GDAL)
-- zipfile (standard library)
-- multiprocessing (standard library)
+- requests library
 
 **Optional:**
 - psutil (for dynamic RAM cache sizing)
 - pmtiles CLI tool (for PMTiles conversion)
-- Multi-core CPU (for parallel tile generation)
 
-**Platform Support:**
-- macOS 10.14+
-- Linux (Ubuntu 20.04+, Debian 10+)
-- Windows 10+ (with OSGeo4W GDAL)
-
-### 4.3 Core Class: ChartSlicer
-
-The `ChartSlicer` class is the primary processing engine that handles all chart operations.
-
-**Constructor:**
-```python
-def __init__(self, source_dir: Path, output_dir: Path, csv_file: Path, shape_dir: Path)
-```
-
-**Properties:**
-- `source_dir` - Directory containing raw chart TIFFs/ZIPs
-- `output_dir` - Output directory for processed data
-- `csv_file` - Path to master_dole.csv metadata file
-- `shape_dir` - Directory containing shapefiles (56 locations)
-- `file_index` - Dict mapping chart keys to file paths
-- `dole_data` - Dict of chart metadata grouped by date
-- `abbreviations` - Chart name normalization mappings
-- `output_format` - Output format: 'geotiff', 'tiles', or 'both'
-- `zoom_levels` - Zoom range string (e.g., '0-11')
-
-#### 4.3.1 Key Methods
-
-**`log(msg: str) -> None`**
-- Logs messages with timestamp in format `[HH:MM:SS] message`
-
-**`normalize_name(name: str) -> str`**
-- Normalizes chart names for consistent matching
-- Converts to lowercase, replaces spaces/dashes with underscores
-- Applies abbreviation mappings
-
-**`sanitize_filename(name: str) -> str`**
-- Removes special characters from filenames for safe GDAL operations
-
-**`scan_source_dir() -> None`**
-- Recursively scans source directory for chart files
-- Builds `file_index` with two key types:
-  - `('EDITION', location, edition)` - Edition-based lookup
-  - `('TS', timestamp)` - Timestamp-based lookup (from Wayback Machine)
-
-**`load_dole_data() -> None`**
-- Loads master_dole.csv metadata file
-- Groups records by date
-- Extracts Wayback Machine timestamps from download URLs
-
-**`find_files(location: str, edition: str, timestamp: Optional[str]) -> List[Path]`**
-- Finds matching chart files using fallback strategy:
-  1. Timestamp match (Wayback Machine)
-  2. Location + edition exact match
-  3. Location + edition + suffix variations (sec, tac, sectional, terminal)
-  4. Directional variants (north, south, east, west) with suffix variations
-
-**`find_shapefile(location: str) -> Optional[Path]`**
-- Matches chart location to shapefile using normalized names
-
-**`unzip_file(zip_path: Path, output_dir: Path) -> List[Path]`**
-- Extracts TIFFs and companion TFW files from ZIP archives
-- Returns list of extracted TIFF paths
-
-**`warp_and_cut(input_tiff: Path, shapefile: Path, output_tiff: Path) -> bool`**
-
-Transforms and crops chart TIFF using shapefile boundary.
-
-**Process:**
-1. Expand to RGBA using VRT (in-memory: `/vsimem/`)
-2. Warp to EPSG:3857 (Web Mercator)
-3. Crop using shapefile cutline (EPSG:4326)
-4. Output as tiled, LZW-compressed GeoTIFF with BIGTIFF support
-
-**GDAL Options:**
-```python
-# Step 1: RGBA expansion
-translate_options = gdal.TranslateOptions(format="VRT", rgbExpand="rgba")
-ds_vrt = gdal.Translate("/vsimem/temp_rgba.vrt", str(input_tiff), options=translate_options)
-
-# Step 2: Warp with cutline
-warp_options = gdal.WarpOptions(
-    format="GTiff",
-    dstSRS='EPSG:3857',              # Web Mercator
-    cutlineDSName=str(shapefile),
-    cutlineSRS='EPSG:4326',          # Shapefile CRS
-    cropToCutline=True,
-    dstAlpha=True,
-    resampleAlg=gdal.GRA_Bilinear,   # Bilinear resampling
-    creationOptions=['TILED=YES', 'COMPRESS=LZW', 'BIGTIFF=YES'],
-    multithread=True,
-    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
-)
-```
-
-**Returns:** `True` on success, `False` on failure
-
----
-
-**`build_vrt(input_files: List[Path], output_vrt: Path) -> bool`**
-
-Combines multiple processed TIFFs/VRTs into virtual mosaic.
-
-**Parameters:**
-- `input_files` - List of warped GeoTIFF/VRT paths
-- `output_vrt` - Output VRT file path
-
-**GDAL Options:**
-```python
-vrt_options = gdal.BuildVRTOptions(
-    resampleAlg=gdal.GRA_Bilinear
-)
-# Note: addAlpha not used - input files already have alpha from warp_and_cut
-```
-
-**Purpose:**
-- Creates lightweight virtual dataset
-- Mosaics multiple chart locations into single dataset
-- No data duplication (references source files)
-
-**Returns:** `True` on success, `False` on failure
-
----
-
-**`create_geotiff(input_vrt: Path, output_tiff: Path, compress: str = 'LZW') -> bool`**
-
-Converts VRT to optimized GeoTIFF.
-
-**Parameters:**
-- `input_vrt` - Source VRT file
-- `output_tiff` - Output GeoTIFF path
-- `compress` - Compression method (default: 'LZW')
-
-**GDAL Options:**
-```python
-translate_options = gdal.TranslateOptions(
-    format='GTiff',
-    creationOptions=['TILED=YES', 'COMPRESS=LZW', 'BIGTIFF=YES', 'PREDICTOR=2']
-)
-```
-
-**Returns:** `True` on success, `False` on failure
-
----
-
-**`generate_tiles(input_vrt: Path, output_dir: Path, zoom_levels: str) -> bool`**
-
-Generates XYZ web tiles using gdal2tiles.py.
-
-**Parameters:**
-- `input_vrt` - Source VRT file
-- `output_dir` - Output directory for tiles
-- `zoom_levels` - Zoom range (e.g., "0-11")
-
-**Command:**
-```bash
-gdal2tiles.py \
-  --zoom 0-11 \
-  --processes 14 \              # CPU count - 2
-  --webviewer=none \
-  --exclude \                   # Exclude empty tiles
-  --tiledriver=WEBP \
-  --webp-quality=50 \           # Quality 50 (smaller files)
-  input.vrt \
-  output_dir/
-```
-
-**Note:** newslicer does NOT use the `--xyz` flag, which means it generates TMS tiles (Y-axis origin at bottom-left). For Leaflet compatibility, you may need to convert these tiles or adjust the frontend tile loading logic.
-
-**Tile Structure:**
-```
-output_dir/
-├── 0/
-│   └── 0/
-│       └── 0.webp        # World view
-├── 1/
-│   ├── 0/
-│   │   ├── 0.webp
-│   │   └── 1.webp
-│   └── 1/
-│       ├── 0.webp
-│       └── 1.webp
-└── ...
-```
-
-**Progress Monitoring:**
-- Captures subprocess output with 2-hour timeout
-- Logs stderr on failure
-
-**Returns:** `True` on success, `False` on failure
-
----
-
-**`process_all_dates() -> None`**
-
-Main processing workflow that handles all dates in the master CSV with sophisticated fallback logic.
-
-**Workflow:**
-
-1. **Load all 56 shapefile locations**
-   - Scans shape_dir for all .shp files
-   - Normalizes location names
-
-2. **For each date (latest to earliest):**
-   - Load chart records from CSV
-   - Create temporary directory (.temp/date/)
-
-3. **Process each location for the date:**
-   - Find shapefile for location
-   - Find source files (TIFF/ZIP) using fallback logic
-   - Extract ZIPs if needed
-   - Warp and cut each TIFF with shapefile
-   - Combine multiple warped files into location VRT
-   - Store in `vrt_library[location][date]`
-
-4. **Build date matrix with fallback:**
-   - For each of the 56 locations:
-     - Find most recent available date ≤ current date
-     - Use that location's VRT (fallback logic)
-   - This ensures every date has all 56 locations
-
-5. **Create final mosaic:**
-   - Build mosaic VRT from all 56 location VRTs
-   - Generate output based on format:
-     - `geotiff`: Create LZW-compressed GeoTIFF
-     - `tiles`: Generate WebP tiles
-     - `both`: Create both outputs
-
-**Fallback Logic Example:**
-```
-Date: 2015-06-25
-- Seattle: Has data for 2015-06-25 → Use 2015-06-25
-- Portland: No data, but has 2015-04-10 → Use 2015-04-10
-- Dallas: No data yet → Skip (not in vrt_library)
-```
-
-This ensures complete coverage for all dates, using the most recent available data for each location.
-
-### 4.4 CLI Usage
-
-newslicer.py is a command-line tool with the following arguments:
-
-**Command-Line Arguments:**
+### 4.3 CLI Arguments
 
 ```bash
 python newslicer.py [OPTIONS]
 ```
 
-**Arguments:**
-
 | Argument | Short | Type | Default | Description |
 |----------|-------|------|---------|-------------|
 | `--source` | `-s` | Path | `/Volumes/drive/newrawtiffs` | Source directory containing TIFF/ZIP files |
-| `--output` | `-o` | Path | `/Volumes/drive/sync` | Output directory for COGs/tiles |
-| `--csv` | `-c` | Path | `~/archive.aero/master_dole.csv` | Master Dole CSV file with chart metadata |
+| `--output` | `-o` | Path | `/Volumes/projects/sync` | Output directory for processed files |
+| `--csv` | `-c` | Path | `~/archive.aero/master_dole.csv` | Master CSV with chart metadata |
 | `--shapefiles` | `-b` | Path | `~/archive.aero/shapefiles` | Directory containing shapefiles |
-| `--format` | `-f` | String | `geotiff` | Output format: `geotiff`, `mbtiles`, `tiles`, or `both` |
-| `--zoom` | `-z` | String | `0-11` | Zoom levels for tile generation (e.g., `0-11`) |
-| `--resample` | `-r` | String | `nearest` | Resampling algorithm: `nearest`, `bilinear`, `cubic`, or `cubicspline` |
-| `--preview` | | Flag | `false` | Preview downloads without downloading (dry-run mode) |
-| `--download-delay` | | Float | `8.0` | Seconds to wait between downloads to avoid rate limiting |
-| `--parallel-mbtiles` | | Integer | `6` | Number of parallel MBTiles creation jobs |
-| `--mbtiles-only` | | Flag | `false` | Skip VRT/GeoTIFF creation, only process MBTiles from existing VRTs (for resuming) |
+| `--temp-dir` | `-t` | Path | `/Volumes/projects/.temp` | Temporary directory for intermediates |
+| `--format` | `-f` | String | `geotiff` | Output: `geotiff`, `mbtiles`, `tiles`, or `both` |
+| `--zoom` | `-z` | String | `0-11` | Zoom levels for tiles (e.g., `0-11`) |
+| `--resample` | `-r` | String | `nearest` | Resampling: `nearest`, `bilinear`, `cubic`, `cubicspline` |
+| `--warp-output` | | String | `tif` | Intermediate format: `tif` or `vrt` |
+| `--clip-projwin` | | Float[4] | None | Optional projWin clip (ULX ULY LRX LRY) |
+| `--compression` | | String | `AUTO` | GeoTIFF compression: `AUTO`, `ZSTD`, `LZW`, `DEFLATE`, `NONE` |
+| `--num-threads` | | String | `4` | Threads for GeoTIFF compression |
+| `--preview` | | Flag | false | Dry-run mode (no downloads) |
+| `--download-delay` | | Float | `8.0` | Seconds between downloads |
+| `--parallel-mbtiles` | | Integer | `2` | Parallel MBTiles creation jobs |
+| `--mbtiles-only` | | Flag | false | Resume mode: only process MBTiles from existing VRTs |
+| `--mbtiles-output` | | Path | None | Separate output directory for MBTiles |
+| `--tile-format` | | String | `PNG` | MBTiles tile format: `PNG`, `JPEG`, `WEBP` |
 
-**Usage Examples:**
+### 4.4 Core Class: ChartSlicer
 
-```bash
-# Process all dates with default paths, output GeoTIFF
-python newslicer.py
+#### 4.4.1 Constructor
 
-# Custom paths, output both GeoTIFF and MBTiles
-python newslicer.py -s /path/to/charts -o /path/to/output -c master_dole.csv -b shapefiles -f both
-
-# Output only MBTiles with custom zoom range
-python newslicer.py -f mbtiles -z 0-13
-
-# Preview mode (dry-run) to check what would be downloaded
-python newslicer.py --preview
-
-# Process with custom download delay to avoid rate limiting
-python newslicer.py --download-delay 12.0
-
-# Resume processing: only create MBTiles from existing VRTs
-python newslicer.py --mbtiles-only -f mbtiles
-
-# Process with higher zoom for detailed terminal charts and custom parallelism
-python newslicer.py -f both -z 0-13 --parallel-mbtiles 8
+```python
+def __init__(self, source_dir: Path, output_dir: Path, csv_file: Path,
+             shape_dir: Path, preview_mode: bool = False,
+             download_delay: float = 8.0, temp_dir: Path = None)
 ```
 
-**Output Structure:**
+**Key Properties:**
 
-```
-output_dir/
-├── .temp/                       # Temporary processing files
-│   └── 2015-06-25/
-│       ├── extract/             # Unzipped TIFFs
-│       ├── seattle_clipped.tif  # Warped individual charts
-│       └── seattle_2015-06-25.vrt # Location-date VRTs
-├── 2015-06-25/
-│   ├── mosaic_2015-06-25.vrt    # Combined mosaic VRT
-│   ├── mosaic_2015-06-25.tif    # GeoTIFF output (if -f geotiff or both)
-│   └── tiles/                    # Tile output (if -f tiles or both)
-│       ├── 0/0/0.webp
-│       └── ...
-└── 2015-08-20/
-    └── ...
-```
+| Property | Type | Description |
+|----------|------|-------------|
+| `source_dir` | Path | Directory containing raw TIFFs/ZIPs |
+| `output_dir` | Path | Output directory for processed data |
+| `temp_dir` | Path | Temporary directory for intermediates |
+| `dole_data` | Dict | Chart metadata grouped by date |
+| `files_by_name` | Dict | O(1) index: filename → Path |
+| `tifs_by_dir` | Dict | O(1) index: directory → list of TIF paths |
+| `shapefile_index` | Dict | O(1) index: normalized location → shapefile path |
+| `compression` | String | ZSTD or LZW (auto-detected) |
+| `output_format` | String | geotiff, mbtiles, tiles, or both |
+
+#### 4.4.2 Key Methods
+
+**Data Loading:**
+
+| Method | Description |
+|--------|-------------|
+| `load_dole_data()` | Load CSV and group records by date |
+| `_build_source_index()` | Build O(1) file lookup index |
+| `_build_shapefile_index()` | Build O(1) shapefile lookup index |
+
+**File Resolution:**
+
+| Method | Description |
+|--------|-------------|
+| `resolve_filename(filename, download_link)` | Resolve CSV filename to file path(s) |
+| `find_files(location, edition, timestamp, filename, download_link)` | Find source files for a location |
+| `find_shapefile(location)` | Find shapefile for location (O(1) lookup) |
+
+**Download Management:**
+
+| Method | Description |
+|--------|-------------|
+| `download_file(url, target_path)` | Download with throttling and retry logic |
+| `extract_zip(zip_path, extract_dir)` | Extract ZIP and update indexes |
+| `_download_missing_files()` | Preparation phase: download all missing files upfront |
+
+**GDAL Operations:**
+
+| Method | Description |
+|--------|-------------|
+| `warp_and_cut(input_tiff, shapefile, output_tiff)` | Warp to EPSG:3857 and crop with cutline |
+| `build_vrt(input_files, output_vrt)` | Combine multiple files into VRT mosaic |
+| `create_geotiff(input_vrt, output_tiff, compress)` | Convert VRT to compressed GeoTIFF |
+| `create_mbtiles(input_vrt, output_mbtiles, tile_format)` | Convert VRT to MBTiles |
+| `generate_tiles(input_vrt, output_dir, zoom_levels)` | Generate WEBP tiles via gdal2tiles.py |
+
+**Processing:**
+
+| Method | Description |
+|--------|-------------|
+| `process_all_dates()` | Main processing loop with fallback logic |
+| `_process_mbtiles_only()` | Resume mode: process MBTiles from existing VRTs |
+| `generate_review_report()` | Generate pre-processing review matrix |
 
 ### 4.5 GDAL Configuration
 
-newslicer automatically configures GDAL for optimal performance:
+Phase-specific GDAL configuration prevents oversubscription:
 
 ```python
-# Dynamic cache sizing (uses psutil if available)
-available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
-cache_size_mb = max(512, min(8192, available_ram_mb * 3 // 4))  # 75% of RAM, max 8GB
+def _configure_gdal_for_phase(phase: str, workers: int = 1):
+    if phase == 'warp':
+        # Single-threaded per worker to prevent oversubscription
+        gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
 
-# GDAL options
-GDAL_CACHEMAX = cache_size_mb          # 512-8192 MB cache (75% available RAM)
-GDAL_NUM_THREADS = ALL_CPUS            # Uses all available CPU threads
-GDAL_SWATH_SIZE = cache_size_mb * 1024 * 1024  # Swath size for warping (bytes)
-COMPRESS_OVERVIEW = DEFLATE            # Overview compression
-GDAL_TIFF_INTERNAL_MASK = YES          # Internal alpha masks
+    elif phase == 'mbtiles':
+        # Single worker gets all CPUs, multiple workers throttled
+        if workers > 1:
+            gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
+        else:
+            gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
+
+    elif phase == 'geotiff':
+        # Single-process translate with full CPU
+        gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
 ```
 
-### 4.6 Data Validation
-
-#### 4.6.1 Input Validation
-
-**Chart Files:**
-- Must be valid GeoTIFF format
-- Must have georeferencing information
-- Supported formats: `.tif`, `.tiff`, `.zip`
-
-**Shapefiles:**
-- Must be valid OGR-readable shapefile
-- Must have geometry (polygon/multipolygon)
-- Coordinate system can differ (GDAL handles reprojection)
-
-**CSV Metadata:**
-- Required columns: `date`, `location`, `edition`
-- Optional: `download_link` (for timestamp extraction)
-- Encoding: UTF-8 with fallback to 'replace' error handling
-
-#### 4.6.2 Output Validation
-
-**VRT Files:**
-- Validated via GDAL dataset open
-- Must reference all source files
-- Checks for missing input files before processing
-
-**Tile Generation:**
-- Exit code check from gdal2tiles.py
-- Validates output directory exists and contains tiles
-- Logs any errors to GUI
-
-### 4.7 Error Handling
-
-**GDAL Errors:**
+**Global Settings:**
 ```python
-gdal.UseExceptions()  # Enable Python exceptions
-
-try:
-    ds = gdal.Warp(...)
-    if ds:
-        ds = None  # Explicit close
-        return True
-    else:
-        self.log("GDAL returned None")
-        return False
-except Exception as e:
-    self.log(f"Error: {e}")
-    return False
+gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))  # 75% RAM, max 8GB
+gdal.SetConfigOption('COMPRESS_OVERVIEW', 'DEFLATE')
+gdal.SetConfigOption('GDAL_TIFF_INTERNAL_MASK', 'YES')
 ```
 
-**Thread Exceptions:**
-- All processing threads wrapped in try/except
-- Exceptions logged with full traceback
-- GUI remains responsive
-- Processing state reset in `finally` block
-
-**User Notifications:**
-- Errors: Logged to ScrolledText widget
-- Critical failures: MessageBox dialogs
-- Success: Toast notifications + dialog
-
-### 4.8 Configuration Files
-
-The CLI tool does not use external configuration files. All settings are passed as command-line arguments:
-- Paths specified via `-s`, `-o`, `-c`, `-b` flags
-- Output format via `-f` flag
-- Zoom levels via `-z` flag
-- No persistent state between runs
-
-**Future Enhancement:**
-Consider adding `config.json` or `.ini` for:
-- Default paths for different environments
-- Zoom level presets per chart type
-- Processing parallelization settings
-- Compression quality settings
-
----
-
-## 4.9 Processing Pipeline
-
-This section documents the complete end-to-end pipeline from raw chart TIFFs to final mosaic outputs, including exact GDAL commands and parallelization strategy.
-
-### 4.9.1 Pipeline Flow Diagram
+### 4.6 Processing Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         INPUT PHASE (Sequential)                             │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ 1. scan_source_dir(): Index all TIFFs/ZIPs by edition and timestamp         │
-│ 2. load_dole_data(): Load master_dole.csv with location/edition/date        │
-│ 3. find_shapefile(): Match 56 location names to .shp files                  │
-│                                                                               │
-│ Output: file_index dict, dole_data dict, shapefile paths                    │
-└──────────────────────────────┬──────────────────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      PER-DATE PROCESSING LOOP                                │
-│                      (Processes dates: Latest → Earliest)                    │
-└──────────────────────────────┬──────────────────────────────────────────────┘
-                               ▼
-       ┌───────────────────────────────────────────────────┐
-       │         BRANCH: Shapefile-based locations         │
-       │              (52 locations: Seattle, Denver, etc) │
-       └───────────────────────┬───────────────────────────┘
-                               ▼
-       ┌─────────────────────────────────────────────────────────────────┐
-       │               EXTRACT PHASE (As needed)                          │
-       │ unzip_file(): Extract *.tif and *.tfw from ZIP archives         │
-       │ Output: List of TIFF paths in .temp/DATE/extract/               │
-       └──────────────────────────┬──────────────────────────────────────┘
-                                  ▼
-       ┌─────────────────────────────────────────────────────────────────┐
-       │           WARP PHASE (Parallel: 4 workers via ThreadPool)       │
-       ├─────────────────────────────────────────────────────────────────┤
-       │  WORKER 1 ┐                                                      │
-       │  WORKER 2 ├──→ warp_and_cut() for each TIFF:                   │
-       │  WORKER 3 │      • Expand to RGBA (/vsimem/ VRT)                │
-       │  WORKER 4 ┘      • Warp to EPSG:3857                           │
-       │                  • Crop with shapefile cutline                  │
-       │                  • Output: LOCATION_FILENAME.tif                │
-       │                                                                  │
-       │  Example: 51 TIFFs → 4 workers → ~13 batches                   │
-       │  Output: Warped TIFFs in .temp/DATE/                            │
-       └──────────────────────────┬──────────────────────────────────────┘
-                                  │
-       ┌──────────────────────────┴──────────────────────────┐
-       │         BRANCH: Shapefile-free locations            │
-       │    (4 locations: Hawaiian Islands, Western Aleutians,│
-       │     Mariana Islands, Samoan Islands)                │
-       └──────────────────────────┬──────────────────────────┘
-                                  ▼
-       ┌─────────────────────────────────────────────────────────────────┐
-       │  EXTRACT & WARP (Currently: Sequential, should be parallel)     │
-       │  • Extract ZIP to .temp/DATE/extract/                           │
-       │  • Warp to EPSG:3857 WITHOUT cutline (whole chart)             │
-       │  • Output: LOCATION_FILENAME_warped.tif                         │
-       │                                                                  │
-       │  NOTE: These skip shapefile cropping but MUST be reprojected   │
-       └──────────────────────────┬──────────────────────────────────────┘
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    VRT BUILD PHASE (Sequential per location)                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ For each location with multiple TIFFs:                                       │
-│   • build_vrt(): Combine all warped TIFFs for this location                 │
-│   • Output: LOCATION_DATE.vrt                                                │
-│   • Store in: vrt_library[location][date]                                   │
-│                                                                               │
-│ For locations with single TIFF:                                              │
-│   • Store TIFF path directly in vrt_library[location][date]                 │
-│                                                                               │
-│ Output: vrt_library dict with Path objects                                   │
-└──────────────────────────────┬───────────────────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                  FALLBACK MATRIX BUILD (Sequential)                          │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ For each of 56 locations:                                                    │
-│   • Find all available dates ≤ current_date in vrt_library[location]       │
-│   • Select most recent: sorted(available_dates)[-1]                         │
-│   • Add to date_matrix[location] = vrt_path                                 │
-│                                                                               │
-│ Result: date_matrix with 56 entries (complete coverage via fallback)        │
-│ Example: 2015-06-25 mosaic uses Seattle from 2015-06-25,                    │
-│          Portland from 2015-04-10 (most recent available)                   │
-└──────────────────────────────┬───────────────────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                      MOSAIC VRT BUILD (Sequential)                           │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ build_vrt(date_matrix.values(), mosaic_DATE.vrt)                            │
-│   • Combines all 56 location VRTs into single virtual dataset              │
-│   • Uses bilinear resampling for smooth transitions                         │
-│   • Result: mosaic_DATE.vrt (~20 KB XML file)                               │
-└──────────────────────────────┬───────────────────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                       OUTPUT PHASE (Format-dependent)                        │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                               │
-│ ┌─────────────────────────┐         ┌─────────────────────────┐            │
-│ │ IF format = 'geotiff'   │         │ IF format = 'tiles'     │            │
-│ │    or 'both'            │         │    or 'both'            │            │
-│ └────────────┬────────────┘         └────────────┬────────────┘            │
-│              ▼                                    ▼                          │
-│  ┌──────────────────────┐           ┌──────────────────────────────────┐   │
-│  │ create_geotiff()     │           │ generate_tiles()                 │   │
-│  │ • Translate VRT→TIF  │           │ • gdal2tiles.py with 14 workers │   │
-│  │ • LZW compression    │           │ • WebP format, quality 50       │   │
-│  │ • PREDICTOR=2        │           │ • Zoom 0-11                     │   │
-│  │ • BIGTIFF support    │           │ • Skip transparent tiles        │   │
-│  │                      │           │                                  │   │
-│  │ Output:              │           │ Output:                          │   │
-│  │ mosaic_DATE.tif      │           │ DATE/tiles/Z/X/Y.webp            │   │
-│  │ (~8 GB, 3 min)       │           │ (~5000 tiles, 20 min)            │   │
-│  └──────────────────────┘           └──────────────────────────────────┘   │
-│                                                                               │
-└─────────────────────────────────────────────────────────────────────────────┘
-                               ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│               OPTIONAL: PMTILES CONVERSION (Manual/Script)                   │
-│               (See Section 5 for detailed workflow)                          │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ Step 1: GeoTIFF → MBTiles (gdal_translate)                                  │
-│ Step 2: Add overviews (gdaladdo)                                             │
-│ Step 3: MBTiles → PMTiles (pmtiles convert)                                 │
-│                                                                               │
-│ Output: mosaic_DATE.pmtiles (~8 GB, 90 min total)                           │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                     INITIALIZATION PHASE                         │
+├─────────────────────────────────────────────────────────────────┤
+│ 1. load_dole_data()        - Load CSV, group by date            │
+│ 2. _build_source_index()   - Index all TIFFs/ZIPs for O(1)      │
+│ 3. _build_shapefile_index()- Index shapefiles for O(1)          │
+│ 4. generate_review_report()- Show preview matrix, get confirm   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    PREPARATION PHASE                             │
+├─────────────────────────────────────────────────────────────────┤
+│ _download_missing_files()                                        │
+│  - Collect all missing files from CSV                           │
+│  - Download sequentially with throttling (--download-delay)     │
+│  - Extract ZIPs and update indexes                              │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              PER-DATE PROCESSING (earliest → latest)             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                    WARP PHASE                            │    │
+│  │  (Parallel: ThreadPoolExecutor, CPU_COUNT - 2 workers)  │    │
+│  ├─────────────────────────────────────────────────────────┤    │
+│  │  For each location in CSV record:                        │    │
+│  │   1. find_shapefile(location) - O(1) lookup             │    │
+│  │   2. find_files(...) - Resolve filename to path(s)       │    │
+│  │   3. _prepare_warp_job() - Create job parameters         │    │
+│  │   4. _warp_worker() - Execute warp_and_cut():            │    │
+│  │      • gdal.Translate → /vsimem/ RGBA VRT               │    │
+│  │      • gdal.Warp → EPSG:3857 with shapefile cutline     │    │
+│  │      • Output: location_filename.tif (or .vrt)          │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                  VRT BUILD PHASE                         │    │
+│  ├─────────────────────────────────────────────────────────┤    │
+│  │  For each location with multiple warped files:           │    │
+│  │   • build_vrt() → location_date.vrt                     │    │
+│  │   • Store in vrt_library[location][date]                │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │              FALLBACK MATRIX BUILD                       │    │
+│  ├─────────────────────────────────────────────────────────┤    │
+│  │  For each of 56 locations:                               │    │
+│  │   • Find most recent available date ≤ current_date      │    │
+│  │   • Add to date_matrix[location] = vrt_path             │    │
+│  │                                                          │    │
+│  │  Result: Complete coverage using fallback where needed   │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                 MOSAIC VRT BUILD                         │    │
+│  ├─────────────────────────────────────────────────────────┤    │
+│  │  build_vrt(date_matrix.values(), mosaic_date.vrt)       │    │
+│  │   • Combines all location VRTs into single mosaic       │    │
+│  │   • Uses bilinear resampling, highest resolution        │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                  OUTPUT GENERATION                       │    │
+│  ├─────────────────────────────────────────────────────────┤    │
+│  │  If format='geotiff' or 'both':                          │    │
+│  │   • create_geotiff() → date.tif (ZSTD/LZW compressed)   │    │
+│  │                                                          │    │
+│  │  If format='mbtiles':                                    │    │
+│  │   • Queue for parallel MBTiles processing               │    │
+│  │                                                          │    │
+│  │  If format='tiles' or 'both':                            │    │
+│  │   • generate_tiles() → date_tiles/z/x/y.webp            │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              MBTILES BATCH PROCESSING (if format='mbtiles')      │
+├─────────────────────────────────────────────────────────────────┤
+│  ProcessPoolExecutor with --parallel-mbtiles workers            │
+│   • create_mbtiles_worker() for each queued VRT                 │
+│   • Progress callback with retry logic                          │
+│   • Memory-aware cache allocation per worker                    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.9.2 Exact Command-Line Equivalents
-
-The newslicer.py Python code uses GDAL bindings that execute operations equivalent to these bash commands. Each step can be replicated manually for debugging or custom workflows.
-
-**Step 1: Extract ZIP (if source is ZIP archive)**
-```bash
-# For charts distributed as ZIP files
-unzip -j /Volumes/drive/newrawtiffs/20251025040847_Hawaiian_Islands.zip \
-  "*.tif" "*.tfw" \
-  -d /Volumes/drive/sync/.temp/2025-10-02/extract/20251025040847_Hawaiian_Islands/
-```
-
-**Step 2: Expand to RGBA (in-memory VRT)**
-```bash
-# Creates RGBA VRT in memory (/vsimem/ is GDAL's virtual filesystem)
-gdal_translate \
-  -of VRT \
-  -expand rgba \
-  input_chart.tif \
-  /vsimem/temp_rgba.vrt
-```
-
-**Step 3a: Warp with shapefile cutline (locations with boundaries)**
-```bash
-# Reproject to Web Mercator, crop to shapefile boundary
-gdalwarp \
-  -of GTiff \
-  -t_srs EPSG:3857 \
-  -cutline /Users/ryanhemenway/archive.aero/shapefiles/seattle.shp \
-  -cutline_srs EPSG:4326 \
-  -crop_to_cutline \
-  -dstalpha \
-  -r bilinear \
-  -co TILED=YES \
-  -co COMPRESS=LZW \
-  -co BIGTIFF=YES \
-  -multi \
-  -wo CUTLINE_ALL_TOUCHED=TRUE \
-  /vsimem/temp_rgba.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/seattle_seattle_sec.tif
-```
-
-**Step 3b: Warp without cutline (shapefile-free locations)**
-```bash
-# Hawaiian Islands, Western Aleutians: reproject entire chart without cropping
-gdalwarp \
-  -of GTiff \
-  -t_srs EPSG:3857 \
-  -dstalpha \
-  -r bilinear \
-  -co TILED=YES \
-  -co COMPRESS=LZW \
-  -co BIGTIFF=YES \
-  -multi \
-  /vsimem/temp_rgba.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/hawaiian_islands_hawaiian_islands_sec_warped.tif
-```
-
-**Step 4: Combine multiple TIFFs per location (if needed)**
-```bash
-# For locations with multiple chart files (e.g., North/South/East/West variants)
-gdalbuildvrt \
-  -r bilinear \
-  /Volumes/drive/sync/.temp/2025-10-02/seattle_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/seattle_seattle_sec.tif \
-  /Volumes/drive/sync/.temp/2025-10-02/seattle_seattle_tac.tif
-```
-
-**Step 5: Build final mosaic VRT (all 56 locations)**
-```bash
-# Combine all location VRTs into single mosaic
-gdalbuildvrt \
-  -r bilinear \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/albuquerque_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/anchorage_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/atlanta_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/bethel_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/billings_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/brownsville_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/cape_lisburne_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/charlotte_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/cheyenne_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/chicago_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/cincinnati_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/cold_bay_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/dallas_ft_worth_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/dawson_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/denver_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/detroit_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/dutch_harbor_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/el_paso_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/fairbanks_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/great_falls_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/green_bay_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/halifax_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/hawaiian_islands_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/houston_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/jacksonville_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/juneau_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/kansas_city_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/ketchikan_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/klamath_falls_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/kodiak_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/lake_huron_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/las_vegas_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/los_angeles_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/mcgrath_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/memphis_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/miami_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/montreal_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/new_orleans_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/new_york_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/nome_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/omaha_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/phoenix_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/point_barrow_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/salt_lake_city_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/san_antonio_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/san_francisco_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/seattle_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/seward_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/st_louis_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/twin_cities_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/washington_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/western_aleutian_islands_2025-10-02.vrt \
-  /Volumes/drive/sync/.temp/2025-10-02/wichita_2025-10-02.vrt
-```
-
-**Step 6a: Create compressed GeoTIFF (if format='geotiff' or 'both')**
-```bash
-# Convert VRT to tiled, compressed GeoTIFF
-gdal_translate \
-  -of GTiff \
-  -co TILED=YES \
-  -co COMPRESS=LZW \
-  -co BIGTIFF=YES \
-  -co PREDICTOR=2 \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.vrt \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.tif
-```
-
-**Step 6b: Generate web tiles (if format='tiles' or 'both')**
-```bash
-# Generate WebP tiles from zoom 0-11 using 14 parallel workers
-gdal2tiles.py \
-  --zoom 0-11 \
-  --processes 14 \
-  --webviewer=none \
-  --exclude \
-  --tiledriver=WEBP \
-  --webp-quality=50 \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.vrt \
-  /Volumes/drive/sync/2025-10-02/tiles/
-```
-
-**Step 7: Convert to PMTiles (optional, manual step)**
-```bash
-# Step 7a: Convert GeoTIFF to MBTiles
-gdal_translate \
-  -of MBTILES \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.tif \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.mbtiles
-
-# Step 7b: Add pyramid overviews for efficient zooming
-gdaladdo \
-  -r bilinear \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.mbtiles \
-  2 4 8 16 32 64 128 256
-
-# Step 7c: Convert MBTiles to PMTiles (cloud-optimized format)
-pmtiles convert \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.mbtiles \
-  /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.pmtiles
-
-# Optional: Remove temporary MBTiles file
-rm /Volumes/drive/sync/2025-10-02/mosaic_2025-10-02.mbtiles
-```
-
-### 4.9.3 Parallelization Strategy
-
-**Warp Phase (4 concurrent workers):**
-- Uses Python ThreadPoolExecutor (newslicer.py:810)
-- Maximum 4 concurrent warp operations
-- Each worker processes one TIFF file at a time
-- Jobs queued and distributed as workers become available
-- Example: 51 locations with TIFFs → 51 jobs → 4 workers → ~13 batches
-- Bottleneck: CPU-bound (projection calculations, resampling)
-
-**Tile Generation (CPU_COUNT - 2 workers):**
-- gdal2tiles.py --processes flag (newslicer.py:411)
-- Automatically parallelizes tile rendering across zoom levels and regions
-- On 16-core system: uses 14 workers
-- Reserves 2 cores for system responsiveness
-- Bottleneck: Mixed CPU (WebP encoding) + I/O (writing tiles)
-
-**Sequential Operations:**
-- **VRT Building** - Fast (<1s), metadata-only, no parallelization needed
-- **ZIP Extraction** - I/O bound, parallelization would have minimal benefit
-- **GeoTIFF Export** - Single large file, cannot parallelize
-- **Mosaic VRT** - Metadata-only (<1s)
-
-**Optimization Trade-offs:**
-- 4 warp workers chosen to balance CPU usage vs system responsiveness
-- Increasing to 8 workers: ~25% speedup, but diminishing returns
-- Memory usage scales with worker count: 4 workers ≈ 2-4 GB RAM
-
-### 4.9.4 Processing Time Estimates
-
-**Per-Date Processing (56 locations, zoom 0-11, 16-core system):**
-
-| Phase | Duration | Parallelization | Bottleneck | Notes |
-|-------|----------|-----------------|------------|-------|
-| Input/Scan | 10s | Sequential | I/O (directory scan) | One-time per run |
-| Load CSV | 2s | Sequential | I/O (read CSV) | One-time per run |
-| Extract ZIPs | 30s | As needed | I/O (disk read/write) | Only for ZIP sources |
-| **Warp (51 TIFFs)** | **15min** | **4 workers** | **CPU (reproject)** | **Main bottleneck** |
-| VRT Build (per loc) | 5s | Sequential | I/O (metadata) | Fast, minimal impact |
-| Fallback Matrix | 1s | Sequential | Memory (dict lookup) | Negligible |
-| Mosaic VRT | 1s | Sequential | I/O (write XML) | Negligible |
-| **GeoTIFF Export** | **3min** | **Sequential** | **I/O + CPU (compress)** | If format=geotiff |
-| **Tile Generation** | **20min** | **14 workers** | **CPU + I/O** | **Longest phase** |
-| PMTiles (Step 1) | 40min | Sequential | I/O + CPU | Manual, if desired |
-| PMTiles (Step 2) | 20min | Sequential | CPU (downsample) | Manual, if desired |
-| PMTiles (Step 3) | 10min | Sequential | I/O (reorganize) | Manual, if desired |
-| **Total (GeoTIFF)** | **~18min** | | | Without tiles |
-| **Total (Tiles)** | **~35min** | | | Without GeoTIFF |
-| **Total (Both)** | **~38min** | | | Both outputs |
-| **+PMTiles** | **~108min** | | | Full pipeline |
-
-**Scaling Factors:**
-- Warp time scales linearly with number of locations (51 TIFFs × 20s avg = 17min)
-- Tile time scales exponentially with zoom level (each level = 4× more tiles)
-- GeoTIFF export scales with mosaic size (~8 GB → 3 min with LZW compression)
-
-**Real-world Variation:**
-- Chart complexity affects warp time (±50%)
-- SSD vs HDD: 2-3× speed difference for I/O-bound phases
-
-### 4.9.5 Complete Example Workflow
-
-**Processing one date (2025-10-02) with both GeoTIFF and tiles:**
+### 4.7 Usage Examples
 
 ```bash
-#!/bin/bash
-# Complete manual pipeline to replicate newslicer.py for one date
+# Standard processing: GeoTIFF output with ZSTD compression
+python newslicer.py -s /path/to/charts -o /path/to/output -f geotiff
 
-DATE="2025-10-02"
-SOURCE="/Volumes/drive/newrawtiffs"
-OUTPUT="/Volumes/drive/sync"
-SHAPES="/Users/ryanhemenway/archive.aero/shapefiles"
-TEMP="$OUTPUT/.temp/$DATE"
+# MBTiles output with WEBP tiles and custom zoom
+python newslicer.py -f mbtiles --tile-format WEBP -z 0-13
 
-# 1. Create temp directory
-mkdir -p "$TEMP"
+# Preview mode (dry-run) to check downloads
+python newslicer.py --preview --download-delay 12.0
 
-# 2. Warp each location (example: Seattle)
-gdal_translate -of VRT -expand rgba \
-  "$SOURCE/seattle_sec.tif" /vsimem/seattle_rgba.vrt
+# Resume MBTiles from existing VRTs
+python newslicer.py --mbtiles-only --parallel-mbtiles 4
 
-gdalwarp -of GTiff -t_srs EPSG:3857 \
-  -cutline "$SHAPES/seattle.shp" -cutline_srs EPSG:4326 \
-  -crop_to_cutline -dstalpha -r bilinear \
-  -co TILED=YES -co COMPRESS=LZW -co BIGTIFF=YES \
-  -multi -wo CUTLINE_ALL_TOUCHED=TRUE \
-  /vsimem/seattle_rgba.vrt "$TEMP/seattle_sec.tif"
+# VRT intermediates (reduces disk I/O)
+python newslicer.py --warp-output vrt -f mbtiles
 
-# 3. Repeat Step 2 for all 56 locations (or use parallel wrapper)
-
-# 4. Build mosaic VRT
-gdalbuildvrt -r bilinear \
-  "$OUTPUT/$DATE/mosaic_$DATE.vrt" \
-  "$TEMP"/*/*.vrt
-
-# 5. Create GeoTIFF
-gdal_translate -of GTiff \
-  -co TILED=YES -co COMPRESS=LZW -co BIGTIFF=YES -co PREDICTOR=2 \
-  "$OUTPUT/$DATE/mosaic_$DATE.vrt" \
-  "$OUTPUT/$DATE/mosaic_$DATE.tif"
-
-# 6. Generate tiles
-gdal2tiles.py \
-  --zoom 0-11 --processes 14 \
-  --webviewer=none --exclude \
-  --tiledriver=WEBP --webp-quality=50 \
-  "$OUTPUT/$DATE/mosaic_$DATE.vrt" \
-  "$OUTPUT/$DATE/tiles/"
-```
-
-**Using newslicer.py (equivalent, recommended):**
-```bash
+# Full processing with custom paths
 python newslicer.py \
   -s /Volumes/drive/newrawtiffs \
-  -o /Volumes/drive/sync \
+  -o /Volumes/projects/sync \
+  -t /Volumes/projects/.temp \
   -c master_dole.csv \
-  -b /Users/ryanhemenway/archive.aero/shapefiles \
-  -f both -z 0-11
+  -b shapefiles \
+  -f mbtiles \
+  --parallel-mbtiles 4
 ```
 
 ---
 
-## 5. PMTiles Conversion
+## 5. PMTiles Conversion Pipeline
 
 ### 5.1 Overview
 
-After newslicer.py generates GeoTIFF outputs they are converted to PMTiles format for efficient web serving. PMTiles is a single-file archive format for tiled map data that enables serverless map hosting.
+After newslicer.py generates MBTiles or GeoTIFF outputs, they are converted to PMTiles format for efficient serverless web hosting.
 
-### 5.2 Conversion Pipeline
+### 5.2 Tools
 
-PMTiles conversion is an optional post-processing step performed after newslicer.py generates the GeoTIFF output (Section 4.9, Step 6a). The conversion has three sequential steps:
+| Tool | Description |
+|------|-------------|
+| `pmandupload.sh` | Interactive TUI shell script |
+| `pmandupload-rs` | High-performance Rust implementation |
 
-1. **Convert GeoTIFF to MBTiles** (gdal_translate)
-2. **Add pyramid overviews** (gdaladdo) - enables efficient multi-scale viewing
-3. **Convert MBTiles to PMTiles** (pmtiles convert) - optimizes for HTTP range requests
-
-**Input:** `mosaic_DATE.tif` from newslicer.py (format='geotiff' or 'both')
-**Output:** `mosaic_DATE.pmtiles` for cloud-optimized serving
-**Total Time:** ~90 minutes per date (see Section 4.9.4 for breakdown)
-
-### 5.3 Step-by-Step Process
-
-#### Step 1: GeoTIFF to MBTiles
+### 5.3 Conversion Steps
 
 ```bash
-gdal_translate -of MBTILES input_cog.tif out.mbtiles
+# Step 1: Add pyramid overviews to MBTiles
+gdaladdo -r bilinear input.mbtiles 2 4 8 16 32 64 128 256
+
+# Step 2: Convert MBTiles to PMTiles
+pmtiles convert input.mbtiles output.pmtiles
+
+# Step 3: Upload to R2/S3
+rclone copy output.pmtiles r2:charts/sectionals/pmtiles/
 ```
 
-Converts the GeoTIFF/COG to MBTiles format, a SQLite-based tile archive.
+### 5.4 PMTiles Benefits
 
-**Parameters:**
-- `-of MBTILES` - Output format (MBTiles)
-- `input_cog.tif` - Source GeoTIFF (can be COG or regular GeoTIFF)
-- `out.mbtiles` - Output MBTiles file
-
-**What it does:**
-- Reads raster data from GeoTIFF
-- Tiles the data into a grid
-- Stores tiles in SQLite database
-- Preserves projection and georeferencing
-
-#### Step 2: Add Overviews
-
-```bash
-gdaladdo -r bilinear out.mbtiles 2 4 8 16 32 64 128 256
-```
-
-Adds pyramid overviews to the MBTiles for efficient zooming.
-
-**Parameters:**
-- `-r bilinear` - Resampling method (bilinear interpolation)
-- `out.mbtiles` - MBTiles file to add overviews to
-- `2 4 8 16 32 64 128 256` - Overview levels (powers of 2)
-
-**What it does:**
-- Creates downsampled versions of the tiles
-- Enables efficient zoom-out rendering
-- Uses bilinear resampling for smooth appearance
-- Stores overviews in the same MBTiles file
-
-**Alternative Resampling Methods:**
-- `nearest` - Nearest neighbor (fast, sharp edges)
-- `cubic` - Cubic interpolation (smoother, slower)
-- `cubicspline` - Cubic spline (highest quality, slowest)
-- `lanczos` - Lanczos windowed sinc (high quality)
-- `average` - Average (good for aerial imagery)
-
-#### Step 3: MBTiles to PMTiles
-
-```bash
-pmtiles convert out.mbtiles out.pmtiles
-```
-
-Converts MBTiles to PMTiles format for serverless hosting.
-
-**Prerequisites:**
-- pmtiles CLI tool installed: `go install github.com/protomaps/go-pmtiles/cmd/pmtiles@latest`
-
-**What it does:**
-- Reads tiles from SQLite MBTiles
-- Reorganizes into cloud-optimized PMTiles format
-- Enables HTTP range request serving
-- Single-file output (no database)
-
-### 5.4 Complete Example
-
-```bash
-#!/bin/bash
-# Convert a GeoTIFF mosaic to PMTiles
-
-INPUT="output/2015-06-25/mosaic_2015-06-25.tif"
-TEMP_MBTILES="output/2015-06-25/temp.mbtiles"
-OUTPUT_PMTILES="output/2015-06-25/2015-06-25.pmtiles"
-
-# Step 1: Convert to MBTiles
-echo "Converting GeoTIFF to MBTiles..."
-gdal_translate -of MBTILES "$INPUT" "$TEMP_MBTILES"
-
-# Step 2: Add overviews
-echo "Adding overviews..."
-gdaladdo -r bilinear "$TEMP_MBTILES" 2 4 8 16 32 64 128 256
-
-# Step 3: Convert to PMTiles
-echo "Converting to PMTiles..."
-pmtiles convert "$TEMP_MBTILES" "$OUTPUT_PMTILES"
-
-# Cleanup temporary MBTiles
-rm "$TEMP_MBTILES"
-
-echo "Done! Output: $OUTPUT_PMTILES"
-```
-
-### 5.5 PMTiles Benefits
-
-**vs WebP Tiles:**
-- **Single file** instead of thousands of individual files
-- **HTTP range requests** for efficient partial loading
-- **Serverless hosting** on S3/R2 without special configuration
-- **Reduced storage overhead** (no file system metadata per tile)
-- **Faster uploads** (one file vs thousands)
-
-**vs MBTiles:**
-- **Cloud-optimized** structure for HTTP serving
-- **No server-side processing** required
-- **Byte-range accessible** without SQLite database
-- **Smaller file size** in many cases
-
-### 5.6 Serving PMTiles
-
-PMTiles can be served directly from object storage:
-
-**Cloudflare R2:**
-```bash
-# Upload PMTiles
-rclone copy output/2015-06-25/2015-06-25.pmtiles r2:sectionals/pmtiles/
-
-# Serve via public R2 domain
-# https://data.archive.aero/pmtiles/2015-06-25.pmtiles
-```
-
-**Frontend Integration (Leaflet + PMTiles):**
-```javascript
-// Using pmtiles JavaScript library
-import { PMTiles, leafletRasterLayer } from 'pmtiles';
-
-const p = new PMTiles('https://data.archive.aero/pmtiles/2015-06-25.pmtiles');
-leafletRasterLayer(p).addTo(map);
-```
-
-### 5.7 Performance Considerations
-
-**Tile Count Estimation:**
-- Zoom 0-11: ~5,000-15,000 tiles per date
-- Zoom 0-13: ~20,000-60,000 tiles per date
-
-**File Sizes:**
-- MBTiles: 8GB MB per date (zoom 0-11)
-- PMTiles: 8GB per date (zoom 0-11, ~10-15% smaller)
-
-**Processing Time:**
-- GeoTIFF → MBTiles: 40 minutes (depends on size)
-- Adding overviews: 20 minutes
-- MBTiles → PMTiles: 10 minutes
-- **Total: 90 minutes per date**
+- **Single file** instead of thousands of individual tiles
+- **HTTP range requests** for efficient partial downloads
+- **Serverless hosting** on static storage (R2, S3, GCS)
+- **No tile server required** - browser fetches directly
 
 ---
 
 ## 6. Data Specifications
 
-### 6.1 Coordinate Reference Systems
+### 6.1 Configuration Files
 
-**Source Data:**
-- Various (typically WGS84 or NAD83)
-- Automatically detected by GDAL
+| File | Purpose | Format |
+|------|---------|--------|
+| `master_dole.csv` | Chart source metadata | CSV |
+| `dates.csv` | Timeline dates for frontend | CSV |
+| `shapefiles/sectional/*.shp` | 56 sectional boundaries | ESRI Shapefile |
 
-**Processing CRS:**
-- EPSG:3857 (Web Mercator)
-- Required for web tile generation
-- Formula: `EPSG:4326 → EPSG:3857`
+### 6.2 master_dole.csv Schema
 
-**Output CRS:**
-- Tiles: EPSG:3857
-- COG: EPSG:3857 (or original if not tiled)
+| Column | Type | Description |
+|--------|------|-------------|
+| `date` | String | Chart date (YYYY-MM-DD) |
+| `location` | String | Chart location name |
+| `edition` | String | Edition number |
+| `filename` | String | Source filename (.tif or .zip) |
+| `download_link` | String | Internet Archive Wayback URL |
 
-### 6.2 File Formats
+### 6.3 Output File Sizes (Typical)
 
-#### 6.2.1 GeoTIFF Specifications
-
-**Input TIFFs:**
-- Format: GeoTIFF (any bit depth)
-- Compression: Any (LZW, JPEG, uncompressed)
-- Bands: RGB, RGBA, or indexed color
-- Georeferencing: Embedded or sidecar (.tfw)
-
-**Intermediate TIFFs:**
-- Format: GeoTIFF or VRT
-- Compression: LZW
-- Bands: RGBA (expanded)
-- CRS: EPSG:3857
-- Tiling: 256x256 internal tiles
-
-**Output GeoTIFF:**
-- Format: Cloud Optimized GeoTIFF
-- Compression: LZW with PREDICTOR=2
-- Bands: RGBA
-- CRS: EPSG:3857
-- Overviews: Built-in (power-of-2)
-- Layout: Tiled with overview sections at beginning
-
-#### 6.2.2 VRT Specifications
-
-**Structure:**
-```xml
-<VRTDataset rasterXSize="..." rasterYSize="...">
-  <SRS>EPSG:3857</SRS>
-  <GeoTransform>...</GeoTransform>
-  <VRTRasterBand dataType="Byte" band="1">
-    <ColorInterp>Red</ColorInterp>
-    <ComplexSource>
-      <SourceFilename>chart1_warped.tif</SourceFilename>
-      ...
-    </ComplexSource>
-  </VRTRasterBand>
-  <!-- Bands 2, 3, 4 (G, B, A) -->
-</VRTDataset>
-```
-
-**Advantages:**
-- Virtual dataset (no data duplication)
-- Lightweight (XML file)
-- Fast mosaic creation
-- Efficient for large areas
-
-**Limitations:**
-- Requires source files to remain accessible
-- Not portable (absolute/relative paths)
-- Can't be directly served (requires rendering)
-
-#### 6.2.3 WebP Tile Format
-
-**Specifications:**
-- Format: WebP (lossy)
-- Quality: 90 (configurable in gdal2tiles)
-- Size: 256x256 pixels
-- Transparency: Supported (alpha channel)
-
-**Advantages vs PNG:**
-- ~30% smaller file size
-- Maintains visual quality
-- Browser support: 97%+ (2025)
-
-**File Naming:**
-```
-{z}/{x}/{y}.webp
-```
-
-Where:
-- `z` = Zoom level (0-22)
-- `x` = Tile column (West to East)
-- `y` = Tile row (North to South, XYZ scheme)
-
-### 6.3 Shapefile Specifications
-
-**Required Files:**
-- `.shp` - Geometry
-- `.shx` - Index
-- `.dbf` - Attributes
-- `.prj` - Projection (recommended)
-
-**Geometry Requirements:**
-- Type: Polygon or MultiPolygon
-- Must be valid (no self-intersections)
-- CRS: Any (GDAL reprojects automatically)
-
-**Attribute Requirements:**
-- None (only geometry used)
-
-**Naming Convention:**
-```
-shapefiles/
-├── seattle.shp
-├── seattle.shx
-├── seattle.dbf
-├── seattle.prj
-├── dallas_ft_worth.shp
-└── ...
-```
-
-Naming should match normalized chart location names.
-
-### 6.4 CSV Metadata Format
-
-**dates.csv (Frontend):**
-```csv
-date_iso
-2011-10-15
-2012-09-08
-2013-02-15
-```
-
-**Fields:**
-- `date_iso` - ISO 8601 date (YYYY-MM-DD)
-
-**Sorting:** Dates should be sorted chronologically (enforced in JavaScript)
+| Format | Size per Date | Notes |
+|--------|---------------|-------|
+| Warped TIFFs | ~200MB each | ~50 per date |
+| Mosaic VRT | ~20KB | XML metadata only |
+| GeoTIFF | 500MB - 1.5GB | LZW/ZSTD compressed |
+| MBTiles | 100-300MB | PNG tiles at zoom 0-11 |
+| PMTiles | 100-300MB | After conversion |
 
 ---
 
-**master_dole.csv (Backend Batch Mode):**
-```csv
-date,location,edition,download_link
-2015-06-25,Seattle,105,https://web.archive.org/web/20150625120000/...
-2015-06-25,Portland,104,https://web.archive.org/web/20150625115500/...
-```
+## 7. Deployment
 
-**Fields:**
-- `date` - ISO 8601 date or any parseable format
-- `location` - Chart location (normalized in code)
-- `edition` - Chart edition number
-- `download_link` - Optional Wayback Machine URL
+### 7.1 Frontend Deployment
 
-**Encoding:** UTF-8
+The frontend is a single HTML file with no build step required:
 
-### 6.4 URL to Filename Conversion Algorithm
+1. Upload `index.html` to static hosting
+2. Upload `dates.csv` to same location
+3. Ensure PMTiles are accessible at configured `baseUrl`
 
-**Purpose:** Derive filesystem-compatible filenames from URLs while preserving URL information for traceability and uniqueness.
+### 7.2 Processing Workflow
 
-**⚠️ CRITICAL: Algorithm Consistency**
+1. **Prepare sources:** Ensure raw TIFFs/ZIPs are in source directory
+2. **Run newslicer:** `python newslicer.py -f mbtiles --parallel-mbtiles 4`
+3. **Convert to PMTiles:** `./pmandupload.sh` or `./pmandupload-rs`
+4. **Upload:** PMTiles uploaded to R2/S3 via rclone
 
-This algorithm MUST be applied consistently everywhere:
-- When renaming downloaded files
-- When updating `master_dole.csv`
-- When newslicer looks up files via `resolve_filename()`
-- Any other file discovery logic
+### 7.3 Browser Compatibility
 
-**If algorithms differ between file renaming and filename lookup, files will not be found.** See section 6.4.2 for common pitfalls.
+**Minimum Requirements:**
+- ES6 support (async/await, arrow functions)
+- Fetch API
+- Clipboard API (with fallback)
 
-**Algorithm:**
-
-1. **Remove ALL occurrences of protocols** - Strip `https://` and `http://` (including embedded ones)
-2. **URL decode** - Convert percent-encoded characters (optional, for readability)
-3. **Replace invalid filename characters** with underscore `_`:
-   - `/` → `_` (path separators)
-   - `:` → `-` (colons in ports, timestamps)
-   - `?`, `#`, `&`, `=` → `_` (query string markers)
-   - `*`, `"`, `<`, `>`, `|`, `\` → `_` (filesystem-invalid)
-   - Whitespace and control characters → `_`
-4. **(Recommended) Collapse** consecutive underscores into single `_`
-5. **(Recommended) Trim** leading/trailing underscores
-6. **(Recommended) Enforce max length** of 255 characters
-
-**Canonical Python Implementation (REQUIRED):**
-
-```python
-def url_to_filename(url):
-    """Convert URL to filesystem-compatible filename.
-
-    IMPORTANT: This implementation removes ALL occurrences of https:// and http://,
-    including embedded protocols. This is critical for Wayback Machine URLs that
-    contain embedded protocols like:
-      https://web.archive.org/web/20111015213143/http://aeronav.faa.gov/...
-    """
-    # Remove ALL occurrences of https:// and http://
-    filename = url.replace('https://', '').replace('http://', '')
-
-    # Replace invalid characters
-    filename = filename.replace('/', '_').replace(':', '-')
-    filename = filename.replace('?', '_').replace('#', '_')
-    filename = filename.replace('&', '_').replace('=', '_')
-    filename = filename.replace('*', '_').replace('"', '_')
-    filename = filename.replace('<', '_').replace('>', '_')
-    filename = filename.replace('|', '_').replace('\\', '_')
-
-    # Replace whitespace and control characters
-    for i in range(32):
-        filename = filename.replace(chr(i), '_')
-    filename = filename.replace(' ', '_').replace('\t', '_')
-
-    # Collapse consecutive underscores
-    while '__' in filename:
-        filename = filename.replace('__', '_')
-
-    # Trim to 255 chars
-    filename = filename[:255]
-
-    return filename
-```
-
-**Examples:**
-
-| URL | Filename | Notes |
-|-----|----------|-------|
-| `https://web.archive.org/web/20111015213143/http://aeronav.faa.gov/content/aeronav/sectional_files/Albuquerque_87.zip` | `web.archive.org_web_20111015213143_aeronav.faa.gov_content_aeronav_sectional_files_Albuquerque_87.zip` | **Embedded protocol removed** |
-| `https://aeronav.faa.gov/visual/01-27-2022/sectional-files/Albuquerque.zip` | `aeronav.faa.gov_visual_01-27-2022_sectional-files_Albuquerque.zip` | Standard URL |
-| `https://s3.amazonaws.com/NARAprodstorage/lz/electronic-records/rg-237/VFR/2019-0060/Albuquerque_SEC_100.tif` | `s3.amazonaws.com_NARAprodstorage_lz_electronic-records_rg-237_VFR_2019-0060_Albuquerque_SEC_100.tif` | S3 path |
-
-### 6.4.1 Common Pitfalls
-
-**❌ WRONG: Only removes leading protocol**
-```python
-# This breaks Wayback URLs with embedded protocols!
-filename = re.sub(r'^https?://', '', url)
-# Result: web.archive.org_web_20111015213143_http_aeronav.faa.gov_...  ← WRONG
-```
-
-**✅ CORRECT: Removes all occurrences**
-```python
-# This handles embedded protocols correctly
-filename = url.replace('https://', '').replace('http://', '')
-# Result: web.archive.org_web_20111015213143_aeronav.faa.gov_...  ← CORRECT
-```
-
-### 6.4.2 Verification Checklist
-
-Before deployment, verify:
-
-1. **Consistency across codebase**: Grep for all uses of this algorithm
-2. **Test with Wayback Machine URLs**: URLs containing embedded protocols
-3. **Update `master_dole.csv`**: Regenerate if algorithm changed
-4. **Verify file matching**: Run `resolve_filename()` test against actual directory
-5. **Document any changes**: Update this section and FSD changelog
-
-**Advantages:**
-
-- **Preserves URL information** - Full download source is encoded in filename
-- **Guarantees uniqueness** - Different URLs always produce different filenames
-- **Filesystem compatible** - Works across Windows, macOS, Linux
-- **Human readable** - Can still identify domain, path, and resource
-- **Reversible** - Download source can be reconstructed from filename (with protocol prefix restoration)
-
-**Use Cases:**
-
-- Batch renaming downloaded files to match source URLs
-- Creating traceability records for archival systems
-- Organizing files by download source while maintaining unique names
+**Tested Browsers:**
+- Chrome 90+
+- Firefox 88+
+- Safari 14+
+- Edge 90+
 
 ---
 
-## 7. Tile System Specification
-
-### 7.1 Zoom Level Coverage
-
-**Strategy:** Adaptive zoom based on chart resolution and detail.
-
-**Recommended Ranges:**
-
-| Chart Type | Zoom Range | Rationale |
-|------------|------------|-----------|
-| Sectional | 0-11 | Continental overview → Local detail |
-| Terminal Area | 0-13 | Higher detail for airport vicinities |
-| Enroute | 0-9 | Lower detail, large areas |
-
-**Zoom Level Guide:**
-
-| Zoom | Scale | Coverage | Use Case |
-|------|-------|----------|----------|
-| 0 | 1:591M | World | Initial load |
-| 5 | 1:18.5M | Multi-state | Region overview |
-| 7 | 1:4.6M | State | Chart selection |
-| 9 | 1:1.2M | Metro area | General navigation |
-| 11 | 1:288k | City | Detail view |
-| 13 | 1:72k | Airport | Terminal charts |
-
-### 7.2 Tile Generation Parameters
-
-**gdal2tiles.py Options:**
-
-```bash
---zoom 0-11              # Zoom range
---processes 14           # Parallel workers
---webviewer=none         # Skip HTML viewer
---exclude                # Skip fully transparent tiles
---tiledriver=WEBP        # Output format
---webp-quality=50        # Quality (0-100, smaller files)
---xyz                    # XYZ tile scheme (CRITICAL!)
-```
-
-**Performance Considerations:**
-
-**Process Count:**
-```python
-cpu_count = max(1, multiprocessing.cpu_count() - 2)
-```
-- Reserves 2 cores for system responsiveness
-- Prevents system lockup during processing
-
-**Tile Exclusion:**
-- `--exclude` skips fully transparent tiles
-- Reduces storage by ~40% for sectional charts
-- Tiles outside chart boundaries not generated
-
-### 7.3 Tile Serving
-
-**CDN Configuration:**
-
-**Origin:** `https://data.archive.aero/sectionals/`
-
-**MIME Types:**
-```
-.webp → image/webp
-```
-
-**CORS Headers:**
-```
-Access-Control-Allow-Origin: *
-Access-Control-Allow-Methods: GET, HEAD
-```
-
-**Cache Headers:**
-```
-Cache-Control: public, max-age=31536000, immutable
-```
-- Tiles never change (immutable)
-- 1-year cache lifetime
-- Reduces bandwidth costs
-
-**Compression:**
-- WebP is already compressed
-- Disable gzip/brotli for `.webp` (wastes CPU)
-
-### 7.4 Tile Caching Strategy
-
-**Browser Cache:**
-- Tiles cached indefinitely via Cache-Control
-- LocalStorage not needed (Leaflet handles via browser cache)
-
-**Service Worker (Future):**
-```javascript
-// Potential offline support
-self.addEventListener('fetch', (event) => {
-  if (event.request.url.includes('/sectionals/')) {
-    event.respondWith(
-      caches.match(event.request)
-        .then(response => response || fetch(event.request))
-    );
-  }
-});
-```
-
-### 7.5 Tile Storage Estimates
-
-**Single Date (Zoom 0-11):**
-- Average: 2,000-5,000 tiles
-- Size: 200-500 MB
-- Variance: Depends on chart coverage area
-
-**Full Archive (77 dates):**
-- Total tiles: ~250,000
-- Total size: ~30 GB
-- Per-date average: ~390 MB
-
-**Cost Estimates (Cloudflare R2):**
-- Storage: $0.015/GB/month → ~$0.45/month
-- Bandwidth: First 10 GB free, then $0.36/GB
-- Operations: Minimal (tiles are immutable)
-
----
-
-## 8. Deployment
-
-### 8.1 Frontend Deployment
-
-**Static Hosting Options:**
-1. Cloudflare Pages (recommended)
-2. Netlify
-3. Vercel
-4. GitHub Pages
-5. AWS S3 + CloudFront
-
-**Required Files:**
-- `index.html`
-- `dates.csv`
-
-**Build Process:**
-- None required (pure static HTML/CSS/JS)
-- Optional: Minification for production
-
-**Environment Variables:**
-- None (all config in `CONFIG` object)
-
-**Deployment Steps (Cloudflare Pages):**
-```bash
-# 1. Install Wrangler CLI
-npm install -g wrangler
-
-# 2. Login
-wrangler login
-
-# 3. Deploy
-wrangler pages deploy . \
-  --project-name=archive-aero \
-  --branch=main
-```
-
-### 8.2 Backend Deployment
-
-**Distribution Methods:**
-
-**1. Source Distribution:**
-```bash
-# Requirements
-python3 -m pip install gdal tkinter
-
-# Run
-python3 faa_chart_slicer_gui.py
-```
-
-**2. PyInstaller Executable:**
-```bash
-# Install PyInstaller
-pip install pyinstaller
-
-# Create executable
-pyinstaller --onefile \
-  --windowed \
-  --name "FAA Chart Processor" \
-  faa_chart_slicer_gui.py
-
-# Output: dist/FAA Chart Processor.app (macOS)
-#     or: dist/FAA Chart Processor.exe (Windows)
-```
-
-**Challenges:**
-- GDAL shared libraries must be bundled
-- Complex dependency tree
-- Platform-specific builds required
-
-**3. Docker Container:**
-```dockerfile
-FROM osgeo/gdal:ubuntu-full-3.6.0
-
-RUN apt-get update && apt-get install -y \
-    python3-tk \
-    python3-pip
-
-COPY newslicer.py /app/
-WORKDIR /app
-
-CMD ["python3", "newslicer.py"]
-```
-
-Note: CLI tool works in headless Docker containers without X11 forwarding.
-
-### 8.3 Tile Storage Deployment
-
-**Cloudflare R2 Configuration:**
-
-**1. Create Bucket:**
-```bash
-wrangler r2 bucket create archive-aero-sectionals
-```
-
-**2. Configure rclone:**
-```ini
-[r2]
-type = s3
-provider = Cloudflare
-access_key_id = YOUR_ACCESS_KEY_ID
-secret_access_key = YOUR_SECRET_ACCESS_KEY
-endpoint = https://YOUR_ACCOUNT_ID.r2.cloudflarestorage.com
-acl = private
-```
-
-**3. Set Public Access:**
-- Create R2 custom domain: `data.archive.aero`
-- Configure DNS CNAME
-- Enable public read access
-
-**4. Upload Tiles:**
-```bash
-rclone sync ./output/2015-06-25/ r2:archive-aero-sectionals/sectionals/2015-06-25/
-```
-
-### 8.4 Continuous Deployment
-
-**GitHub Actions Workflow:**
-```yaml
-name: Deploy Frontend
-
-on:
-  push:
-    branches: [main]
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: pages deploy . --project-name=archive-aero
-```
-
-### 8.5 Monitoring & Analytics
-
-**Plausible Analytics:**
-- Script: `https://plausible.io/js/pa-m9DzDEgB7Ebb2zKdbBaMF.js`
-- Privacy-friendly (no cookies)
-- GDPR/CCPA compliant
-
-**Tracked Events:**
-- Page views
-- Time on site
-- Browser/OS distribution
-- Geographic distribution
-
-**Custom Events (Potential):**
-```javascript
-plausible('Timeline Interaction', {
-  props: { action: 'play', date: currentDate }
-});
-```
-
----
-
-## 9. Performance Considerations
-
-### 9.1 Frontend Performance
-
-**Initial Load Time:**
-- Target: < 2 seconds (LCP)
-- Optimizations:
-  - Inline critical CSS
-  - Defer non-critical JS
-  - Preconnect to CDN origin
-
-**Runtime Performance:**
-- Target: 60 FPS during timeline scrubbing
-- Optimizations:
-  - 250ms debounce on scrubbing
-  - Layer caching (prevents recreation)
-  - RequestAnimationFrame for smooth updates
-
-**Memory Management:**
-- Leaflet automatically removes off-screen tiles
-- `keepBuffer: 2` limits tile retention
-- Active layer limit: ~10 layers (167-day window)
-
-**Network Optimization:**
-- HTTP/2 multiplexing for parallel tile loads
-- Immutable cache headers (infinite cache)
-- WebP format (~30% smaller than PNG)
-
-### 9.2 Backend Performance
-
-**Processing Bottlenecks:**
-
-1. **Warping (GDAL):**
-   - CPU-intensive
-   - Multi-threaded via GDAL options
-   - Bilinear resampling (good balance of quality and speed)
-
-2. **Tile Generation (gdal2tiles):**
-   - Most time-consuming operation
-   - Parallelized across CPU cores
-   - I/O-bound at high zoom levels
-
-3. **Compression:**
-   - WebP encoding faster than PNG
-   - Quality 90 balances size vs speed
-
-**Optimization Strategies:**
-
-**VRT Pipeline:**
-- Use VRTs instead of intermediate TIFFs
-- Saves disk I/O and processing time
-- Trade-off: Source files must remain
-
-**Parallel Processing:**
-```python
-processes = max(1, cpu_count - 2)
-```
-- Maximizes CPU utilization
-- Reserves cores for system responsiveness
-
-**Memory Management:**
-- GDAL streaming (doesn't load entire file to RAM)
-- Python garbage collection after each date
-- Explicit `ds = None` to close datasets
-
-**Disk I/O:**
-- SSD strongly recommended
-- Temporary files on separate drive (if available)
-- Consider RAM disk for temp files (advanced)
-
-### 9.3 Scalability Considerations
-
-**Frontend:**
-- Static files scale infinitely via CDN
-- No server-side processing required
-- Cost scales linearly with bandwidth
-
-**Backend:**
-- Processing time scales linearly with:
-  - Number of charts
-  - Input file size
-  - Zoom level range
-  - CPU core count (diminishing returns)
-
-**Storage:**
-- Tile storage scales linearly with dates
-- Deduplication not applicable (unique per date)
-- Cold storage for old tiles (S3 Glacier)
-
-**Bandwidth:**
-- Majority of bandwidth from tile serving
-- CDN reduces origin load
-- Cache hit rate > 90% expected
-
-### 9.4 Performance Monitoring
-
-**Frontend Metrics:**
-```javascript
-// Measure tile load time
-layer.on('load', () => {
-  const loadTime = Date.now() - startTime;
-  console.log(`Tiles loaded in ${loadTime}ms`);
-});
-```
-
-**Backend Metrics:**
-- Processing time logged per chart
-- ETA calculation in ProgressTracker
-- Total pipeline time displayed
-
-**Key Performance Indicators:**
-
-| Metric | Target | Measurement |
-|--------|--------|-------------|
-| Initial page load | < 2s | Lighthouse LCP |
-| Timeline step | < 300ms | Custom timing |
-| Tile load (cached) | < 50ms | Network panel |
-| Tile load (cold) | < 500ms | Network panel |
-| Chart processing | < 2 min | Backend log |
-| Full date batch | < 30 min | Backend log |
-
----
-
-## 10. Security Considerations
-
-### 10.1 Frontend Security
-
-**Content Security Policy (CSP):**
-```http
-Content-Security-Policy:
-  default-src 'self';
-  script-src 'self' https://unpkg.com https://plausible.io 'unsafe-inline';
-  style-src 'self' https://unpkg.com 'unsafe-inline';
-  img-src 'self' data: https://*.basemaps.cartocdn.com https://data.archive.aero;
-  connect-src 'self' https://data.archive.aero https://nominatim.openstreetmap.org https://ipapi.co;
-  font-src 'self';
-```
-
-**XSS Prevention:**
-- No user-generated content displayed
-- URL parameters sanitized (parseFloat, parseInt)
-- innerHTML avoided (textContent used)
-
-**CORS Configuration:**
-- Tiles served with `Access-Control-Allow-Origin: *`
-- Required for cross-origin tile loading
-
-**HTTPS Only:**
-- All resources loaded via HTTPS
-- Mixed content blocked
-
-### 10.2 Backend Security
-
-**File System Access:**
-- CLI restricts file operations to specified directories
-- No arbitrary file read/write outside user selections
-- Shapefile paths validated before GDAL operations
-
-**Command Injection:**
-- GDAL Python bindings used (not shell commands)
-- gdal2tiles.py via subprocess with argument list (not shell=True)
-- rclone via subprocess with argument list
-
-**Input Validation:**
-- File extensions checked before processing
-- GDAL validates file formats
-- Shapefile geometry validated by OGR
-
-**Temporary Files:**
-- Created in user-specified output directory
-- Cleaned up on completion (optional)
-- No sensitive data in temp files
-
-### 10.3 Data Privacy
-
-**Frontend:**
-- No user data collected (Plausible analytics only)
-- No cookies or local storage
-- IP-based geolocation optional and anonymous
-
-**Backend:**
-- No network requests (except optional R2 upload)
-- All processing local
-- No telemetry or phone-home
-
-### 10.4 API Rate Limiting
-
-**Nominatim (Search):**
-- Rate limit: 1 request per second
-- Enforced in code: 1000ms cooldown
-- User-Agent header: "AeroMap Historical Chart Viewer"
-
-**ipapi.co (Geolocation):**
-- Rate limit: 1000 requests/day (free tier)
-- Fail gracefully on limit
-- Single request per page load
-
----
-
-## 11. Testing & Quality Assurance
-
-### 11.1 Frontend Testing
-
-**Manual Testing Checklist:**
-
-- [ ] Timeline scrubbing smooth (no lag)
-- [ ] Play/pause functionality
-- [ ] Forward/backward navigation
-- [ ] Keyboard shortcuts work
-- [ ] Share URL generates correctly
-- [ ] Share URL opens to correct state
-- [ ] Mobile responsive layout
-- [ ] Touch gestures work (pinch zoom, pan)
-- [ ] Location search returns results
-- [ ] Auto-geolocation works
-- [ ] Split-view synchronization
-- [ ] Opacity slider updates tiles
-- [ ] All panels open/close correctly
-- [ ] Fullscreen toggle works
-- [ ] Help overlay displays
-
-**Browser Testing:**
-- Chrome 90+ (macOS, Windows, Linux)
-- Firefox 88+ (macOS, Windows, Linux)
-- Safari 14+ (macOS, iOS)
-- Edge 90+ (Windows)
-
-**Performance Testing:**
-```javascript
-// Measure frame rendering time
-const start = performance.now();
-timelineApp.update(index);
-requestAnimationFrame(() => {
-  const duration = performance.now() - start;
-  console.log(`Frame update: ${duration}ms`);
-});
-```
-
-### 11.2 Backend Testing
-
-**Unit Testing (Potential):**
-```python
-import unittest
-
-class TestChartSlicer(unittest.TestCase):
-    def test_warp_and_cut(self):
-        slicer = ChartSlicer(
-            source_dir=Path("test/source"),
-            output_dir=Path("test/output"),
-            csv_file=Path("test/test.csv"),
-            shape_dir=Path("test/shapefiles")
-        )
-        result = slicer.warp_and_cut(
-            input_tiff=Path("test/input.tif"),
-            shapefile=Path("test/boundary.shp"),
-            output_tiff=Path("test/output.tif")
-        )
-        self.assertTrue(result)
-        self.assertTrue(Path("test/output.tif").exists())
-```
-
-**Integration Testing:**
-
-1. **Manual Mode:**
-   - Add sample chart
-   - Link shapefile
-   - Process with each output format
-   - Verify outputs
-
-2. **Batch Mode:**
-   - Use test CSV with 2-3 dates
-   - Verify file matching
-   - Process batch
-   - Verify date-specific directories
-
-3. **COG Pipeline:**
-   - Create test mosaic
-   - Convert to COG
-   - Validate with `gdalinfo`
-
-**GDAL Validation:**
-```bash
-# Validate output TIFF
-gdalinfo output.tif
-
-# Check projection
-gdalinfo output.tif | grep EPSG
-
-# Validate COG
-gdalinfo output_cog.tif | grep -i "overviews"
-```
-
-### 11.3 Visual Regression Testing
-
-**Tile Validation:**
-1. Generate reference tile set
-2. Process same source with updated code
-3. Compare tiles visually or via image diff
-
-**Tools:**
-- ImageMagick `compare` command
-- Python: `PIL.ImageChops.difference()`
-
-### 11.4 Load Testing
-
-**Frontend:**
-```javascript
-// Simulate rapid timeline scrubbing
-for (let i = 0; i < frames.length; i++) {
-  setTimeout(() => timelineApp.update(i), i * 100);
-}
-```
-
-**Backend:**
-- Process large batch (20+ dates)
-- Monitor CPU/memory usage
-- Verify no memory leaks
-- Check temp disk usage
-
----
-
-## 12. Maintenance & Operations
-
-### 12.1 Adding New Dates
-
-**Process:**
-
-1. **Obtain Source Charts:**
-   - FAA distribution: https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/vfr/
-   - Wayback Machine archives
-   - Manual downloads
-
-2. **Organize Files:**
-   ```
-   source/
-   └── 2025-10-02/
-       ├── seattle_sec.tif
-       ├── portland_sec.tif
-       └── ...
-   ```
-
-3. **Update Master CSV:**
-   ```csv
-   date,location,edition,download_link
-   2025-10-02,Seattle,125,https://...
-   2025-10-02,Portland,124,https://...
-   ```
-
-4. **Process with Batch Mode:**
-   - Select source directory
-   - Select master CSV
-   - Set date filter: `2025-10-02`
-   - Review and process
-
-5. **Update Frontend CSV:**
-   ```csv
-   date_iso
-   ...
-   2025-10-02
-   ```
-
-6. **Upload Tiles:**
-   ```bash
-   rclone sync output/2025-10-02/ r2:sectionals/2025-10-02/
-   ```
-
-7. **Deploy Updated CSV:**
-   ```bash
-   git add dates.csv
-   git commit -m "Add 2025-10-02"
-   git push
-   ```
-
-### 12.2 Updating Shapefiles
-
-**When Needed:**
-- Chart boundaries change
-- New charts introduced
-- Existing charts split/merged
-
-**Process:**
-
-1. Obtain new shapefile (from FAA or digitize manually)
-2. Add to `shapefiles/` directory
-3. Test with sample chart
-4. Reprocess affected dates if needed
-
-### 12.3 Troubleshooting
-
-**Common Issues:**
-
-**Frontend:**
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| Tiles not loading | CORS error | Check CDN CORS headers |
-| Tiles misaligned | TMS vs XYZ | Regenerate with `--xyz` flag |
-| Timeline empty | CSV parse error | Validate CSV format |
-| Search not working | Rate limit | Wait or reduce requests |
-
-**Backend:**
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| GDAL import error | Missing GDAL | Install GDAL + Python bindings |
-| Warp failed | Invalid shapefile | Validate with `ogrinfo` |
-| Tile generation slow | Too many processes | Reduce process count |
-| Out of memory | File too large | Process smaller regions |
-| VRT build failed | Missing source | Check file paths |
-
-**GDAL Debugging:**
-```python
-import logging
-logging.basicConfig(level=logging.DEBUG)
-
-from osgeo import gdal
-gdal.SetConfigOption('CPL_DEBUG', 'ON')
-```
-
-### 12.4 Backup & Recovery
-
-**Critical Data:**
-- Source chart TIFFs (irreplaceable)
-- Shapefiles (manually created)
-- Master CSV metadata
-
-**Backup Strategy:**
-```bash
-# Incremental backup
-rclone sync source/ backup:archive-aero-source/
-rclone sync shapefiles/ backup:archive-aero-shapefiles/
-rclone sync master_dole.csv backup:archive-aero-csv/
-```
-
-**Recovery:**
-- Tiles can be regenerated from sources
-- Frontend can be redeployed from Git
-- Backend is in version control
-
----
-
-## 13. Future Enhancements
-
-### 13.1 Frontend Improvements
-
-**Planned:**
-- [ ] Service Worker for offline support
-- [ ] Date range picker UI
-- [ ] Advanced search filters (by chart name)
-- [ ] Export current view as image
-- [ ] Time-lapse video generation
-- [ ] Mobile app (React Native / Flutter)
-
-**Considered:**
-- [ ] 3D terrain visualization (Cesium.js)
-- [ ] Historical waypoint overlay
-- [ ] Flight path animation
-- [ ] Change detection highlighting
-
-**VFRMap-Inspired Features (Reference: vfrmap.com):**
-
-These features are based on analysis of VFRMap.com's implementation. Source files analyzed: `map.js`, `vfrmap-index.html`.
-
-- [ ] **LocalStorage Persistence** - Save and restore user session (map center, zoom, current timeline date). VFRMap saves `lat`, `lon`, `zoom`, `map_type` on every `moveend` event and restores on page load.
-
-- [ ] **Enhanced Airport Search** - Improve search to recognize aviation-specific queries:
-  - FAA/ICAO codes: `BFI`, `KBFI`, `KSEA`
-  - Airport names: `Boeing Field`, `Paine Field`
-  - Pattern detection: If input is 3-4 uppercase letters, treat as airport code
-  - Data sources: OpenAIP API (free), FAA NASR database, or static JSON of US airports
-
-- [ ] **Airport Info Panel** - When an airport is found/clicked, show an info panel with:
-  - Airport name and identifier
-  - Link to AirNav.com: `https://airnav.com/airport/{code}`
-  - Link to SkyVector: `https://skyvector.com/airport/{code}`
-  - Current METAR from aviationweather.gov (optional)
-  - VFRMap uses a sliding `#inset` panel that toggles between `inset_hidden` and `inset_visible` classes
-
-- [ ] **Quick Links Dropdown** - Add dropdown/panel with aviation resources:
-  - Current FAA charts (faa.gov)
-  - AirNav airport search
-  - SkyVector
-  - Aviation Weather (aviationweather.gov)
-  - 1800wxbrief.com
-
-- [ ] **Airport Markers on Map** - Display airport markers within viewport (most complex):
-  - Requires airport lat/lng data source (FAA NASR or OpenAIP)
-  - Dynamic loading based on viewport bounds (VFRMap uses `/fe?req=get_airports&bounds=`)
-  - Click handlers to show airport info panel
-  - Different marker colors for selected vs unselected airports
-
-### 13.2 Backend Improvements
-
-**Planned:**
-- [x] CLI interface (implemented: newslicer.py)
-- [ ] Configuration file support
-- [ ] Incremental processing (skip existing)
-- [ ] Parallel date processing
-- [ ] Progress persistence (resume after crash)
-
-**Considered:**
-- [ ] Cloud processing (AWS Lambda, Google Cloud Run)
-- [ ] Distributed processing (multiple machines)
-- [ ] GPU acceleration (GDAL CUDA)
-- [ ] AI-powered chart enhancement
-
-### 13.2.1 Performance Monitoring & Optimization (newslicer.py)
-
-**Monitoring Framework:**
-
-The following monitoring capabilities should be added to identify and track optimization opportunities during runtime:
-
-**Real-time Metrics Collection:**
-- [ ] Built-in performance timer for each operation (warp, VRT build, GeoTIFF creation)
-- [ ] Per-operation throughput (files/second, MB/second)
-- [ ] Memory usage tracking (peak, average, per-operation)
-- [ ] CPU utilization (actual % vs theoretical max)
-- [ ] Disk I/O rate monitoring (read/write bytes per second)
-- [ ] Thread count and worker utilization reporting
-
-**Example Instrumentation:**
-```python
-# Add timing to critical operations
-start = time.time()
-self.warp_and_cut(...)  # warp operations
-elapsed = time.time() - start
-self.log(f"Warped {file_count} in {elapsed:.1f}s ({file_count/elapsed:.1f} files/sec)")
-
-# Track memory usage
-import psutil
-proc = psutil.Process()
-mem_peak = proc.memory_info().rss / (1024*1024)
-self.log(f"Peak memory: {mem_peak:.0f} MB")
-
-# Output statistics summary at end
-self.log(f"\n=== Performance Summary ===")
-self.log(f"Total time: {total_time:.1f}s")
-self.log(f"Files processed: {file_count}")
-self.log(f"Average throughput: {file_count/total_time:.1f} files/sec")
-```
-
-**Optimization Opportunities to Investigate:**
-
-1. **Parallelism Bottlenecks:**
-   - [ ] Monitor actual CPU usage during warp operations
-   - [ ] If CPU < 80% with workers=cpu_count-2, investigate:
-     - GIL contention in Python
-     - I/O blocking threads
-     - GDAL thread configuration not applying
-   - [ ] Consider subprocess-based workers instead of ThreadPoolExecutor for CPU-bound ops
-
-2. **I/O Optimization:**
-   - [ ] Monitor disk I/O rate (target: saturate available bandwidth)
-   - [ ] If I/O bound:
-     - Use ramdisk for temp directory (`/dev/shm` on Linux, `/var/tmp` on macOS)
-     - Reduce intermediate compression level (or disable during warp)
-     - Stream output directly instead of buffering
-   - [ ] If I/O spiky: implement write batching
-
-3. **Memory Optimization:**
-   - [ ] Monitor GDAL cache efficiency (hits vs misses)
-   - [ ] If cache misses high: increase `GDAL_CACHEMAX` up to 50% of available RAM
-   - [ ] If memory pressure: implement LRU eviction for VRT library
-
-4. **Compression Trade-offs:**
-   - [ ] Benchmark ZSTD vs LZW during warp (CPU vs file size)
-   - [ ] Add `--compress-level` flag for dynamic quality tuning
-   - [ ] Profile: does compression during warp save I/O vs adding CPU?
-
-5. **File System Effects:**
-   - [ ] Monitor stat() calls (expensive on network volumes)
-   - [ ] Batch file existence checks instead of per-file
-   - [ ] Cache shapefile lookups (already implemented in v2.6)
-
-6. **GDAL Configuration Tuning:**
-   - [ ] Benchmark different `GDAL_NUM_THREADS` values (currently dynamic)
-   - [ ] Test `GDAL_SWATH_SIZE` vs actual warp speed
-   - [ ] Profile `GDAL_CACHEMAX` impact on multi-date processing
-
-**Monitoring Commands (Add to Documentation):**
-```bash
-# Real-time CPU/memory while running
-watch -n 1 'ps aux | grep newslicer | grep -v grep | awk "{print \$3, \$6}"'
-
-# Disk I/O monitoring
-iostat -x 2
-
-# Temp directory growth
-watch -n 1 'du -sh /Volumes/drive/sync/.temp'
-
-# System calls tracing (advanced)
-dtrace -n 'syscall:::entry /execname == "python"/ { @[probefunc] = count(); }' -n 'tick-5s { print(@); }'
-```
-
-**Success Metrics:**
-
-- [ ] GeoTIFF creation < 5 minutes per date (goal: 2-3 minutes)
-- [ ] CPU utilization 80-100% during warp phase
-- [ ] Memory stays within configured GDAL cache limit
-- [ ] I/O rate consistent (no spikes indicating buffering)
-- [ ] Scaling efficiency: 2x workers = ~1.8x speedup (accounting for overhead)
-
-### 13.2.2 Pre-Unzipped Files Workflow (Implemented - v2.6+)
-
-**Optimization: Eliminate ZIP Decompression Overhead**
-
-Charts are stored as .zip files online (1,637 ZIPs, 100.8 GB total). Previously, newslicer would:
-1. Open ZIP file
-2. Seek to internal TIFF
-3. Decompress TIFF
-4. Extract to temp disk
-5. Read from temp disk
-6. Warp
-7. Delete temp files
-
-**Current optimized workflow:**
-
-Pre-unzip all files once (choose one approach):
-
-**Option A: Inline Extraction (Recommended - simpler)**
-```bash
-# Unzip into source directory (same location as ZIPs)
-./unzip_all.sh /Volumes/drive/newrawtiffs 4
-
-# Result structure:
-# /Volumes/drive/newrawtiffs/
-#   ├── file1.zip (original)
-#   ├── file1/ (extracted)
-#   ├── file2.zip
-#   ├── file2/ (extracted)
-#   └── ... (1,637 ZIP pairs)
-#
-# Then run newslicer:
-newslicer.py -s /Volumes/drive/newrawtiffs
-```
-
-**Option B: Separate Extraction (keeps things organized)**
-```bash
-# Unzip into separate directory
-./unzip_all.sh /Volumes/drive/newrawtiffs_unzipped 4
-
-# Then run newslicer:
-newslicer.py -s /Volumes/drive/newrawtiffs_unzipped
-```
-
-Both approaches work identically. Time: ~30-60 minutes (one-time setup)
-
-**Benefits:**
-- ✅ Eliminates ZIP decompression (5-10% CPU savings)
-- ✅ Eliminates file seeking (2-5% savings)
-- ✅ Direct disk read (can use memory-mapping)
-- ✅ Simpler code (removed ~45 lines of ZIP handling)
-- ✅ Reduced SSD wear
-- ✅ Predictable performance (no ZIP overhead variance)
-- ✅ **Total: 15-25% faster processing**
-
-**Implementation Details:**
-
-1. **Unzip Script** (`unzip_all.sh`):
-   - Parallel extraction (default 4 jobs)
-   - Preserves directory structure: `zipname/internal_tif.tif`
-   - Can be safely deleted after unzipping (ZIPs are original sources)
-
-2. **File Discovery** (`resolve_filename()`):
-   - Detects `.zip` filenames in CSV
-   - Removes `.zip` extension
-   - Searches for directory with that name
-   - Returns all `.tif` files found recursively
-
-3. **CSV Format** (No changes needed):
-   - 880 entries: `.zip` files (now directories)
-   - 523 entries: `.tif` files (direct files)
-   - newslicer handles both seamlessly
-
-4. **Disk Space**:
-
-   **Option A (Inline - both ZIPs and directories coexist):**
-   - Before: 100.8 GB (ZIPs) + 46.5 GB (NARA TIFFs) = 147.3 GB
-   - After unzip: 100.8 GB (ZIPs) + 201.6 GB (unzipped) + 46.5 GB (NARA) = 348.9 GB
-   - Available: 440 GB free ✅ (sufficient - ~91 GB remaining)
-   - Can delete ZIPs later to free 100.8 GB
-
-   **Option B (Separate - extraction to new directory):**
-   - Before: 100.8 GB (ZIPs) + 46.5 GB (NARA) = 147.3 GB
-   - After unzip: 201.6 GB (unzipped dir) + 46.5 GB (NARA) + 100.8 GB (originals) = 348.9 GB
-   - Available: 440 GB free ✅ (sufficient - ~91 GB remaining)
-   - Can delete ZIPs later to free 100.8 GB
-
-**Deployment Checklist:**
-
-- [x] Created `unzip_all.sh` script with parallel extraction (supports both inline and separate)
-- [x] Updated `resolve_filename()` to handle .zip → directory mapping
-- [x] Removed `unzip_file()` method (45 lines)
-- [x] Removed ZIP extraction from shapefile-free processing
-- [x] Removed `zipfile` import (no longer needed)
-- [x] Updated `_prepare_warp_job()` to work with pre-unzipped structure
-- [ ] **TO DO:** Run unzip_all.sh to extract all files (choose option):
-  - Option A (inline): `./unzip_all.sh /Volumes/drive/newrawtiffs 4`
-  - Option B (separate): `./unzip_all.sh /Volumes/drive/newrawtiffs_unzipped 4`
-- [ ] **TO DO:** Test newslicer with unzipped source directory
-- [ ] **TO DO:** Verify performance improvement (15-25% faster)
-- [ ] **TO DO:** (Optional) Delete ZIPs to recover 100.8 GB: `rm -rf /Volumes/drive/newrawtiffs/*.zip`
-
-### 13.3 Data Enhancements
-
-**Planned:**
-- [ ] Terminal area charts (TAC)
-- [ ] Enroute charts (IFR)
-- [ ] Helicopter route charts
-- [ ] Grand Canyon chart (special use)
-
-**Considered:**
-- [ ] Historical airport data overlay
-- [ ] Airspace boundary evolution
-- [ ] NOTAM historical archive
-- [ ] Weather pattern correlation
-
----
-
-## 14. Glossary
-
-**COG (Cloud Optimized GeoTIFF):** GeoTIFF variant optimized for cloud storage with HTTP range requests, enabling efficient partial file access.
-
-**EPSG:3857 (Web Mercator):** Spherical Mercator projection used by web mapping systems. Projects Earth onto a square, distorting areas near poles.
-
-**EPSG:4326 (WGS84):** Geographic coordinate system using latitude/longitude. Global standard for GPS and mapping.
-
-**GDAL (Geospatial Data Abstraction Library):** Open-source library for reading, writing, and transforming geospatial raster data.
-
-**OGR:** Vector data handling component of GDAL, supporting shapefiles and other vector formats.
-
-**Sectional Chart:** VFR aeronautical chart covering ~150 nautical miles, updated every 56 days by FAA.
-
-**TMS (Tile Map Service):** Tile scheme with Y-axis origin at bottom-left. Incompatible with most web maps.
-
-**VRT (Virtual Dataset):** XML-based GDAL format describing a virtual raster mosaic without duplicating source data.
-
-**XYZ Tiles:** Tile scheme with Y-axis origin at top-left. Standard for web mapping (Google Maps, Leaflet, OpenStreetMap).
-
-**WebP:** Modern image format developed by Google offering superior compression for web use.
-
-**Cutline:** Vector boundary used to crop raster data, implemented as shapefile polygon.
-
-**Warping:** GDAL operation combining reprojection, resampling, and cropping in a single step.
-
-**Mosaic:** Combined raster dataset from multiple source images, with overlaps resolved.
-
----
-
-## 15. References
-
-### 15.1 External Documentation
-
-**Leaflet:**
-- Official Docs: https://leafletjs.com/reference.html
-- Tutorials: https://leafletjs.com/examples.html
-
-**GDAL:**
-- GDAL Docs: https://gdal.org/
-- Python API: https://gdal.org/api/python.html
-- gdal2tiles: https://gdal.org/programs/gdal2tiles.html
-
-**FAA Charts:**
-- Aeronautical Charts: https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/
-- Chart Currency: https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/vfr/
-
-### 15.2 Standards & Specifications
-
-**OGC (Open Geospatial Consortium):**
-- GeoTIFF: http://www.opengis.net/def/glossary/term/GeoTIFF
-- WMS: https://www.ogc.org/standards/wms
-
-**Tile Specifications:**
-- OSGeo Tile Map Service: https://wiki.osgeo.org/wiki/Tile_Map_Service_Specification
-- XYZ Tiles: https://developers.google.com/maps/documentation/javascript/coordinates
-
-### 15.3 Related Projects
-
-**Similar Systems:**
-- David Rumsey Map Collection: https://www.davidrumsey.com/
-- OldMapsOnline: https://www.oldmapsonline.org/
-- Wayback Imagery: https://livingatlas.arcgis.com/wayback/
-
----
-
-## 16. Changelog
-
-### Version 2.6.1 (2026-01-24)
-- **Documentation:** Updated BUILD_PROCESS.md with accurate parameter values and missing arguments
-  - Fixed default JOBS value (was 3, now 6) for pmandupload.sh
-  - Added missing newslicer.py arguments: --mbtiles-only, --download-delay, --parallel-mbtiles, --resample
-  - Updated directory paths to reflect actual usage (sync vs upload directories)
-  - Added QUALITY parameter documentation for WebP quality settings
-  - Corrected GDAL configuration documentation (cache size now 75% RAM up to 8GB, not 50% up to 4GB)
-  - Updated parallel worker count references throughout documentation
-- **Documentation:** Updated FSD.md command-line arguments table to include all available options
-  - Added missing format option 'mbtiles'
-  - Documented --resample, --preview, --download-delay, --parallel-mbtiles, --mbtiles-only flags
-- **Documentation:** Updated map.txt to include --mbtiles-only argument in CLI arguments list
-
-### Version 2.6 (2026-01-19)
-- **CRITICAL FIX:** URL to filename conversion algorithm now removes ALL protocol occurrences (including embedded), not just leading. Fixes file matching for Wayback Machine URLs with embedded protocols.
-- **BUG:** Previous version broke newslicer file discovery when CSV filenames didn't match actual renamed files (web.archive.org files were not found)
-- **FIX:** Regenerated master_dole.csv with correct algorithm; all 1,404 files now correctly match
-- **Documentation:** Added comprehensive algorithm specifications in section 6.4 with pitfall warnings and verification checklist
-- **Documentation:** Added Performance Monitoring & Optimization section (13.2.1) with monitoring framework and optimization opportunities
-- **Documentation:** Added Pre-Unzipped Files Workflow section (13.2.2) with deployment checklist and performance analysis
-- **Performance:** Removed unnecessary file_index scanning system in newslicer
-- **Performance:** Dynamic parallel workers (now uses cpu_count - 2 instead of hardcoded 4)
-- **Performance:** Added compression during warp operations (PREDICTOR=2)
-- **Performance - MAJOR:** Replaced `gdal.Translate()` with `gdal.Warp()` in `create_geotiff()` for multithreaded GeoTIFF creation. Enables GDAL multithreading (was 20% CPU single-threaded, now targets 80-100% with full parallelism). Expected 2-4x speedup.
-- **Performance - MAJOR:** Implemented pre-unzipped file workflow (`unzip_all.sh` script). Eliminates ZIP decompression overhead during processing. Expected 15-25% speedup. Updated `resolve_filename()` to handle .zip → directory mapping. Removed `unzip_file()` method and all ZIP extraction logic (~45 lines removed).
-- **Feature:** Configurable resampling algorithm via `--resample` flag (nearest, bilinear, cubic, cubicspline)
-- **Performance:** Cached shapefile SRS lookups to eliminate redundant OGR calls
-- **Feature:** New `unzip_all.sh` script for parallel extraction of 1,637 chart ZIPs (supports up to 4 parallel jobs)
-- **Impact:** All optimizations combined: Pre-unzip (15-25%) + Multithreaded Warp (2-4x) = **Expected 3-6x faster total processing** when fully optimized
-
-### Version 2.5 (2026-01-15)
-- **Backend Overhaul:** Replaced GUI application with newslicer.py CLI tool
-- Implemented sophisticated 56-location fallback system
-- Added PMTiles conversion documentation
-- Improved GDAL configuration with dynamic cache sizing
-- Updated WebP quality to 50 for smaller files
-- Enhanced documentation with complete CLI usage examples
-
-### Version 2.0 (2026-01-13)
-- Migrated from tiles.rdnt.io to direct CDN serving
-- Implemented XYZ tile scheme (removed TMS)
-- Updated tile URL format to direct WebP access
-- Simplified CSV format (removed filename column)
-- Added progress bar with ETA to backend GUI
-- Implemented ProgressTracker class
-- Enhanced batch processing progress reporting
-
-### Version 1.5 (2025-12-01)
-- Added split-view comparison mode
-- Implemented 167-day rolling window
-- Enhanced mobile responsiveness
-- Added location search and auto-geolocation
-- Improved opacity controls
-
-### Version 1.0 (2025-06-01)
-- Initial release
-- Manual and batch processing modes
-- COG generation and R2 upload
-- Timeline viewer with 77 dates
-- WebP tile generation
-
----
-
-## 17. License & Attribution
-
-**Code License:** MIT License
-
-**Chart Data:**
-- Source: Federal Aviation Administration (FAA)
-- Status: Public Domain (U.S. Government Work)
-- Usage: Unrestricted
-
-**Attribution Required:**
-- Basemap: © OpenStreetMap contributors, © CARTO
-- Leaflet: © Leaflet contributors
-- GDAL: © OSGeo
-
----
-
-**Document End**
-
-For questions or contributions, contact: ryan@ryanhemenway.com
+*End of File Specification Document*
