@@ -9,7 +9,6 @@ import sys
 import csv
 import re
 import argparse
-import subprocess
 import zipfile
 import requests
 import time
@@ -17,7 +16,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
 import datetime
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from osgeo import gdal, ogr
@@ -49,7 +48,7 @@ def _configure_gdal_for_phase(phase: str, workers: int = 1, available_ram_mb: in
     Configure GDAL settings for specific processing phases.
 
     Args:
-        phase: One of 'warp', 'mbtiles', 'geotiff'
+        phase: One of 'warp', 'geotiff'
         workers: Number of parallel workers
         available_ram_mb: Available RAM in MB (auto-detect if None)
     """
@@ -66,105 +65,10 @@ def _configure_gdal_for_phase(phase: str, workers: int = 1, available_ram_mb: in
         cache_per_worker = max(256, available_ram_mb // workers)
         gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_per_worker))
 
-    elif phase == 'mbtiles':
-        # MBTiles phase: single worker gets all CPUs, multiple workers throttled
-        if workers > 1:
-            gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
-        else:
-            gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
-        cache_per_worker = max(256, min(4096, available_ram_mb // workers))
-        gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_per_worker))
-
     elif phase == 'geotiff':
         # GeoTIFF phase: single-process translate with full CPU
         gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
         gdal.SetConfigOption('GDAL_CACHEMAX', str(max(512, min(8192, available_ram_mb * 3 // 4))))
-
-
-def create_mbtiles_worker(args):
-    """Worker for parallel MBTiles creation."""
-    try:
-        input_vrt, output_mbtiles, zoom_levels, cache_size_mb, total_workers, tile_format = args
-    except ValueError:
-        # Backwards compatibility for old args unpacking
-        input_vrt, output_mbtiles, zoom_levels, cache_size_mb, total_workers = args
-        tile_format = 'PNG'
-    
-    max_retries = 3
-    import time
-    
-    for attempt in range(1, max_retries + 1):
-        try:
-            from osgeo import gdal
-            gdal.UseExceptions()
-
-            # Configure GDAL for MBTiles phase with phase-specific settings
-            _configure_gdal_for_phase('mbtiles', workers=total_workers, available_ram_mb=cache_size_mb * total_workers)
-            
-            # Parse zoom levels to get max zoom
-            max_zoom = 11  # Default
-            try:
-                if '-' in zoom_levels:
-                    max_zoom = int(zoom_levels.split('-')[1])
-                else:
-                    max_zoom = int(zoom_levels)
-            except:
-                pass
-
-            # Define a simple progress callback
-            def progress_cb(complete, message, callback_data):
-                # Only print occasionally to avoid spamming
-                pct = int(complete * 100)
-                # Use a unique attribute for this function instance to track state
-                if not hasattr(progress_cb, 'last_pct'):
-                    progress_cb.last_pct = -1
-                
-                if pct % 10 == 0 and pct != progress_cb.last_pct:
-                    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-                    retry_suffix = f" (Attempt {attempt})" if attempt > 1 else ""
-                    print(f"[{timestamp}] [MBTiles {output_mbtiles.name}]{retry_suffix} Progress: {pct}%")
-                    progress_cb.last_pct = pct
-                return 1
-            
-            translate_options = gdal.TranslateOptions(
-                format='MBTiles',
-                creationOptions=[
-                    f'TILE_FORMAT={tile_format}',
-                    f'MAXZOOM={max_zoom}'
-                ],
-                callback=progress_cb
-            )
-            
-            # Create parent directory if needed
-            output_mbtiles.parent.mkdir(parents=True, exist_ok=True)
-            
-            # If retrying, ensure we start fresh
-            if attempt > 1 and output_mbtiles.exists():
-                try:
-                    output_mbtiles.unlink()
-                except:
-                    pass
-            
-            ds = gdal.Translate(str(output_mbtiles), str(input_vrt), options=translate_options)
-            
-            if ds:
-                ds = None
-                size_mb = output_mbtiles.stat().st_size / (1024 * 1024) if output_mbtiles.exists() else 0
-                return (True, output_mbtiles, size_mb, None)
-            else:
-                raise Exception("GDAL Translate returned None")
-                
-        except Exception as e:
-            error_msg = str(e)
-            # Check for locking/IO errors that might be transient
-            is_transient = "database is locked" in error_msg or "disk I/O error" in error_msg or "readonly database" in error_msg
-            
-            if attempt < max_retries and is_transient:
-                wait_time = attempt * 5 + (attempt ** 2)  # 6s, 14s, etc.
-                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] [MBTiles {output_mbtiles.name}] Failed attempt {attempt}/{max_retries}: {error_msg}. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-            else:
-                return (False, output_mbtiles, 0, error_msg)
 
 
 class ChartSlicer:
@@ -211,9 +115,6 @@ class ChartSlicer:
         if self.compression == 'LZW':
             # This will be logged when log() is called for the first time
             self._compression_warning = True
-
-        # MBTiles output directory (defaults to output_dir if not set)
-        self.mbtiles_output_dir = None  # Set via attribute after init
 
         # GeoTIFF ETA tracking
         self.geotiff_total_planned = 0
@@ -964,85 +865,6 @@ class ChartSlicer:
             self.log(f"    {traceback.format_exc()}")
             return False
 
-    def create_mbtiles(self, input_vrt: Path, output_mbtiles: Path, tile_format: str = 'PNG') -> bool:
-        """Convert VRT to MBTiles with specified tile format (PNG/JPEG/WEBP).
-
-        Uses gdal.Translate to create MBTiles directly from VRT.
-        ZOOM_LEVEL_STRATEGY=AUTO lets GDAL determine optimal zoom levels.
-        """
-        try:
-            self.log(f"    Creating MBTiles with {tile_format} tiles...")
-
-            translate_options = gdal.TranslateOptions(
-                format='MBTiles',
-                creationOptions=[
-                    f'TILE_FORMAT={tile_format}',
-                    'ZOOM_LEVEL_STRATEGY=AUTO'
-                ]
-            )
-
-            ds = gdal.Translate(str(output_mbtiles), str(input_vrt), options=translate_options)
-
-            if ds:
-                ds = None
-                file_size_mb = output_mbtiles.stat().st_size / (1024 * 1024) if output_mbtiles.exists() else 0
-                self.log(f"      ✓ MBTiles created: {output_mbtiles.name} ({file_size_mb:.1f} MB)")
-                return True
-            else:
-                self.log(f"      ✗ Failed to create MBTiles")
-                return False
-
-        except Exception as e:
-            self.log(f"    Error creating MBTiles: {e}")
-            import traceback
-            self.log(f"    {traceback.format_exc()}")
-            return False
-
-    def generate_tiles(self, input_vrt: Path, output_dir: Path, zoom_levels: str) -> bool:
-        """Generate tiles using gdal2tiles.py."""
-        try:
-            self.log(f"    Generating tiles (zoom: {zoom_levels})...")
-
-            # Check availability of gdal2tiles.py
-            gdal2tiles_cmd = subprocess.run(['which', 'gdal2tiles.py'], capture_output=True, text=True)
-            if gdal2tiles_cmd.returncode != 0:
-                gdal2tiles_cmd = "gdal2tiles.py"
-            else:
-                gdal2tiles_cmd = gdal2tiles_cmd.stdout.strip()
-
-            # Use reduced CPU count to avoid locking up system
-            cpu_count_for_tiles = max(1, cpu_count - 2)
-
-            cmd = [
-                gdal2tiles_cmd,
-                '--zoom', zoom_levels,
-                '--processes', str(cpu_count_for_tiles),
-                '--webviewer=none',
-                '--exclude',
-                '--tiledriver=WEBP',
-                '--webp-quality=50',
-                str(input_vrt),
-                str(output_dir)
-            ]
-
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
-
-            if result.returncode == 0:
-                self.log(f"      ✓ Tiles generated in {output_dir.name}")
-                return True
-            else:
-                self.log(f"      ✗ Tile generation failed with return code {result.returncode}")
-                if result.stderr:
-                    self.log(f"      Error: {result.stderr[:500]}")
-                return False
-
-        except subprocess.TimeoutExpired:
-            self.log(f"      ✗ Tile generation timed out after 2 hours")
-            return False
-        except Exception as e:
-            self.log(f"      ✗ Error generating tiles: {e}")
-            return False
-
     def _save_review_csv(self, report_data: List[Dict], output_path: Path) -> None:
         """Save review report to CSV file in matrix format (dates × locations)."""
         try:
@@ -1326,184 +1148,6 @@ class ChartSlicer:
             else:
                 print("Please enter 'y' or 'n'")
 
-    def preview_downloads(self):
-        """
-        Preview what files will be needed for each date and location.
-        Shows as a pivot table: dates (rows) x locations (columns)
-        Cells show what file/folder will be looked for during processing.
-        """
-        self.log("\n=== Processing Preview - File Lookup Table ===")
-        self.log("Shows what files newslicer will look for when processing each date/location combo.\n")
-
-        # Build pivot table: date -> location -> filename
-        pivot = defaultdict(lambda: defaultdict(str))
-        all_locations = set()
-        missing_count = 0
-        found_count = 0
-
-        for date in sorted(self.dole_data.keys(), reverse=True):
-            records = self.dole_data[date]
-
-            for rec in records:
-                location = rec.get('location', '')
-                filename = rec.get('filename', '')
-                norm_loc = self.normalize_name(location)
-
-                if not location or not filename:
-                    continue
-
-                all_locations.add(norm_loc)
-
-                # Check if file exists locally
-                if filename.endswith('.zip'):
-                    dir_name = filename[:-4]
-                    local_path = self.source_dir / dir_name
-                else:
-                    local_path = self.source_dir / filename
-
-                # Show status: local file, remote URL, or missing
-                if local_path.exists():
-                    pivot[date][norm_loc] = f"✓ {filename[:40]}"
-                    found_count += 1
-                else:
-                    pivot[date][norm_loc] = f"📥 {filename[:40]}"  # Will download
-                    missing_count += 1
-
-        # Print pivot table (latest to oldest)
-        sorted_dates = sorted(pivot.keys(), reverse=True)
-        sorted_locations = sorted(all_locations)
-
-        # Header row
-        header = f"{'Date':<15} "
-        for loc in sorted_locations[:10]:  # Show first 10 locations
-            header += f"{loc[:18]:18} "
-        if len(sorted_locations) > 10:
-            header += f"... +{len(sorted_locations)-10} more"
-        self.log(header)
-        self.log("=" * 200)
-
-        # Data rows
-        for date in sorted_dates:
-            row = f"{date:<15} "
-            for loc in sorted_locations[:10]:
-                cell = pivot[date].get(loc, "---")
-                row += f"{cell:<18} "
-            self.log(row)
-
-        self.log("\n=== Legend ===")
-        self.log("✓ = File exists locally (no download needed)")
-        self.log("📥 = File needs to be downloaded")
-        self.log("--- = Not in CSV for this date/location combo")
-
-        self.log(f"\n=== Summary ===")
-        self.log(f"Total dates: {len(sorted_dates)}")
-        self.log(f"Total locations: {len(sorted_locations)}")
-        self.log(f"Files already local: {found_count}")
-        self.log(f"Files to download: {missing_count}")
-
-        if missing_count > 0:
-            self.log(f"\nWhen you run newslicer for real:")
-            self.log(f"- It will process each date in order")
-            self.log(f"- For each date, it will look for these files per location")
-            self.log(f"- If a file is missing, it will download with --download-delay {self.download_delay}s between requests")
-            self.log(f"- Estimated time: {missing_count * self.download_delay / 60:.0f} minutes at {self.download_delay}s delay")
-
-    def _process_mbtiles_only(self):
-        """Process MBTiles from existing VRT files (resume mode).
-
-        Scans temp directory for .vrt files and creates MBTiles for any
-        that don't already have a valid .mbtiles file (>1MB).
-        """
-        self.log("\n=== MBTiles-Only Mode (Resume) ===")
-        self.log(f"Scanning {self.temp_dir} for existing VRT files...")
-
-        # Find all VRT files in temp directory subdirectories
-        vrt_files = sorted(self.temp_dir.glob("*/mosaic_*.vrt"))
-
-        # Fall back to output directory for backwards compatibility
-        if not vrt_files:
-            vrt_files = sorted(self.output_dir.glob(".temp/*/mosaic_*.vrt"))
-            if not vrt_files:
-                vrt_files = sorted(self.output_dir.glob("*.vrt"))
-            
-        self.log(f"Found {len(vrt_files)} VRT files")
-
-        if not vrt_files:
-            self.log("No VRT files found. Run without --mbtiles-only first to create VRTs.")
-            return
-
-        # Build list of MBTiles jobs (VRTs without valid MBTiles)
-        mbtiles_jobs = []
-        skipped = 0
-
-        for vrt_path in vrt_files:
-            # Extract date from filename
-            # For .temp/*/mosaic_*.vrt format: remove "mosaic_" prefix
-            # For top-level *.vrt format: use stem as-is
-            filename = vrt_path.stem
-            if filename.startswith("mosaic_"):
-                date = filename.removeprefix("mosaic_")
-            else:
-                date = filename
-            
-            mbtiles_out_dir = self.mbtiles_output_dir or self.output_dir
-            mbtiles_path = mbtiles_out_dir / f"{date}.mbtiles"
-
-            # Skip if MBTiles exists and is valid (>1MB)
-            if mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024:
-                self.log(f"  ⊘ Skipping {date} (MBTiles exists: {mbtiles_path.stat().st_size / (1024*1024):.1f} MB)")
-                skipped += 1
-                continue
-
-            # Queue for processing
-            mbtiles_jobs.append((vrt_path, mbtiles_path))
-
-        self.log(f"\nTo process: {len(mbtiles_jobs)} | Skipped: {skipped}")
-
-        if not mbtiles_jobs:
-            self.log("All MBTiles already exist. Nothing to do.")
-            return
-
-        # Process MBTiles jobs in parallel (same logic as process_all_dates)
-        workers = getattr(self, 'parallel_mbtiles', 6)
-
-        # Calculate memory per worker
-        try:
-            import psutil
-            total_ram_mb = psutil.virtual_memory().total // (1024 * 1024)
-            available_for_workers = max(4096, total_ram_mb - 2048)
-            cache_per_worker = available_for_workers // workers
-            cache_per_worker = max(256, min(4096, cache_per_worker))
-        except:
-            cache_per_worker = 1024
-
-        self.log(f"\n=== Processing {len(mbtiles_jobs)} MBTiles jobs in parallel ({workers} workers) ===")
-        self.log(f"Configuring {cache_per_worker}MB cache per worker")
-
-        # Add zoom levels and cache size to job args
-        zoom_levels = getattr(self, 'zoom_levels', '0-11')
-        tile_format = getattr(self, 'tile_format', 'PNG')
-        mbtiles_jobs_with_args = []
-        for job in mbtiles_jobs:
-            mbtiles_jobs_with_args.append(job + (zoom_levels, cache_per_worker, workers, tile_format))
-
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(create_mbtiles_worker, job): job for job in mbtiles_jobs_with_args}
-
-            for i, future in enumerate(as_completed(futures), 1):
-                input_job = futures[future]
-                output_path = input_job[1]
-                try:
-                    success, path, size_mb, error = future.result()
-                    if success:
-                        self.log(f"[{i}/{len(mbtiles_jobs)}] ✓ MBTiles created: {path.name} ({size_mb:.1f} MB)")
-                    else:
-                        self.log(f"[{i}/{len(mbtiles_jobs)}] ✗ Failed: {path.name} - {error}")
-                except Exception as e:
-                    self.log(f"[{i}/{len(mbtiles_jobs)}] ✗ Error processing {output_path.name}: {e}")
-
-        self.log("\n=== MBTiles Processing Complete ===")
-
     def _rebuild_vrt_library(self, all_locations: List[str]) -> Dict[str, Dict[str, Path]]:
         """
         Rebuild vrt_library from existing temp VRTs for resume support.
@@ -1573,13 +1217,8 @@ class ChartSlicer:
         return vrt_library
 
     def process_all_dates(self):
-        """Process all dates in CSV with fallback logic."""
+        """Process all dates in CSV with fallback logic (GeoTIFF only)."""
         self.log("\n=== Starting Chart Processing ===")
-
-        # Check for mbtiles-only mode (resume from existing VRTs)
-        if getattr(self, 'mbtiles_only', False):
-            self._process_mbtiles_only()
-            return
 
         # Get all locations from CSV (not shapefiles)
         all_locations = set()
@@ -1603,27 +1242,22 @@ class ChartSlicer:
         # Rebuild from existing temp files to support resume with fallback
         vrt_library = self._rebuild_vrt_library(all_locations)
 
-        # Queue for MBTiles jobs
-        mbtiles_jobs = []
-
         # Process each date (earliest to latest)
         # Fallback logic uses most_recent available date, so processing order doesn't matter
         sorted_dates = sorted(self.dole_data.keys())
         total_dates = len(sorted_dates)
-        output_format = getattr(self, 'output_format', 'geotiff')
 
         # Count dates that need GeoTIFF processing (for ETA calculation)
-        if output_format in ['geotiff', 'both']:
-            dates_needing_geotiff = 0
-            for date in sorted_dates:
-                geotiff_path = self.output_dir / f"{date}.tif"
-                if not (geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024):
-                    dates_needing_geotiff += 1
-            self.geotiff_total_planned = dates_needing_geotiff
-            self.geotiff_completed = 0
-            self.geotiff_times = []
-            if dates_needing_geotiff > 0:
-                self.log(f"GeoTIFFs to create: {dates_needing_geotiff} (skipping {total_dates - dates_needing_geotiff} existing)")
+        dates_needing_geotiff = 0
+        for date in sorted_dates:
+            geotiff_path = self.output_dir / f"{date}.tif"
+            if not (geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024):
+                dates_needing_geotiff += 1
+        self.geotiff_total_planned = dates_needing_geotiff
+        self.geotiff_completed = 0
+        self.geotiff_times = []
+        if dates_needing_geotiff > 0:
+            self.log(f"GeoTIFFs to create: {dates_needing_geotiff} (skipping {total_dates - dates_needing_geotiff} existing)")
 
         for date_idx, date in enumerate(sorted_dates, 1):
             self.log(f"\n[{date_idx}/{total_dates}] Processing date: {date}")
@@ -1631,34 +1265,9 @@ class ChartSlicer:
             # Check if output artifacts already exist to skip expensive processing
             geotiff_path = self.output_dir / f"{date}.tif"
             geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024
-
-            mbtiles_out_dir = self.mbtiles_output_dir or self.output_dir
-            mbtiles_path = mbtiles_out_dir / f"{date}.mbtiles"
-            mbtiles_exists = mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024
-
-            tiles_dir = self.output_dir / f"{date}_tiles"
-            tiles_exist = False
-            if tiles_dir.exists():
-                try:
-                    # quick check for any webp file
-                    next(tiles_dir.glob('**/*.webp'))
-                    tiles_exist = True
-                except StopIteration:
-                    pass
-
-            is_complete = False
-            if output_format == 'geotiff':
-                is_complete = geotiff_exists
-            elif output_format == 'mbtiles':
-                is_complete = mbtiles_exists
-            elif output_format == 'tiles':
-                is_complete = tiles_exist
-            elif output_format == 'both':
-                is_complete = geotiff_exists and tiles_exist
-            
-            if is_complete:
-                 self.log(f"  ✓ Output for {date} already exists - skipping processing")
-                 continue
+            if geotiff_exists:
+                self.log(f"  ✓ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
+                continue
 
             records = self.dole_data[date]
             temp_dir = self.temp_dir / date
@@ -1666,7 +1275,6 @@ class ChartSlicer:
 
             # Collect warp jobs for parallel processing
             warp_jobs = []
-            location_metadata = {}  # Track location/edition for each job
 
             for rec in records:
                 location = rec.get('location', '')
@@ -1695,9 +1303,6 @@ class ChartSlicer:
                 for src_file_info in found_files:
                     jobs = self._prepare_warp_job(src_file_info, location, edition, shp_path, temp_dir, date)
                     warp_jobs.extend(jobs)
-
-                # Store location metadata
-                location_metadata[norm_loc] = {'edition': edition}
 
             # Execute warp jobs in parallel
             if warp_jobs:
@@ -1756,105 +1361,28 @@ class ChartSlicer:
                         most_recent = available_dates[-1]
                         date_matrix[location] = vrt_library[location][most_recent]
 
-            # Create mosaic VRT and output products
+            # Create mosaic VRT and output GeoTIFF
             if date_matrix:
                 mosaic_vrts = list(date_matrix.values())
                 self.log(f"  Creating mosaic VRT from {len(mosaic_vrts)} locations...")
 
-                temp_dir = self.temp_dir / date
                 temp_dir.mkdir(parents=True, exist_ok=True)
 
                 mosaic_vrt = temp_dir / f"mosaic_{date}.vrt"
                 if self.build_vrt(mosaic_vrts, mosaic_vrt):
                     self.log(f"  ✓ Mosaic VRT created")
 
-                    # Generate output based on configured format
-                    output_format = getattr(self, 'output_format', 'geotiff')
-                    zoom_levels = getattr(self, 'zoom_levels', '0-11')
-
-                    geotiff_path = self.output_dir / f"{date}.tif"
-                    geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024  # At least 1 MB
-
-                    mbtiles_out_dir = self.mbtiles_output_dir or self.output_dir
-                    mbtiles_path = mbtiles_out_dir / f"{date}.mbtiles"
-                    mbtiles_exists = mbtiles_path.exists() and mbtiles_path.stat().st_size > 1024 * 1024  # At least 1 MB
-
-                    tiles_dir = self.output_dir / f"{date}_tiles" if output_format in ['tiles', 'both'] else None
-                    tiles_exist = tiles_dir and tiles_dir.exists() and list(tiles_dir.glob('**/*.webp'))
-
-                    # Check if this date is already complete
-                    if output_format == 'geotiff' and geotiff_exists:
-                        self.log(f"  ⊘ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
-                    elif output_format == 'mbtiles' and mbtiles_exists:
-                        self.log(f"  ⊘ MBTiles already exists ({mbtiles_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
-                    elif output_format == 'tiles' and tiles_exist:
-                        self.log(f"  ⊘ Tiles already exist - skipping")
-                    elif output_format == 'both' and geotiff_exists and tiles_exist:
-                        self.log(f"  ⊘ GeoTIFF and tiles already exist - skipping")
-                    else:
-                        if output_format in ['geotiff', 'both'] and not geotiff_exists:
-                            self.log(f"  Creating GeoTIFF (this may take several minutes)...")
-                            success, elapsed = self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
-                            if success and elapsed:
-                                self.geotiff_completed += 1
-                                self.geotiff_times.append(elapsed)
-
-                        if output_format == 'mbtiles' and not mbtiles_exists:
-                            self.log(f"  Queuing MBTiles creation...")
-                            mbtiles_jobs.append((mosaic_vrt, mbtiles_path))
-
-                        if output_format in ['tiles', 'both'] and not tiles_exist:
-                            self.log(f"  Generating tiles...")
-                            tiles_output_dir = self.output_dir / f"{date}_tiles"
-                            self.generate_tiles(mosaic_vrt, tiles_output_dir, zoom_levels)
+                    self.log(f"  Creating GeoTIFF (this may take several minutes)...")
+                    success, elapsed = self.create_geotiff(mosaic_vrt, geotiff_path, compress=self.compression)
+                    if success and elapsed:
+                        self.geotiff_completed += 1
+                        self.geotiff_times.append(elapsed)
 
                     self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
                 else:
                     self.log(f"  ✗ Mosaic creation failed")
             else:
                 self.log(f"  Skipping {date} - no data available")
-
-        # Process queued MBTiles jobs
-        if mbtiles_jobs:
-            workers = getattr(self, 'parallel_mbtiles', 6)
-            
-            # Calculate memory per worker
-            # Reserve 2GB for system/main process, split remainder among workers
-            try:
-                import psutil
-                total_ram_mb = psutil.virtual_memory().total // (1024 * 1024)
-                available_for_workers = max(4096, total_ram_mb - 2048)
-                cache_per_worker = available_for_workers // workers
-                cache_per_worker = max(256, min(4096, cache_per_worker)) # Clamp between 256MB and 4GB
-            except:
-                cache_per_worker = 1024
-                
-            self.log(f"\n=== Processing {len(mbtiles_jobs)} MBTiles jobs in parallel ({workers} workers) ===")
-            self.log(f"Configuring {cache_per_worker}MB cache per worker")
-            
-            # Add zoom levels and cache size to job args
-            zoom_levels = getattr(self, 'zoom_levels', '0-11')
-            tile_format = getattr(self, 'tile_format', 'PNG')
-            mbtiles_jobs_with_args = []
-            for job in mbtiles_jobs:
-                mbtiles_jobs_with_args.append(job + (zoom_levels, cache_per_worker, workers, tile_format))
-
-            with ProcessPoolExecutor(max_workers=workers) as executor:
-                # Submit all jobs
-                futures = {executor.submit(create_mbtiles_worker, job): job for job in mbtiles_jobs_with_args}
-                
-                # Process results as they complete
-                for i, future in enumerate(as_completed(futures), 1):
-                    input_job = futures[future]
-                    output_path = input_job[1]
-                    try:
-                        success, path, size_mb, error = future.result()
-                        if success:
-                            self.log(f"[{i}/{len(mbtiles_jobs)}] ✓ MBTiles created: {path.name} ({size_mb:.1f} MB)")
-                        else:
-                            self.log(f"[{i}/{len(mbtiles_jobs)}] ✗ Failed: {path.name} - {error}")
-                    except Exception as e:
-                        self.log(f"[{i}/{len(mbtiles_jobs)}] ✗ Error processing {output_path.name}: {e}")
 
         self.log("\n=== Processing Complete ===")
 
@@ -1906,21 +1434,6 @@ Examples:
     )
 
     parser.add_argument(
-        "-f", "--format",
-        type=str,
-        choices=['geotiff', 'mbtiles', 'tiles', 'both'],
-        default='geotiff',
-        help="Output format: geotiff (LZW compressed), mbtiles (PNG tiles), tiles (WEBP), or both (default: geotiff)"
-    )
-
-    parser.add_argument(
-        "-z", "--zoom",
-        type=str,
-        default='0-11',
-        help="Zoom levels for tile generation, e.g., '0-11' (default: 0-11)"
-    )
-
-    parser.add_argument(
         "-r", "--resample",
         type=str,
         choices=['nearest', 'bilinear', 'cubic', 'cubicspline'],
@@ -1962,44 +1475,10 @@ Examples:
     )
 
     parser.add_argument(
-        "--preview",
-        action="store_true",
-        help="Preview downloads without actually downloading (dry-run mode)"
-    )
-
-    parser.add_argument(
         "--download-delay",
         type=float,
         default=8.0,
         help="Seconds to wait between downloads to avoid rate limiting (default: 8.0, try 12.0-20.0 if hitting connection errors)"
-    )
-
-    parser.add_argument(
-        "--parallel-mbtiles",
-        type=int,
-        default=2,
-        help="Number of parallel MBTiles creation jobs (default: 2, reduced from 6 to avoid I/O errors)"
-    )
-
-    parser.add_argument(
-        "--mbtiles-only",
-        action="store_true",
-        help="Skip VRT/GeoTIFF creation, only process MBTiles from existing VRTs (for resuming)"
-    )
-
-    parser.add_argument(
-        "--mbtiles-output",
-        type=Path,
-        default=None,
-        help="Output directory for MBTiles files (default: same as --output)"
-    )
-
-    parser.add_argument(
-        "--tile-format",
-        type=str,
-        choices=['PNG', 'JPEG', 'WEBP'],
-        default='PNG',
-        help="Tile format for MBTiles: PNG, JPEG, or WEBP (default: PNG). WEBP requires GDAL with WebP support."
     )
 
     args = parser.parse_args()
@@ -2023,20 +1502,10 @@ Examples:
     # Create temp directory
     args.temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create MBTiles output directory if specified
-    if args.mbtiles_output:
-        args.mbtiles_output.mkdir(parents=True, exist_ok=True)
-
     # Process
     slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles,
-                         preview_mode=args.preview, download_delay=args.download_delay,
+                         preview_mode=False, download_delay=args.download_delay,
                          temp_dir=args.temp_dir)
-    slicer.output_format = args.format
-    slicer.zoom_levels = args.zoom
-    slicer.parallel_mbtiles = args.parallel_mbtiles
-    slicer.mbtiles_only = args.mbtiles_only
-    slicer.mbtiles_output_dir = args.mbtiles_output
-    slicer.tile_format = args.tile_format
     slicer.warp_output = args.warp_output
     slicer.clip_projwin = tuple(args.clip_projwin) if args.clip_projwin else None
     slicer.num_threads = args.num_threads
@@ -2059,11 +1528,6 @@ Examples:
     # Build indexes for O(1) lookups (after loading CSV data)
     slicer._build_source_index()
     slicer._build_shapefile_index()
-
-    # If preview mode, show what would be downloaded and exit
-    if args.preview:
-        slicer.preview_downloads()
-        sys.exit(0)
 
     # During review phase, disable downloads (don't try to validate by downloading)
     # This prevents rate limiting during the review report generation
