@@ -1497,6 +1497,74 @@ class ChartSlicer:
 
         self.log("\n=== MBTiles Processing Complete ===")
 
+    def _rebuild_vrt_library(self, all_locations: List[str]) -> Dict[str, Dict[str, Path]]:
+        """
+        Rebuild vrt_library from existing temp VRTs for resume support.
+
+        Scans temp_dir for previously created location VRTs so that fallback
+        logic works correctly when resuming an interrupted run.
+
+        Returns:
+            Dict mapping location -> date -> VRT/TIF path
+        """
+        vrt_library: Dict[str, Dict[str, Path]] = defaultdict(dict)
+
+        if not self.temp_dir.exists():
+            return vrt_library
+
+        self.log("Rebuilding VRT library from existing temp files...")
+
+        # Scan date subdirectories in temp_dir
+        date_dirs = [d for d in self.temp_dir.iterdir() if d.is_dir()]
+
+        found_count = 0
+        for date_dir in date_dirs:
+            date = date_dir.name
+
+            # Skip non-date directories (simple validation: should contain hyphen)
+            if '-' not in date:
+                continue
+
+            # Look for per-location VRTs: {location}_{date}.vrt
+            for vrt_file in date_dir.glob("*_*.vrt"):
+                # Skip mosaic VRTs
+                if vrt_file.name.startswith("mosaic_"):
+                    continue
+                # Skip RGBA intermediate VRTs
+                if "_rgba.vrt" in vrt_file.name:
+                    continue
+
+                # Parse location from filename: {location}_{date}.vrt
+                stem = vrt_file.stem
+                if stem.endswith(f"_{date}"):
+                    location = stem[:-len(f"_{date}")]
+                    if location in all_locations or self.normalize_name(location) in all_locations:
+                        norm_loc = self.normalize_name(location)
+                        vrt_library[norm_loc][date] = vrt_file
+                        found_count += 1
+
+            # Also check for single warped TIFs (used when only one file per location)
+            # These follow pattern: {location}_{original_stem}.tif
+            for tif_file in date_dir.glob("*.tif"):
+                # Try to extract location from filename
+                stem = tif_file.stem
+                for loc in all_locations:
+                    if stem.startswith(f"{loc}_"):
+                        # Only add if we don't already have a VRT for this location/date
+                        if date not in vrt_library.get(loc, {}):
+                            vrt_library[loc][date] = tif_file
+                            found_count += 1
+                        break
+
+        if found_count > 0:
+            # Count unique location-date pairs
+            total_pairs = sum(len(dates) for dates in vrt_library.values())
+            self.log(f"  Restored {total_pairs} location-date entries from {len(vrt_library)} locations")
+        else:
+            self.log("  No existing VRTs found (fresh run)")
+
+        return vrt_library
+
     def process_all_dates(self):
         """Process all dates in CSV with fallback logic."""
         self.log("\n=== Starting Chart Processing ===")
@@ -1525,7 +1593,8 @@ class ChartSlicer:
         self._download_missing_files()
 
         # Track all warped VRTs per location-date
-        vrt_library: Dict[str, Dict[str, Path]] = defaultdict(dict)
+        # Rebuild from existing temp files to support resume with fallback
+        vrt_library = self._rebuild_vrt_library(all_locations)
 
         # Queue for MBTiles jobs
         mbtiles_jobs = []
