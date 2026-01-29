@@ -12,6 +12,7 @@ import argparse
 import zipfile
 import requests
 import time
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
@@ -177,6 +178,72 @@ def create_geotiff_worker(args):
             }
 
 
+def postprocess_tif_worker(args):
+    """Convert GeoTIFF to MBTiles/PMTiles and upload PMTiles via rclone."""
+    input_tiff, output_dir, remote, rclone_flags = args
+    input_tiff = Path(input_tiff)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    stem = input_tiff.stem
+    mbtiles_path = output_dir / f"{stem}.mbtiles"
+    pmtiles_path = output_dir / f"{stem}.pmtiles"
+
+    def run(cmd):
+        result = subprocess.run(cmd)
+        return result.returncode == 0, result.returncode
+
+    if not (pmtiles_path.exists() and pmtiles_path.stat().st_size > 0):
+        ok, rc = run(["gdal_translate", "-of", "MBTILES", str(input_tiff), str(mbtiles_path)])
+        if not ok:
+            return {
+                'success': False,
+                'input_tiff': str(input_tiff),
+                'error': f"gdal_translate failed (exit {rc})"
+            }
+
+        ok, rc = run([
+            "gdaladdo", "-r", "bilinear", str(mbtiles_path),
+            "2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"
+        ])
+        if not ok:
+            return {
+                'success': False,
+                'input_tiff': str(input_tiff),
+                'error': f"gdaladdo failed (exit {rc})"
+            }
+
+        ok, rc = run(["pmtiles", "convert", str(mbtiles_path), str(pmtiles_path)])
+        if not ok:
+            return {
+                'success': False,
+                'input_tiff': str(input_tiff),
+                'error': f"pmtiles convert failed (exit {rc})"
+            }
+
+    if not (pmtiles_path.exists() and pmtiles_path.stat().st_size > 0):
+        return {
+            'success': False,
+            'input_tiff': str(input_tiff),
+            'error': "pmtiles output missing"
+        }
+
+    upload_cmd = ["rclone", "copyto", str(pmtiles_path), f"{remote}/{pmtiles_path.name}"] + list(rclone_flags)
+    ok, rc = run(upload_cmd)
+    if not ok:
+        return {
+            'success': False,
+            'input_tiff': str(input_tiff),
+            'error': f"rclone upload failed (exit {rc})"
+        }
+
+    return {
+        'success': True,
+        'input_tiff': str(input_tiff),
+        'pmtiles': str(pmtiles_path)
+    }
+
+
 class ChartSlicer:
     """Process FAA charts and create COGs."""
 
@@ -205,6 +272,19 @@ class ChartSlicer:
         self.preview_mode = preview_mode  # If True, only report what would be downloaded
         self.download_delay = download_delay  # Seconds to wait between downloads (to avoid rate limiting)
         self.last_download_time = 0  # Track last download time for throttling
+        self.fallback_window_days = 180  # Max age for fallback chart reuse
+        self._date_cache: Dict[str, Optional[datetime.date]] = {}
+        self.upload_root = Path("/Volumes/drive/upload")
+        self.upload_remote = "r2:charts/sectionals"
+        self.upload_jobs = 6
+        self.rclone_flags = [
+            "-P",
+            "--s3-upload-concurrency", "16",
+            "--s3-chunk-size", "128M",
+            "--buffer-size", "128M",
+            "--s3-disable-checksum",
+            "--stats", "1s"
+        ]
         self.abbreviations = {
             "hawaiian_is": "hawaiian_islands",
             "dallas_ft_worth": "dallas_ft_worth",
@@ -256,6 +336,62 @@ class ChartSlicer:
         while '__' in name:
             name = name.replace('__', '_')
         return name.lower()
+
+    def _date_from_str(self, date_str: str) -> Optional[datetime.date]:
+        """Parse YYYY-MM-DD date strings with caching."""
+        if date_str in self._date_cache:
+            return self._date_cache[date_str]
+        try:
+            parsed = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            parsed = None
+        self._date_cache[date_str] = parsed
+        return parsed
+
+    def _run_postprocess_upload_stage(self, input_dir: Path) -> None:
+        """Convert GeoTIFF mosaics to MBTiles/PMTiles and upload PMTiles."""
+        output_dir = self.upload_root
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        tiff_files = sorted(input_dir.glob("*.tif"))
+        jobs = [tiff for tiff in tiff_files if tiff.exists() and tiff.stat().st_size > 1024 * 1024]
+        if not jobs:
+            self.log(f"  ⊘ No GeoTIFFs found in {input_dir}")
+            return
+
+        workers = max(1, min(self.upload_jobs, len(jobs)))
+        self.log(f"\n=== Post-Processing: TIFF → MBTiles → PMTiles → Upload ===")
+        self.log(f"Input: {input_dir}")
+        self.log(f"Output: {output_dir}")
+        self.log(f"Remote: {self.upload_remote}")
+        self.log(f"Workers: {workers}")
+
+        successes = 0
+        failures = 0
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
+                    postprocess_tif_worker,
+                    (tiff, output_dir, self.upload_remote, self.rclone_flags)
+                ): tiff for tiff in jobs
+            }
+            for future in as_completed(futures):
+                tiff = futures[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    failures += 1
+                    self.log(f"  ✗ Post-process failed for {tiff.name}: {e}")
+                    continue
+
+                if result.get('success'):
+                    successes += 1
+                    self.log(f"  ✓ Uploaded: {Path(result.get('pmtiles', '')).name}")
+                else:
+                    failures += 1
+                    self.log(f"  ✗ Failed: {tiff.name} - {result.get('error', 'unknown error')}")
+
+        self.log(f"Post-processing complete: {successes} succeeded, {failures} failed")
 
 
     def load_dole_data(self):
@@ -768,16 +904,30 @@ class ChartSlicer:
             to_vrt = warp_out == 'vrt'
             self.log(f"    Warping {input_tiff.name} to {'VRT' if to_vrt else 'TIFF'}...")
 
-            # Step 1: Expand to RGBA
+            # Step 1: Build a VRT source for warping.
+            # Only use rgbExpand when the source is paletted; otherwise GDAL errors.
             sanitized_stem = self.sanitize_filename(input_tiff.stem)
-            # Keep the RGBA VRT on disk when outputting VRT so downstream VRTs
+            # Keep the source VRT on disk when outputting VRT so downstream VRTs
             # can reference a persistent source (vsimem would disappear).
             if to_vrt:
-                temp_vrt_path = output_tiff.parent / f"{sanitized_stem}_rgba.vrt"
+                temp_vrt_path = output_tiff.parent / f"{sanitized_stem}_src.vrt"
                 temp_vrt_name = str(temp_vrt_path)
             else:
-                temp_vrt_name = f"/vsimem/{sanitized_stem}_rgba.vrt"
-            translate_options = gdal.TranslateOptions(format="VRT", rgbExpand="rgba")
+                temp_vrt_name = f"/vsimem/{sanitized_stem}_src.vrt"
+
+            src_ds = gdal.Open(str(input_tiff))
+            if not src_ds:
+                self.log(f"      ✗ Could not open {input_tiff.name}")
+                return False
+            first_band = src_ds.GetRasterBand(1)
+            has_color_table = bool(first_band and first_band.GetColorTable())
+            src_ds = None
+
+            if has_color_table:
+                translate_options = gdal.TranslateOptions(format="VRT", rgbExpand="rgba")
+            else:
+                translate_options = gdal.TranslateOptions(format="VRT")
+
             ds_vrt = gdal.Translate(temp_vrt_name, str(input_tiff), options=translate_options)
             ds_vrt = None
 
@@ -1100,7 +1250,7 @@ class ChartSlicer:
         lines.append("Legend:")
         lines.append("  filename.ext    = Direct match for this date")
         lines.append("  ---             = No file found (missing)")
-        lines.append("  (→MM-DD)        = Using fallback from previous date")
+        lines.append(f"  (→MM-DD)        = Using fallback from previous date (<= {self.fallback_window_days} days)")
         lines.append("  (N files)       = Multiple files matched")
         lines.append("")
 
@@ -1212,13 +1362,23 @@ class ChartSlicer:
 
                 report_data.append(report_entry)
 
-        # Second pass: determine fallback usage
+        # Second pass: determine fallback usage (limit to recent history)
+        max_fallback_days = self.fallback_window_days
         for date in sorted_dates:
+            date_dt = self._date_from_str(date)
+            if not date_dt:
+                continue
             for location in all_locations:
                 if location in vrt_library_sim:
-                    available_dates = [d for d in vrt_library_sim[location].keys() if d <= date]
+                    available_dates = []
+                    for d in vrt_library_sim[location].keys():
+                        cand_dt = self._date_from_str(d)
+                        if not cand_dt:
+                            continue
+                        if cand_dt <= date_dt and (date_dt - cand_dt).days <= max_fallback_days:
+                            available_dates.append(d)
                     if available_dates:
-                        most_recent = sorted(available_dates)[-1]
+                        most_recent = max(available_dates, key=self._date_from_str)
                         if most_recent != date:
                             # Mark this entry as using fallback
                             for entry in report_data:
@@ -1458,6 +1618,7 @@ class ChartSlicer:
 
             # Build date matrix with fallback logic
             date_matrix = {}
+            date_dt = self._date_from_str(date)
             for location in all_locations:
                 if location in vrt_library:
                     # Prefer exact date match, otherwise fall back to most recent available
@@ -1465,9 +1626,16 @@ class ChartSlicer:
                         date_matrix[location] = vrt_library[location][date]
                     elif vrt_library[location]:
                         # Use most recent available date <= current date to avoid future data
-                        available_dates = [d for d in vrt_library[location].keys() if d <= date]
+                        available_dates = []
+                        if date_dt:
+                            for d in vrt_library[location].keys():
+                                cand_dt = self._date_from_str(d)
+                                if not cand_dt:
+                                    continue
+                                if cand_dt <= date_dt and (date_dt - cand_dt).days <= self.fallback_window_days:
+                                    available_dates.append(d)
                         if available_dates:
-                            most_recent = max(available_dates)
+                            most_recent = max(available_dates, key=self._date_from_str)
                             date_matrix[location] = vrt_library[location][most_recent]
 
             # Create mosaic VRT and output GeoTIFF
@@ -1588,6 +1756,9 @@ class ChartSlicer:
                         self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
                     else:
                         self.log(f"  ✗ GeoTIFF failed after retry: {date}")
+
+        # Post-process: convert GeoTIFF mosaics to MBTiles/PMTiles and upload
+        self._run_postprocess_upload_stage(input_dir=self.output_dir)
 
         self.log("\n=== Processing Complete ===")
 
