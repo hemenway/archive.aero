@@ -1,0 +1,57 @@
+[package]
+name = "slicer"
+version = "0.1.0"
+edition = "2021"
+description = "FAA Chart Newslicer - High-performance chart processing to COGs"
+authors = ["Ryan Hemenway"]
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# GDAL bindings for geospatial operations
+# Version 0.19 supports GDAL 3.12, enable bindgen for generating bindings
+gdal = { version = "0.19", features = ["bindgen"] }
+
+# Parallel processing
+rayon = "1.10"
+
+# CSV parsing with serde integration
+csv = "1.3"
+serde = { version = "1.0", features = ["derive"] }
+
+# HTTP client for downloads
+reqwest = { version = "0.12", features = ["blocking", "stream"] }
+
+# Date/time handling
+chrono = "0.4"
+
+# Regex for wayback timestamp extraction
+regex = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Progress bars and logging
+indicatif = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# File system walking
+walkdir = "2"
+
+# ZIP extraction
+zip = "2"
+
+# Thread-safe concurrent HashMap
+dashmap = "6"
+
+# Temporary files
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true
