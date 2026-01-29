@@ -290,6 +290,8 @@ class ChartSlicer:
             "dallas_ft_worth": "dallas_ft_worth",
             "mariana_islands_inset": "mariana_islands",
         }
+        # Prefer a single best coordinate operation to avoid PROJ multi-op artifacts/warnings.
+        self.transformer_options = ['ONLY_BEST=YES', 'ALLOW_BALLPARK=NO']
 
         # File index caches for O(1) lookups
         self.files_by_name: Dict[str, Path] = {}  # Direct TIFs and ZIPs
@@ -947,6 +949,7 @@ class ChartSlicer:
                 resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
                 creationOptions=None if to_vrt else ['TILED=YES', 'BIGTIFF=YES'],
                 multithread=True,
+                transformerOptions=getattr(self, 'transformer_options', None) or None,
                 warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
             )
 
