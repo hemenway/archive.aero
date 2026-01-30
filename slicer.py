@@ -129,7 +129,16 @@ def create_geotiff_worker(args):
                 projWin=clip_projwin if clip_projwin else None
             )
 
-            ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
+            progress_cb = getattr(gdal, "TermProgress_nocb", None) or getattr(gdal, "TermProgress", None)
+            if progress_cb:
+                ds = gdal.Translate(
+                    str(output_tiff),
+                    str(input_vrt),
+                    options=translate_options,
+                    callback=progress_cb
+                )
+            else:
+                ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
 
             if ds:
                 ds = None
@@ -227,7 +236,7 @@ def postprocess_tif_worker(args):
             except Exception:
                 pass
         ok, rc = run([
-            "gdal_translate", "-q", "-of", "MBTILES",
+            "gdal_translate", "-of", "MBTILES",
             "--config", "GDAL_NUM_THREADS", "ALL_CPUS",
             "-co", "TILE_FORMAT=WEBP",
             "-co", f"QUALITY={mbtiles_quality}",
@@ -337,6 +346,7 @@ class ChartSlicer:
             "--stats", "1s"
         ]
         self.mbtiles_quality = 80
+        self.max_postprocess_backlog = 10
         self.abbreviations = {
             "hawaiian_is": "hawaiian_islands",
             "dallas_ft_worth": "dallas_ft_worth",
@@ -1601,6 +1611,71 @@ class ChartSlicer:
             self.log(f"GeoTIFFs to create: {dates_needing_geotiff} (skipping {total_dates - dates_needing_geotiff} existing)")
 
         geotiff_jobs = []
+        pending_postprocess = []
+        postprocess_futures = set()
+        postprocess_executor = None
+        postprocess_workers_during_geotiff = 1
+
+        def _ensure_postprocess_executor(workers: int):
+            nonlocal postprocess_executor
+            if postprocess_executor is None:
+                postprocess_executor = ThreadPoolExecutor(max_workers=workers)
+            return postprocess_executor
+
+        def _submit_postprocess_jobs(workers: int):
+            executor = _ensure_postprocess_executor(workers)
+            while pending_postprocess and len(postprocess_futures) < workers:
+                tiff = pending_postprocess.pop(0)
+                pp_future = executor.submit(self._postprocess_single_tiff, tiff)
+                postprocess_futures.add(pp_future)
+
+        def _collect_done_postprocess():
+            if not postprocess_futures:
+                return
+            pp_done, _ = wait(postprocess_futures, timeout=0)
+            for pp_future in pp_done:
+                postprocess_futures.discard(pp_future)
+                try:
+                    pp_future.result()
+                except Exception as e:
+                    self.log(f"  ✗ Post-process task failed: {e}")
+
+        def _apply_postprocess_backpressure(workers: int):
+            max_backlog = getattr(self, 'max_postprocess_backlog', 10)
+            def backlog_count():
+                return len(pending_postprocess) + len(postprocess_futures)
+            while backlog_count() > max_backlog:
+                self.log(f"  ⏸ Post-process backlog {backlog_count()}/{max_backlog} - waiting for MBTiles/PMTiles...")
+                _submit_postprocess_jobs(workers)
+                if not postprocess_futures:
+                    break
+                pp_done, _ = wait(postprocess_futures, return_when=FIRST_COMPLETED)
+                for pp_future in pp_done:
+                    postprocess_futures.discard(pp_future)
+                    try:
+                        pp_future.result()
+                    except Exception as e:
+                        self.log(f"  ✗ Post-process task failed: {e}")
+
+        def _finalize_postprocess(full_workers: int):
+            nonlocal postprocess_executor
+            if not pending_postprocess and not postprocess_futures:
+                return
+            if postprocess_executor is not None:
+                postprocess_executor.shutdown(wait=False)
+            postprocess_executor = ThreadPoolExecutor(max_workers=full_workers)
+            for tiff in pending_postprocess:
+                pp_future = postprocess_executor.submit(self._postprocess_single_tiff, tiff)
+                postprocess_futures.add(pp_future)
+            pending_postprocess.clear()
+            if postprocess_futures:
+                self.log(f"\nWaiting for {len(postprocess_futures)} post-process tasks...")
+                for future in as_completed(postprocess_futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        self.log(f"  ✗ Post-process task failed: {e}")
+            postprocess_executor.shutdown(wait=True)
 
         for date_idx, date in enumerate(sorted_dates, 1):
             self.log(f"\n[{date_idx}/{total_dates}] Processing date: {date}")
@@ -1609,7 +1684,11 @@ class ChartSlicer:
             geotiff_path = self.output_dir / f"{date}.tif"
             geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024
             if geotiff_exists:
-                self.log(f"  ✓ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
+                self.log(f"  ✓ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping (queued for postprocess)")
+                pending_postprocess.append(geotiff_path)
+                _collect_done_postprocess()
+                _submit_postprocess_jobs(postprocess_workers_during_geotiff)
+                _apply_postprocess_backpressure(postprocess_workers_during_geotiff)
                 continue
 
             temp_dir = self.temp_dir / date
@@ -1790,10 +1869,7 @@ class ChartSlicer:
             failed_jobs = []
             # Limit postprocess concurrency to 1 while geotiffs are being generated
             # to avoid CPU starvation from mbtiles/pmtiles conversion subprocesses
-            postprocess_workers_during_geotiff = 1
-            postprocess_executor = ThreadPoolExecutor(max_workers=postprocess_workers_during_geotiff)
-            postprocess_futures = set()
-            pending_postprocess = []  # Queue excess postprocess jobs
+            _ensure_postprocess_executor(postprocess_workers_during_geotiff)
             with ProcessPoolExecutor(max_workers=geo_workers) as executor:
                 job_iter = iter(geotiff_jobs_with_args)
                 futures = {}
@@ -1865,6 +1941,29 @@ class ChartSlicer:
                                         tiff
                                     )
                                     postprocess_futures.add(pp_future)
+                                # Backpressure: cap queued+running postprocess work
+                                max_backlog = getattr(self, 'max_postprocess_backlog', 10)
+                                def backlog_count():
+                                    return len(pending_postprocess) + len(postprocess_futures)
+                                while backlog_count() > max_backlog:
+                                    self.log(f"  ⏸ Post-process backlog {backlog_count()}/{max_backlog} - waiting for MBTiles/PMTiles...")
+                                    # Ensure at least one postprocess job is running
+                                    if pending_postprocess and len(postprocess_futures) < postprocess_workers_during_geotiff:
+                                        tiff = pending_postprocess.pop(0)
+                                        pp_future = postprocess_executor.submit(
+                                            self._postprocess_single_tiff,
+                                            tiff
+                                        )
+                                        postprocess_futures.add(pp_future)
+                                    if not postprocess_futures:
+                                        break
+                                    pp_done, _ = wait(postprocess_futures, return_when=FIRST_COMPLETED)
+                                    for pp_future in pp_done:
+                                        postprocess_futures.discard(pp_future)
+                                        try:
+                                            pp_future.result()
+                                        except Exception as e:
+                                            self.log(f"  ✗ Post-process task failed: {e}")
                             else:
                                 self.log(f"  ✗ GeoTIFF failed for {date}: {result.get('error', 'unknown error')}")
                                 failed_jobs.append(job)
@@ -1918,31 +2017,38 @@ class ChartSlicer:
                                 tiff
                             )
                             postprocess_futures.add(pp_future)
+                        # Backpressure: cap queued+running postprocess work
+                        max_backlog = getattr(self, 'max_postprocess_backlog', 10)
+                        def backlog_count():
+                            return len(pending_postprocess) + len(postprocess_futures)
+                        while backlog_count() > max_backlog:
+                            self.log(f"  ⏸ Post-process backlog {backlog_count()}/{max_backlog} - waiting for MBTiles/PMTiles...")
+                            if pending_postprocess and len(postprocess_futures) < postprocess_workers_during_geotiff:
+                                tiff = pending_postprocess.pop(0)
+                                pp_future = postprocess_executor.submit(
+                                    self._postprocess_single_tiff,
+                                    tiff
+                                )
+                                postprocess_futures.add(pp_future)
+                            if not postprocess_futures:
+                                break
+                            pp_done, _ = wait(postprocess_futures, return_when=FIRST_COMPLETED)
+                            for pp_future in pp_done:
+                                postprocess_futures.discard(pp_future)
+                                try:
+                                    pp_future.result()
+                                except Exception as e:
+                                    self.log(f"  ✗ Post-process task failed: {e}")
                     else:
                         self.log(f"  ✗ GeoTIFF failed after retry: {date}")
 
             # After geotiff generation is complete, process remaining postprocess queue with full concurrency
-            postprocess_executor.shutdown(wait=False)
             full_postprocess_workers = max(1, min(self.upload_jobs, len(pending_postprocess) + len(postprocess_futures)))
-            postprocess_executor = ThreadPoolExecutor(max_workers=full_postprocess_workers)
+            _finalize_postprocess(full_postprocess_workers)
 
-            # Re-submit any pending postprocess jobs to new executor
-            for tiff in pending_postprocess:
-                pp_future = postprocess_executor.submit(
-                    self._postprocess_single_tiff,
-                    tiff
-                )
-                postprocess_futures.add(pp_future)
-            pending_postprocess.clear()
-
-            if postprocess_futures:
-                self.log(f"\nWaiting for {len(postprocess_futures)} post-process tasks...")
-                for future in as_completed(postprocess_futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        self.log(f"  ✗ Post-process task failed: {e}")
-            postprocess_executor.shutdown(wait=True)
+        if not geotiff_jobs:
+            full_postprocess_workers = max(1, min(self.upload_jobs, len(pending_postprocess) + len(postprocess_futures)))
+            _finalize_postprocess(full_postprocess_workers)
 
         # Post-process: convert GeoTIFF mosaics to MBTiles/PMTiles and upload
         self._run_postprocess_upload_stage(input_dir=self.output_dir)
