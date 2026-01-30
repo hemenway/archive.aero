@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
 import datetime
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 try:
     from osgeo import gdal, ogr
@@ -180,10 +180,25 @@ def create_geotiff_worker(args):
 
 def postprocess_tif_worker(args):
     """Convert GeoTIFF to MBTiles/PMTiles and upload PMTiles via rclone."""
-    input_tiff, output_dir, remote, rclone_flags = args
+    if len(args) == 6:
+        input_tiff, output_dir, remote, rclone_flags, delete_input, mbtiles_quality = args
+    elif len(args) == 5:
+        input_tiff, output_dir, remote, rclone_flags, delete_input = args
+        mbtiles_quality = 80
+    elif len(args) == 4:
+        input_tiff, output_dir, remote, rclone_flags = args
+        delete_input = False
+        mbtiles_quality = 80
+    else:
+        raise ValueError("postprocess_tif_worker expected 4, 5, or 6 args")
     input_tiff = Path(input_tiff)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        mbtiles_quality = int(mbtiles_quality)
+    except Exception:
+        mbtiles_quality = 80
+    mbtiles_quality = max(1, min(100, mbtiles_quality))
 
     stem = input_tiff.stem
     mbtiles_path = output_dir / f"{stem}.mbtiles"
@@ -193,8 +208,31 @@ def postprocess_tif_worker(args):
         result = subprocess.run(cmd)
         return result.returncode == 0, result.returncode
 
-    if not (pmtiles_path.exists() and pmtiles_path.stat().st_size > 0):
-        ok, rc = run(["gdal_translate", "-of", "MBTILES", str(input_tiff), str(mbtiles_path)])
+    input_mtime = input_tiff.stat().st_mtime if input_tiff.exists() else 0
+    pmtiles_up_to_date = (
+        pmtiles_path.exists()
+        and pmtiles_path.stat().st_size > 0
+        and pmtiles_path.stat().st_mtime >= input_mtime
+    )
+
+    if not pmtiles_up_to_date:
+        if mbtiles_path.exists():
+            try:
+                mbtiles_path.unlink()
+            except Exception:
+                pass
+        if pmtiles_path.exists():
+            try:
+                pmtiles_path.unlink()
+            except Exception:
+                pass
+        ok, rc = run([
+            "gdal_translate", "-q", "-of", "MBTILES",
+            "--config", "GDAL_NUM_THREADS", "ALL_CPUS",
+            "-co", "TILE_FORMAT=WEBP",
+            "-co", f"QUALITY={mbtiles_quality}",
+            str(input_tiff), str(mbtiles_path)
+        ])
         if not ok:
             return {
                 'success': False,
@@ -237,10 +275,22 @@ def postprocess_tif_worker(args):
             'error': f"rclone upload failed (exit {rc})"
         }
 
+    deleted_input = False
+    delete_error = None
+    if delete_input:
+        try:
+            if input_tiff.exists():
+                input_tiff.unlink()
+                deleted_input = True
+        except Exception as e:
+            delete_error = str(e)
+
     return {
         'success': True,
         'input_tiff': str(input_tiff),
-        'pmtiles': str(pmtiles_path)
+        'pmtiles': str(pmtiles_path),
+        'deleted_input': deleted_input,
+        'delete_error': delete_error
     }
 
 
@@ -266,7 +316,7 @@ class ChartSlicer:
         self.output_dir = output_dir
         self.csv_file = csv_file
         self.shape_dir = shape_dir
-        self.temp_dir = temp_dir if temp_dir else output_dir / ".temp"  # Default to output_dir/.temp for backward compatibility
+        self.temp_dir = temp_dir if temp_dir else Path("/Volumes/projects/.temp")
         self.dole_data = defaultdict(list)
         self.srs_cache = {}  # Cache for shapefile SRS lookups
         self.preview_mode = preview_mode  # If True, only report what would be downloaded
@@ -274,9 +324,10 @@ class ChartSlicer:
         self.last_download_time = 0  # Track last download time for throttling
         self.fallback_window_days = 180  # Max age for fallback chart reuse
         self._date_cache: Dict[str, Optional[datetime.date]] = {}
-        self.upload_root = Path("/Volumes/drive/upload")
+        self.upload_root = Path("/Users/ryanhemenway/Desktop/sync")
         self.upload_remote = "r2:charts/sectionals"
-        self.upload_jobs = 6
+        self.upload_jobs = 4
+        self.delete_geotiff_after_mbtiles = True
         self.rclone_flags = [
             "-P",
             "--s3-upload-concurrency", "16",
@@ -285,6 +336,7 @@ class ChartSlicer:
             "--s3-disable-checksum",
             "--stats", "1s"
         ]
+        self.mbtiles_quality = 80
         self.abbreviations = {
             "hawaiian_is": "hawaiian_islands",
             "dallas_ft_worth": "dallas_ft_worth",
@@ -374,7 +426,7 @@ class ChartSlicer:
             futures = {
                 executor.submit(
                     postprocess_tif_worker,
-                    (tiff, output_dir, self.upload_remote, self.rclone_flags)
+                    (tiff, output_dir, self.upload_remote, self.rclone_flags, self.delete_geotiff_after_mbtiles, self.mbtiles_quality)
                 ): tiff for tiff in jobs
             }
             for future in as_completed(futures):
@@ -388,12 +440,34 @@ class ChartSlicer:
 
                 if result.get('success'):
                     successes += 1
-                    self.log(f"  ✓ Uploaded: {Path(result.get('pmtiles', '')).name}")
+                    msg = f"  ✓ Uploaded: {Path(result.get('pmtiles', '')).name}"
+                    if result.get('deleted_input'):
+                        msg += " (deleted GeoTIFF)"
+                    elif result.get('delete_error'):
+                        msg += f" (delete failed: {result.get('delete_error')})"
+                    self.log(msg)
                 else:
                     failures += 1
                     self.log(f"  ✗ Failed: {tiff.name} - {result.get('error', 'unknown error')}")
 
         self.log(f"Post-processing complete: {successes} succeeded, {failures} failed")
+
+    def _postprocess_single_tiff(self, tiff_path: Path) -> bool:
+        """Convert a single GeoTIFF to MBTiles/PMTiles and upload, with optional cleanup."""
+        result = postprocess_tif_worker(
+            (tiff_path, self.upload_root, self.upload_remote, self.rclone_flags, self.delete_geotiff_after_mbtiles, self.mbtiles_quality)
+        )
+        if result.get('success'):
+            msg = f"  ✓ Uploaded: {Path(result.get('pmtiles', '')).name}"
+            if result.get('deleted_input'):
+                msg += " (deleted GeoTIFF)"
+            elif result.get('delete_error'):
+                msg += f" (delete failed: {result.get('delete_error')})"
+            self.log(msg)
+            return True
+
+        self.log(f"  ✗ Post-process failed for {tiff_path.name}: {result.get('error', 'unknown error')}")
+        return False
 
 
     def load_dole_data(self):
@@ -879,9 +953,6 @@ class ChartSlicer:
 
     def _warp_worker(self, job: Dict) -> Dict:
         """Worker function for parallel warping operations."""
-        # Configure GDAL for warp phase (single-threaded per worker)
-        _configure_gdal_for_phase('warp', workers=1)
-
         success = self.warp_and_cut(
             job['input_tiff'],
             job['shapefile'],
@@ -997,7 +1068,8 @@ class ChartSlicer:
 
             input_strs = [str(f) for f in valid_files]
             # Don't add alpha - input files already have alpha from warp_and_cut
-            vrt_options = gdal.BuildVRTOptions(resampleAlg=gdal.GRA_Bilinear, resolution='highest')
+            resample_alg = getattr(self, 'resample_alg', gdal.GRA_Bilinear)
+            vrt_options = gdal.BuildVRTOptions(resampleAlg=resample_alg, resolution='highest')
             ds = gdal.BuildVRT(str(output_vrt), input_strs, options=vrt_options)
 
             if ds:
@@ -1540,9 +1612,17 @@ class ChartSlicer:
                 self.log(f"  ✓ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
                 continue
 
-            records = self.dole_data[date]
             temp_dir = self.temp_dir / date
             temp_dir.mkdir(parents=True, exist_ok=True)
+
+            mosaic_vrt = temp_dir / f"mosaic_{date}.vrt"
+            if mosaic_vrt.exists() and mosaic_vrt.stat().st_size > 0:
+                self.log(f"  ✓ Mosaic VRT already exists - skipping warp/mosaic build")
+                geotiff_jobs.append((mosaic_vrt, geotiff_path, date))
+                self.log(f"  Queued GeoTIFF creation")
+                continue
+
+            records = self.dole_data[date]
 
             # Collect warp jobs for parallel processing
             warp_jobs = []
@@ -1578,6 +1658,7 @@ class ChartSlicer:
             # Execute warp jobs in parallel
             if warp_jobs:
                 cpu_count_for_warp = max(2, cpu_count - 2)
+                _configure_gdal_for_phase('warp', workers=cpu_count_for_warp)
                 self.log(f"  Processing {len(warp_jobs)} warp jobs with {cpu_count_for_warp} parallel workers...")
                 results = []
 
@@ -1707,45 +1788,110 @@ class ChartSlicer:
                 ))
 
             failed_jobs = []
+            # Limit postprocess concurrency to 1 while geotiffs are being generated
+            # to avoid CPU starvation from mbtiles/pmtiles conversion subprocesses
+            postprocess_workers_during_geotiff = 1
+            postprocess_executor = ThreadPoolExecutor(max_workers=postprocess_workers_during_geotiff)
+            postprocess_futures = set()
+            pending_postprocess = []  # Queue excess postprocess jobs
             with ProcessPoolExecutor(max_workers=geo_workers) as executor:
-                futures = {executor.submit(create_geotiff_worker, job): job for job in geotiff_jobs_with_args}
+                job_iter = iter(geotiff_jobs_with_args)
+                futures = {}
 
-                for future in as_completed(futures):
-                    job = futures[future]
-                    date = job[2]
-                    try:
-                        result = future.result()
-                    except Exception as e:
-                        self.log(f"  ✗ GeoTIFF worker crashed for {date}: {e}")
-                        failed_jobs.append(job)
+                job_start_times = {}  # Track when each job started
+
+                # Seed initial jobs
+                for _ in range(min(geo_workers, len(geotiff_jobs_with_args))):
+                    job = next(job_iter, None)
+                    if not job:
+                        break
+                    future = executor.submit(create_geotiff_worker, job)
+                    futures[future] = job
+                    job_start_times[future] = time.time()
+                    self.log(f"  → Starting GeoTIFF: {job[2]}")
+
+                while futures:
+                    # Use timeout to detect stuck workers
+                    done, not_done = wait(futures, timeout=120, return_when=FIRST_COMPLETED)
+
+                    if not done:
+                        # No jobs completed in 120 seconds - log what's running with elapsed time
+                        now = time.time()
+                        running_info = []
+                        for f in not_done:
+                            date = futures[f][2]
+                            elapsed = int(now - job_start_times.get(f, now))
+                            running_info.append(f"{date} ({elapsed}s)")
+                        self.log(f"  ⏳ Waiting on GeoTIFF workers: {', '.join(running_info)}")
                         continue
 
-                    if result.get('success'):
-                        self.geotiff_completed += 1
-                        elapsed = result.get('elapsed')
-                        if elapsed:
-                            self.geotiff_times.append(elapsed)
-                        file_size_mb = result.get('file_size_mb', 0)
-                        rate = result.get('rate', 0)
-                        compress_used = result.get('compress', self.compression)
-                        if elapsed:
-                            self.log(f"  ✓ GeoTIFF created: {Path(result['output_tiff']).name} ({file_size_mb:.1f} MB in {elapsed:.1f}s, {rate:.1f} MB/s, {compress_used})")
+                    for future in done:
+                        job = futures.pop(future)
+                        date = job[2]
+                        try:
+                            result = future.result()
+                        except Exception as e:
+                            self.log(f"  ✗ GeoTIFF worker crashed for {date}: {e}")
+                            failed_jobs.append(job)
                         else:
-                            self.log(f"  ✓ GeoTIFF created: {Path(result['output_tiff']).name} ({file_size_mb:.1f} MB, {compress_used})")
-                        self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
-                    else:
-                        self.log(f"  ✗ GeoTIFF failed for {date}: {result.get('error', 'unknown error')}")
-                        failed_jobs.append(job)
+                            if result.get('success'):
+                                self.geotiff_completed += 1
+                                elapsed = result.get('elapsed')
+                                if elapsed:
+                                    self.geotiff_times.append(elapsed)
+                                file_size_mb = result.get('file_size_mb', 0)
+                                rate = result.get('rate', 0)
+                                compress_used = result.get('compress', self.compression)
+                                if elapsed:
+                                    self.log(f"  ✓ GeoTIFF created: {Path(result['output_tiff']).name} ({file_size_mb:.1f} MB in {elapsed:.1f}s, {rate:.1f} MB/s, {compress_used})")
+                                else:
+                                    self.log(f"  ✓ GeoTIFF created: {Path(result['output_tiff']).name} ({file_size_mb:.1f} MB, {compress_used})")
+                                self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
+                                # Queue postprocess job; only submit if under limit
+                                pending_postprocess.append(Path(result['output_tiff']))
+                                # Collect completed postprocess futures
+                                pp_done, _ = wait(postprocess_futures, timeout=0)
+                                for pp_future in pp_done:
+                                    postprocess_futures.discard(pp_future)
+                                    try:
+                                        pp_future.result()
+                                    except Exception as e:
+                                        self.log(f"  ✗ Post-process task failed: {e}")
+                                # Submit pending jobs up to worker limit
+                                while pending_postprocess and len(postprocess_futures) < postprocess_workers_during_geotiff:
+                                    tiff = pending_postprocess.pop(0)
+                                    pp_future = postprocess_executor.submit(
+                                        self._postprocess_single_tiff,
+                                        tiff
+                                    )
+                                    postprocess_futures.add(pp_future)
+                            else:
+                                self.log(f"  ✗ GeoTIFF failed for {date}: {result.get('error', 'unknown error')}")
+                                failed_jobs.append(job)
 
-                    remaining_jobs = max(0, self.geotiff_total_planned - self.geotiff_completed)
-                    if self.geotiff_times and remaining_jobs > 0:
-                        avg_sec = sum(self.geotiff_times) / len(self.geotiff_times)
-                        overall_sec = remaining_jobs * avg_sec
-                        overall_hours = overall_sec / 3600
-                        if overall_hours >= 1:
-                            self.log(f"  Overall ETA: {overall_hours:.1f} hours ({remaining_jobs} GeoTIFFs remaining)")
-                        else:
-                            self.log(f"  Overall ETA: {overall_sec/60:.1f} min ({remaining_jobs} GeoTIFFs remaining)")
+                            remaining_jobs = max(0, self.geotiff_total_planned - self.geotiff_completed)
+                            if self.geotiff_times and remaining_jobs > 0:
+                                avg_sec = sum(self.geotiff_times) / len(self.geotiff_times)
+                                overall_sec = remaining_jobs * avg_sec
+                                overall_hours = overall_sec / 3600
+                                if overall_hours >= 1:
+                                    self.log(f"  Overall ETA: {overall_hours:.1f} hours ({remaining_jobs} GeoTIFFs remaining)")
+                                else:
+                                    self.log(f"  Overall ETA: {overall_sec/60:.1f} min ({remaining_jobs} GeoTIFFs remaining)")
+
+                        # Clean up start time for completed job
+                        job_start_times.pop(future, None)
+
+                        # Submit next job after handling this one to keep disk usage bounded
+                        try:
+                            next_job = next(job_iter)
+                        except StopIteration:
+                            next_job = None
+                        if next_job:
+                            new_future = executor.submit(create_geotiff_worker, next_job)
+                            futures[new_future] = next_job
+                            job_start_times[new_future] = time.time()
+                            self.log(f"  → Starting GeoTIFF: {next_job[2]}")
 
             if failed_jobs:
                 self.log(f"\nRetrying {len(failed_jobs)} GeoTIFFs sequentially...")
@@ -1757,8 +1903,46 @@ class ChartSlicer:
                         self.geotiff_completed += 1
                         self.geotiff_times.append(elapsed)
                         self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
+                        pending_postprocess.append(Path(output_tiff))
+                        pp_done, _ = wait(postprocess_futures, timeout=0)
+                        for pp_future in pp_done:
+                            postprocess_futures.discard(pp_future)
+                            try:
+                                pp_future.result()
+                            except Exception as e:
+                                self.log(f"  ✗ Post-process task failed: {e}")
+                        while pending_postprocess and len(postprocess_futures) < postprocess_workers_during_geotiff:
+                            tiff = pending_postprocess.pop(0)
+                            pp_future = postprocess_executor.submit(
+                                self._postprocess_single_tiff,
+                                tiff
+                            )
+                            postprocess_futures.add(pp_future)
                     else:
                         self.log(f"  ✗ GeoTIFF failed after retry: {date}")
+
+            # After geotiff generation is complete, process remaining postprocess queue with full concurrency
+            postprocess_executor.shutdown(wait=False)
+            full_postprocess_workers = max(1, min(self.upload_jobs, len(pending_postprocess) + len(postprocess_futures)))
+            postprocess_executor = ThreadPoolExecutor(max_workers=full_postprocess_workers)
+
+            # Re-submit any pending postprocess jobs to new executor
+            for tiff in pending_postprocess:
+                pp_future = postprocess_executor.submit(
+                    self._postprocess_single_tiff,
+                    tiff
+                )
+                postprocess_futures.add(pp_future)
+            pending_postprocess.clear()
+
+            if postprocess_futures:
+                self.log(f"\nWaiting for {len(postprocess_futures)} post-process tasks...")
+                for future in as_completed(postprocess_futures):
+                    try:
+                        future.result()
+                    except Exception as e:
+                        self.log(f"  ✗ Post-process task failed: {e}")
+            postprocess_executor.shutdown(wait=True)
 
         # Post-process: convert GeoTIFF mosaics to MBTiles/PMTiles and upload
         self._run_postprocess_upload_stage(input_dir=self.output_dir)
@@ -1787,8 +1971,8 @@ Examples:
     parser.add_argument(
         "-o", "--output",
         type=Path,
-        default=Path("/Volumes/projects/sync"),
-        help="Output directory for COGs (default: /Volumes/projects/sync)"
+        default=Path("/Volumes/drive/sync"),
+        help="Output directory for COGs (default: /Volumes/drive/sync)"
     )
 
     parser.add_argument(
@@ -1856,8 +2040,15 @@ Examples:
     parser.add_argument(
         "--parallel-geotiff",
         type=int,
-        default=3,
-        help="Number of parallel GeoTIFF creation jobs (default: 3, tuned for 10-core/16GB systems)"
+        default=4,
+        help="Number of parallel GeoTIFF creation jobs (default: 4, tuned for 10-core/16GB systems)"
+    )
+
+    parser.add_argument(
+        "--mbtiles-quality",
+        type=int,
+        default=80,
+        help="WEBP quality for MBTiles tiles (1-100, default: 80)"
     )
 
     parser.add_argument(
@@ -1896,6 +2087,7 @@ Examples:
     slicer.clip_projwin = tuple(args.clip_projwin) if args.clip_projwin else None
     slicer.num_threads = args.num_threads
     slicer.parallel_geotiff = args.parallel_geotiff
+    slicer.mbtiles_quality = args.mbtiles_quality
 
     # Map resampling algorithm
     resample_map = {
