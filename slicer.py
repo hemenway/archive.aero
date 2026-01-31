@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FAA Chart Newslicer - CLI tool for processing sectional charts
-Creates COGs for each date with fallback logic for 56 locations.
+Creates COGs for each date for 56 locations.
 """
 
 import os
@@ -331,7 +331,6 @@ class ChartSlicer:
         self.preview_mode = preview_mode  # If True, only report what would be downloaded
         self.download_delay = download_delay  # Seconds to wait between downloads (to avoid rate limiting)
         self.last_download_time = 0  # Track last download time for throttling
-        self.fallback_window_days = 180  # Max age for fallback chart reuse
         self._date_cache: Dict[str, Optional[datetime.date]] = {}
         self.upload_root = Path("/Users/ryanhemenway/Desktop/sync")
         self.upload_remote = "r2:charts/sectionals"
@@ -491,6 +490,10 @@ class ChartSlicer:
                 date = row.get('date')
                 if not date:
                     continue
+
+                # Support newer CSV schema where filename is stored as tif_filename
+                if not row.get('filename') and row.get('tif_filename'):
+                    row['filename'] = row.get('tif_filename')
 
                 link = row.get('download_link', '')
                 timestamp = None
@@ -1020,21 +1023,38 @@ class ChartSlicer:
             # Step 2: Warp with cutline. Write GTiff (default) or VRT when requested
             # Note: Not specifying xRes/yRes allows GDAL to maintain source resolution during warp
             # Don't compress intermediates to reduce CPU load and improve parallel performance
-            warp_options = gdal.WarpOptions(
-                format="VRT" if to_vrt else "GTiff",
-                dstSRS='EPSG:3857',
-                cutlineDSName=str(shapefile),
-                cutlineSRS=shapefile_srs,
-                cropToCutline=True,
-                dstAlpha=True,
-                resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
-                creationOptions=None if to_vrt else ['TILED=YES', 'BIGTIFF=YES'],
-                multithread=True,
-                transformerOptions=getattr(self, 'transformer_options', None) or None,
-                warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
-            )
+            def _run_warp(transformer_opts):
+                warp_options = gdal.WarpOptions(
+                    format="VRT" if to_vrt else "GTiff",
+                    dstSRS='EPSG:3857',
+                    cutlineDSName=str(shapefile),
+                    cutlineSRS=shapefile_srs,
+                    cropToCutline=True,
+                    dstAlpha=True,
+                    resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
+                    creationOptions=None if to_vrt else ['TILED=YES', 'BIGTIFF=YES'],
+                    multithread=True,
+                    transformerOptions=transformer_opts or None,
+                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
+                )
+                return gdal.Warp(str(output_tiff), temp_vrt_name, options=warp_options)
 
-            ds = gdal.Warp(str(output_tiff), temp_vrt_name, options=warp_options)
+            transformer_opts = getattr(self, 'transformer_options', None)
+            ds = None
+            try:
+                ds = _run_warp(transformer_opts)
+            except Exception as e:
+                if transformer_opts:
+                    self.log(f"      ⚠ Warp failed with strict transformer options; retrying with relaxed options...")
+                    try:
+                        ds = _run_warp(['ALLOW_BALLPARK=YES'])
+                    except Exception:
+                        raise e
+                else:
+                    raise e
+            if ds is None and transformer_opts:
+                self.log(f"      ⚠ Warp returned no dataset with strict transformer options; retrying with relaxed options...")
+                ds = _run_warp(['ALLOW_BALLPARK=YES'])
 
             # Cleanup
             if not to_vrt and temp_vrt_name.startswith("/vsimem/"):
@@ -1221,7 +1241,7 @@ class ChartSlicer:
                 date = entry['date']
                 loc = entry['location']
 
-                # Determine cell content based on matches and fallback
+                # Determine cell content based on matches
                 if entry['num_files'] > 0:
                     # Extract just filename
                     files = entry['source_files'].split(',')
@@ -1235,11 +1255,6 @@ class ChartSlicer:
                         cell = filename
                 else:
                     cell = "---"
-
-                # Override with fallback indicator if using fallback
-                if entry['fallback'] != 'NO':
-                    fallback_date = entry['fallback'][-5:]  # MM-DD
-                    cell = f"(→{fallback_date})"
 
                 matrix[date][loc] = cell
 
@@ -1281,7 +1296,7 @@ class ChartSlicer:
             date = entry['date']
             loc = entry['location']
 
-            # Determine cell content based on matches and fallback
+            # Determine cell content based on matches
             if entry['num_files'] > 0:
                 # Extract just filename
                 files = entry['source_files'].split(',')
@@ -1295,11 +1310,6 @@ class ChartSlicer:
                     cell = filename
             else:
                 cell = "---"
-
-            # Override with fallback indicator if using fallback
-            if entry['fallback'] != 'NO':
-                fallback_date = entry['fallback'][-5:]  # MM-DD
-                cell = f"(→{fallback_date})"
 
             matrix[date][loc] = cell
 
@@ -1335,7 +1345,6 @@ class ChartSlicer:
         lines.append("Legend:")
         lines.append("  filename.ext    = Direct match for this date")
         lines.append("  ---             = No file found (missing)")
-        lines.append(f"  (→MM-DD)        = Using fallback from previous date (<= {self.fallback_window_days} days)")
         lines.append("  (N files)       = Multiple files matched")
         lines.append("")
 
@@ -1345,7 +1354,6 @@ class ChartSlicer:
         lines.append(f"  Total locations: {stats['total_locations']}")
         lines.append(f"  Total matches: {stats['total_matches']}")
         lines.append(f"  Missing matches: {stats['missing_matches']}")
-        lines.append(f"  Locations using fallback: {stats['fallback_count']}")
         lines.append("")
         lines.append("═" * 80)
 
@@ -1368,9 +1376,6 @@ class ChartSlicer:
                     all_locations.add(norm_loc)
 
         all_locations = sorted(all_locations)
-
-        # Track file matches per location-date for fallback simulation
-        vrt_library_sim = defaultdict(dict)
 
         # Build CSV records lookup: date -> location -> record
         csv_lookup = defaultdict(dict)
@@ -1401,7 +1406,6 @@ class ChartSlicer:
                     found_files = self.find_files(location, edition, timestamp, filename, download_link)
 
                     if found_files:
-                        vrt_library_sim[location][date] = True
                         # Handle both Path and (Path, internal_file) tuple formats
                         file_names = []
                         for f in found_files:
@@ -1418,8 +1422,6 @@ class ChartSlicer:
                         # Check if filename exists in CSV but just not on disk yet
                         if filename:
                             # File is in CSV but not on disk - will be downloaded during processing
-                            # Mark it as found so fallback logic doesn't trigger
-                            vrt_library_sim[location][date] = True
                             source_files_str = f"📥 WILL DOWNLOAD: {filename}"
                         else:
                             source_files_str = "NOT IN CSV"
@@ -1430,8 +1432,7 @@ class ChartSlicer:
                         'edition': edition,
                         'shapefile_found': shapefile_found,
                         'source_files': source_files_str,
-                        'num_files': len(found_files),
-                        'fallback': 'NO'
+                        'num_files': len(found_files)
                     }
                 else:
                     # No CSV record for this location on this date
@@ -1441,43 +1442,17 @@ class ChartSlicer:
                         'edition': 'N/A',
                         'shapefile_found': 'N/A',
                         'source_files': 'NOT FOUND',
-                        'num_files': 0,
-                        'fallback': 'NO'
+                        'num_files': 0
                     }
 
                 report_data.append(report_entry)
-
-        # Second pass: determine fallback usage (limit to recent history)
-        max_fallback_days = self.fallback_window_days
-        for date in sorted_dates:
-            date_dt = self._date_from_str(date)
-            if not date_dt:
-                continue
-            for location in all_locations:
-                if location in vrt_library_sim:
-                    available_dates = []
-                    for d in vrt_library_sim[location].keys():
-                        cand_dt = self._date_from_str(d)
-                        if not cand_dt:
-                            continue
-                        if cand_dt <= date_dt and (date_dt - cand_dt).days <= max_fallback_days:
-                            available_dates.append(d)
-                    if available_dates:
-                        most_recent = max(available_dates, key=self._date_from_str)
-                        if most_recent != date:
-                            # Mark this entry as using fallback
-                            for entry in report_data:
-                                if entry['date'] == date and entry['location'] == location:
-                                    entry['fallback'] = most_recent
-                                    break
 
         # Calculate statistics
         stats = {
             'total_dates': len(sorted_dates),
             'total_locations': len(all_locations),
             'total_matches': sum(1 for e in report_data if e['num_files'] > 0),
-            'missing_matches': sum(1 for e in report_data if e['num_files'] == 0),
-            'fallback_count': sum(1 for e in report_data if e['fallback'] != 'NO')
+            'missing_matches': sum(1 for e in report_data if e['num_files'] == 0)
         }
 
         # Display formatted console output
@@ -1503,8 +1478,8 @@ class ChartSlicer:
         """
         Rebuild vrt_library from existing temp VRTs for resume support.
 
-        Scans temp_dir for previously created location VRTs so that fallback
-        logic works correctly when resuming an interrupted run.
+        Scans temp_dir for previously created location VRTs so that
+        resuming an interrupted run can reuse existing intermediates.
 
         Returns:
             Dict mapping location -> date -> VRT/TIF path
@@ -1568,7 +1543,7 @@ class ChartSlicer:
         return vrt_library
 
     def process_all_dates(self):
-        """Process all dates in CSV with fallback logic (GeoTIFF only)."""
+        """Process all dates in CSV (GeoTIFF only)."""
         self.log("\n=== Starting Chart Processing ===")
 
         # Get all locations from CSV (not shapefiles)
@@ -1590,11 +1565,10 @@ class ChartSlicer:
         self._download_missing_files()
 
         # Track all warped VRTs per location-date
-        # Rebuild from existing temp files to support resume with fallback
+        # Rebuild from existing temp files to support resume
         vrt_library = self._rebuild_vrt_library(all_locations)
 
         # Process each date (earliest to latest)
-        # Fallback logic uses most_recent available date <= current date
         sorted_dates = sorted(self.dole_data.keys())
         total_dates = len(sorted_dates)
 
@@ -1611,80 +1585,6 @@ class ChartSlicer:
             self.log(f"GeoTIFFs to create: {dates_needing_geotiff} (skipping {total_dates - dates_needing_geotiff} existing)")
 
         geotiff_jobs = []
-        pending_postprocess = []
-        postprocess_futures = set()
-        postprocess_executor = None
-        postprocess_workers_during_geotiff = 1
-        postprocess_workers_when_backlog_full = min(3, max(1, getattr(self, 'upload_jobs', 1)))
-        postprocess_max_workers = max(postprocess_workers_during_geotiff, postprocess_workers_when_backlog_full)
-
-        def _backlog_count():
-            return len(pending_postprocess) + len(postprocess_futures)
-
-        def _postprocess_worker_limit():
-            max_backlog = getattr(self, 'max_postprocess_backlog', 10)
-            if _backlog_count() >= max_backlog:
-                return postprocess_workers_when_backlog_full
-            return postprocess_workers_during_geotiff
-
-        def _ensure_postprocess_executor(max_workers: int):
-            nonlocal postprocess_executor
-            if postprocess_executor is None:
-                postprocess_executor = ThreadPoolExecutor(max_workers=max_workers)
-            return postprocess_executor
-
-        def _submit_postprocess_jobs(limit_workers: int):
-            executor = _ensure_postprocess_executor(postprocess_max_workers)
-            while pending_postprocess and len(postprocess_futures) < limit_workers:
-                tiff = pending_postprocess.pop(0)
-                pp_future = executor.submit(self._postprocess_single_tiff, tiff)
-                postprocess_futures.add(pp_future)
-
-        def _collect_done_postprocess():
-            if not postprocess_futures:
-                return
-            pp_done, _ = wait(postprocess_futures, timeout=0)
-            for pp_future in pp_done:
-                postprocess_futures.discard(pp_future)
-                try:
-                    pp_future.result()
-                except Exception as e:
-                    self.log(f"  ✗ Post-process task failed: {e}")
-
-        def _apply_postprocess_backpressure():
-            max_backlog = getattr(self, 'max_postprocess_backlog', 10)
-            while _backlog_count() >= max_backlog:
-                self.log(f"  ⏸ Post-process backlog {_backlog_count()}/{max_backlog} - waiting for MBTiles/PMTiles...")
-                _submit_postprocess_jobs(_postprocess_worker_limit())
-                if not postprocess_futures:
-                    break
-                pp_done, _ = wait(postprocess_futures, return_when=FIRST_COMPLETED)
-                for pp_future in pp_done:
-                    postprocess_futures.discard(pp_future)
-                    try:
-                        pp_future.result()
-                    except Exception as e:
-                        self.log(f"  ✗ Post-process task failed: {e}")
-
-        def _finalize_postprocess(full_workers: int):
-            nonlocal postprocess_executor
-            if not pending_postprocess and not postprocess_futures:
-                return
-            if postprocess_executor is not None:
-                postprocess_executor.shutdown(wait=False)
-            postprocess_executor = ThreadPoolExecutor(max_workers=full_workers)
-            for tiff in pending_postprocess:
-                pp_future = postprocess_executor.submit(self._postprocess_single_tiff, tiff)
-                postprocess_futures.add(pp_future)
-            pending_postprocess.clear()
-            if postprocess_futures:
-                self.log(f"\nWaiting for {len(postprocess_futures)} post-process tasks...")
-                for future in as_completed(postprocess_futures):
-                    try:
-                        future.result()
-                    except Exception as e:
-                        self.log(f"  ✗ Post-process task failed: {e}")
-            postprocess_executor.shutdown(wait=True)
 
         for date_idx, date in enumerate(sorted_dates, 1):
             self.log(f"\n[{date_idx}/{total_dates}] Processing date: {date}")
@@ -1693,11 +1593,7 @@ class ChartSlicer:
             geotiff_path = self.output_dir / f"{date}.tif"
             geotiff_exists = geotiff_path.exists() and geotiff_path.stat().st_size > 1024 * 1024
             if geotiff_exists:
-                self.log(f"  ✓ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping (queued for postprocess)")
-                pending_postprocess.append(geotiff_path)
-                _collect_done_postprocess()
-                _submit_postprocess_jobs(_postprocess_worker_limit())
-                _apply_postprocess_backpressure()
+                self.log(f"  ✓ GeoTIFF already exists ({geotiff_path.stat().st_size / (1024*1024):.1f} MB) - skipping")
                 continue
 
             temp_dir = self.temp_dir / date
@@ -1788,27 +1684,11 @@ class ChartSlicer:
             else:
                 self.log(f"  No valid locations found with source files")
 
-            # Build date matrix with fallback logic
+            # Build date matrix from exact date matches only
             date_matrix = {}
-            date_dt = self._date_from_str(date)
             for location in all_locations:
-                if location in vrt_library:
-                    # Prefer exact date match, otherwise fall back to most recent available
-                    if date in vrt_library[location]:
-                        date_matrix[location] = vrt_library[location][date]
-                    elif vrt_library[location]:
-                        # Use most recent available date <= current date to avoid future data
-                        available_dates = []
-                        if date_dt:
-                            for d in vrt_library[location].keys():
-                                cand_dt = self._date_from_str(d)
-                                if not cand_dt:
-                                    continue
-                                if cand_dt <= date_dt and (date_dt - cand_dt).days <= self.fallback_window_days:
-                                    available_dates.append(d)
-                        if available_dates:
-                            most_recent = max(available_dates, key=self._date_from_str)
-                            date_matrix[location] = vrt_library[location][most_recent]
+                if location in vrt_library and date in vrt_library[location]:
+                    date_matrix[location] = vrt_library[location][date]
 
             # Create mosaic VRT and output GeoTIFF
             if date_matrix:
@@ -1876,9 +1756,6 @@ class ChartSlicer:
                 ))
 
             failed_jobs = []
-            # Limit postprocess concurrency to 1 while geotiffs are being generated
-            # to avoid CPU starvation from mbtiles/pmtiles conversion subprocesses
-            _ensure_postprocess_executor(postprocess_max_workers)
             with ProcessPoolExecutor(max_workers=geo_workers) as executor:
                 job_iter = iter(geotiff_jobs_with_args)
                 futures = {}
@@ -1932,20 +1809,6 @@ class ChartSlicer:
                                 else:
                                     self.log(f"  ✓ GeoTIFF created: {Path(result['output_tiff']).name} ({file_size_mb:.1f} MB, {compress_used})")
                                 self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
-                                # Queue postprocess job; only submit if under limit
-                                pending_postprocess.append(Path(result['output_tiff']))
-                                # Collect completed postprocess futures
-                                pp_done, _ = wait(postprocess_futures, timeout=0)
-                                for pp_future in pp_done:
-                                    postprocess_futures.discard(pp_future)
-                                    try:
-                                        pp_future.result()
-                                    except Exception as e:
-                                        self.log(f"  ✗ Post-process task failed: {e}")
-                                # Submit pending jobs up to worker limit
-                                _submit_postprocess_jobs(_postprocess_worker_limit())
-                                # Backpressure: cap queued+running postprocess work
-                                _apply_postprocess_backpressure()
                             else:
                                 self.log(f"  ✗ GeoTIFF failed for {date}: {result.get('error', 'unknown error')}")
                                 failed_jobs.append(job)
@@ -1984,27 +1847,8 @@ class ChartSlicer:
                         self.geotiff_completed += 1
                         self.geotiff_times.append(elapsed)
                         self.log(f"  ✓✓✓ {date.upper()} COMPLETE")
-                        pending_postprocess.append(Path(output_tiff))
-                        pp_done, _ = wait(postprocess_futures, timeout=0)
-                        for pp_future in pp_done:
-                            postprocess_futures.discard(pp_future)
-                            try:
-                                pp_future.result()
-                            except Exception as e:
-                                self.log(f"  ✗ Post-process task failed: {e}")
-                        _submit_postprocess_jobs(_postprocess_worker_limit())
-                        # Backpressure: cap queued+running postprocess work
-                        _apply_postprocess_backpressure()
                     else:
                         self.log(f"  ✗ GeoTIFF failed after retry: {date}")
-
-            # After geotiff generation is complete, process remaining postprocess queue with full concurrency
-            full_postprocess_workers = max(1, min(self.upload_jobs, len(pending_postprocess) + len(postprocess_futures)))
-            _finalize_postprocess(full_postprocess_workers)
-
-        if not geotiff_jobs:
-            full_postprocess_workers = max(1, min(self.upload_jobs, len(pending_postprocess) + len(postprocess_futures)))
-            _finalize_postprocess(full_postprocess_workers)
 
         # Post-process: convert GeoTIFF mosaics to MBTiles/PMTiles and upload
         self._run_postprocess_upload_stage(input_dir=self.output_dir)
