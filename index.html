@@ -14,7 +14,6 @@
   <link rel="preconnect" href="https://unpkg.com" crossorigin>
   <link rel="preconnect" href="https://data.archive.aero" crossorigin>
   <link rel="preconnect" href="https://basemaps.cartocdn.com" crossorigin>
-  <link rel="dns-prefetch" href="https://ipapi.co">
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
@@ -50,12 +49,6 @@
       <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn" title="Support this project">
         ☕ Support
       </a>
-    </div>
-
-    <!-- Search Box -->
-    <div class="search-container">
-      <input type="text" class="search-input" id="locationSearch" placeholder="Search location...">
-      <span class="search-icon">🔍</span>
     </div>
 
     <div class="header-actions">
@@ -359,11 +352,14 @@
           zoomControl: false,
           fadeAnimation: true,
           zoomAnimation: true,
-          attributionControl: true
+          attributionControl: true,
+          zoomSnap: 0.25,
+          zoomDelta: 0.5,
+          wheelPxPerZoomLevel: 120
         }).setView(CONFIG.initialView.center, CONFIG.initialView.zoom);
 
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-          maxZoom: 20, opacity: 1, zIndex: 1,
+          maxZoom: 22, maxNativeZoom: 20, opacity: 1, zIndex: 1,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; &copy; <a href="https://carto.com/attributions">CARTO</a>'
         }).addTo(this.map);
 
@@ -391,7 +387,7 @@
         // Create a Leaflet tile layer that fetches from PMTiles
         const layer = L.tileLayer('', {
           minZoom: 0,
-          maxZoom: 18,
+          maxZoom: 22,
           minNativeZoom: 0,
           maxNativeZoom: 11,  // Tiles generated up to zoom 11, Leaflet will scale beyond
           tileSize: 256,
@@ -1064,31 +1060,6 @@
         }
       }
 
-      // Location Search & Silent IP Geolocation
-      const searchInput = document.getElementById('locationSearch');
-
-      // Auto-locate via IP if no URL params
-      if (!latParam && !lngParam) {
-        try {
-          // Use ipapi.co - secure HTTPS endpoint
-          fetch('https://ipapi.co/json/')
-            .then(res => res.json())
-            .then(data => {
-              if (data && data.latitude && data.longitude) {
-                // Silent move, no toast
-                mapCtrl.map.flyTo([data.latitude, data.longitude], 10, { duration: 2.0 });
-              }
-            })
-            .catch(e => {
-              console.log('IP Geo failed', e);
-              // Fallback: show a subtle hint that geolocation failed
-              Utils.toast('Unable to detect location', 2000);
-            });
-        } catch (e) {
-          console.log('IP Geo Error', e);
-        }
-      }
-
       // Location Crosshair Button - Request User's Geolocation
       const locateBtn = document.getElementById('locateBtn');
       locateBtn?.addEventListener('click', () => {
@@ -1123,51 +1094,6 @@
           Utils.toast('Geolocation not supported by your browser');
         }
       });
-
-      // Search Handler with rate limiting
-      let lastSearchTime = 0;
-      const SEARCH_COOLDOWN = 1000; // 1 second between searches
-
-      if (searchInput) {
-        searchInput.addEventListener('keydown', async (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            const query = searchInput.value.trim();
-            if (!query) return;
-
-            // Rate limiting check
-            const now = Date.now();
-            if (now - lastSearchTime < SEARCH_COOLDOWN) {
-              Utils.toast("Please wait before searching again");
-              return;
-            }
-            lastSearchTime = now;
-
-            try {
-              Utils.toast("Searching...");
-              // Use Nominatim geocoding API
-              const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
-              const data = await res.json();
-
-              if (data && data.length > 0) {
-                const best = data[0];
-                const lat = parseFloat(best.lat);
-                const lon = parseFloat(best.lon);
-                mapCtrl.map.flyTo([lat, lon], 10, { duration: 1.5 });
-                searchInput.blur();
-                Utils.toast(`Found: ${best.display_name.split(',')[0]}`);
-              } else {
-                Utils.toast("Location not found");
-              }
-            } catch (err) {
-              console.error('Search error:', err);
-              Utils.toast("Search failed - try again");
-            }
-          }
-        });
-      } else {
-        console.error('Search input element not found');
-      }
 
       // --- Side-by-Side Comparison Logic ---
       const mapCtrl2 = new MapController('map2');
