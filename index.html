@@ -1271,13 +1271,11 @@
           const data = this.getLayerData(frame.date, frame.url);
           if (data && data.layer) {
             const layer = data.layer;
-            // Calculate opacity - newer layers are more opaque
-            const layerOpacity = opacityValue * (0.3 + 0.7 * (i / Math.max(framesInRange.length - 1, 1)));
             layer.setZIndex(10 + i);
             if (!this.map.hasLayer(layer)) {
               layer.addTo(this.map);
             }
-            layer.setOpacity(layerOpacity);
+            layer.setOpacity(opacityValue);
             newLayers.push(layer);
           }
         });
