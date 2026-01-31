@@ -399,12 +399,25 @@
         });
 
         // Override the getTileUrl method to use PMTiles
+        const maxNativeZoom = 11;
         layer.createTile = function(coords, done) {
           const tile = document.createElement('img');
           tile.alt = '';
           tile.setAttribute('role', 'presentation');
 
-          p.getZxy(coords.z, coords.x, coords.y).then(result => {
+          // Handle overzoom - fetch tile from maxNativeZoom and let Leaflet scale it
+          let z = coords.z;
+          let x = coords.x;
+          let y = coords.y;
+
+          if (z > maxNativeZoom) {
+            const zoomDiff = z - maxNativeZoom;
+            z = maxNativeZoom;
+            x = Math.floor(x / Math.pow(2, zoomDiff));
+            y = Math.floor(y / Math.pow(2, zoomDiff));
+          }
+
+          p.getZxy(z, x, y).then(result => {
             // If layer was removed before data arrived, abort
             if (!layer._map) return;
 
