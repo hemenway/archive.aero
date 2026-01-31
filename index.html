@@ -111,6 +111,15 @@
         <span>◫</span>
       </button>
     </div>
+
+    <div class="tool-section">
+      <span class="tool-label">History Range</span>
+      <div class="tool-slider-container">
+        <input type="number" class="tool-input" id="historyDaysInput" min="0" max="3650" value="0" placeholder="Days">
+        <span class="tool-unit">days back</span>
+      </div>
+      <div class="tool-hint" id="historyHint">Set to 0 for single map</div>
+    </div>
   </div>
 
   <!-- Share Panel -->
@@ -145,6 +154,10 @@
     <div class="chart-info-row">
       <span class="chart-info-label">Status</span>
       <span class="chart-badge historical">Historical Only</span>
+    </div>
+    <div class="chart-info-row">
+      <span class="chart-info-label">Zoom Level</span>
+      <span class="chart-info-value" id="chartInfoZoom">—</span>
     </div>
   </div>
 
@@ -1213,7 +1226,88 @@
       // Update chart info panel with initial data
       const chartInfoDate = document.getElementById('chartInfoDate');
       const chartInfoTotal = document.getElementById('chartInfoTotal');
+      const chartInfoZoom = document.getElementById('chartInfoZoom');
       chartInfoTotal.textContent = CONFIG.frames.length.toString();
+
+      // Update zoom level display
+      const updateZoomDisplay = () => {
+        if (chartInfoZoom) {
+          chartInfoZoom.textContent = mapCtrl.map.getZoom().toFixed(2);
+        }
+      };
+      mapCtrl.map.on('zoomend', updateZoomDisplay);
+      updateZoomDisplay(); // Initial value
+
+      // History Range Feature
+      const historyDaysInput = document.getElementById('historyDaysInput');
+      const historyHint = document.getElementById('historyHint');
+      let historyRangeDays = 0;
+
+      // Store reference to showFrameRange on mapCtrl for multi-layer display
+      mapCtrl.showFrameRange = function(endIndex, days) {
+        const loader = document.getElementById('loader');
+        const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
+
+        const endFrame = CONFIG.frames[endIndex];
+        const endDate = new Date(endFrame.date);
+        const startDate = new Date(endDate);
+        startDate.setDate(startDate.getDate() - days);
+
+        // Find all frames within the date range
+        const framesInRange = [];
+        CONFIG.frames.forEach((frame, idx) => {
+          const frameDate = new Date(frame.date);
+          if (frameDate >= startDate && frameDate <= endDate) {
+            framesInRange.push({ frame, idx });
+          }
+        });
+
+        const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
+        const oldLayers = [...this.activeLayers];
+
+        // Add all layers in range (oldest first so newest is on top)
+        const newLayers = [];
+        framesInRange.forEach(({ frame }, i) => {
+          const data = this.getLayerData(frame.date, frame.url);
+          if (data && data.layer) {
+            const layer = data.layer;
+            // Calculate opacity - newer layers are more opaque
+            const layerOpacity = opacityValue * (0.3 + 0.7 * (i / Math.max(framesInRange.length - 1, 1)));
+            layer.setZIndex(10 + i);
+            if (!this.map.hasLayer(layer)) {
+              layer.addTo(this.map);
+            }
+            layer.setOpacity(layerOpacity);
+            newLayers.push(layer);
+          }
+        });
+
+        // Remove old layers not in new set
+        oldLayers.forEach(l => {
+          if (!newLayers.includes(l) && this.map.hasLayer(l)) {
+            this.map.removeLayer(l);
+          }
+        });
+
+        this.activeLayers = newLayers;
+
+        clearTimeout(spinnerTimeout);
+        loader.classList.remove('active');
+
+        return framesInRange.length;
+      };
+
+      historyDaysInput?.addEventListener('input', (e) => {
+        historyRangeDays = parseInt(e.target.value) || 0;
+
+        if (historyRangeDays > 0) {
+          const count = mapCtrl.showFrameRange(timelineApp.currentIndex, historyRangeDays);
+          historyHint.textContent = `Showing ${count} map${count !== 1 ? 's' : ''}`;
+        } else {
+          historyHint.textContent = 'Set to 0 for single map';
+          mapCtrl.showFrame(timelineApp.currentIndex);
+        }
+      });
 
       // Update chart info when frame changes
       const originalUpdate = timelineApp.update.bind(timelineApp);
@@ -1222,6 +1316,12 @@
         const frame = CONFIG.frames[index];
         if (chartInfoDate && frame) {
           chartInfoDate.textContent = Utils.formatDateId(frame.date);
+        }
+
+        // If history range is active, show range instead of single frame
+        if (historyRangeDays > 0) {
+          const count = mapCtrl.showFrameRange(index, historyRangeDays);
+          historyHint.textContent = `Showing ${count} map${count !== 1 ? 's' : ''}`;
         }
       };
 
