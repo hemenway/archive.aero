@@ -372,7 +372,7 @@
         }).setView(CONFIG.initialView.center, CONFIG.initialView.zoom);
 
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-          maxZoom: 22, maxNativeZoom: 20, opacity: 1, zIndex: 1,
+          maxZoom: 14, maxNativeZoom: 14, opacity: 1, zIndex: 1,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; &copy; <a href="https://carto.com/attributions">CARTO</a>'
         }).addTo(this.map);
 
@@ -400,7 +400,7 @@
         // Create a Leaflet tile layer that fetches from PMTiles
         const layer = L.tileLayer('', {
           minZoom: 0,
-          maxZoom: 22,
+          maxZoom: 14,
           minNativeZoom: 0,
           maxNativeZoom: 11,  // Tiles generated up to zoom 11, Leaflet will scale beyond
           tileSize: 256,
