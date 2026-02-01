@@ -266,6 +266,39 @@ body {
   display: none;
 }
 
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.about-btn {
+  background: rgba(30, 144, 255, 0.9);
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s var(--transition-smooth);
+  box-shadow: 0 2px 8px rgba(30, 144, 255, 0.3);
+}
+
+.about-btn:hover {
+  background: rgba(30, 144, 255, 1);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(30, 144, 255, 0.5);
+}
+
+.about-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .donate-btn {
   background: linear-gradient(135deg, #ff813f 0%, #ffdd00 100%);
   color: #000;
@@ -284,6 +317,11 @@ body {
 .donate-btn:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(255, 129, 63, 0.5);
+}
+
+.donate-btn:focus-visible {
+  outline: 2px solid #ff813f;
+  outline-offset: 2px;
 }
 
 .sources-link {
@@ -424,7 +462,7 @@ body {
   width: min(320px, 78vw);
   max-height: min(600px, 70vh);
   overflow-y: auto;
-  background: var(--bg-glass);
+  background: rgba(20, 25, 30, 0.98);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   padding: 16px;
@@ -448,7 +486,7 @@ body {
 
 .tools-section {
   display: grid;
-  gap: 10px;
+  gap: 4px;
   padding-bottom: 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -456,6 +494,10 @@ body {
 .tools-section:last-child {
   border-bottom: none;
   padding-bottom: 0;
+}
+
+.tools-section.collapsible {
+  gap: 0;
 }
 
 .tools-panel h4 {
@@ -468,6 +510,41 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.section-header {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  transition: color 0.2s var(--transition-smooth);
+}
+
+.section-header:hover {
+  color: var(--primary);
+}
+
+.collapse-icon {
+  font-size: 10px;
+  transition: transform 0.2s var(--transition-smooth);
+  color: var(--text-muted);
+}
+
+.section-content {
+  overflow: hidden;
+  transition: max-height 0.3s var(--transition-smooth);
+  padding-top: 8px;
+}
+
+.tools-section.collapsed .section-content {
+  max-height: 0 !important;
+  padding-top: 0;
+}
+
+.tools-section.collapsed .collapse-icon {
+  transform: rotate(-90deg);
 }
 
 /* UI Container */
@@ -1029,6 +1106,16 @@ body {
 
   .site-tagline {
     display: none;
+  }
+
+  .header-right {
+    gap: 8px;
+  }
+
+  .about-btn,
+  .donate-btn {
+    font-size: 12px;
+    padding: 6px 10px;
   }
 
   /* Hide fullscreen and help buttons on mobile (in tools panel) */

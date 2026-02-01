@@ -47,10 +47,6 @@
           ✈️ archive.aero
         </button>
         <nav class="menu-panel" id="siteMenu" aria-label="Site menu">
-          <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="menu-item">
-            <span class="menu-item-icon" aria-hidden="true">👨‍✈️</span>
-            <span>About Me</span>
-          </a>
           <a href="https://github.com/hemenway/AeroMap" target="_blank" rel="noopener" class="menu-item">
             <span class="menu-item-icon" aria-hidden="true">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -62,6 +58,11 @@
         </nav>
       </div>
       <span class="site-tagline">Historical Aviation Charts</span>
+    </div>
+    <div class="header-right">
+      <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="about-btn" title="About Me">
+        👨‍✈️ About
+      </a>
       <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn" title="Support this project">
         ☕ Support
       </a>
@@ -74,93 +75,108 @@
       🧰
     </button>
     <div class="tools-panel" id="toolsPanel" role="dialog" aria-label="Map tools and settings">
-      <div class="tools-section">
-        <h4>🛠️ Map Tools</h4>
-        <div class="tool-section">
-          <span class="tool-label">Chart Opacity</span>
-          <div class="tool-slider-container">
-            <input type="range" class="tool-slider" id="toolOpacitySlider" min="0" max="100" value="100">
-            <div class="tool-value"><span id="toolOpacityValue">100</span>%</div>
+      <div class="tools-section collapsible">
+        <h4 class="section-header" data-section="mapTools">
+          <span>🛠️ Map Tools</span>
+          <span class="collapse-icon">▼</span>
+        </h4>
+        <div class="section-content" id="mapToolsContent">
+          <div class="tool-section">
+            <span class="tool-label">Chart Opacity</span>
+            <div class="tool-slider-container">
+              <input type="range" class="tool-slider" id="toolOpacitySlider" min="0" max="100" value="100">
+              <div class="tool-value"><span id="toolOpacityValue">100</span>%</div>
+            </div>
           </div>
-        </div>
 
-        <div class="tool-section">
-          <span class="tool-label">My Location</span>
-          <button class="tool-button" id="locateBtn">
-            <span>Center Map</span>
-            <span>🧭</span>
-          </button>
-        </div>
-
-        <div class="tool-section">
-          <span class="tool-label">Fullscreen</span>
-          <button class="tool-button" id="fullscreenBtn">
-            <span>Toggle Fullscreen</span>
-            <span>⛶</span>
-          </button>
-        </div>
-
-        <div class="tool-section">
-          <span class="tool-label">Shortcuts</span>
-          <button class="tool-button" id="helpBtn">
-            <span>Keyboard Shortcuts</span>
-            <span>?</span>
-          </button>
-        </div>
-
-        <div class="tool-section">
-          <span class="tool-label">Split View</span>
-          <button class="tool-button" id="toolCompareBtn">
-            <span>Side-by-Side</span>
-            <span>◫</span>
-          </button>
-        </div>
-
-        <div class="tool-section">
-          <span class="tool-label">History Range</span>
-          <div class="tool-slider-container">
-            <input type="number" class="tool-input" id="historyDaysInput" min="0" max="3650" value="0" placeholder="Days">
-            <span class="tool-unit">days back</span>
+          <div class="tool-section">
+            <span class="tool-label">My Location</span>
+            <button class="tool-button" id="locateBtn">
+              <span>Center Map</span>
+              <span>🧭</span>
+            </button>
           </div>
-          <div class="tool-hint" id="historyHint">Set to 0 for single map</div>
+
+          <div class="tool-section">
+            <span class="tool-label">Fullscreen</span>
+            <button class="tool-button" id="fullscreenBtn">
+              <span>Toggle Fullscreen</span>
+              <span>⛶</span>
+            </button>
+          </div>
+
+          <div class="tool-section">
+            <span class="tool-label">Shortcuts</span>
+            <button class="tool-button" id="helpBtn">
+              <span>Keyboard Shortcuts</span>
+              <span>?</span>
+            </button>
+          </div>
+
+          <div class="tool-section">
+            <span class="tool-label">Split View</span>
+            <button class="tool-button" id="toolCompareBtn">
+              <span>Side-by-Side</span>
+              <span>◫</span>
+            </button>
+          </div>
+
+          <div class="tool-section">
+            <span class="tool-label">History Range</span>
+            <div class="tool-slider-container">
+              <input type="number" class="tool-input" id="historyDaysInput" min="0" max="3650" value="0" placeholder="Days">
+              <span class="tool-unit">days back</span>
+            </div>
+            <div class="tool-hint" id="historyHint">Set to 0 for single map</div>
+          </div>
         </div>
       </div>
 
-      <div class="tools-section">
-        <h4 id="chartInfoTitle">📋 Chart Information</h4>
-        <div class="chart-info-row">
-          <span class="chart-info-label">Date</span>
-          <span class="chart-info-value" id="chartInfoDate">—</span>
-        </div>
-        <div class="chart-info-row">
-          <span class="chart-info-label">Type</span>
-          <span class="chart-info-value"><span class="chart-badge sectional">Sectional</span></span>
-        </div>
-        <div class="chart-info-row">
-          <span class="chart-info-label">Format</span>
-          <span class="chart-info-value">PMTiles / WebP</span>
-        </div>
-        <div class="chart-info-row">
-          <span class="chart-info-label">Total Charts</span>
-          <span class="chart-info-value" id="chartInfoTotal">—</span>
-        </div>
-        <div class="chart-info-row">
-          <span class="chart-info-label">Status</span>
-          <span class="chart-badge historical">Historical Only</span>
-        </div>
-        <div class="chart-info-row">
-          <span class="chart-info-label">Zoom Level</span>
-          <span class="chart-info-value" id="chartInfoZoom">—</span>
+      <div class="tools-section collapsible">
+        <h4 class="section-header" data-section="chartInfo">
+          <span>📋 Chart Information</span>
+          <span class="collapse-icon">▼</span>
+        </h4>
+        <div class="section-content" id="chartInfoContent">
+          <div class="chart-info-row">
+            <span class="chart-info-label">Date</span>
+            <span class="chart-info-value" id="chartInfoDate">—</span>
+          </div>
+          <div class="chart-info-row">
+            <span class="chart-info-label">Type</span>
+            <span class="chart-info-value"><span class="chart-badge sectional">Sectional</span></span>
+          </div>
+          <div class="chart-info-row">
+            <span class="chart-info-label">Format</span>
+            <span class="chart-info-value">PMTiles / WebP</span>
+          </div>
+          <div class="chart-info-row">
+            <span class="chart-info-label">Total Charts</span>
+            <span class="chart-info-value" id="chartInfoTotal">—</span>
+          </div>
+          <div class="chart-info-row">
+            <span class="chart-info-label">Status</span>
+            <span class="chart-badge historical">Historical Only</span>
+          </div>
+          <div class="chart-info-row">
+            <span class="chart-info-label">Zoom Level</span>
+            <span class="chart-info-value" id="chartInfoZoom">—</span>
+          </div>
         </div>
       </div>
 
-      <div class="tools-section">
-        <h4 id="sharePanelTitle">🔗 Share</h4>
-        <div class="share-url-box">
-          <input type="text" class="share-url" id="shareUrl" readonly aria-label="Share URL">
-          <button class="copy-btn" id="copyBtn">Copy</button>
+      <div class="tools-section collapsible">
+        <h4 class="section-header" data-section="share">
+          <span>🔗 Share</span>
+          <span class="collapse-icon">▼</span>
+        </h4>
+        <div class="section-content" id="shareContent">
+          <div class="share-url-box">
+            <input type="text" class="share-url" id="shareUrl" readonly aria-label="Share URL">
+            <button class="copy-btn" id="copyBtn">Copy</button>
+          </div>
+          <div class="share-info">Share your current timeframe and map position</div>
         </div>
-        <div class="share-info">Share your current timeframe and map position</div>
       </div>
     </div>
   </div>
@@ -365,6 +381,37 @@
           closeMenu();
         }
       });
+    }
+
+    /** COLLAPSIBLE SECTIONS **/
+    const initCollapsibleSections = () => {
+      document.querySelectorAll('.section-header').forEach(header => {
+        const content = header.nextElementSibling;
+        // Set initial maxHeight for expanded state
+        content.style.maxHeight = content.scrollHeight + 'px';
+
+        header.addEventListener('click', () => {
+          const section = header.parentElement;
+          const icon = header.querySelector('.collapse-icon');
+
+          section.classList.toggle('collapsed');
+
+          if (section.classList.contains('collapsed')) {
+            icon.textContent = '▶';
+            content.style.maxHeight = '0';
+          } else {
+            icon.textContent = '▼';
+            content.style.maxHeight = content.scrollHeight + 'px';
+          }
+        });
+      });
+    };
+
+    // Initialize after DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initCollapsibleSections);
+    } else {
+      initCollapsibleSections();
     }
 
     /** DATA LOADER **/
@@ -910,6 +957,17 @@
         toolsControl.classList.add('open');
         toolsBtn.setAttribute('aria-expanded', 'true');
         this.updateShareUrl();
+
+        // Recalculate section heights when panel opens
+        setTimeout(() => {
+          document.querySelectorAll('.section-content').forEach(content => {
+            const section = content.parentElement;
+            if (!section.classList.contains('collapsed')) {
+              content.style.maxHeight = content.scrollHeight + 'px';
+            }
+          });
+        }, 50);
+
         if (focusTarget === 'share') {
           document.getElementById('shareUrl')?.focus();
         }
