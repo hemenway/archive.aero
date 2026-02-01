@@ -152,7 +152,7 @@ body {
   padding: 0;
   cursor: pointer;
   font-family: inherit;
-  transition: all 0.2s var(--transition-smooth);
+  transition: color 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
 }
 
 .site-logo {
@@ -228,7 +228,7 @@ body {
   font-family: inherit;
   cursor: pointer;
   appearance: none;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), color 0.2s var(--transition-smooth);
 }
 
 .menu-item:hover {
@@ -284,7 +284,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
   box-shadow: 0 2px 8px rgba(30, 144, 255, 0.3);
 }
 
@@ -310,7 +310,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  transition: all 0.2s var(--transition-smooth);
+  transition: box-shadow 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
   box-shadow: 0 2px 8px rgba(255, 129, 63, 0.3);
 }
 
@@ -329,8 +329,6 @@ body {
   bottom: 12px;
   left: 12px;
   background: var(--bg-glass);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   color: var(--text-muted);
   padding: 6px 12px;
   border-radius: 6px;
@@ -338,7 +336,7 @@ body {
   text-decoration: none;
   border: 1px solid rgba(255, 255, 255, 0.1);
   z-index: 1000;
-  transition: all 0.2s var(--transition-smooth);
+  transition: color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth);
 }
 
 .sources-link:hover {
@@ -369,7 +367,7 @@ body {
   line-height: 36px !important;
   font-size: 18px !important;
   font-weight: 400 !important;
-  transition: all 0.2s var(--transition-smooth) !important;
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), color 0.2s var(--transition-smooth) !important;
 }
 
 .leaflet-control-zoom a:hover {
@@ -436,7 +434,7 @@ body {
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
 }
 
 .tools-btn:hover {
@@ -534,13 +532,17 @@ body {
 
 .section-content {
   overflow: hidden;
-  transition: max-height 0.3s var(--transition-smooth);
   padding-top: 8px;
+  transform-origin: top;
+  transform: scaleY(1);
+  opacity: 1;
+  transition: transform 0.2s var(--transition-smooth), opacity 0.2s var(--transition-smooth);
+  will-change: transform, opacity;
 }
 
 .tools-section.collapsed .section-content {
-  max-height: 0 !important;
-  padding-top: 0;
+  transform: scaleY(0);
+  opacity: 0;
 }
 
 .tools-section.collapsed .collapse-icon {
@@ -591,7 +593,7 @@ body {
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
 }
 
 .btn-nav:hover {
@@ -623,7 +625,7 @@ body {
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: all 0.2s var(--transition-smooth);
+  transition: box-shadow 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
   box-shadow: 0 4px 12px rgba(30, 144, 255, 0.3);
 }
 
@@ -680,19 +682,20 @@ body {
   height: 18px;
   width: 3px;
   opacity: 1;
-  box-shadow: 0 0 12px var(--primary);
+  filter: drop-shadow(0 0 8px var(--primary));
   animation: pulse 2s ease-in-out infinite;
+  will-change: filter, transform;
 }
 
 @keyframes pulse {
 
   0%,
   100% {
-    box-shadow: 0 0 12px var(--primary);
+    filter: drop-shadow(0 0 8px var(--primary));
   }
 
   50% {
-    box-shadow: 0 0 20px var(--primary), 0 0 30px rgba(30, 144, 255, 0.5);
+    filter: drop-shadow(0 0 12px var(--primary)) drop-shadow(0 0 18px rgba(30, 144, 255, 0.5));
   }
 }
 
@@ -724,7 +727,7 @@ body {
   transform: translate(-50%, -50%);
   box-shadow: 0 0 0 4px rgba(30, 144, 255, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
   cursor: grab;
-  transition: all 0.2s var(--transition-smooth);
+  transition: transform 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
   z-index: 2;
 }
 
@@ -825,7 +828,7 @@ body {
   line-height: 1;
   outline: none;
   cursor: pointer;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
   color-scheme: dark;
 }
 
@@ -853,8 +856,6 @@ body {
   right: 0;
   bottom: 0;
   background: rgba(0, 0, 0, 0.85);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   z-index: 2000;
   display: none;
   align-items: center;
@@ -925,7 +926,7 @@ body {
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
 }
 
 .close-shortcuts:hover {
@@ -940,8 +941,6 @@ body {
   top: 160px;
   right: 24px;
   background: var(--bg-glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   padding: 16px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -996,7 +995,7 @@ body {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
   white-space: nowrap;
 }
 
@@ -1028,8 +1027,6 @@ body {
   top: 160px;
   right: 24px;
   background: var(--bg-glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   padding: 16px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1264,7 +1261,7 @@ body.split-view .map2-controls {
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
 }
 
 .btn-compare:hover {
@@ -1306,7 +1303,6 @@ body.split-view .map2-controls {
 
 .warning-modal {
   background: rgba(255, 69, 58, 0.9);
-  backdrop-filter: blur(8px);
   border: 1px solid rgba(255, 255, 255, 0.2);
   padding: 12px 24px;
   border-radius: 50px;
@@ -1358,8 +1354,7 @@ body.split-view .map2-controls {
   padding: 10px 40px 10px 16px;
   color: white;
   font-size: 14px;
-  transition: all 0.2s;
-  backdrop-filter: blur(8px);
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
 }
 
 .search-input:focus {
@@ -1389,8 +1384,6 @@ body.split-view .map2-controls {
   top: 160px;
   right: 24px;
   background: var(--bg-glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   padding: 16px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1440,7 +1433,7 @@ body.split-view .map2-controls {
   color: white;
   font-size: 13px;
   cursor: pointer;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1513,7 +1506,7 @@ body.split-view .map2-controls {
   color: var(--text-light);
   font-size: 13px;
   outline: none;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth);
 }
 
 .tool-input:focus {
@@ -1559,7 +1552,7 @@ body.split-view .map2-controls {
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: all 0.2s var(--transition-smooth);
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), color 0.2s var(--transition-smooth);
 }
 
 .speed-btn:hover {
@@ -1579,8 +1572,6 @@ body.split-view .map2-controls {
   top: 160px;
   right: 24px;
   background: var(--bg-glass);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   padding: 16px;
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);

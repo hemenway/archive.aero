@@ -15,15 +15,12 @@
   <link rel="preconnect" href="https://data.archive.aero" crossorigin>
   <link rel="preconnect" href="https://basemaps.cartocdn.com" crossorigin>
 
+  <link rel="preload" as="script" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin>
+  <link rel="preload" as="script" href="https://unpkg.com/papaparse@5.4.1/papaparse.min.js" crossorigin>
+  <link rel="preload" as="script" href="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin>
+
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
-
-  <!-- Privacy-friendly analytics by Plausible -->
-  <script async src="https://plausible.io/js/pa-m9DzDEgB7Ebb2zKdbBaMF.js"></script>
-  <script>
-    window.plausible = window.plausible || function () { (plausible.q = plausible.q || []).push(arguments) }, plausible.init = plausible.init || function (i) { plausible.o = i || {} };
-    plausible.init()
-  </script>
 
 </head>
 
@@ -272,9 +269,9 @@
 
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
-  <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js" crossorigin></script>
+  <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin></script>
 
   <script>
     // Guard against Leaflet tile callbacks firing after a layer was removed
@@ -386,23 +383,52 @@
     /** COLLAPSIBLE SECTIONS **/
     const initCollapsibleSections = () => {
       document.querySelectorAll('.section-header').forEach(header => {
+        const section = header.parentElement;
         const content = header.nextElementSibling;
-        // Set initial maxHeight for expanded state
-        content.style.maxHeight = content.scrollHeight + 'px';
+        const icon = header.querySelector('.collapse-icon');
+        if (!content) return;
+
+        const setExpandedState = (isExpanded) => {
+          if (isExpanded) {
+            section.classList.remove('collapsed');
+            if (icon) icon.textContent = '▼';
+            content.style.paddingTop = '';
+            content.style.maxHeight = content.scrollHeight + 'px';
+            requestAnimationFrame(() => {
+              content.style.transform = 'scaleY(1)';
+              content.style.opacity = '1';
+            });
+          } else {
+            section.classList.add('collapsed');
+            if (icon) icon.textContent = '▶';
+            content.style.transform = 'scaleY(0)';
+            content.style.opacity = '0';
+            const onEnd = (event) => {
+              if (event.propertyName !== 'transform') return;
+              content.style.maxHeight = '0px';
+              content.style.paddingTop = '0px';
+              content.removeEventListener('transitionend', onEnd);
+            };
+            content.addEventListener('transitionend', onEnd);
+          }
+        };
+
+        if (section.classList.contains('collapsed')) {
+          content.style.maxHeight = '0px';
+          content.style.paddingTop = '0px';
+          content.style.transform = 'scaleY(0)';
+          content.style.opacity = '0';
+          if (icon) icon.textContent = '▶';
+        } else {
+          content.style.maxHeight = content.scrollHeight + 'px';
+          content.style.transform = 'scaleY(1)';
+          content.style.opacity = '1';
+          if (icon) icon.textContent = '▼';
+        }
 
         header.addEventListener('click', () => {
-          const section = header.parentElement;
-          const icon = header.querySelector('.collapse-icon');
-
-          section.classList.toggle('collapsed');
-
-          if (section.classList.contains('collapsed')) {
-            icon.textContent = '▶';
-            content.style.maxHeight = '0';
-          } else {
-            icon.textContent = '▼';
-            content.style.maxHeight = content.scrollHeight + 'px';
-          }
+          const isExpanded = !section.classList.contains('collapsed');
+          setExpandedState(!isExpanded);
         });
       });
     };
@@ -475,6 +501,7 @@
         this.activeLayers = [];
         this.pmtilesInstances = {}; // Cache for PMTiles instances
         this.requestCounter = 0; // Track most recent frame request
+        this.frameIndexByDate = new Map(CONFIG.frames.map((f, i) => [f.date, i]));
 
         // Debounced version of showFrame for timeline scrubbing
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), 250);
@@ -529,14 +556,16 @@
 
             if (result && result.data) {
               const blob = new Blob([result.data], { type: 'image/webp' });
-              tile.src = URL.createObjectURL(blob);
+              const objectUrl = URL.createObjectURL(blob);
+              tile.src = objectUrl;
               tile.onload = () => {
-                URL.revokeObjectURL(tile.src);
+                URL.revokeObjectURL(objectUrl);
                 // Skip callback if layer is no longer on a map to avoid Leaflet null _map errors
                 if (!layer._map) return;
                 done(null, tile);
               };
               tile.onerror = () => {
+                URL.revokeObjectURL(objectUrl);
                 if (!layer._map) return;
                 done(new Error('Tile load error'), tile);
               };
@@ -727,10 +756,9 @@
         });
 
         // Clean up frames outside the buffer
-        const frameDates = CONFIG.frames.map(f => f.date);
         Object.keys(this.cache).forEach(date => {
-          const frameIndex = frameDates.indexOf(date);
-          if (frameIndex !== -1 && !keepIndices.has(frameIndex)) {
+          const frameIndex = this.frameIndexByDate.get(date);
+          if (frameIndex !== undefined && !keepIndices.has(frameIndex)) {
             const cached = this.cache[date];
             // Remove layer from map if mounted
             if (cached.layer && this.map.hasLayer(cached.layer)) {
@@ -963,7 +991,10 @@
           document.querySelectorAll('.section-content').forEach(content => {
             const section = content.parentElement;
             if (!section.classList.contains('collapsed')) {
+              content.style.paddingTop = '';
               content.style.maxHeight = content.scrollHeight + 'px';
+              content.style.transform = 'scaleY(1)';
+              content.style.opacity = '1';
             }
           });
         }, 50);
@@ -1080,10 +1111,18 @@
         this.ui.nextBtn.onclick = () => this.step(1);
 
         // drag on the track/handle
+        let trackRect = null;
+        let rafPending = false;
+        let lastClientX = 0;
+
+        const updateTrackRect = () => {
+          trackRect = this.ui.track.getBoundingClientRect();
+        };
+
         const handleInput = (clientX) => {
-          const rect = this.ui.track.getBoundingClientRect();
-          const x = Math.max(0, Math.min(clientX - rect.left, rect.width));
-          const pct = (x / rect.width) * 100;
+          if (!trackRect) updateTrackRect();
+          const x = Math.max(0, Math.min(clientX - trackRect.left, trackRect.width));
+          const pct = (x / trackRect.width) * 100;
 
           let closestIdx = 0, minDiff = Infinity;
           this.frames.forEach((f, i) => {
@@ -1095,12 +1134,23 @@
         };
 
         let isDragging = false;
+        const scheduleInput = (clientX) => {
+          lastClientX = clientX;
+          if (rafPending) return;
+          rafPending = true;
+          requestAnimationFrame(() => {
+            rafPending = false;
+            handleInput(lastClientX);
+          });
+        };
+
         const startDrag = (e) => {
           isDragging = true;
-          handleInput((e.touches?.[0]?.clientX) ?? e.clientX);
+          updateTrackRect();
+          scheduleInput((e.touches?.[0]?.clientX) ?? e.clientX);
         };
-        const moveDrag = (e) => { if (isDragging) handleInput((e.touches?.[0]?.clientX) ?? e.clientX); };
-        const endDrag = () => { isDragging = false; };
+        const moveDrag = (e) => { if (isDragging) scheduleInput((e.touches?.[0]?.clientX) ?? e.clientX); };
+        const endDrag = () => { isDragging = false; rafPending = false; };
 
         this.ui.track.addEventListener('mousedown', startDrag);
         this.ui.track.addEventListener('touchstart', startDrag, { passive: false });
@@ -1108,6 +1158,7 @@
         window.addEventListener('touchmove', moveDrag, { passive: false });
         window.addEventListener('mouseup', endDrag);
         window.addEventListener('touchend', endDrag);
+        window.addEventListener('resize', () => { trackRect = null; });
       }
 
       update(index, lazy = false, skipMapUpdate = false) {
@@ -1457,6 +1508,13 @@
     }
 
     document.addEventListener('DOMContentLoaded', initApp);
+  </script>
+
+  <!-- Privacy-friendly analytics by Plausible -->
+  <script async src="https://plausible.io/js/pa-m9DzDEgB7Ebb2zKdbBaMF.js"></script>
+  <script>
+    window.plausible = window.plausible || function () { (plausible.q = plausible.q || []).push(arguments) }, plausible.init = plausible.init || function (i) { plausible.o = i || {} };
+    plausible.init()
   </script>
 </body>
 

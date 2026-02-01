@@ -684,7 +684,7 @@ class ChartSlicer:
                 shutil.rmtree(extract_dir)
             return False
 
-    def _download_missing_files(self):
+    def _download_missing_files(self, allowed_dates: Optional[set] = None):
         """
         Preparation phase: Download all missing files upfront before processing begins.
 
@@ -698,6 +698,8 @@ class ChartSlicer:
         missing_files = []  # List of (filename, download_link, location, date, is_zip)
 
         for date in self.dole_data:
+            if allowed_dates is not None and date not in allowed_dates:
+                continue
             for record in self.dole_data[date]:
                 filename = record.get('filename', '')
                 download_link = record.get('download_link', '')
@@ -976,7 +978,8 @@ class ChartSlicer:
             'success': success,
             'output_tiff': job['output_tiff'] if success else None,
             'location': job['location'],
-            'date': job['date']
+            'date': job['date'],
+            'attempt_id': job.get('attempt_id')
         }
 
     def warp_and_cut(self, input_tiff: Path, shapefile: Path, output_tiff: Path) -> bool:
@@ -1278,87 +1281,6 @@ class ChartSlicer:
         except Exception as e:
             self.log(f"Warning: Could not save review CSV: {e}")
 
-    def _format_review_console(self, report_data: List[Dict], stats: Dict) -> str:
-        """Format review report as matrix (dates × locations)."""
-        lines = []
-        lines.append("╔" + "═" * 78 + "╗")
-        lines.append("║" + " " * 25 + "PROCESSING REVIEW REPORT" + " " * 31 + "║")
-        lines.append("╚" + "═" * 78 + "╝")
-        lines.append("")
-
-        # Build data structures
-        dates = sorted(set(e['date'] for e in report_data), reverse=True)
-        locations = sorted(set(e['location'] for e in report_data))
-
-        # Build lookup: date -> location -> cell content
-        matrix = defaultdict(dict)
-        for entry in report_data:
-            date = entry['date']
-            loc = entry['location']
-
-            # Determine cell content based on matches
-            if entry['num_files'] > 0:
-                # Extract just filename
-                files = entry['source_files'].split(',')
-                if len(files) > 1:
-                    cell = f"({len(files)} files)"
-                else:
-                    filename = Path(files[0].strip()).name
-                    # Truncate if too long
-                    if len(filename) > 12:
-                        filename = filename[:9] + "..."
-                    cell = filename
-            else:
-                cell = "---"
-
-            matrix[date][loc] = cell
-
-        # Determine column width (min 8, max 14)
-        if locations:
-            col_width = min(14, max(8, max(len(loc) for loc in locations) + 1))
-        else:
-            col_width = 12
-
-        # Build header row with location names
-        header = "Date        │ " + " │ ".join(
-            loc[:col_width-1].ljust(col_width-1) for loc in locations
-        )
-        lines.append(header)
-
-        # Build separator
-        separator = "────────────┼" + "┼".join("─" * col_width for _ in locations)
-        lines.append(separator)
-
-        # Build data rows
-        for date in dates:
-            row = f"{date} │ "
-            cells = []
-            for loc in locations:
-                cell_value = matrix[date].get(loc, "---")
-                cells.append(cell_value.ljust(col_width-1))
-            row += " │ ".join(cells)
-            lines.append(row)
-
-        lines.append("")
-
-        # Legend
-        lines.append("Legend:")
-        lines.append("  filename.ext    = Direct match for this date")
-        lines.append("  ---             = No file found (missing)")
-        lines.append("  (N files)       = Multiple files matched")
-        lines.append("")
-
-        # Statistics
-        lines.append("STATISTICS:")
-        lines.append(f"  Total dates: {stats['total_dates']}")
-        lines.append(f"  Total locations: {stats['total_locations']}")
-        lines.append(f"  Total matches: {stats['total_matches']}")
-        lines.append(f"  Missing matches: {stats['missing_matches']}")
-        lines.append("")
-        lines.append("═" * 80)
-
-        return "\n".join(lines)
-
     def generate_review_report(self) -> bool:
         """
         Generate review report showing file matches for all dates.
@@ -1447,18 +1369,6 @@ class ChartSlicer:
 
                 report_data.append(report_entry)
 
-        # Calculate statistics
-        stats = {
-            'total_dates': len(sorted_dates),
-            'total_locations': len(all_locations),
-            'total_matches': sum(1 for e in report_data if e['num_files'] > 0),
-            'missing_matches': sum(1 for e in report_data if e['num_files'] == 0)
-        }
-
-        # Display formatted console output
-        console_output = self._format_review_console(report_data, stats)
-        print("\n" + console_output)
-
         # Save CSV report
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         csv_path = self.output_dir / f"processing_review_{timestamp}.csv"
@@ -1474,7 +1384,7 @@ class ChartSlicer:
             else:
                 print("Please enter 'y' or 'n'")
 
-    def _rebuild_vrt_library(self, all_locations: List[str]) -> Dict[str, Dict[str, Path]]:
+    def _rebuild_vrt_library(self, all_locations: List[str]) -> Dict[str, Dict[str, List[Path]]]:
         """
         Rebuild vrt_library from existing temp VRTs for resume support.
 
@@ -1482,9 +1392,9 @@ class ChartSlicer:
         resuming an interrupted run can reuse existing intermediates.
 
         Returns:
-            Dict mapping location -> date -> VRT/TIF path
+            Dict mapping location -> date -> list of VRT/TIF paths
         """
-        vrt_library: Dict[str, Dict[str, Path]] = defaultdict(dict)
+        vrt_library: Dict[str, Dict[str, List[Path]]] = defaultdict(dict)
 
         if not self.temp_dir.exists():
             return vrt_library
@@ -1502,8 +1412,10 @@ class ChartSlicer:
             if '-' not in date:
                 continue
 
-            # Look for per-location VRTs: {location}_{date}.vrt
-            for vrt_file in date_dir.glob("*_*.vrt"):
+            # Collect per-location warped outputs (TIF/VRT) and fall back to combined VRTs
+            combined_vrt_by_loc = {}
+
+            for vrt_file in date_dir.glob("*.vrt"):
                 # Skip mosaic VRTs
                 if vrt_file.name.startswith("mosaic_"):
                     continue
@@ -1511,27 +1423,41 @@ class ChartSlicer:
                 if "_rgba.vrt" in vrt_file.name:
                     continue
 
-                # Parse location from filename: {location}_{date}.vrt
+                # Track per-location combined VRTs: {location}_{date}.vrt
                 stem = vrt_file.stem
                 if stem.endswith(f"_{date}"):
                     location = stem[:-len(f"_{date}")]
                     if location in all_locations or self.normalize_name(location) in all_locations:
                         norm_loc = self.normalize_name(location)
-                        vrt_library[norm_loc][date] = vrt_file
-                        found_count += 1
+                        combined_vrt_by_loc[norm_loc] = vrt_file
+                    continue
 
-            # Also check for single warped TIFs (used when only one file per location)
-            # These follow pattern: {location}_{original_stem}.tif
+                # Treat other VRTs as individual warped outputs: {location}_{original_stem}.vrt
+                for loc in all_locations:
+                    if stem.startswith(f"{loc}_"):
+                        if date not in vrt_library.get(loc, {}):
+                            vrt_library[loc][date] = []
+                        vrt_library[loc][date].append(vrt_file)
+                        found_count += 1
+                        break
+
+            # Collect warped TIFs: {location}_{original_stem}.tif
             for tif_file in date_dir.glob("*.tif"):
-                # Try to extract location from filename
                 stem = tif_file.stem
                 for loc in all_locations:
                     if stem.startswith(f"{loc}_"):
-                        # Only add if we don't already have a VRT for this location/date
                         if date not in vrt_library.get(loc, {}):
-                            vrt_library[loc][date] = tif_file
-                            found_count += 1
+                            vrt_library[loc][date] = []
+                        vrt_library[loc][date].append(tif_file)
+                        found_count += 1
                         break
+
+            # If no individual warped outputs were found, fall back to per-location combined VRTs
+            for norm_loc, loc_vrt in combined_vrt_by_loc.items():
+                if date in vrt_library.get(norm_loc, {}):
+                    continue
+                vrt_library[norm_loc][date] = [loc_vrt]
+                found_count += 1
 
         if found_count > 0:
             # Count unique location-date pairs
@@ -1542,8 +1468,8 @@ class ChartSlicer:
 
         return vrt_library
 
-    def process_all_dates(self):
-        """Process all dates in CSV (GeoTIFF only)."""
+    def process_all_dates(self, date_range: Optional[Tuple[datetime.date, datetime.date]] = None):
+        """Process dates in CSV (GeoTIFF only), optionally limited to a date range."""
         self.log("\n=== Starting Chart Processing ===")
 
         # Get all locations from CSV (not shapefiles)
@@ -1560,16 +1486,36 @@ class ChartSlicer:
         shapefile_count = sum(1 for loc in all_locations if self.find_shapefile(loc))
         self.log(f"Found {len(all_locations)} locations from CSV ({shapefile_count} with shapefiles).")
 
+        # Build processing date list (optionally filtered)
+        sorted_dates = sorted(self.dole_data.keys())
+        if date_range:
+            start_date, end_date = date_range
+            if start_date and end_date and start_date > end_date:
+                start_date, end_date = end_date, start_date
+            filtered = []
+            for date_str in sorted_dates:
+                date_obj = self._date_from_str(date_str)
+                if not date_obj:
+                    continue
+                if start_date <= date_obj <= end_date:
+                    filtered.append(date_str)
+            sorted_dates = filtered
+
+            if not sorted_dates:
+                self.log("No dates found in the requested range. Nothing to process.")
+                return
+
+            self.log(f"Limiting processing to {len(sorted_dates)} dates ({start_date} to {end_date})")
+
         # === PREPARATION PHASE: Download all missing files upfront ===
         self.log("\n=== Preparing: Downloading missing files ===")
-        self._download_missing_files()
+        self._download_missing_files(allowed_dates=set(sorted_dates))
 
         # Track all warped VRTs per location-date
         # Rebuild from existing temp files to support resume
         vrt_library = self._rebuild_vrt_library(all_locations)
 
         # Process each date (earliest to latest)
-        sorted_dates = sorted(self.dole_data.keys())
         total_dates = len(sorted_dates)
 
         # Count dates that need GeoTIFF processing (for ETA calculation)
@@ -1608,97 +1554,200 @@ class ChartSlicer:
 
             records = self.dole_data[date]
 
-            # Collect warp jobs for parallel processing
-            warp_jobs = []
-
+            # Group records by exact (location, edition) to handle duplicate rows with fallback
+            record_groups = []
+            record_group_map = {}
             for rec in records:
-                location = rec.get('location', '')
-                edition = rec.get('edition', '')
-                timestamp = rec.get('wayback_ts')
-                filename = rec.get('filename', '')  # Get filename from CSV
+                location = (rec.get('location') or '').strip()
+                edition = (rec.get('edition') or '').strip()
+                key = (location, edition)
+                if key not in record_group_map:
+                    record_group_map[key] = {
+                        'location': location,
+                        'edition': edition,
+                        'records': []
+                    }
+                    record_groups.append(record_group_map[key])
+                record_group_map[key]['records'].append(rec)
 
-                norm_loc = self.normalize_name(location)
+            # Track warped outputs selected per location for this date
+            temp_warped_by_location = defaultdict(list)
 
-                # Find shapefile
-                shp_path = self.find_shapefile(location)
-                if not shp_path:
-                    self.log(f"    {location}: No shapefile found")
-                    continue
+            # Prepare group state for fallback attempts
+            group_states = []
+            for group in record_groups:
+                norm_loc = self.normalize_name(group['location'])
+                group_states.append({
+                    'location': group['location'],
+                    'edition': group['edition'],
+                    'norm_loc': norm_loc,
+                    'records': group['records'],
+                    'next_index': 0,
+                    'done': False
+                })
 
-                # Find source files (use filename from CSV if available)
-                download_link = rec.get('download_link', '')
-                found_files = self.find_files(location, edition, timestamp, filename, download_link)
-                if not found_files:
-                    self.log(f"    {location}: No source files found (edition {edition}) [CSV: {filename if filename else 'no match'}]")
-                    continue
-
-                self.log(f"    {location} (edition {edition}): {filename if filename else 'pattern match'}")
-
-                # Prepare warp jobs for this location
-                for src_file_info in found_files:
-                    jobs = self._prepare_warp_job(src_file_info, location, edition, shp_path, temp_dir, date)
-                    warp_jobs.extend(jobs)
-
-            # Execute warp jobs in parallel
-            if warp_jobs:
+            # Execute warp jobs in parallel, with fallback to duplicate rows on failure
+            if group_states:
                 cpu_count_for_warp = max(2, cpu_count - 2)
                 _configure_gdal_for_phase('warp', workers=cpu_count_for_warp)
-                self.log(f"  Processing {len(warp_jobs)} warp jobs with {cpu_count_for_warp} parallel workers...")
-                results = []
 
-                with ThreadPoolExecutor(max_workers=cpu_count_for_warp) as executor:
-                    futures = {executor.submit(self._warp_worker, job): job for job in warp_jobs}
+                round_idx = 0
+                while True:
+                    warp_jobs = []
+                    attempt_map = {}
+                    made_progress = False
 
-                    for future in as_completed(futures):
-                        try:
-                            result = future.result()
-                            results.append(result)
-                        except Exception as e:
-                            self.log(f"    Error in parallel warp: {e}")
+                    for state in group_states:
+                        if state['done'] or state['next_index'] >= len(state['records']):
+                            continue
 
-                # Group results by location (validate output files)
-                temp_warped_by_location = defaultdict(list)
-                for result in results:
-                    if result['success'] and result['output_tiff']:
-                        output_file = result['output_tiff']
-                        if output_file.exists() and output_file.stat().st_size > 1024:
-                            temp_warped_by_location[result['location']].append(output_file)
+                        rec = state['records'][state['next_index']]
+                        location = (rec.get('location') or '').strip()
+                        edition = (rec.get('edition') or '').strip()
+                        timestamp = rec.get('wayback_ts')
+                        filename = rec.get('filename', '')  # Get filename from CSV
+
+                        attempt_num = state['next_index'] + 1
+                        attempt_total = len(state['records'])
+                        attempt_label = f" (option {attempt_num}/{attempt_total})" if attempt_total > 1 else ""
+
+                        # Find shapefile
+                        shp_path = self.find_shapefile(location)
+                        if not shp_path:
+                            self.log(f"    {location}: No shapefile found")
+                            state['done'] = True
+                            made_progress = True
+                            continue
+
+                        # Find source files (use filename from CSV if available)
+                        download_link = rec.get('download_link', '')
+                        found_files = self.find_files(location, edition, timestamp, filename, download_link)
+                        if not found_files:
+                            self.log(
+                                f"    {location} (edition {edition}){attempt_label}: No source files found [CSV: {filename if filename else 'no match'}]"
+                            )
+                            state['next_index'] += 1
+                            made_progress = True
+                            if state['next_index'] < len(state['records']):
+                                self.log(f"    {location} (edition {edition}): trying next duplicate option")
+                            continue
+
+                        self.log(f"    {location} (edition {edition}){attempt_label}: {filename if filename else 'pattern match'}")
+
+                        attempt_id = (state['location'], state['edition'], state['next_index'])
+                        attempt_map[attempt_id] = state
+
+                        # Prepare warp jobs for this record attempt
+                        for src_file_info in found_files:
+                            jobs = self._prepare_warp_job(src_file_info, location, edition, shp_path, temp_dir, date)
+                            for job in jobs:
+                                job['attempt_id'] = attempt_id
+                            warp_jobs.extend(jobs)
+
+                    if not warp_jobs:
+                        if made_progress:
+                            continue
+                        break
+
+                    round_idx += 1
+                    self.log(
+                        f"  Processing {len(warp_jobs)} warp jobs with {cpu_count_for_warp} parallel workers (round {round_idx})..."
+                    )
+                    results = []
+
+                    with ThreadPoolExecutor(max_workers=cpu_count_for_warp) as executor:
+                        futures = {executor.submit(self._warp_worker, job): job for job in warp_jobs}
+
+                        for future in as_completed(futures):
+                            try:
+                                result = future.result()
+                                results.append(result)
+                            except Exception as e:
+                                self.log(f"    Error in parallel warp: {e}")
+
+                    # Group results by attempt (validate output files)
+                    outputs_by_attempt = defaultdict(list)
+                    for result in results:
+                        if result['success'] and result['output_tiff']:
+                            output_file = result['output_tiff']
+                            if output_file.exists() and output_file.stat().st_size > 1024:
+                                outputs_by_attempt[result.get('attempt_id')].append(output_file)
+                            else:
+                                self.log(f"      Warning: Skipping invalid warped file: {output_file.name}")
+
+                    # Apply results and schedule fallback attempts as needed
+                    for attempt_id, state in attempt_map.items():
+                        attempt_outputs = outputs_by_attempt.get(attempt_id, [])
+                        if attempt_outputs:
+                            temp_warped_by_location[state['norm_loc']].extend(attempt_outputs)
+                            state['done'] = True
                         else:
-                            self.log(f"      Warning: Skipping invalid warped file: {output_file.name}")
+                            state['next_index'] += 1
+                            made_progress = True
+                            if state['next_index'] < len(state['records']):
+                                self.log(
+                                    f"    {state['location']} (edition {state['edition']}): warp failed; trying next duplicate option"
+                                )
 
-                # Build VRTs for each location
+                # Register warped outputs directly for mosaic (no per-location VRT combining)
                 location_count = 0
                 for norm_loc, temp_warped in temp_warped_by_location.items():
+                    if not temp_warped:
+                        continue
                     location_count += 1
                     if len(temp_warped) > 1:
-                        self.log(f"      Combining {len(temp_warped)} warped files for {norm_loc}...")
-                        loc_vrt = temp_dir / f"{norm_loc}_{date}.vrt"
-                        if self.build_vrt(temp_warped, loc_vrt):
-                            self.log(f"      ✓ VRT created: {loc_vrt.name}")
-                            vrt_library[norm_loc][date] = loc_vrt
+                        self.log(f"      Using {len(temp_warped)} warped files for {norm_loc}")
                     else:
                         self.log(f"      Single file, using directly")
-                        vrt_library[norm_loc][date] = temp_warped[0]
 
-                self.log(f"  Processed {location_count} locations with data")
+                    existing = vrt_library.get(norm_loc, {}).get(date, [])
+                    if isinstance(existing, list):
+                        combined = list(existing)
+                    elif existing:
+                        combined = [existing]
+                    else:
+                        combined = []
+
+                    combined.extend(temp_warped)
+
+                    # De-duplicate while preserving order
+                    seen = set()
+                    deduped = []
+                    for p in combined:
+                        key = str(p)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        deduped.append(p)
+
+                    vrt_library[norm_loc][date] = deduped
+
+                if temp_warped_by_location:
+                    self.log(f"  Processed {location_count} locations with data")
+                else:
+                    self.log(f"  No valid locations found with source files")
             else:
                 self.log(f"  No valid locations found with source files")
 
-            # Build date matrix from exact date matches only
-            date_matrix = {}
+            # Build mosaic inputs from exact date matches only
+            mosaic_sources = []
             for location in all_locations:
-                if location in vrt_library and date in vrt_library[location]:
-                    date_matrix[location] = vrt_library[location][date]
+                entries = vrt_library.get(location, {}).get(date)
+                if not entries:
+                    continue
+                if isinstance(entries, list):
+                    mosaic_sources.extend(entries)
+                else:
+                    mosaic_sources.append(entries)
 
             # Create mosaic VRT and output GeoTIFF
-            if date_matrix:
-                mosaic_vrts = list(date_matrix.values())
-                self.log(f"  Creating mosaic VRT from {len(mosaic_vrts)} locations...")
+            if mosaic_sources:
+                self.log(f"  Creating mosaic VRT from {len(mosaic_sources)} sources...")
 
                 temp_dir.mkdir(parents=True, exist_ok=True)
 
                 mosaic_vrt = temp_dir / f"mosaic_{date}.vrt"
-                if self.build_vrt(mosaic_vrts, mosaic_vrt):
+                if self.build_vrt(mosaic_sources, mosaic_vrt):
                     self.log(f"  ✓ Mosaic VRT created")
 
                     geotiff_jobs.append((mosaic_vrt, geotiff_path, date))
@@ -2023,9 +2072,29 @@ Examples:
         print("Processing cancelled by user.")
         sys.exit(0)
 
+    def _prompt_date_range() -> Optional[Tuple[datetime.date, datetime.date]]:
+        while True:
+            choice = input("Process all dates or a range? (all/range): ").strip().lower()
+            if choice in {"all", "a", ""}:
+                return None
+            if choice in {"range", "r"}:
+                start_str = input("Start date (YYYY-MM-DD): ").strip()
+                end_str = input("End date (YYYY-MM-DD): ").strip()
+                start_dt = slicer._date_from_str(start_str)
+                end_dt = slicer._date_from_str(end_str)
+                if not start_dt or not end_dt:
+                    print("Please enter valid dates in YYYY-MM-DD format.")
+                    continue
+                if start_dt > end_dt:
+                    start_dt, end_dt = end_dt, start_dt
+                    print(f"Swapped range to {start_dt} - {end_dt}")
+                return (start_dt, end_dt)
+            print("Please enter 'all' or 'range'.")
+
     # Now enable downloads for actual processing
     slicer.preview_mode = False
-    slicer.process_all_dates()
+    date_range = _prompt_date_range()
+    slicer.process_all_dates(date_range=date_range)
 
 
 if __name__ == '__main__':
