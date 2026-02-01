@@ -308,51 +308,6 @@ body {
   border-color: var(--primary);
 }
 
-.header-actions {
-  display: flex;
-  gap: 8px;
-  pointer-events: auto;
-  align-items: center;
-}
-
-.btn-group {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.btn-separator {
-  width: 1px;
-  height: 24px;
-  background: rgba(255, 255, 255, 0.2);
-  margin: 0 4px;
-}
-
-.icon-btn {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: white;
-  font-size: 18px;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition: all 0.2s var(--transition-smooth);
-  text-decoration: none;
-}
-
-.icon-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: var(--primary);
-  transform: translateY(-2px);
-}
-
-.icon-btn:active {
-  transform: translateY(0);
-}
-
 /* Map Performance Tweaks */
 .leaflet-fade-anim .leaflet-tile,
 .leaflet-zoom-anim .leaflet-zoom-animated {
@@ -902,13 +857,6 @@ body {
   box-shadow: 0 4px 12px rgba(30, 144, 255, 0.4);
 }
 
-/* Hide keyboard shortcuts on mobile */
-@media (max-width: 640px) {
-  #helpBtn {
-    display: none;
-  }
-}
-
 /* Share Panel */
 .share-panel {
   position: absolute;
@@ -1083,14 +1031,9 @@ body {
     display: none;
   }
 
-  .header-actions .icon-btn {
-    width: 36px;
-    height: 36px;
-    font-size: 16px;
-  }
-
-  /* Hide fullscreen button on mobile */
-  #fullscreenBtn {
+  /* Hide fullscreen and help buttons on mobile (in tools panel) */
+  #fullscreenBtn,
+  #helpBtn {
     display: none;
   }
 
@@ -1106,19 +1049,6 @@ body {
     max-height: 50vh;
     overflow-y: auto;
     z-index: 1100;
-  }
-
-  /* Hide separators on mobile to save space */
-  .btn-separator {
-    display: none;
-  }
-
-  .btn-group {
-    gap: 4px;
-  }
-
-  .header-actions {
-    gap: 4px;
   }
 
   .leaflet-top.leaflet-right {
@@ -1706,7 +1636,6 @@ body.split-view .map2-controls {
 }
 
 /* Focus states for accessibility */
-.icon-btn:focus-visible,
 .btn-nav:focus-visible,
 .btn-play:focus-visible,
 .tool-button:focus-visible,

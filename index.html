@@ -59,28 +59,12 @@
             </span>
             <span>GitHub</span>
           </a>
-          <button class="menu-item menu-action" type="button" data-action="fullscreen">
-            <span class="menu-item-icon" aria-hidden="true">⛶</span>
-            <span>Fullscreen</span>
-          </button>
-          <button class="menu-item menu-action" type="button" data-action="shortcuts">
-            <span class="menu-item-icon" aria-hidden="true">?</span>
-            <span>Keyboard Shortcuts</span>
-          </button>
         </nav>
       </div>
       <span class="site-tagline">Historical Aviation Charts</span>
       <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn" title="Support this project">
         ☕ Support
       </a>
-    </div>
-
-    <div class="header-actions">
-      <!-- View Controls -->
-      <div class="btn-group">
-        <button class="icon-btn" id="fullscreenBtn" title="Fullscreen (F)">⛶</button>
-        <button class="icon-btn" id="helpBtn" title="Keyboard Shortcuts (?)">?</button>
-      </div>
     </div>
   </div>
 
@@ -105,6 +89,22 @@
           <button class="tool-button" id="locateBtn">
             <span>Center Map</span>
             <span>🧭</span>
+          </button>
+        </div>
+
+        <div class="tool-section">
+          <span class="tool-label">Fullscreen</span>
+          <button class="tool-button" id="fullscreenBtn">
+            <span>Toggle Fullscreen</span>
+            <span>⛶</span>
+          </button>
+        </div>
+
+        <div class="tool-section">
+          <span class="tool-label">Shortcuts</span>
+          <button class="tool-button" id="helpBtn">
+            <span>Keyboard Shortcuts</span>
+            <span>?</span>
           </button>
         </div>
 
@@ -348,18 +348,8 @@
         menuToggle.setAttribute('aria-expanded', String(isOpen));
       });
 
-      menuPanel.querySelectorAll('a, button').forEach((item) => {
-        item.addEventListener('click', (event) => {
-          if (item.tagName === 'BUTTON') {
-            event.preventDefault();
-            const action = item.dataset.action;
-            if (action === 'fullscreen') {
-              Utils.toggleFullscreen();
-            }
-            if (action === 'shortcuts') {
-              document.getElementById('shortcutsOverlay')?.classList.add('visible');
-            }
-          }
+      menuPanel.querySelectorAll('a').forEach((item) => {
+        item.addEventListener('click', () => {
           closeMenu();
         });
       });
