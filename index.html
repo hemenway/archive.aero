@@ -42,9 +42,26 @@
   <!-- Header Bar -->
   <div class="header-bar">
     <div class="header-content">
-      <a href="/" class="site-logo">
-        ✈️ archive.aero
-      </a>
+      <div class="menu-trigger">
+        <button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="siteMenu" aria-label="Open site menu">
+          <span class="menu-icon" aria-hidden="true">☰</span>
+          <span class="menu-logo">✈️ archive.aero</span>
+        </button>
+        <nav class="menu-panel" id="siteMenu" aria-label="Site menu">
+          <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="menu-item">
+            <span class="menu-item-icon" aria-hidden="true">👨‍✈️</span>
+            <span>About Me</span>
+          </a>
+          <a href="https://github.com/hemenway/AeroMap" target="_blank" rel="noopener" class="menu-item">
+            <span class="menu-item-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+            </span>
+            <span>GitHub</span>
+          </a>
+        </nav>
+      </div>
       <span class="site-tagline">Historical Aviation Charts</span>
       <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn" title="Support this project">
         ☕ Support
@@ -52,112 +69,92 @@
     </div>
 
     <div class="header-actions">
-      <!-- Map Tools -->
-      <div class="btn-group">
-        <button class="icon-btn" id="mapToolsBtn" title="Map Tools" aria-label="Open map tools panel">🛠️</button>
-        <button class="icon-btn" id="chartInfoBtn" title="Chart Info" aria-label="View chart information">📋</button>
-      </div>
-      <div class="btn-separator"></div>
       <!-- View Controls -->
       <div class="btn-group">
-        <button class="icon-btn" id="shareBtn" title="Share (S)" aria-label="Share current view">🔗</button>
         <button class="icon-btn" id="fullscreenBtn" title="Fullscreen (F)">⛶</button>
         <button class="icon-btn" id="helpBtn" title="Keyboard Shortcuts (?)">?</button>
       </div>
-      <div class="btn-separator"></div>
-      <!-- External Links -->
-      <div class="btn-group">
-        <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="icon-btn" title="About Me">👨‍✈️</a>
-        <a href="https://github.com/hemenway/AeroMap" target="_blank" rel="noopener" class="icon-btn" title="View on GitHub">
-          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor">
-            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-          </svg>
-        </a>
+    </div>
+  </div>
+
+  <!-- Tools Dropdown (mounted next to zoom controls) -->
+  <div class="tools-control leaflet-control" id="toolsControl">
+    <button class="tools-btn" id="toolsBtn" type="button" title="Tools" aria-expanded="false" aria-controls="toolsPanel" aria-label="Open tools panel">
+      🧰
+    </button>
+    <div class="tools-panel" id="toolsPanel" role="dialog" aria-label="Map tools and settings">
+      <div class="tools-section">
+        <h4>🛠️ Map Tools</h4>
+        <div class="tool-section">
+          <span class="tool-label">Chart Opacity</span>
+          <div class="tool-slider-container">
+            <input type="range" class="tool-slider" id="toolOpacitySlider" min="0" max="100" value="100">
+            <div class="tool-value"><span id="toolOpacityValue">100</span>%</div>
+          </div>
+        </div>
+
+        <div class="tool-section">
+          <span class="tool-label">My Location</span>
+          <button class="tool-button" id="locateBtn">
+            <span>Center Map</span>
+            <span>🧭</span>
+          </button>
+        </div>
+
+        <div class="tool-section">
+          <span class="tool-label">Split View</span>
+          <button class="tool-button" id="toolCompareBtn">
+            <span>Side-by-Side</span>
+            <span>◫</span>
+          </button>
+        </div>
+
+        <div class="tool-section">
+          <span class="tool-label">History Range</span>
+          <div class="tool-slider-container">
+            <input type="number" class="tool-input" id="historyDaysInput" min="0" max="3650" value="0" placeholder="Days">
+            <span class="tool-unit">days back</span>
+          </div>
+          <div class="tool-hint" id="historyHint">Set to 0 for single map</div>
+        </div>
       </div>
-    </div>
-  </div>
 
-  <!-- Opacity Control -->
-  <div class="opacity-control" id="opacityControl">
-    <h4>Chart Opacity</h4>
-    <input type="range" class="opacity-slider" id="opacitySlider" min="0" max="100" value="100">
-    <div class="opacity-value"><span id="opacityValue">100</span>%</div>
-  </div>
-
-  <!-- Map Tools Panel -->
-  <div class="map-tools-panel" id="mapToolsPanel">
-    <h4>🛠️ Map Tools</h4>
-
-    <div class="tool-section">
-      <span class="tool-label">Chart Opacity</span>
-      <div class="tool-slider-container">
-        <input type="range" class="tool-slider" id="toolOpacitySlider" min="0" max="100" value="100">
-        <div class="tool-value"><span id="toolOpacityValue">100</span>%</div>
+      <div class="tools-section">
+        <h4 id="chartInfoTitle">📋 Chart Information</h4>
+        <div class="chart-info-row">
+          <span class="chart-info-label">Date</span>
+          <span class="chart-info-value" id="chartInfoDate">—</span>
+        </div>
+        <div class="chart-info-row">
+          <span class="chart-info-label">Type</span>
+          <span class="chart-info-value"><span class="chart-badge sectional">Sectional</span></span>
+        </div>
+        <div class="chart-info-row">
+          <span class="chart-info-label">Format</span>
+          <span class="chart-info-value">PMTiles / WebP</span>
+        </div>
+        <div class="chart-info-row">
+          <span class="chart-info-label">Total Charts</span>
+          <span class="chart-info-value" id="chartInfoTotal">—</span>
+        </div>
+        <div class="chart-info-row">
+          <span class="chart-info-label">Status</span>
+          <span class="chart-badge historical">Historical Only</span>
+        </div>
+        <div class="chart-info-row">
+          <span class="chart-info-label">Zoom Level</span>
+          <span class="chart-info-value" id="chartInfoZoom">—</span>
+        </div>
       </div>
-    </div>
 
-    <div class="tool-section">
-      <span class="tool-label">My Location</span>
-      <button class="tool-button" id="locateBtn">
-        <span>Center Map</span>
-        <span>🧭</span>
-      </button>
-    </div>
-
-    <div class="tool-section">
-      <span class="tool-label">Split View</span>
-      <button class="tool-button" id="toolCompareBtn">
-        <span>Side-by-Side</span>
-        <span>◫</span>
-      </button>
-    </div>
-
-    <div class="tool-section">
-      <span class="tool-label">History Range</span>
-      <div class="tool-slider-container">
-        <input type="number" class="tool-input" id="historyDaysInput" min="0" max="3650" value="0" placeholder="Days">
-        <span class="tool-unit">days back</span>
+      <div class="tools-section">
+        <h4 id="sharePanelTitle">🔗 Share</h4>
+        <div class="share-url-box">
+          <input type="text" class="share-url" id="shareUrl" readonly aria-label="Share URL">
+          <button class="copy-btn" id="copyBtn">Copy</button>
+        </div>
+        <div class="share-info">Share your current timeframe and map position</div>
       </div>
-      <div class="tool-hint" id="historyHint">Set to 0 for single map</div>
-    </div>
-  </div>
-
-  <!-- Share Panel -->
-  <div class="share-panel" id="sharePanel" role="dialog" aria-labelledby="sharePanelTitle">
-    <h4 id="sharePanelTitle">Share This View</h4>
-    <div class="share-url-box">
-      <input type="text" class="share-url" id="shareUrl" readonly aria-label="Share URL">
-      <button class="copy-btn" id="copyBtn">Copy</button>
-    </div>
-    <div class="share-info">Share your current timeframe and map position</div>
-  </div>
-
-  <!-- Chart Info Panel -->
-  <div class="chart-info-panel" id="chartInfoPanel" role="dialog" aria-labelledby="chartInfoTitle">
-    <h4 id="chartInfoTitle">📋 Chart Information</h4>
-    <div class="chart-info-row">
-      <span class="chart-info-label">Date</span>
-      <span class="chart-info-value" id="chartInfoDate">—</span>
-    </div>
-    <div class="chart-info-row">
-      <span class="chart-info-label">Type</span>
-      <span class="chart-info-value"><span class="chart-badge sectional">Sectional</span></span>
-    </div>
-    <div class="chart-info-row">
-      <span class="chart-info-label">Format</span>
-      <span class="chart-info-value">PMTiles / WebP</span>
-    </div>
-    <div class="chart-info-row">
-      <span class="chart-info-label">Total Charts</span>
-      <span class="chart-info-value" id="chartInfoTotal">—</span>
-    </div>
-    <div class="chart-info-row">
-      <span class="chart-info-label">Status</span>
-      <span class="chart-badge historical">Historical Only</span>
-    </div>
-    <div class="chart-info-row">
-      <span class="chart-info-label">Zoom Level</span>
-      <span class="chart-info-value" id="chartInfoZoom">—</span>
     </div>
   </div>
 
@@ -320,6 +317,40 @@
         };
       }
     };
+
+    /** MENU **/
+    const menuToggle = document.getElementById('menuToggle');
+    const menuPanel = document.getElementById('siteMenu');
+    const menuTrigger = document.querySelector('.menu-trigger');
+
+    if (menuToggle && menuPanel && menuTrigger) {
+      const closeMenu = () => {
+        menuTrigger.classList.remove('open');
+        menuToggle.setAttribute('aria-expanded', 'false');
+      };
+
+      menuToggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const isOpen = menuTrigger.classList.toggle('open');
+        menuToggle.setAttribute('aria-expanded', String(isOpen));
+      });
+
+      menuPanel.querySelectorAll('a').forEach((link) => {
+        link.addEventListener('click', closeMenu);
+      });
+
+      document.addEventListener('click', (event) => {
+        if (!menuTrigger.contains(event.target)) {
+          closeMenu();
+        }
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          closeMenu();
+        }
+      });
+    }
 
     /** DATA LOADER **/
     async function loadData() {
@@ -705,17 +736,12 @@
           }
           if (e.key === 's' || e.key === 'S') {
             e.preventDefault();
-            const sharePanel = document.getElementById('sharePanel');
-            const wasVisible = sharePanel.classList.contains('visible');
-            this.hideAllPanels();
-            if (!wasVisible) {
-              this.updateShareUrl();
-              sharePanel.classList.add('visible');
-            }
+            this.openToolsPanel('share');
           }
           if (e.key === '?') {
             e.preventDefault();
             document.getElementById('shortcutsOverlay').classList.add('visible');
+            this.hideAllPanels(['shortcutsOverlay']);
           }
           if (e.key === 'Escape') {
             document.getElementById('shortcutsOverlay').classList.remove('visible');
@@ -746,67 +772,49 @@
           Utils.toggleFullscreen();
         });
 
-        // Map Tools Panel
-        const mapToolsBtn = document.getElementById('mapToolsBtn');
-        const mapToolsPanel = document.getElementById('mapToolsPanel');
+        // Tools Dropdown
+        const toolsControl = document.getElementById('toolsControl');
+        const toolsBtn = document.getElementById('toolsBtn');
         const toolOpacitySlider = document.getElementById('toolOpacitySlider');
         const toolOpacityValue = document.getElementById('toolOpacityValue');
 
-        mapToolsBtn?.addEventListener('click', () => {
-          const wasVisible = mapToolsPanel.classList.contains('visible');
-          this.hideAllPanels();
-          if (!wasVisible) mapToolsPanel.classList.add('visible');
+        toolsBtn?.addEventListener('click', (event) => {
+          event.stopPropagation();
+          if (toolsControl?.classList.contains('open')) {
+            this.closeToolsPanel();
+          } else {
+            this.openToolsPanel();
+          }
+        });
+
+        toolsControl?.addEventListener('click', (event) => {
+          event.stopPropagation();
+        });
+
+        document.addEventListener('click', (event) => {
+          if (toolsControl && !toolsControl.contains(event.target)) {
+            this.closeToolsPanel();
+          }
+        });
+
+        document.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') {
+            this.closeToolsPanel();
+          }
         });
 
         toolOpacitySlider?.addEventListener('input', (e) => {
           const value = e.target.value;
           toolOpacityValue.textContent = value;
           this.mapCtrl.setOpacity(value / 100);
-          // Sync with old opacity slider if it exists
-          const oldOpacitySlider = document.getElementById('opacitySlider');
-          const oldOpacityValue = document.getElementById('opacityValue');
-          if (oldOpacitySlider) oldOpacitySlider.value = value;
-          if (oldOpacityValue) oldOpacityValue.textContent = value;
         });
 
-        // Legacy Opacity control (keep for backward compatibility)
-        const opacityBtn = document.getElementById('opacityBtn');
-        const opacityControl = document.getElementById('opacityControl');
-        const opacitySlider = document.getElementById('opacitySlider');
-        const opacityValue = document.getElementById('opacityValue');
-
-        opacityBtn?.addEventListener('click', () => {
-          const wasVisible = opacityControl.classList.contains('visible');
-          this.hideAllPanels();
-          if (!wasVisible) opacityControl.classList.add('visible');
-        });
-
-        opacitySlider?.addEventListener('input', (e) => {
-          const value = e.target.value;
-          opacityValue.textContent = value;
-          this.mapCtrl.setOpacity(value / 100);
-          // Sync with new tool slider
-          if (toolOpacitySlider) toolOpacitySlider.value = value;
-          if (toolOpacityValue) toolOpacityValue.textContent = value;
-        });
-
-        // Share button
-        const shareBtn = document.getElementById('shareBtn');
-        const sharePanel = document.getElementById('sharePanel');
         const shareUrl = document.getElementById('shareUrl');
         const copyBtn = document.getElementById('copyBtn');
 
-        shareBtn?.addEventListener('click', () => {
-          const wasVisible = sharePanel.classList.contains('visible');
-          this.hideAllPanels();
-          if (!wasVisible) {
-            this.updateShareUrl();
-            sharePanel.classList.add('visible');
-          }
-        });
-
         copyBtn?.addEventListener('click', async () => {
           try {
+            this.updateShareUrl();
             await navigator.clipboard.writeText(shareUrl.value);
             copyBtn.textContent = '✓ Copied';
             copyBtn.classList.add('copied');
@@ -866,24 +874,37 @@
           });
         });
 
-        // Chart Info Panel
-        const chartInfoBtn = document.getElementById('chartInfoBtn');
-        const chartInfoPanel = document.getElementById('chartInfoPanel');
-
-        chartInfoBtn?.addEventListener('click', () => {
-          const wasVisible = chartInfoPanel.classList.contains('visible');
-          this.hideAllPanels();
-          if (!wasVisible) chartInfoPanel.classList.add('visible');
-        });
       }
 
       hideAllPanels(except = []) {
-        const panels = ['opacityControl', 'sharePanel', 'mapToolsPanel', 'chartInfoPanel'];
-        panels.forEach(id => {
-          if (!except.includes(id)) {
-            document.getElementById(id)?.classList.remove('visible');
-          }
-        });
+        if (!except.includes('toolsPanel')) {
+          this.closeToolsPanel();
+        }
+      }
+
+      openToolsPanel(focusTarget) {
+        const toolsControl = document.getElementById('toolsControl');
+        const toolsBtn = document.getElementById('toolsBtn');
+        if (!toolsControl || !toolsBtn) return;
+        const menuTrigger = document.querySelector('.menu-trigger');
+        const menuToggle = document.getElementById('menuToggle');
+        if (menuTrigger?.classList.contains('open')) {
+          menuTrigger.classList.remove('open');
+          menuToggle?.setAttribute('aria-expanded', 'false');
+        }
+        toolsControl.classList.add('open');
+        toolsBtn.setAttribute('aria-expanded', 'true');
+        this.updateShareUrl();
+        if (focusTarget === 'share') {
+          document.getElementById('shareUrl')?.focus();
+        }
+      }
+
+      closeToolsPanel() {
+        const toolsControl = document.getElementById('toolsControl');
+        const toolsBtn = document.getElementById('toolsBtn');
+        toolsControl?.classList.remove('open');
+        toolsBtn?.setAttribute('aria-expanded', 'false');
       }
 
       updateShareUrl() {
@@ -1078,6 +1099,15 @@
       }
 
       const mapCtrl = new MapController('map');
+      const toolsControl = document.getElementById('toolsControl');
+      const mapControls = mapCtrl.map.getContainer().querySelector('.leaflet-top.leaflet-right');
+      if (toolsControl && mapControls) {
+        mapControls.prepend(toolsControl);
+        if (window.L && L.DomEvent) {
+          L.DomEvent.disableClickPropagation(toolsControl);
+          L.DomEvent.disableScrollPropagation(toolsControl);
+        }
+      }
       updateLoading(70, 'Loading controls...');
 
       const timelineApp = new TimelineApp(mapCtrl);
