@@ -1223,6 +1223,30 @@
       }
 
       const mapCtrl = new MapController('map');
+      const zoomState = { count: 0, timeout: null };
+      const setZooming = (isZooming) => {
+        if (isZooming) {
+          zoomState.count += 1;
+          if (zoomState.timeout) {
+            clearTimeout(zoomState.timeout);
+            zoomState.timeout = null;
+          }
+          document.body.classList.add('zooming');
+          return;
+        }
+        zoomState.count = Math.max(0, zoomState.count - 1);
+        if (zoomState.count === 0) {
+          zoomState.timeout = setTimeout(() => {
+            document.body.classList.remove('zooming');
+            zoomState.timeout = null;
+          }, 120);
+        }
+      };
+      const attachZoomListeners = (map) => {
+        map.on('zoomstart', () => setZooming(true));
+        map.on('zoomend', () => setZooming(false));
+      };
+      attachZoomListeners(mapCtrl.map);
       const toolsControl = document.getElementById('toolsControl');
       const mapControls = mapCtrl.map.getContainer().querySelector('.leaflet-top.leaflet-right');
       if (toolsControl && mapControls) {
@@ -1299,6 +1323,7 @@
 
       // --- Side-by-Side Comparison Logic ---
       const mapCtrl2 = new MapController('map2');
+      attachZoomListeners(mapCtrl2.map);
       const compareBtn = document.getElementById('compareBtn'); // Old location (if exists)
       const toolCompareBtn = document.getElementById('toolCompareBtn'); // New location in map tools
       const map2Controls = document.querySelector('.map2-controls');

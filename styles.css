@@ -350,6 +350,24 @@ body {
   will-change: transform;
 }
 
+body.zooming .header-bar,
+body.zooming .menu-panel,
+body.zooming .controls-card,
+body.zooming .tools-panel,
+body.zooming .leaflet-control-zoom a,
+body.zooming .leaflet-control-attribution {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+body.zooming .controls-card,
+body.zooming .menu-panel,
+body.zooming .tools-panel,
+body.zooming .leaflet-control-zoom,
+body.zooming .leaflet-control-attribution {
+  box-shadow: none !important;
+}
+
 /* Leaflet Controls Styling - Dark Glass Theme */
 .leaflet-control-zoom {
   border: none !important;
