@@ -515,6 +515,11 @@
           return tiles && Object.keys(tiles).length > 0 && Object.values(tiles).every(t => t.loaded);
         };
 
+        const tilesAnyLoaded = () => {
+          const tiles = newLayer._tiles;
+          return tiles && Object.values(tiles).some(t => t.loaded);
+        };
+
         const stopSpinner = () => {
           clearTimeout(spinnerTimeout);
           loader.classList.remove('active');
@@ -553,33 +558,48 @@
           if (notify) Utils.toast('Chart failed to load; keeping previous map');
         };
 
-        const cleanupListeners = (onLoadFn, onErrorFn) => {
+        const cleanupListeners = (onLoadFn, onErrorFn, onTileLoadFn) => {
           newLayer.off('load', onLoadFn);
           newLayer.off('tileerror', onErrorFn);
+          newLayer.off('tileload', onTileLoadFn);
         };
 
         // If tiles already cached and ready, swap immediately
         if (tilesReady()) {
           finalizeSwap();
         } else {
-          const onLoad = () => {
-            cleanupListeners(onLoad, onError);
+          let didSwap = false;
+          const finalizeSwapOnce = () => {
+            if (didSwap) return;
+            didSwap = true;
+            cleanupListeners(onLoad, onError, onTileLoad);
             finalizeSwap();
           };
 
+          const onLoad = () => {
+            finalizeSwapOnce();
+          };
+
+          const onTileLoad = () => {
+            finalizeSwapOnce();
+          };
+
           const onError = () => {
-            cleanupListeners(onLoad, onError);
-            bailOut();
+            if (!tilesAnyLoaded()) {
+              cleanupListeners(onLoad, onError, onTileLoad);
+              bailOut();
+            }
           };
 
           newLayer.on('load', onLoad);
           newLayer.on('tileerror', onError);
+          newLayer.on('tileload', onTileLoad);
 
-          // Fallback: if layer still isn't ready after timeout, keep current map to avoid flicker
+          // Fallback: if layer still isn't ready after timeout, swap if any tiles loaded; otherwise keep current map
           setTimeout(() => {
-            cleanupListeners(onLoad, onError);
-            if (tilesReady()) {
-              finalizeSwap();
+            cleanupListeners(onLoad, onError, onTileLoad);
+            if (tilesReady() || tilesAnyLoaded()) {
+              finalizeSwapOnce();
             } else {
               bailOut(false);
             }
@@ -996,7 +1016,7 @@
         window.addEventListener('touchend', endDrag);
       }
 
-      update(index, lazy = false) {
+      update(index, lazy = false, skipMapUpdate = false) {
         this.currentIndex = index;
         const f = this.frames[index];
 
@@ -1012,10 +1032,12 @@
           if (i === index) tick.classList.add('active'); else tick.classList.remove('active');
         });
 
-        if (lazy) {
-          this.mapCtrl.showFrameDebounced(index);
-        } else {
-          this.mapCtrl.showFrame(index);
+        if (!skipMapUpdate) {
+          if (lazy) {
+            this.mapCtrl.showFrameDebounced(index);
+          } else {
+            this.mapCtrl.showFrame(index);
+          }
         }
       }
 
@@ -1310,7 +1332,8 @@
       // Update chart info when frame changes
       const originalUpdate = timelineApp.update.bind(timelineApp);
       timelineApp.update = function(index, lazy) {
-        originalUpdate(index, lazy);
+        const skipMapUpdate = historyRangeDays > 0;
+        originalUpdate(index, lazy, skipMapUpdate);
         const frame = CONFIG.frames[index];
         if (chartInfoDate && frame) {
           chartInfoDate.textContent = Utils.formatDateId(frame.date);
