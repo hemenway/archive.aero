@@ -43,9 +43,8 @@
   <div class="header-bar">
     <div class="header-content">
       <div class="menu-trigger">
-        <button class="menu-toggle" id="menuToggle" type="button" aria-expanded="false" aria-controls="siteMenu" aria-label="Open site menu">
-          <span class="menu-icon" aria-hidden="true">☰</span>
-          <span class="menu-logo">✈️ archive.aero</span>
+        <button class="menu-toggle site-logo" id="menuToggle" type="button" aria-expanded="false" aria-controls="siteMenu" aria-label="Open site menu">
+          ✈️ archive.aero
         </button>
         <nav class="menu-panel" id="siteMenu" aria-label="Site menu">
           <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="menu-item">
@@ -60,6 +59,14 @@
             </span>
             <span>GitHub</span>
           </a>
+          <button class="menu-item menu-action" type="button" data-action="fullscreen">
+            <span class="menu-item-icon" aria-hidden="true">⛶</span>
+            <span>Fullscreen</span>
+          </button>
+          <button class="menu-item menu-action" type="button" data-action="shortcuts">
+            <span class="menu-item-icon" aria-hidden="true">?</span>
+            <span>Keyboard Shortcuts</span>
+          </button>
         </nav>
       </div>
       <span class="site-tagline">Historical Aviation Charts</span>
@@ -322,6 +329,8 @@
     const menuToggle = document.getElementById('menuToggle');
     const menuPanel = document.getElementById('siteMenu');
     const menuTrigger = document.querySelector('.menu-trigger');
+    const toolsControl = document.getElementById('toolsControl');
+    const toolsBtn = document.getElementById('toolsBtn');
 
     if (menuToggle && menuPanel && menuTrigger) {
       const closeMenu = () => {
@@ -331,12 +340,28 @@
 
       menuToggle.addEventListener('click', (event) => {
         event.stopPropagation();
+        if (toolsControl?.classList.contains('open')) {
+          toolsControl.classList.remove('open');
+          toolsBtn?.setAttribute('aria-expanded', 'false');
+        }
         const isOpen = menuTrigger.classList.toggle('open');
         menuToggle.setAttribute('aria-expanded', String(isOpen));
       });
 
-      menuPanel.querySelectorAll('a').forEach((link) => {
-        link.addEventListener('click', closeMenu);
+      menuPanel.querySelectorAll('a, button').forEach((item) => {
+        item.addEventListener('click', (event) => {
+          if (item.tagName === 'BUTTON') {
+            event.preventDefault();
+            const action = item.dataset.action;
+            if (action === 'fullscreen') {
+              Utils.toggleFullscreen();
+            }
+            if (action === 'shortcuts') {
+              document.getElementById('shortcutsOverlay')?.classList.add('visible');
+            }
+          }
+          closeMenu();
+        });
       });
 
       document.addEventListener('click', (event) => {
