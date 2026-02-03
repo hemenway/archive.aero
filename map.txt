@@ -1,0 +1,259 @@
+SLICER.PY - FAA Chart Processing Tool
+================================================================================
+
+PURPOSE:
+CLI tool for processing FAA sectional charts. Creates Cloud Optimized GeoTIFFs
+(COGs) for each date across 56 locations. Handles download, warping, cutting,
+and optimization of aeronautical chart data.
+
+ARCHITECTURE:
+- Parallel processing using ThreadPoolExecutor and ProcessPoolExecutor
+- GDAL-based geospatial transformations
+- Multi-phase pipeline: download -> warp -> build VRT -> create GeoTIFF -> postprocess
+
+================================================================================
+FILE STRUCTURE
+================================================================================
+
+IMPORTS & GLOBALS (lines 1-45)
+- Standard library: os, sys, csv, re, argparse, zipfile, requests, time, subprocess
+- Typing: Dict, List, Tuple, Optional, Union
+- GDAL/OGR for geospatial operations
+- Multiprocessing and concurrent.futures for parallelization
+- Global GDAL configuration with RAM-based cache sizing
+
+CONFIGURATION FUNCTIONS (lines 47-73)
+_configure_gdal_for_phase(phase, workers, available_ram_mb)
+  - Dynamic GDAL settings for 'warp' vs 'geotiff' phases
+  - Memory-aware cache allocation
+  - Thread configuration per processing stage
+
+WORKER FUNCTIONS (lines 75-304)
+create_geotiff_worker(args)
+  - Parallel worker for GeoTIFF creation
+  - Handles VRT -> COG conversion
+  - Compression, tiling, overview generation
+  - Lines 75-188
+
+postprocess_tif_worker(args)
+  - Post-processing worker for final optimization
+  - Upload staging, validation
+  - Lines 190-304
+
+MAIN CLASS: ChartSlicer (lines 306-1906)
+================================================================================
+
+CLASS VARIABLES & INIT (lines 306-371)
+- Static method: _check_zstd_support() - Tests for zstd compression
+- __init__() - Initializes directories, paths, workers, dry-run mode
+  - source_dir: Raw chart downloads
+  - output_dir: Processed outputs
+  - csv_file: Dole master CSV with chart metadata
+  - shape_dir: Shapefile boundaries for clipping
+
+UTILITY METHODS (lines 373-412)
+log(msg)                    - Timestamped logging
+normalize_name(name)        - Standardizes location names
+sanitize_filename(name)     - Creates filesystem-safe names
+_date_from_str(date_str)    - Parses date strings to datetime.date
+
+POSTPROCESSING PIPELINE (lines 414-480)
+_run_postprocess_upload_stage(input_dir)
+  - Final COG optimization before upload
+  - Parallel processing with progress tracking
+  - Lines 414-462
+
+_postprocess_single_tiff(tiff_path)
+  - Individual file optimization
+  - Validation and staging
+  - Lines 464-480
+
+DATA LOADING & INDEXING (lines 482-566)
+load_dole_data()
+  - Parses Dole master CSV
+  - Builds edition/location/date mappings
+  - Lines 482-507
+
+_build_source_index()
+  - Indexes downloaded source files
+  - Tracks ZIP and TIFF locations
+  - Lines 509-539
+
+_build_shapefile_index()
+  - Finds boundary shapefiles
+  - Supports nested directories
+  - Lines 541-566
+
+DOWNLOAD OPERATIONS (lines 568-781)
+download_file(url, target_path, timeout, max_retries)
+  - Robust HTTP download with retries
+  - Progress tracking, resume support
+  - Lines 568-647
+
+extract_zip(zip_path, extract_dir)
+  - ZIP extraction with validation
+  - Error handling and logging
+  - Lines 649-685
+
+_download_missing_files(allowed_dates)
+  - Batch download of missing charts
+  - Respects date filters
+  - Parallel downloads with rate limiting
+  - Lines 687-781
+
+FILE RESOLUTION (lines 783-899)
+resolve_filename(filename, download_link)
+  - Maps CSV filenames to actual files
+  - Handles ZIP archives and direct TIFFs
+  - Fallback to download_link
+  - Lines 783-868
+
+find_files(location, edition, timestamp, filename, download_link)
+  - Locates source files for processing
+  - Returns list of file paths
+  - Lines 870-884
+
+find_shapefile(location)
+  - Finds boundary shapefile for location
+  - Lines 886-899
+
+GEOSPATIAL OPERATIONS (lines 901-1122)
+get_shapefile_srs(shapefile)
+  - Extracts spatial reference from shapefile
+  - Lines 901-928
+
+_prepare_warp_job(src_file_info, location, edition, timestamp, ...)
+  - Creates warp job specification
+  - Lines 930-967
+
+_warp_worker(job)
+  - Executes warp job in parallel worker
+  - Lines 969-983
+
+warp_and_cut(input_tiff, shapefile, output_tiff)
+  - Core warping operation using gdalwarp
+  - Clips to shapefile boundary
+  - Reprojects to Web Mercator (EPSG:3857)
+  - Memory-efficient chunked processing
+  - Lines 985-1081
+
+build_vrt(input_files, output_vrt)
+  - Creates VRT mosaic from multiple TIFFs
+  - Supports alpha channel transparency
+  - Lines 1083-1122
+
+GEOTIFF CREATION (lines 1124-1230)
+create_geotiff(input_vrt, output_tiff, compress)
+  - Converts VRT to Cloud Optimized GeoTIFF
+  - Handles tiling, compression, overviews
+  - Supports LZW, ZSTD compression
+  - Progress reporting
+  - Lines 1124-1230
+
+REVIEW & REPORTING (lines 1232-1385)
+_save_review_csv(report_data, output_path)
+  - Saves processing report to CSV
+  - Lines 1232-1282
+
+generate_review_report()
+  - Creates comprehensive processing report
+  - Tracks missing files, errors, successes
+  - Generates CSV output
+  - Lines 1284-1385
+
+VRT LIBRARY MANAGEMENT (lines 1387-1469)
+_rebuild_vrt_library(all_locations)
+  - Rebuilds VRT index for all processed files
+  - Organizes by location and date
+  - Lines 1387-1469
+
+MAIN PROCESSING PIPELINE (lines 1471-1906)
+process_all_dates(date_range)
+  - Master processing function
+  - Multi-phase pipeline:
+    Phase 1: Download missing files
+    Phase 2: Warp and cut to boundaries
+    Phase 3: Build VRT mosaics per date
+    Phase 4: Create COGs (parallel by date)
+    Phase 5: Postprocess and upload staging
+  - Progress tracking and error reporting
+  - Lines 1471-1906
+
+HELPER FUNCTIONS (lines 1908-2073)
+_prompt_date_range()
+  - Interactive date range selection
+  - Lines 2075-2101
+
+MAIN ENTRY POINT (lines 1908-2101)
+main()
+  - CLI argument parsing
+  - Validates paths and inputs
+  - Orchestrates processing pipeline
+  - Handles dry-run mode
+  - Lines 1908-2073
+
+CLI ARGUMENTS:
+  --source-dir        Raw chart downloads directory
+  --output-dir        Processed output directory
+  --csv               Dole master CSV file
+  --shape-dir         Shapefile boundaries directory
+  --workers           Number of parallel workers
+  --date-range        Optional date filtering
+  --dry-run           Preview mode without changes
+
+COMMAND EXECUTION:
+  if __name__ == "__main__": main()
+
+================================================================================
+PROCESSING FLOW
+================================================================================
+
+1. INITIALIZATION
+   - Load Dole CSV metadata
+   - Index source files and shapefiles
+   - Configure GDAL settings
+
+2. DOWNLOAD PHASE
+   - Check for missing files
+   - Download ZIPs from FAA
+   - Extract archives
+
+3. WARP PHASE (Parallel)
+   - For each location/edition/date:
+     - Find source TIFF
+     - Find boundary shapefile
+     - Warp to Web Mercator
+     - Clip to boundary
+     - Save warped TIFF
+
+4. VRT BUILD PHASE
+   - Group warped TIFFs by date
+   - Create VRT mosaic per date
+   - Handle multi-location composites
+
+5. GEOTIFF CREATION PHASE (Parallel)
+   - Convert VRTs to COGs
+   - Apply compression (LZW/ZSTD)
+   - Generate overviews
+   - Optimize for cloud serving
+
+6. POSTPROCESS PHASE (Parallel)
+   - Final optimization
+   - Validation
+   - Stage for upload
+
+7. REPORTING
+   - Generate review CSV
+   - Log statistics and errors
+
+================================================================================
+KEY DEPENDENCIES
+================================================================================
+
+GDAL/OGR      - Geospatial transformations
+requests      - HTTP downloads
+psutil        - Memory detection
+multiprocessing - Parallelization
+csv           - Metadata parsing
+
+================================================================================

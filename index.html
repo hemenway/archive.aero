@@ -727,51 +727,6 @@
             }
           }, 10000);
         }
-
-        // Preload 3 frames before and 3 after, clean up others
-        this.manageCache(index);
-      }
-
-      manageCache(currentIndex) {
-        const BUFFER = 3; // Keep 3 before and 3 after
-        const totalFrames = CONFIG.frames.length;
-
-        // Calculate which indices to keep
-        const keepIndices = new Set();
-        for (let offset = -BUFFER; offset <= BUFFER; offset++) {
-          let idx = currentIndex + offset;
-          // Wrap around for circular navigation
-          if (idx < 0) idx = totalFrames + idx;
-          if (idx >= totalFrames) idx = idx - totalFrames;
-          keepIndices.add(idx);
-        }
-
-        // Preload frames in the buffer
-        keepIndices.forEach(idx => {
-          if (idx !== currentIndex) {
-            const frame = CONFIG.frames[idx];
-            // Just create the layer data (doesn't add to map)
-            this.getLayerData(frame.date, frame.url);
-          }
-        });
-
-        // Clean up frames outside the buffer
-        Object.keys(this.cache).forEach(date => {
-          const frameIndex = this.frameIndexByDate.get(date);
-          if (frameIndex !== undefined && !keepIndices.has(frameIndex)) {
-            const cached = this.cache[date];
-            // Remove layer from map if mounted
-            if (cached.layer && this.map.hasLayer(cached.layer)) {
-              this.map.removeLayer(cached.layer);
-            }
-            // Clean up PMTiles instance
-            if (this.pmtilesInstances[date]) {
-              delete this.pmtilesInstances[date];
-            }
-            // Remove from cache
-            delete this.cache[date];
-          }
-        });
       }
 
       setOpacity(opacity) {
