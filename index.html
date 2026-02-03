@@ -40,14 +40,16 @@
   <div class="header-bar">
     <div class="header-content">
       <div class="menu-trigger">
-        <button class="menu-toggle site-logo" id="menuToggle" type="button" aria-expanded="false" aria-controls="siteMenu" aria-label="Open site menu">
+        <button class="menu-toggle site-logo" id="menuToggle" type="button" aria-expanded="false"
+          aria-controls="siteMenu" aria-label="Open site menu">
           ✈️ archive.aero
         </button>
         <nav class="menu-panel" id="siteMenu" aria-label="Site menu">
           <a href="https://github.com/hemenway/AeroMap" target="_blank" rel="noopener" class="menu-item">
             <span class="menu-item-icon" aria-hidden="true">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
               </svg>
             </span>
             <span>GitHub</span>
@@ -60,7 +62,8 @@
       <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="about-btn" title="About Me">
         👨‍✈️ About
       </a>
-      <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn" title="Support this project">
+      <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn"
+        title="Support this project">
         ☕ Support
       </a>
     </div>
@@ -68,7 +71,8 @@
 
   <!-- Tools Dropdown (mounted next to zoom controls) -->
   <div class="tools-control leaflet-control" id="toolsControl">
-    <button class="tools-btn" id="toolsBtn" type="button" title="Tools" aria-expanded="false" aria-controls="toolsPanel" aria-label="Open tools panel">
+    <button class="tools-btn" id="toolsBtn" type="button" title="Tools" aria-expanded="false" aria-controls="toolsPanel"
+      aria-label="Open tools panel">
       🧰
     </button>
     <div class="tools-panel" id="toolsPanel" role="dialog" aria-label="Map tools and settings">
@@ -121,7 +125,8 @@
           <div class="tool-section">
             <span class="tool-label">History Range</span>
             <div class="tool-slider-container">
-              <input type="number" class="tool-input" id="historyDaysInput" min="0" max="3650" value="0" placeholder="Days">
+              <input type="number" class="tool-input" id="historyDaysInput" min="0" max="3650" value="360"
+                placeholder="Days">
               <span class="tool-unit">days back</span>
             </div>
             <div class="tool-hint" id="historyHint">Set to 0 for single map</div>
@@ -277,7 +282,7 @@
     // Guard against Leaflet tile callbacks firing after a layer was removed
     if (L && L.TileLayer && L.TileLayer.prototype._tileReady) {
       const originalTileReady = L.TileLayer.prototype._tileReady;
-      L.TileLayer.prototype._tileReady = function(error, tile) {
+      L.TileLayer.prototype._tileReady = function (error, tile) {
         if (!this._map) return;
         return originalTileReady.call(this, error, tile);
       };
@@ -533,7 +538,7 @@
 
         // Override the getTileUrl method to use PMTiles
         const maxNativeZoom = 11;
-        layer.createTile = function(coords, done) {
+        layer.createTile = function (coords, done) {
           const tile = document.createElement('img');
           tile.alt = '';
           tile.setAttribute('role', 'presentation');
@@ -1251,19 +1256,23 @@
               const lat = position.coords.latitude;
               const lng = position.coords.longitude;
               mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
-              Utils.toast('Centered on your location');
+              Utils.toast('Centered on your location (GPS)');
             },
             (error) => {
-              console.error('Geolocation error:', error);
-              let message = 'Unable to get your location';
-              if (error.code === error.PERMISSION_DENIED) {
-                message = 'Location permission denied';
-              } else if (error.code === error.POSITION_UNAVAILABLE) {
-                message = 'Location unavailable';
-              } else if (error.code === error.TIMEOUT) {
-                message = 'Location request timed out';
-              }
-              Utils.toast(message);
+              console.log('GPS failed, trying IP geolocation...');
+              // Fallback to IP Geolocation
+              fetch('https://get.geojs.io/v1/ip/geo.json')
+                .then(response => response.json())
+                .then(data => {
+                  const lat = parseFloat(data.latitude);
+                  const lng = parseFloat(data.longitude);
+                  mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
+                  Utils.toast('Centered on your approximate location');
+                })
+                .catch(err => {
+                  console.error('IP Geolocation error:', err);
+                  Utils.toast('Unable to determine location');
+                });
             },
             {
               enableHighAccuracy: true,
@@ -1397,10 +1406,10 @@
       // History Range Feature
       const historyDaysInput = document.getElementById('historyDaysInput');
       const historyHint = document.getElementById('historyHint');
-      let historyRangeDays = 0;
+      let historyRangeDays = 360;
 
       // Store reference to showFrameRange on mapCtrl for multi-layer display
-      mapCtrl.showFrameRange = function(endIndex, days) {
+      mapCtrl.showFrameRange = function (endIndex, days) {
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
 
@@ -1465,7 +1474,7 @@
 
       // Update chart info when frame changes
       const originalUpdate = timelineApp.update.bind(timelineApp);
-      timelineApp.update = function(index, lazy) {
+      timelineApp.update = function (index, lazy) {
         const skipMapUpdate = historyRangeDays > 0;
         originalUpdate(index, lazy, skipMapUpdate);
         const frame = CONFIG.frames[index];
@@ -1485,6 +1494,22 @@
       setTimeout(() => {
         loadingSplash.classList.add('hidden');
       }, 300);
+
+      // Initial IP Geolocation (Non-precise, privacy friendly)
+      // Only runs if no location params provided in URL
+      if (!latParam || !lngParam) {
+        fetch('https://get.geojs.io/v1/ip/geo.json')
+          .then(response => response.json())
+          .then(data => {
+            const lat = parseFloat(data.latitude);
+            const lng = parseFloat(data.longitude);
+            if (!isNaN(lat) && !isNaN(lng)) {
+              mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
+              Utils.toast('Centered on your approximate location');
+            }
+          })
+          .catch(e => console.log('Auto-geolocation failed', e)); // Silent fail
+      }
     }
 
     document.addEventListener('DOMContentLoaded', initApp);
