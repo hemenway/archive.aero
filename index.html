@@ -148,6 +148,10 @@
             <span class="chart-info-value" id="chartInfoTotal">—</span>
           </div>
           <div class="chart-info-row">
+            <span class="chart-info-label">Effective Layers</span>
+            <span class="chart-info-value" id="chartInfoEffective">—</span>
+          </div>
+          <div class="chart-info-row">
             <span class="chart-info-label">Status</span>
             <span class="chart-badge historical">Historical Only</span>
           </div>
@@ -279,6 +283,13 @@
       };
     }
 
+    const DeviceInfo = (() => {
+      const ua = navigator.userAgent || '';
+      const isIOS = /iP(ad|hone|od)/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      const isSafari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|SamsungBrowser/.test(ua);
+      return { isIOS, isMobileSafari: isIOS && isSafari };
+    })();
+
     /** CONFIGURATION **/
     const CONFIG = {
       baseUrl: 'https://data.archive.aero/sectionals/pmtiles/',
@@ -286,7 +297,8 @@
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       ranges: [], // Full list of PMTiles ranges
       frames: [], // Unique timeline dates (start dates)
-      dateBounds: { min: null, max: null }
+      dateBounds: { min: null, max: null },
+      compositeTiles: DeviceInfo.isMobileSafari
     };
 
     /** UTILITIES **/
@@ -359,6 +371,93 @@
         };
       }
     };
+
+    class CompositePMTilesLayer extends L.GridLayer {
+      constructor(options = {}) {
+        super(options);
+        this.sources = [];
+        this.sourceVersion = 0;
+        this.maxNativeZoom = options.maxNativeZoom ?? 11;
+      }
+
+      setSources(sources) {
+        this.sources = sources || [];
+        this.sourceVersion += 1;
+        this.redraw();
+      }
+
+      _normalizeCoords(coords) {
+        let z = coords.z;
+        let x = coords.x;
+        let y = coords.y;
+        if (z > this.maxNativeZoom) {
+          const zoomDiff = z - this.maxNativeZoom;
+          z = this.maxNativeZoom;
+          x = Math.floor(x / Math.pow(2, zoomDiff));
+          y = Math.floor(y / Math.pow(2, zoomDiff));
+        }
+        return { z, x, y };
+      }
+
+      async _drawTileData(ctx, data) {
+        const blob = new Blob([data], { type: 'image/webp' });
+        if ('createImageBitmap' in window) {
+          const bitmap = await createImageBitmap(blob);
+          ctx.drawImage(bitmap, 0, 0, 256, 256);
+          if (bitmap.close) bitmap.close();
+          return;
+        }
+
+        await new Promise(resolve => {
+          const img = new Image();
+          const url = URL.createObjectURL(blob);
+          img.onload = () => {
+            ctx.drawImage(img, 0, 0, 256, 256);
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          img.onerror = () => {
+            URL.revokeObjectURL(url);
+            resolve();
+          };
+          img.src = url;
+        });
+      }
+
+      createTile(coords, done) {
+        const tile = document.createElement('canvas');
+        tile.width = 256;
+        tile.height = 256;
+        const ctx = tile.getContext('2d');
+        const version = this.sourceVersion;
+        const { z, x, y } = this._normalizeCoords(coords);
+
+        const render = async () => {
+          for (const source of this.sources) {
+            if (!this._map || version !== this.sourceVersion) {
+              done(null, tile);
+              return;
+            }
+            try {
+              const result = await source.pmtiles.getZxy(z, x, y);
+              if (result && result.data) {
+                await this._drawTileData(ctx, result.data);
+              }
+            } catch (e) {
+              // Ignore missing tiles or fetch errors.
+            }
+          }
+          if (!this._map || version !== this.sourceVersion) {
+            done(null, tile);
+            return;
+          }
+          done(null, tile);
+        };
+
+        render();
+        return tile;
+      }
+    }
 
     /** MENU **/
     const menuToggle = document.getElementById('menuToggle');
@@ -547,9 +646,28 @@
         this.cache = {};
         this.activeLayers = [];
         this.pmtilesInstances = {}; // Cache for PMTiles instances
+        this.activeKeys = [];
+        this.useCompositeTiles = CONFIG.compositeTiles;
+
+        if (this.useCompositeTiles) {
+          this.compositeLayer = new CompositePMTilesLayer({
+            minZoom: 0,
+            maxZoom: 14,
+            minNativeZoom: 0,
+            maxNativeZoom: 11,
+            tileSize: 256,
+            opacity: 0,
+            keepBuffer: 1,
+            updateWhenIdle: true,
+            updateWhenZooming: false
+          });
+          this.compositeLayer.addTo(this.map);
+          this.activeLayers = [this.compositeLayer];
+        }
 
         // Debounced version of showFrame for timeline scrubbing
-        this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), 250);
+        const debounceDelay = this.useCompositeTiles ? 350 : 250;
+        this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), debounceDelay);
       }
 
       getLayerData(key, customUrl) {
@@ -670,6 +788,49 @@
         rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
 
         const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
+        const activeKeys = rangesInEffect.map(range => range.key);
+
+        if (this.useCompositeTiles) {
+          const sameKeys = this.activeKeys.length === activeKeys.length
+            && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
+
+          if (sameKeys) {
+            this.compositeLayer.setOpacity(opacityValue);
+            clearTimeout(spinnerTimeout);
+            loader.classList.remove('active');
+            return;
+          }
+
+          const sources = rangesInEffect.map(range => {
+            let pmtilesSource = this.pmtilesInstances[range.key];
+            if (!pmtilesSource) {
+              const pmtilesUrl = Utils.buildPMTilesUrl(range.key, range.url);
+              pmtilesSource = new pmtiles.PMTiles(pmtilesUrl);
+              this.pmtilesInstances[range.key] = pmtilesSource;
+            }
+            return { key: range.key, pmtiles: pmtilesSource };
+          });
+
+          this.compositeLayer.setSources(sources);
+          this.compositeLayer.setOpacity(opacityValue);
+          this.activeKeys = activeKeys;
+
+          const activeSet = new Set(activeKeys);
+          Object.keys(this.pmtilesInstances).forEach(key => {
+            if (!activeSet.has(key)) delete this.pmtilesInstances[key];
+          });
+
+          // Update effective layers count in chart info
+          const chartInfoEffective = document.getElementById('chartInfoEffective');
+          if (chartInfoEffective) {
+            chartInfoEffective.textContent = sources.length.toString();
+          }
+
+          clearTimeout(spinnerTimeout);
+          loader.classList.remove('active');
+          return;
+        }
+
         const oldLayers = [...this.activeLayers];
         const newLayers = [];
 
@@ -692,6 +853,12 @@
         });
 
         this.activeLayers = newLayers;
+
+        // Update effective layers count in chart info
+        const chartInfoEffective = document.getElementById('chartInfoEffective');
+        if (chartInfoEffective) {
+          chartInfoEffective.textContent = newLayers.length.toString();
+        }
 
         clearTimeout(spinnerTimeout);
         loader.classList.remove('active');
