@@ -775,7 +775,7 @@
         }
 
         const rangesInEffect = CONFIG.ranges.filter(range => {
-          return selectedTime >= range.startTime && selectedTime <= range.endTime;
+          return selectedTime >= range.startTime && selectedTime < range.endTime;
         });
 
         if (rangesInEffect.length === 0) {
