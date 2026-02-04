@@ -250,7 +250,13 @@ def postprocess_tif_worker(args):
             }
 
         ok, rc = run([
-            "gdaladdo", "-r", "bilinear", str(mbtiles_path),
+            "gdaladdo",
+            "--config", "GDAL_NUM_THREADS", "ALL_CPUS",
+            "--config", "OGR_SQLITE_JOURNAL", "WAL",
+            "--config", "OGR_SQLITE_CACHE", "2048",
+            "--config", "GDAL_CACHEMAX", "10240",
+            "-r", "bilinear",
+            str(mbtiles_path),
             "2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"
         ])
         if not ok:
@@ -332,9 +338,10 @@ class ChartSlicer:
         self.download_delay = download_delay  # Seconds to wait between downloads (to avoid rate limiting)
         self.last_download_time = 0  # Track last download time for throttling
         self._date_cache: Dict[str, Optional[datetime.date]] = {}
+        self.date_key_map: Dict[str, Tuple[str, str]] = {}
         self.upload_root = Path("/Users/ryanhemenway/Desktop/sync")
         self.upload_remote = "r2:charts/sectionals"
-        self.upload_jobs = 4
+        self.upload_jobs = 1
         self.delete_geotiff_after_mbtiles = True
         self.rclone_flags = [
             "-P",
@@ -411,6 +418,20 @@ class ChartSlicer:
         self._date_cache[date_str] = parsed
         return parsed
 
+    def _date_range_key(self, start_date: Optional[str], end_date: Optional[str]) -> Optional[str]:
+        """Build a stable date key that includes both start and end dates."""
+        if not start_date:
+            return None
+        if not end_date or end_date == start_date:
+            return start_date
+        return f"{start_date}_to_{end_date}"
+
+    def _date_key_sort_key(self, date_key: str) -> datetime.date:
+        """Sort by start date for range keys."""
+        start_date = self.date_key_map.get(date_key, (date_key, None))[0]
+        parsed = self._date_from_str(start_date)
+        return parsed if parsed else datetime.date.min
+
     def _run_postprocess_upload_stage(self, input_dir: Path) -> None:
         """Convert GeoTIFF mosaics to MBTiles/PMTiles and upload PMTiles."""
         output_dir = self.upload_root
@@ -483,12 +504,14 @@ class ChartSlicer:
         """Load CSV data."""
         self.log(f"Loading CSV: {self.csv_file.name}...")
         self.dole_data = defaultdict(list)
+        self.date_key_map = {}
 
         with open(self.csv_file, 'r', encoding='utf-8', errors='replace') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                date = row.get('date')
-                if not date:
+                start_date = row.get('date')
+                end_date = row.get('end_date') or start_date
+                if not start_date:
                     continue
 
                 # Support newer CSV schema where filename is stored as tif_filename
@@ -502,9 +525,17 @@ class ChartSlicer:
                     if match:
                         timestamp = match.group(1)
                 row['wayback_ts'] = timestamp
-                self.dole_data[date].append(row)
+                row['start_date'] = start_date
+                row['end_date'] = end_date
+                date_key = self._date_range_key(start_date, end_date)
+                if not date_key:
+                    continue
+                row['date_key'] = date_key
+                self.dole_data[date_key].append(row)
+                if date_key not in self.date_key_map:
+                    self.date_key_map[date_key] = (start_date, end_date)
 
-        self.log(f"Loaded {len(self.dole_data)} dates.")
+        self.log(f"Loaded {len(self.dole_data)} date ranges.")
 
     def _build_source_index(self):
         """
@@ -726,7 +757,7 @@ class ChartSlicer:
             return
 
         # Sort by date (latest first to match processing order)
-        missing_files.sort(key=lambda x: x[3], reverse=True)
+        missing_files.sort(key=lambda x: self._date_key_sort_key(x[3]), reverse=True)
 
         self.log(f"Found {len(missing_files)} missing files to download (sorted latest→oldest)")
         self.log(f"Download throttle: {self.download_delay}s between requests")
@@ -1307,7 +1338,7 @@ class ChartSlicer:
                 csv_lookup[date][norm_loc] = rec
 
         # Build report data for ALL locations on ALL dates
-        sorted_dates = sorted(self.dole_data.keys(), reverse=True)
+        sorted_dates = sorted(self.dole_data.keys(), key=self._date_key_sort_key, reverse=True)
         report_data = []
 
         for date in sorted_dates:
@@ -1469,7 +1500,7 @@ class ChartSlicer:
         return vrt_library
 
     def process_all_dates(self, date_range: Optional[Tuple[datetime.date, datetime.date]] = None):
-        """Process dates in CSV (GeoTIFF only), optionally limited to a date range."""
+        """Process date ranges in CSV (GeoTIFF only), optionally limited by start date."""
         self.log("\n=== Starting Chart Processing ===")
 
         # Get all locations from CSV (not shapefiles)
@@ -1487,25 +1518,26 @@ class ChartSlicer:
         self.log(f"Found {len(all_locations)} locations from CSV ({shapefile_count} with shapefiles).")
 
         # Build processing date list (optionally filtered)
-        sorted_dates = sorted(self.dole_data.keys())
+        sorted_dates = sorted(self.dole_data.keys(), key=self._date_key_sort_key)
         if date_range:
             start_date, end_date = date_range
             if start_date and end_date and start_date > end_date:
                 start_date, end_date = end_date, start_date
             filtered = []
-            for date_str in sorted_dates:
-                date_obj = self._date_from_str(date_str)
+            for date_key in sorted_dates:
+                start_str = self.date_key_map.get(date_key, (date_key, None))[0]
+                date_obj = self._date_from_str(start_str)
                 if not date_obj:
                     continue
                 if start_date <= date_obj <= end_date:
-                    filtered.append(date_str)
+                    filtered.append(date_key)
             sorted_dates = filtered
 
             if not sorted_dates:
                 self.log("No dates found in the requested range. Nothing to process.")
                 return
 
-            self.log(f"Limiting processing to {len(sorted_dates)} dates ({start_date} to {end_date})")
+            self.log(f"Limiting processing to {len(sorted_dates)} date ranges ({start_date} to {end_date})")
 
         # === PREPARATION PHASE: Download all missing files upfront ===
         self.log("\n=== Preparing: Downloading missing files ===")
@@ -1515,10 +1547,10 @@ class ChartSlicer:
         # Rebuild from existing temp files to support resume
         vrt_library = self._rebuild_vrt_library(all_locations)
 
-        # Process each date (earliest to latest)
+        # Process each date range (earliest to latest)
         total_dates = len(sorted_dates)
 
-        # Count dates that need GeoTIFF processing (for ETA calculation)
+        # Count date ranges that need GeoTIFF processing (for ETA calculation)
         dates_needing_geotiff = 0
         for date in sorted_dates:
             geotiff_path = self.output_dir / f"{date}.tif"
@@ -1533,7 +1565,7 @@ class ChartSlicer:
         geotiff_jobs = []
 
         for date_idx, date in enumerate(sorted_dates, 1):
-            self.log(f"\n[{date_idx}/{total_dates}] Processing date: {date}")
+            self.log(f"\n[{date_idx}/{total_dates}] Processing range: {date}")
 
             # Check if output artifacts already exist to skip expensive processing
             geotiff_path = self.output_dir / f"{date}.tif"
@@ -1729,7 +1761,7 @@ class ChartSlicer:
             else:
                 self.log(f"  No valid locations found with source files")
 
-            # Build mosaic inputs from exact date matches only
+            # Build mosaic inputs from exact date range matches only
             mosaic_sources = []
             for location in all_locations:
                 entries = vrt_library.get(location, {}).get(date)
@@ -2007,6 +2039,12 @@ Examples:
     )
 
     parser.add_argument(
+        "--postprocess-only",
+        action="store_true",
+        help="Skip warp/GeoTIFF creation and only post-process existing GeoTIFFs to MBTiles/PMTiles + upload"
+    )
+
+    parser.add_argument(
         "--download-delay",
         type=float,
         default=8.0,
@@ -2056,6 +2094,11 @@ Examples:
     # Override compression if specified
     if args.compression != 'AUTO':
         slicer.compression = args.compression
+
+    if args.postprocess_only:
+        slicer.log("Post-process only: skipping warp/GeoTIFF creation.")
+        slicer._run_postprocess_upload_stage(input_dir=args.output)
+        return
 
     slicer.load_dole_data()
 

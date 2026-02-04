@@ -122,15 +122,6 @@
             </button>
           </div>
 
-          <div class="tool-section">
-            <span class="tool-label">History Range</span>
-            <div class="tool-slider-container">
-              <input type="number" class="tool-input" id="historyDaysInput" min="0" max="3650" value="360"
-                placeholder="Days">
-              <span class="tool-unit">days back</span>
-            </div>
-            <div class="tool-hint" id="historyHint">Set to 0 for single map</div>
-          </div>
         </div>
       </div>
 
@@ -293,14 +284,16 @@
       baseUrl: 'https://data.archive.aero/sectionals/pmtiles/',
       csvUrl: 'dates.csv', // Dynamic Source
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
-      frames: [] // Will be populated dynamically
+      ranges: [], // Full list of PMTiles ranges
+      frames: [], // Unique timeline dates (start dates)
+      dateBounds: { min: null, max: null }
     };
 
     /** UTILITIES **/
     const Utils = {
-      buildPMTilesUrl: (date, customUrl) => {
+      buildPMTilesUrl: (key, customUrl) => {
         if (customUrl) return customUrl;
-        return `${CONFIG.baseUrl}${date}.pmtiles`;
+        return `${CONFIG.baseUrl}${key}.pmtiles`;
       },
       toast: (msg, duration = 3000) => {
         const el = document.getElementById('toast');
@@ -309,6 +302,30 @@
           el.classList.add('visible');
           setTimeout(() => el.classList.remove('visible'), duration);
         }
+      },
+      parseDateRangeKey: (key) => {
+        if (!key) return null;
+        const parts = key.split('_to_');
+        const startStr = parts[0];
+        const endStr = parts[1] || parts[0];
+        const startDate = new Date(startStr);
+        const endDate = new Date(endStr);
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return null;
+        if (endDate < startDate) {
+          return {
+            startStr: endStr,
+            endStr: startStr,
+            startDate: endDate,
+            endDate: startDate
+          };
+        }
+        return { startStr, endStr, startDate, endDate };
+      },
+      toIsoDate: (date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
       },
       formatDateId: (dateStr) => {
         try {
@@ -454,18 +471,43 @@
           skipEmptyLines: true,
           complete: (results) => {
             try {
-              const frames = [];
+              const ranges = [];
               results.data.forEach(row => {
-                if (!row.date_iso || row.date_iso === '?') return;
-                frames.push({
-                  id: Utils.formatDateId(row.date_iso),
-                  date: row.date_iso,
+                const key = (row.date_iso || '').trim();
+                if (!key || key === '?') return;
+                const parsed = Utils.parseDateRangeKey(key);
+                if (!parsed) return;
+                ranges.push({
+                  key,
+                  start: parsed.startStr,
+                  end: parsed.endStr,
+                  startDate: parsed.startDate,
+                  endDate: parsed.endDate,
+                  startTime: parsed.startDate.getTime(),
+                  endTime: parsed.endDate.getTime(),
                   url: row.url || null
                 });
               });
-              CONFIG.frames = frames.sort((a, b) => {
-                return new Date(a.date) - new Date(b.date);
+              CONFIG.ranges = ranges.sort((a, b) => {
+                return a.startTime - b.startTime || a.endTime - b.endTime;
               });
+
+              const uniqueStartDates = Array.from(new Set(CONFIG.ranges.map(r => r.start)));
+              CONFIG.frames = uniqueStartDates.sort().map(date => ({
+                id: Utils.formatDateId(date),
+                date
+              }));
+
+              if (CONFIG.ranges.length > 0) {
+                let minStart = CONFIG.ranges[0];
+                let maxEnd = CONFIG.ranges[0];
+                CONFIG.ranges.forEach(range => {
+                  if (range.startTime < minStart.startTime) minStart = range;
+                  if (range.endTime > maxEnd.endTime) maxEnd = range;
+                });
+                CONFIG.dateBounds.min = Utils.toIsoDate(minStart.startDate);
+                CONFIG.dateBounds.max = Utils.toIsoDate(maxEnd.endDate);
+              }
               resolve();
             } catch (e) {
               console.error("Data processing error", e);
@@ -505,22 +547,20 @@
         this.cache = {};
         this.activeLayers = [];
         this.pmtilesInstances = {}; // Cache for PMTiles instances
-        this.requestCounter = 0; // Track most recent frame request
-        this.frameIndexByDate = new Map(CONFIG.frames.map((f, i) => [f.date, i]));
 
         // Debounced version of showFrame for timeline scrubbing
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), 250);
       }
 
-      getLayerData(date, customUrl) {
-        if (this.cache[date]) return this.cache[date];
+      getLayerData(key, customUrl) {
+        if (this.cache[key]) return this.cache[key];
 
-        const pmtilesUrl = Utils.buildPMTilesUrl(date, customUrl);
+        const pmtilesUrl = Utils.buildPMTilesUrl(key, customUrl);
 
         // Create a PMTiles-backed raster tile layer
         // Using the pmtiles library to create a tile source
         const p = new pmtiles.PMTiles(pmtilesUrl);
-        this.pmtilesInstances[date] = p;
+        this.pmtilesInstances[key] = p;
 
         // Create a Leaflet tile layer that fetches from PMTiles
         const layer = L.tileLayer('', {
@@ -590,8 +630,8 @@
           return tile;
         };
 
-        this.cache[date] = { layer };
-        return this.cache[date];
+        this.cache[key] = { layer };
+        return this.cache[key];
       }
 
 
@@ -604,134 +644,57 @@
         });
       }
 
-      async showFrame(index) {
-        const currentFrame = CONFIG.frames[index];
+      async showFrame(selectedDateStr) {
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
-        const requestId = ++this.requestCounter;
+        const selectedDate = new Date(selectedDateStr);
+        const selectedTime = selectedDate.getTime();
 
-        // Get layer for the selected date only
-        const data = this.getLayerData(currentFrame.date, currentFrame.url);
-        if (!data || !data.layer) {
+        if (isNaN(selectedTime)) {
           clearTimeout(spinnerTimeout);
           loader.classList.remove('active');
           return;
         }
 
-        const newLayer = data.layer;
-        newLayer.setZIndex(10);
-        const oldLayers = [...this.activeLayers];
+        const rangesInEffect = CONFIG.ranges.filter(range => {
+          return selectedTime >= range.startTime && selectedTime <= range.endTime;
+        });
+
+        if (rangesInEffect.length === 0) {
+          clearTimeout(spinnerTimeout);
+          loader.classList.remove('active');
+          Utils.toast('No charts available for selected date');
+          return;
+        }
+
+        rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+
         const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
+        const oldLayers = [...this.activeLayers];
+        const newLayers = [];
 
-        // If we're already displaying this layer, just sync opacity and return
-        if (this.activeLayers[0] === newLayer) {
-          newLayer.setOpacity(opacityValue);
-          clearTimeout(spinnerTimeout);
-          loader.classList.remove('active');
-          return;
-        }
-
-        // Add new layer at opacity 0 (hidden)
-        if (!this.map.hasLayer(newLayer)) {
-          newLayer.setOpacity(0);
-          newLayer.addTo(this.map);
-        }
-
-        const tilesReady = () => {
-          const tiles = newLayer._tiles;
-          return tiles && Object.keys(tiles).length > 0 && Object.values(tiles).every(t => t.loaded);
-        };
-
-        const tilesAnyLoaded = () => {
-          const tiles = newLayer._tiles;
-          return tiles && Object.values(tiles).some(t => t.loaded);
-        };
-
-        const stopSpinner = () => {
-          clearTimeout(spinnerTimeout);
-          loader.classList.remove('active');
-        };
-
-        const removeIfInactive = () => {
-          if (!this.activeLayers.includes(newLayer) && this.map.hasLayer(newLayer)) {
-            this.map.removeLayer(newLayer);
+        rangesInEffect.forEach((range, i) => {
+          const data = this.getLayerData(range.key, range.url);
+          if (!data || !data.layer) return;
+          const layer = data.layer;
+          layer.setZIndex(10 + i);
+          if (!this.map.hasLayer(layer)) {
+            layer.addTo(this.map);
           }
-        };
+          layer.setOpacity(opacityValue);
+          newLayers.push(layer);
+        });
 
-        const finalizeSwap = () => {
-          // Ignore stale requests
-          if (requestId !== this.requestCounter) {
-            removeIfInactive();
-            stopSpinner();
-            return;
+        oldLayers.forEach(layer => {
+          if (!newLayers.includes(layer) && this.map.hasLayer(layer)) {
+            this.map.removeLayer(layer);
           }
+        });
 
-          requestAnimationFrame(() => {
-            newLayer.setOpacity(opacityValue);
-            oldLayers.forEach(l => { if (l !== newLayer && this.map.hasLayer(l)) this.map.removeLayer(l); });
-            this.activeLayers = [newLayer];
-            stopSpinner();
-          });
-        };
+        this.activeLayers = newLayers;
 
-        const bailOut = (notify = true) => {
-          if (requestId !== this.requestCounter) {
-            removeIfInactive();
-            stopSpinner();
-            return;
-          }
-          removeIfInactive();
-          stopSpinner();
-          if (notify) Utils.toast('Chart failed to load; keeping previous map');
-        };
-
-        const cleanupListeners = (onLoadFn, onErrorFn, onTileLoadFn) => {
-          newLayer.off('load', onLoadFn);
-          newLayer.off('tileerror', onErrorFn);
-          newLayer.off('tileload', onTileLoadFn);
-        };
-
-        // If tiles already cached and ready, swap immediately
-        if (tilesReady()) {
-          finalizeSwap();
-        } else {
-          let didSwap = false;
-          const finalizeSwapOnce = () => {
-            if (didSwap) return;
-            didSwap = true;
-            cleanupListeners(onLoad, onError, onTileLoad);
-            finalizeSwap();
-          };
-
-          const onLoad = () => {
-            finalizeSwapOnce();
-          };
-
-          const onTileLoad = () => {
-            finalizeSwapOnce();
-          };
-
-          const onError = () => {
-            if (!tilesAnyLoaded()) {
-              cleanupListeners(onLoad, onError, onTileLoad);
-              bailOut();
-            }
-          };
-
-          newLayer.on('load', onLoad);
-          newLayer.on('tileerror', onError);
-          newLayer.on('tileload', onTileLoad);
-
-          // Fallback: if layer still isn't ready after timeout, swap if any tiles loaded; otherwise keep current map
-          setTimeout(() => {
-            cleanupListeners(onLoad, onError, onTileLoad);
-            if (tilesReady() || tilesAnyLoaded()) {
-              finalizeSwapOnce();
-            } else {
-              bailOut(false);
-            }
-          }, 10000);
-        }
+        clearTimeout(spinnerTimeout);
+        loader.classList.remove('active');
       }
 
       setOpacity(opacity) {
@@ -751,6 +714,7 @@
         this.frames.forEach((f, i) => { const d = dates[i]; f.pct = max === min ? 0 : ((d - min) / (max - min)) * 100; });
 
         this.currentIndex = 0;
+        this.selectedDate = null;
         this.isPlaying = false;
         this.playInterval = null;
         this.playbackSpeed = 1;
@@ -769,7 +733,10 @@
 
         this.initUI();
         this.initControls();
-        this.update(this.frames.length - 1); // Start at most recent
+        const initialDate = this.ui.timeSelect?.value || this.frames[this.frames.length - 1]?.date;
+        if (initialDate) {
+          this.updateByDate(initialDate);
+        }
 
         window.addEventListener('keydown', (e) => {
           if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
@@ -972,10 +939,10 @@
       }
 
       updateShareUrl() {
-        const frame = this.frames[this.currentIndex];
+        const selectedDate = this.selectedDate || this.frames[this.currentIndex]?.date;
         const center = this.mapCtrl.map.getCenter();
         const zoom = this.mapCtrl.map.getZoom();
-        const url = `${window.location.origin}${window.location.pathname}?date=${frame.date}&lat=${center.lat.toFixed(4)}&lng=${center.lng.toFixed(4)}&zoom=${zoom}`;
+        const url = `${window.location.origin}${window.location.pathname}?date=${selectedDate}&lat=${center.lat.toFixed(4)}&lng=${center.lng.toFixed(4)}&zoom=${zoom}`;
         document.getElementById('shareUrl').value = url;
       }
 
@@ -1002,14 +969,17 @@
       }
 
       initUI() {
+        if (!this.frames.length) return;
+
         this.ui.lblRange.textContent = `${this.frames[0].id} — ${this.frames[this.frames.length - 1].id}`;
 
         // Setup date picker with min/max and default to most recent
-        const firstDate = this.frames[0].date;
-        const lastDate = this.frames[this.frames.length - 1].date;
+        const firstDate = CONFIG.dateBounds.min || this.frames[0].date;
+        const lastDate = CONFIG.dateBounds.max || this.frames[this.frames.length - 1].date;
         this.ui.timeSelect.min = firstDate;
         this.ui.timeSelect.max = lastDate;
         this.ui.timeSelect.value = lastDate; // Default to most recent
+        this.selectedDate = lastDate;
 
         // Start at most recent frame
         this.currentIndex = this.frames.length - 1;
@@ -1017,27 +987,7 @@
         this.ui.timeSelect.addEventListener('change', () => {
           const selectedDate = this.ui.timeSelect.value;
           if (!selectedDate) return;
-
-          // Find the most recent frame on or before the selected date (never round forward)
-          const selectedTime = new Date(selectedDate).getTime();
-          let bestIdx = 0;
-          let bestTime = -Infinity;
-
-          this.frames.forEach((f, i) => {
-            const frameTime = new Date(f.date).getTime();
-            // Only consider dates on or before selected date
-            if (frameTime <= selectedTime && frameTime > bestTime) {
-              bestTime = frameTime;
-              bestIdx = i;
-            }
-          });
-
-          // If no date found on or before (user selected before earliest), use the first frame
-          if (bestTime === -Infinity) {
-            bestIdx = 0;
-          }
-
-          this.update(bestIdx);
+          this.updateByDate(selectedDate);
         });
 
         // ticks with year labels
@@ -1121,13 +1071,35 @@
         window.addEventListener('resize', () => { trackRect = null; });
       }
 
-      update(index, lazy = false, skipMapUpdate = false) {
+      updateByDate(dateStr, lazy = false) {
+        const selectedTime = new Date(dateStr).getTime();
+        let bestIdx = 0;
+        let bestTime = -Infinity;
+
+        this.frames.forEach((f, i) => {
+          const frameTime = new Date(f.date).getTime();
+          if (frameTime <= selectedTime && frameTime > bestTime) {
+            bestTime = frameTime;
+            bestIdx = i;
+          }
+        });
+
+        if (bestTime === -Infinity) {
+          bestIdx = 0;
+        }
+
+        this.update(bestIdx, lazy, dateStr);
+      }
+
+      update(index, lazy = false, selectedDateOverride = null) {
         this.currentIndex = index;
         const f = this.frames[index];
+        const selectedDate = selectedDateOverride || f.date;
+        this.selectedDate = selectedDate;
 
-        // Update date picker to show the current frame's date
-        if (this.ui.timeSelect && this.ui.timeSelect.value !== f.date) {
-          this.ui.timeSelect.value = f.date;
+        // Update date picker to show the selected date
+        if (this.ui.timeSelect && this.ui.timeSelect.value !== selectedDate) {
+          this.ui.timeSelect.value = selectedDate;
         }
 
         this.ui.handle.style.left = `${f.pct}%`;
@@ -1137,12 +1109,10 @@
           if (i === index) tick.classList.add('active'); else tick.classList.remove('active');
         });
 
-        if (!skipMapUpdate) {
-          if (lazy) {
-            this.mapCtrl.showFrameDebounced(index);
-          } else {
-            this.mapCtrl.showFrame(index);
-          }
+        if (lazy) {
+          this.mapCtrl.showFrameDebounced(selectedDate);
+        } else {
+          this.mapCtrl.showFrame(selectedDate);
         }
       }
 
@@ -1240,10 +1210,7 @@
 
       // Set timeframe from URL if available
       if (dateParam) {
-        const frameIndex = CONFIG.frames.findIndex(f => f.date === dateParam);
-        if (frameIndex >= 0) {
-          timelineApp.update(frameIndex);
-        }
+        timelineApp.updateByDate(dateParam);
       }
 
       // Location Crosshair Button - Request User's Geolocation
@@ -1296,8 +1263,8 @@
       let isSyncing = false;
 
       // Setup Map 2 date picker
-      const firstDate = CONFIG.frames[0].date;
-      const lastDate = CONFIG.frames[CONFIG.frames.length - 1].date;
+      const firstDate = CONFIG.dateBounds.min || CONFIG.frames[0].date;
+      const lastDate = CONFIG.dateBounds.max || CONFIG.frames[CONFIG.frames.length - 1].date;
       map2TimeSelect.min = firstDate;
       map2TimeSelect.max = lastDate;
       map2TimeSelect.value = lastDate;
@@ -1305,28 +1272,7 @@
       map2TimeSelect.addEventListener('change', () => {
         const selectedDate = map2TimeSelect.value;
         if (!selectedDate) return;
-
-        // Find the most recent frame on or before the selected date (never round forward)
-        const selectedTime = new Date(selectedDate).getTime();
-        let bestIdx = 0;
-        let bestTime = -Infinity;
-
-        CONFIG.frames.forEach((f, i) => {
-          const frameTime = new Date(f.date).getTime();
-          if (frameTime <= selectedTime && frameTime > bestTime) {
-            bestTime = frameTime;
-            bestIdx = i;
-          }
-        });
-
-        // If no date found on or before, use the first frame
-        if (bestTime === -Infinity) {
-          bestIdx = 0;
-        }
-
-        // Update picker to show the actual available date
-        map2TimeSelect.value = CONFIG.frames[bestIdx].date;
-        mapCtrl2.showFrame(bestIdx);
+        mapCtrl2.showFrame(selectedDate);
       });
 
       // Sync Maps Function with debouncing to prevent infinite loops
@@ -1370,8 +1316,9 @@
           const currentIdx = timelineApp.currentIndex;
           // Default map 2 to either same or previous frame
           let compareIdx = currentIdx > 0 ? currentIdx - 1 : currentIdx;
-          map2TimeSelect.value = CONFIG.frames[compareIdx].date;
-          mapCtrl2.showFrame(compareIdx);
+          const compareDate = CONFIG.frames[compareIdx].date;
+          map2TimeSelect.value = compareDate;
+          mapCtrl2.showFrame(compareDate);
 
           // Sync view to Map 1 immediately
           mapCtrl2.map.setView(mapCtrl.map.getCenter(), mapCtrl.map.getZoom(), { animate: false });
@@ -1392,7 +1339,7 @@
       const chartInfoDate = document.getElementById('chartInfoDate');
       const chartInfoTotal = document.getElementById('chartInfoTotal');
       const chartInfoZoom = document.getElementById('chartInfoZoom');
-      chartInfoTotal.textContent = CONFIG.frames.length.toString();
+      chartInfoTotal.textContent = CONFIG.ranges.length.toString();
 
       // Update zoom level display
       const updateZoomDisplay = () => {
@@ -1403,91 +1350,19 @@
       mapCtrl.map.on('zoomend', updateZoomDisplay);
       updateZoomDisplay(); // Initial value
 
-      // History Range Feature
-      const historyDaysInput = document.getElementById('historyDaysInput');
-      const historyHint = document.getElementById('historyHint');
-      let historyRangeDays = 360;
-
-      // Store reference to showFrameRange on mapCtrl for multi-layer display
-      mapCtrl.showFrameRange = function (endIndex, days) {
-        const loader = document.getElementById('loader');
-        const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
-
-        const endFrame = CONFIG.frames[endIndex];
-        const endDate = new Date(endFrame.date);
-        const startDate = new Date(endDate);
-        startDate.setDate(startDate.getDate() - days);
-
-        // Find all frames within the date range
-        const framesInRange = [];
-        CONFIG.frames.forEach((frame, idx) => {
-          const frameDate = new Date(frame.date);
-          if (frameDate >= startDate && frameDate <= endDate) {
-            framesInRange.push({ frame, idx });
-          }
-        });
-
-        const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
-        const oldLayers = [...this.activeLayers];
-
-        // Add all layers in range (oldest first so newest is on top)
-        const newLayers = [];
-        framesInRange.forEach(({ frame }, i) => {
-          const data = this.getLayerData(frame.date, frame.url);
-          if (data && data.layer) {
-            const layer = data.layer;
-            layer.setZIndex(10 + i);
-            if (!this.map.hasLayer(layer)) {
-              layer.addTo(this.map);
-            }
-            layer.setOpacity(opacityValue);
-            newLayers.push(layer);
-          }
-        });
-
-        // Remove old layers not in new set
-        oldLayers.forEach(l => {
-          if (!newLayers.includes(l) && this.map.hasLayer(l)) {
-            this.map.removeLayer(l);
-          }
-        });
-
-        this.activeLayers = newLayers;
-
-        clearTimeout(spinnerTimeout);
-        loader.classList.remove('active');
-
-        return framesInRange.length;
-      };
-
-      historyDaysInput?.addEventListener('input', (e) => {
-        historyRangeDays = parseInt(e.target.value) || 0;
-
-        if (historyRangeDays > 0) {
-          const count = mapCtrl.showFrameRange(timelineApp.currentIndex, historyRangeDays);
-          historyHint.textContent = `Showing ${count} map${count !== 1 ? 's' : ''}`;
-        } else {
-          historyHint.textContent = 'Set to 0 for single map';
-          mapCtrl.showFrame(timelineApp.currentIndex);
-        }
-      });
-
       // Update chart info when frame changes
       const originalUpdate = timelineApp.update.bind(timelineApp);
-      timelineApp.update = function (index, lazy) {
-        const skipMapUpdate = historyRangeDays > 0;
-        originalUpdate(index, lazy, skipMapUpdate);
-        const frame = CONFIG.frames[index];
-        if (chartInfoDate && frame) {
-          chartInfoDate.textContent = Utils.formatDateId(frame.date);
-        }
-
-        // If history range is active, show range instead of single frame
-        if (historyRangeDays > 0) {
-          const count = mapCtrl.showFrameRange(index, historyRangeDays);
-          historyHint.textContent = `Showing ${count} map${count !== 1 ? 's' : ''}`;
+      timelineApp.update = function (index, lazy, selectedDateOverride) {
+        originalUpdate(index, lazy, selectedDateOverride);
+        const displayDate = this.selectedDate || this.frames[index]?.date;
+        if (chartInfoDate && displayDate) {
+          chartInfoDate.textContent = Utils.formatDateId(displayDate);
         }
       };
+      const initialDisplayDate = timelineApp.selectedDate || timelineApp.frames[timelineApp.currentIndex]?.date;
+      if (chartInfoDate && initialDisplayDate) {
+        chartInfoDate.textContent = Utils.formatDateId(initialDisplayDate);
+      }
 
       // Hide loading splash
       updateLoading(100, 'Ready!');
