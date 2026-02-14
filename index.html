@@ -114,14 +114,6 @@
             </button>
           </div>
 
-          <div class="tool-section">
-            <span class="tool-label">Split View</span>
-            <button class="tool-button" id="toolCompareBtn">
-              <span>Side-by-Side</span>
-              <span>◫</span>
-            </button>
-          </div>
-
         </div>
       </div>
 
@@ -225,14 +217,9 @@
   </div>
 
   <div id="map"></div>
-  <div id="map2"></div>
 
   <!-- Sources Link -->
   <a href="sources.html" class="sources-link">Sources & Attribution</a>
-
-  <div class="map2-controls">
-    <input type="date" id="map2TimeSelect" class="time-select" aria-label="Select comparison timeframe">
-  </div>
 
   <div class="toast" id="toast"></div>
 
@@ -297,8 +284,7 @@
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       ranges: [], // Full list of PMTiles ranges
       frames: [], // Unique timeline dates (start dates)
-      dateBounds: { min: null, max: null },
-      compositeTiles: DeviceInfo.isMobileSafari
+      dateBounds: { min: null, max: null }
     };
 
     /** UTILITIES **/
@@ -656,34 +642,29 @@
 
         L.control.zoom({ position: 'topright' }).addTo(this.map);
 
-        this.cache = {};
         this.activeLayers = [];
         this.pmtilesInstances = {}; // Cache for PMTiles instances
         this.pmtilesAccess = {};
         this.pmtilesAccessSeq = 0;
         this.pmtilesCacheLimit = DeviceInfo.isMobileSafari ? 10 : 20;
         this.activeKeys = [];
-        this.useCompositeTiles = CONFIG.compositeTiles;
-
-        if (this.useCompositeTiles) {
-          this.compositeLayer = new CompositePMTilesLayer({
-            minZoom: 0,
-            maxZoom: 14,
-            minNativeZoom: 0,
-            maxNativeZoom: 11,
-            tileSize: 256,
-            opacity: 0,
-            keepBuffer: 1,
-            updateWhenIdle: true,
-            updateWhenZooming: false,
-            useImageBitmap: !DeviceInfo.isMobileSafari
-          });
-          this.compositeLayer.addTo(this.map);
-          this.activeLayers = [this.compositeLayer];
-        }
+        this.compositeLayer = new CompositePMTilesLayer({
+          minZoom: 0,
+          maxZoom: 14,
+          minNativeZoom: 0,
+          maxNativeZoom: 11,
+          tileSize: 256,
+          opacity: 0,
+          keepBuffer: 1,
+          updateWhenIdle: true,
+          updateWhenZooming: false,
+          useImageBitmap: !DeviceInfo.isMobileSafari
+        });
+        this.compositeLayer.addTo(this.map);
+        this.activeLayers = [this.compositeLayer];
 
         // Debounced version of showFrame for timeline scrubbing
-        const debounceDelay = this.useCompositeTiles ? 350 : 250;
+        const debounceDelay = 350;
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), debounceDelay);
       }
 
@@ -715,124 +696,6 @@
         }
       }
 
-      getLayerData(key, customUrl) {
-        if (this.cache[key]) return this.cache[key];
-
-        // Create a PMTiles-backed raster tile layer
-        // Using the pmtiles library to create a tile source
-        const p = this.getPMTilesInstance(key, customUrl);
-
-        // Create a Leaflet tile layer that fetches from PMTiles
-        const layer = L.tileLayer('', {
-          minZoom: 0,
-          maxZoom: 14,
-          minNativeZoom: 0,
-          maxNativeZoom: 11,  // Tiles generated up to zoom 11, Leaflet will scale beyond
-          tileSize: 256,
-          opacity: 0,
-          zIndex: 10,
-          keepBuffer: 2,
-          updateWhenIdle: true,
-          updateWhenZooming: false
-        });
-
-        // Override the getTileUrl method to use PMTiles
-        const maxNativeZoom = 11;
-        layer.createTile = function (coords, done) {
-          const tile = document.createElement('canvas');
-          tile.width = 256;
-          tile.height = 256;
-          const ctx = tile.getContext('2d');
-          const canUseImageBitmap = !DeviceInfo.isMobileSafari && ('createImageBitmap' in window);
-
-          // Handle overzoom - fetch tile from maxNativeZoom and let Leaflet scale it
-          let z = coords.z;
-          let x = coords.x;
-          let y = coords.y;
-          let scale = 1;
-          let offsetX = 0;
-          let offsetY = 0;
-
-          if (z > maxNativeZoom) {
-            const zoomDiff = z - maxNativeZoom;
-            const divisor = Math.pow(2, zoomDiff);
-            offsetX = ((x % divisor) + divisor) % divisor;
-            offsetY = ((y % divisor) + divisor) % divisor;
-            z = maxNativeZoom;
-            x = Math.floor(x / divisor);
-            y = Math.floor(y / divisor);
-            scale = divisor;
-          }
-
-          const sourceSize = 256 / scale;
-          const sourceX = offsetX * sourceSize;
-          const sourceY = offsetY * sourceSize;
-
-          p.getZxy(z, x, y).then(result => {
-            // If layer was removed before data arrived, abort
-            if (!layer._map) return;
-
-            if (result && result.data) {
-              const blob = new Blob([result.data], { type: 'image/webp' });
-
-              if (canUseImageBitmap) {
-                createImageBitmap(blob).then(bitmap => {
-                  if (!layer._map) {
-                    if (bitmap.close) bitmap.close();
-                    return;
-                  }
-                  ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
-                  if (bitmap.close) bitmap.close();
-                  done(null, tile);
-                }).catch(() => {
-                  if (!layer._map) return;
-                  done(null, tile);
-                });
-                return;
-              }
-
-              const objectUrl = URL.createObjectURL(blob);
-              const img = new Image();
-              img.onload = () => {
-                URL.revokeObjectURL(objectUrl);
-                if (!layer._map) return;
-                ctx.drawImage(img, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
-                done(null, tile);
-              };
-              img.onerror = () => {
-                URL.revokeObjectURL(objectUrl);
-                if (!layer._map) return;
-                done(null, tile);
-              };
-              img.src = objectUrl;
-            } else {
-              // No tile data - keep transparent tile
-              if (!layer._map) return;
-              done(null, tile);
-            }
-          }).catch(() => {
-            // Return transparent tile on error
-            if (!layer._map) return;
-            done(null, tile);
-          });
-
-          return tile;
-        };
-
-        this.cache[key] = { layer };
-        return this.cache[key];
-      }
-
-
-      waitForLayer(layer) {
-        return new Promise(resolve => {
-          if (layer._tiles && Object.keys(layer._tiles).length > 0) return resolve();
-          const onload = () => { layer.off('load', onload); resolve(); };
-          layer.on('load', onload);
-          setTimeout(() => { layer.off('load', onload); resolve(); }, 2000);
-        });
-      }
-
       async showFrame(selectedDateStr) {
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
@@ -861,66 +724,30 @@
         const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
         const activeKeys = rangesInEffect.map(range => range.key);
 
-        if (this.useCompositeTiles) {
-          const sameKeys = this.activeKeys.length === activeKeys.length
-            && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
+        const sameKeys = this.activeKeys.length === activeKeys.length
+          && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
 
-          if (sameKeys) {
-            this.compositeLayer.setOpacity(opacityValue);
-            clearTimeout(spinnerTimeout);
-            loader.classList.remove('active');
-            return;
-          }
-
-          const sources = rangesInEffect.map(range => {
-            const pmtilesSource = this.getPMTilesInstance(range.key, range.url);
-            return { key: range.key, pmtiles: pmtilesSource };
-          });
-
-          this.compositeLayer.setSources(sources);
+        if (sameKeys) {
           this.compositeLayer.setOpacity(opacityValue);
-          this.activeKeys = activeKeys;
-          this.prunePMTilesInstances(activeKeys);
-
-          // Update effective layers count in chart info
-          const chartInfoEffective = document.getElementById('chartInfoEffective');
-          if (chartInfoEffective) {
-            chartInfoEffective.textContent = sources.length.toString();
-          }
-
           clearTimeout(spinnerTimeout);
           loader.classList.remove('active');
           return;
         }
 
-        const oldLayers = [...this.activeLayers];
-        const newLayers = [];
-
-        rangesInEffect.forEach((range, i) => {
-          const data = this.getLayerData(range.key, range.url);
-          if (!data || !data.layer) return;
-          const layer = data.layer;
-          layer.setZIndex(10 + i);
-          if (!this.map.hasLayer(layer)) {
-            layer.addTo(this.map);
-          }
-          layer.setOpacity(opacityValue);
-          newLayers.push(layer);
+        const sources = rangesInEffect.map(range => {
+          const pmtilesSource = this.getPMTilesInstance(range.key, range.url);
+          return { key: range.key, pmtiles: pmtilesSource };
         });
 
-        oldLayers.forEach(layer => {
-          if (!newLayers.includes(layer) && this.map.hasLayer(layer)) {
-            this.map.removeLayer(layer);
-          }
-        });
-
-        this.activeLayers = newLayers;
+        this.compositeLayer.setSources(sources);
+        this.compositeLayer.setOpacity(opacityValue);
+        this.activeKeys = activeKeys;
         this.prunePMTilesInstances(activeKeys);
 
         // Update effective layers count in chart info
         const chartInfoEffective = document.getElementById('chartInfoEffective');
         if (chartInfoEffective) {
-          chartInfoEffective.textContent = newLayers.length.toString();
+          chartInfoEffective.textContent = sources.length.toString();
         }
 
         clearTimeout(spinnerTimeout);
@@ -1496,7 +1323,6 @@
                   const lat = parseFloat(data.latitude);
                   const lng = parseFloat(data.longitude);
                   mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
-                  Utils.toast('Centered on your approximate location');
                 })
                 .catch(err => {
                   console.error('IP Geolocation error:', err);
@@ -1513,89 +1339,6 @@
           Utils.toast('Geolocation not supported by your browser');
         }
       });
-
-      // --- Side-by-Side Comparison Logic ---
-      const mapCtrl2 = new MapController('map2');
-      attachZoomListeners(mapCtrl2.map);
-      const compareBtn = document.getElementById('compareBtn'); // Old location (if exists)
-      const toolCompareBtn = document.getElementById('toolCompareBtn'); // New location in map tools
-      const map2Controls = document.querySelector('.map2-controls');
-      const map2TimeSelect = document.getElementById('map2TimeSelect');
-      let isCompareMode = false;
-      let isSyncing = false;
-
-      // Setup Map 2 date picker
-      const firstDate = CONFIG.dateBounds.min || CONFIG.frames[0].date;
-      const lastDate = CONFIG.dateBounds.max || CONFIG.frames[CONFIG.frames.length - 1].date;
-      map2TimeSelect.min = firstDate;
-      map2TimeSelect.max = lastDate;
-      map2TimeSelect.value = lastDate;
-
-      map2TimeSelect.addEventListener('change', () => {
-        const selectedDate = map2TimeSelect.value;
-        if (!selectedDate) return;
-        mapCtrl2.showFrame(selectedDate);
-      });
-
-      // Sync Maps Function with debouncing to prevent infinite loops
-      let syncTimeout = null;
-      function syncMaps(source, target) {
-        if (!isCompareMode || isSyncing) return;
-        isSyncing = true;
-
-        // Clear any pending sync timeout
-        if (syncTimeout) {
-          clearTimeout(syncTimeout);
-        }
-
-        target.setView(source.getCenter(), source.getZoom(), { animate: false });
-
-        // Reset flag after a short delay to ensure all events are processed
-        syncTimeout = setTimeout(() => {
-          isSyncing = false;
-          syncTimeout = null;
-        }, 50);
-      }
-
-      mapCtrl.map.on('moveend', () => syncMaps(mapCtrl.map, mapCtrl2.map));
-      mapCtrl2.map.on('moveend', () => syncMaps(mapCtrl2.map, mapCtrl.map));
-
-      // Toggle Compare Mode Function
-      function toggleCompareMode() {
-        isCompareMode = !isCompareMode;
-        document.body.classList.toggle('split-view', isCompareMode);
-
-        // Update both button states if they exist
-        if (compareBtn) compareBtn.classList.toggle('active', isCompareMode);
-        if (toolCompareBtn) toolCompareBtn.classList.toggle('active', isCompareMode);
-
-        // Resize maps
-        mapCtrl.map.invalidateSize();
-        mapCtrl2.map.invalidateSize();
-
-        if (isCompareMode) {
-          // Init Map 2 state if needed
-          const currentIdx = timelineApp.currentIndex;
-          // Default map 2 to either same or previous frame
-          let compareIdx = currentIdx > 0 ? currentIdx - 1 : currentIdx;
-          const compareDate = CONFIG.frames[compareIdx].date;
-          map2TimeSelect.value = compareDate;
-          mapCtrl2.showFrame(compareDate);
-
-          // Sync view to Map 1 immediately
-          mapCtrl2.map.setView(mapCtrl.map.getCenter(), mapCtrl.map.getZoom(), { animate: false });
-
-          Utils.toast("Compare Mode: On");
-        } else {
-          Utils.toast("Compare Mode: Off");
-          // Optional: clear map2 layers to save resources? 
-          // For now, keep them.
-        }
-      }
-
-      // Toggle Compare Mode - bind to both buttons
-      compareBtn?.addEventListener('click', toggleCompareMode);
-      toolCompareBtn?.addEventListener('click', toggleCompareMode);
 
       // Update chart info panel with initial data
       const chartInfoDate = document.getElementById('chartInfoDate');

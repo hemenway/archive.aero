@@ -1218,64 +1218,6 @@ body.zooming .leaflet-control-attribution {
   }
 }
 
-/* Side-by-Side View */
-#map2 {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  width: 50%;
-  height: 100%;
-  background: var(--bg-dark);
-  z-index: 1;
-  display: none;
-  border-left: 2px solid rgba(0, 0, 0, 0.5);
-}
-
-body.split-view #map {
-  width: 50%;
-}
-
-body.split-view #map2 {
-  display: block;
-}
-
-/* Map 2 Controls (Floating) */
-.map2-controls {
-  position: absolute;
-  top: 80px;
-  /* Below header */
-  right: 20px;
-  z-index: 1000;
-  display: none;
-}
-
-body.split-view .map2-controls {
-  display: block;
-}
-
-.btn-compare {
-  width: 44px;
-  height: 44px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: white;
-  font-size: 18px;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition: background-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
-}
-
-.btn-compare:hover {
-  background: var(--primary);
-}
-
-.btn-compare.active {
-  background: var(--secondary);
-  box-shadow: 0 0 15px rgba(0, 212, 170, 0.4);
-}
-
 @media (min-width: 768px) {
   .site-tagline {
     display: block;
