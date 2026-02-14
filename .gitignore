@@ -54,3 +54,14 @@ master_dole/master_dole_Pivot.csv
 master_dole_add.csv
 1georef_toolv10.py
 early_master_dole.csv
+NARAlist.csv
+log.txt
+.gitignore
+.gitignore
+quantize_dates.py
+test_results.csv
+.gitignore
+master_dole_quantized_20260210_192507.csv
+timeline_gaps_quantized.html
+timeline_gaps.html
+.gitignore
