@@ -65,3 +65,4 @@ master_dole_quantized_20260210_192507.csv
 timeline_gaps_quantized.html
 timeline_gaps.html
 .gitignore
+quantization_report.csv

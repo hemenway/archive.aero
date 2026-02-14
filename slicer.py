@@ -13,6 +13,7 @@ import zipfile
 import requests
 import time
 import subprocess
+import platform
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
@@ -29,14 +30,78 @@ except ImportError:
 
 import multiprocessing
 cpu_count = multiprocessing.cpu_count()
+IS_APPLE_SILICON = (sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"})
+
+
+def _get_available_ram_mb(default_mb: int = 4096) -> int:
+    """Return currently available RAM in MB, or a conservative fallback."""
+    try:
+        import psutil
+        return psutil.virtual_memory().available // (1024 * 1024)
+    except Exception:
+        return default_mb
+
+
+def _auto_postprocess_settings(
+    worker_count: int,
+    requested_threads: Union[int, str, None] = "AUTO",
+    requested_cache_mb: Optional[int] = None
+) -> Tuple[int, int]:
+    """Choose postprocess thread/cache settings with Apple Silicon-aware defaults."""
+    worker_count = max(1, int(worker_count or 1))
+    total_cpu = max(1, cpu_count)
+    per_worker_cpu = max(1, total_cpu // worker_count)
+    available_ram_mb = _get_available_ram_mb(default_mb=8192 if IS_APPLE_SILICON else 4096)
+
+    req_threads = str(requested_threads).strip().upper() if requested_threads is not None else "AUTO"
+    if req_threads == "AUTO":
+        # On Apple Silicon, avoid saturating all logical cores per job for better perf/watt.
+        if IS_APPLE_SILICON:
+            threads = max(2, min(6, per_worker_cpu))
+        else:
+            threads = max(1, per_worker_cpu)
+    else:
+        try:
+            threads = int(req_threads)
+        except ValueError:
+            threads = per_worker_cpu
+        threads = max(1, min(threads, total_cpu))
+
+    if requested_cache_mb and int(requested_cache_mb) > 0:
+        cache_mb = max(256, int(requested_cache_mb))
+    else:
+        cache_cap = 8192 if worker_count == 1 else 4096
+        cache_mb = max(512, min(cache_cap, available_ram_mb // worker_count))
+
+    return threads, cache_mb
+
+
+def _overview_levels_for_mbtiles(mbtiles_path: Path) -> List[str]:
+    """
+    Compute overview levels so the smallest pyramid level is near 256 px.
+    Avoids generating unnecessary deep overviews on small charts.
+    """
+    default_levels = ["2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"]
+    try:
+        ds = gdal.Open(str(mbtiles_path))
+        if not ds:
+            return default_levels
+        min_dim = min(ds.RasterXSize, ds.RasterYSize)
+        ds = None
+
+        levels: List[str] = []
+        level = 2
+        while level <= 1024 and (min_dim // level) >= 256:
+            levels.append(str(level))
+            level *= 2
+
+        return levels if levels else ["2"]
+    except Exception:
+        return default_levels
 
 # Set minimal GDAL global defaults (defer thread decisions to phase-specific config)
-try:
-    import psutil
-    available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
-    cache_size_mb = max(512, min(8192, available_ram_mb * 3 // 4))  # 75% of RAM, max 8GB
-except ImportError:
-    cache_size_mb = 2048
+available_ram_mb = _get_available_ram_mb(default_mb=4096)
+cache_size_mb = max(512, min(8192, available_ram_mb * 3 // 4))  # 75% of RAM, max 8GB
 
 # Only set cache at global level - thread settings will be phase-specific
 gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
@@ -54,11 +119,7 @@ def _configure_gdal_for_phase(phase: str, workers: int = 1, available_ram_mb: in
         available_ram_mb: Available RAM in MB (auto-detect if None)
     """
     if available_ram_mb is None:
-        try:
-            import psutil
-            available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
-        except ImportError:
-            available_ram_mb = 4096
+        available_ram_mb = _get_available_ram_mb(default_mb=4096)
 
     if phase == 'warp':
         # Warp phase: single-threaded per worker to prevent oversubscription
@@ -129,16 +190,7 @@ def create_geotiff_worker(args):
                 projWin=clip_projwin if clip_projwin else None
             )
 
-            progress_cb = getattr(gdal, "TermProgress_nocb", None) or getattr(gdal, "TermProgress", None)
-            if progress_cb:
-                ds = gdal.Translate(
-                    str(output_tiff),
-                    str(input_vrt),
-                    options=translate_options,
-                    callback=progress_cb
-                )
-            else:
-                ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
+            ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
 
             if ds:
                 ds = None
@@ -189,33 +241,46 @@ def create_geotiff_worker(args):
 
 def postprocess_tif_worker(args):
     """Convert GeoTIFF to MBTiles/PMTiles and upload PMTiles via rclone."""
-    if len(args) == 6:
-        input_tiff, output_dir, remote, rclone_flags, delete_input, mbtiles_quality = args
-    elif len(args) == 5:
-        input_tiff, output_dir, remote, rclone_flags, delete_input = args
-        mbtiles_quality = 80
-    elif len(args) == 4:
-        input_tiff, output_dir, remote, rclone_flags = args
-        delete_input = False
-        mbtiles_quality = 80
-    else:
-        raise ValueError("postprocess_tif_worker expected 4, 5, or 6 args")
+    if len(args) < 4:
+        raise ValueError("postprocess_tif_worker expected at least 4 args")
+
+    input_tiff, output_dir, remote, rclone_flags = args[:4]
+    delete_input = args[4] if len(args) > 4 else False
+    mbtiles_quality = args[5] if len(args) > 5 else 80
+    requested_threads = args[6] if len(args) > 6 else "AUTO"
+    requested_cache_mb = args[7] if len(args) > 7 else None
+    quiet_external_tools = bool(args[8]) if len(args) > 8 else True
+
     input_tiff = Path(input_tiff)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
     try:
         mbtiles_quality = int(mbtiles_quality)
     except Exception:
         mbtiles_quality = 80
     mbtiles_quality = max(1, min(100, mbtiles_quality))
+    gdal_threads, gdal_cache_mb = _auto_postprocess_settings(
+        worker_count=1,
+        requested_threads=requested_threads,
+        requested_cache_mb=requested_cache_mb
+    )
+    ogr_sqlite_cache_mb = max(512, min(4096, gdal_cache_mb // 2))
 
     stem = input_tiff.stem
     mbtiles_path = output_dir / f"{stem}.mbtiles"
     pmtiles_path = output_dir / f"{stem}.pmtiles"
 
     def run(cmd):
+        if quiet_external_tools:
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            tail = ""
+            if result.returncode != 0 and result.stdout:
+                lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
+                tail = "\n".join(lines[-8:])
+            return result.returncode == 0, result.returncode, tail
         result = subprocess.run(cmd)
-        return result.returncode == 0, result.returncode
+        return result.returncode == 0, result.returncode, ""
 
     input_mtime = input_tiff.stat().st_mtime if input_tiff.exists() else 0
     pmtiles_up_to_date = (
@@ -235,43 +300,54 @@ def postprocess_tif_worker(args):
                 pmtiles_path.unlink()
             except Exception:
                 pass
-        ok, rc = run([
-            "gdal_translate", "-of", "MBTILES",
-            "--config", "GDAL_NUM_THREADS", "ALL_CPUS",
+        ok, rc, err_tail = run([
+            "gdal_translate", "-q", "-of", "MBTILES",
+            "--config", "GDAL_NUM_THREADS", str(gdal_threads),
+            "--config", "GDAL_CACHEMAX", str(gdal_cache_mb),
             "-co", "TILE_FORMAT=WEBP",
             "-co", f"QUALITY={mbtiles_quality}",
             str(input_tiff), str(mbtiles_path)
         ])
         if not ok:
+            error_msg = f"gdal_translate failed (exit {rc})"
+            if err_tail:
+                error_msg += f"\n{err_tail}"
             return {
                 'success': False,
                 'input_tiff': str(input_tiff),
-                'error': f"gdal_translate failed (exit {rc})"
+                'error': error_msg
             }
 
-        ok, rc = run([
-            "gdaladdo",
-            "--config", "GDAL_NUM_THREADS", "ALL_CPUS",
+        overview_levels = _overview_levels_for_mbtiles(mbtiles_path)
+        ok, rc, err_tail = run([
+            "gdaladdo", "-q",
+            "--config", "GDAL_NUM_THREADS", str(gdal_threads),
             "--config", "OGR_SQLITE_JOURNAL", "WAL",
-            "--config", "OGR_SQLITE_CACHE", "2048",
-            "--config", "GDAL_CACHEMAX", "10240",
+            "--config", "OGR_SQLITE_CACHE", str(ogr_sqlite_cache_mb),
+            "--config", "GDAL_CACHEMAX", str(gdal_cache_mb),
             "-r", "bilinear",
             str(mbtiles_path),
-            "2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"
+            *overview_levels
         ])
         if not ok:
+            error_msg = f"gdaladdo failed (exit {rc})"
+            if err_tail:
+                error_msg += f"\n{err_tail}"
             return {
                 'success': False,
                 'input_tiff': str(input_tiff),
-                'error': f"gdaladdo failed (exit {rc})"
+                'error': error_msg
             }
 
-        ok, rc = run(["pmtiles", "convert", str(mbtiles_path), str(pmtiles_path)])
+        ok, rc, err_tail = run(["pmtiles", "convert", str(mbtiles_path), str(pmtiles_path)])
         if not ok:
+            error_msg = f"pmtiles convert failed (exit {rc})"
+            if err_tail:
+                error_msg += f"\n{err_tail}"
             return {
                 'success': False,
                 'input_tiff': str(input_tiff),
-                'error': f"pmtiles convert failed (exit {rc})"
+                'error': error_msg
             }
 
     if not (pmtiles_path.exists() and pmtiles_path.stat().st_size > 0):
@@ -281,13 +357,32 @@ def postprocess_tif_worker(args):
             'error': "pmtiles output missing"
         }
 
-    upload_cmd = ["rclone", "copyto", str(pmtiles_path), f"{remote}/{pmtiles_path.name}"] + list(rclone_flags)
-    ok, rc = run(upload_cmd)
+    upload_flags = list(rclone_flags)
+    if quiet_external_tools:
+        cleaned_flags = []
+        skip_next = False
+        for flag in upload_flags:
+            if skip_next:
+                skip_next = False
+                continue
+            if flag in {"-P", "--progress"}:
+                continue
+            if flag == "--stats":
+                skip_next = True
+                continue
+            cleaned_flags.append(flag)
+        upload_flags = cleaned_flags
+
+    upload_cmd = ["rclone", "copyto", str(pmtiles_path), f"{remote}/{pmtiles_path.name}"] + upload_flags
+    ok, rc, err_tail = run(upload_cmd)
     if not ok:
+        error_msg = f"rclone upload failed (exit {rc})"
+        if err_tail:
+            error_msg += f"\n{err_tail}"
         return {
             'success': False,
             'input_tiff': str(input_tiff),
-            'error': f"rclone upload failed (exit {rc})"
+            'error': error_msg
         }
 
     deleted_input = False
