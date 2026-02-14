@@ -1092,8 +1092,9 @@ body.zooming .leaflet-control-attribution {
 /* --- MOBILE OPTIMIZATIONS --- */
 @media (max-width: 640px) {
   .header-bar {
-    height: 60px;
-    padding: 0 16px;
+    height: 58px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
   }
 
   .menu-toggle {
@@ -1109,13 +1110,14 @@ body.zooming .leaflet-control-attribution {
   }
 
   .header-right {
-    gap: 8px;
+    gap: 6px;
   }
 
   .about-btn,
   .donate-btn {
-    font-size: 12px;
-    padding: 6px 10px;
+    font-size: 11px;
+    padding: 6px 9px;
+    border-radius: 16px;
   }
 
   /* Hide fullscreen and help buttons on mobile (in tools panel) */
@@ -1140,7 +1142,8 @@ body.zooming .leaflet-control-attribution {
 
   .leaflet-top.leaflet-right {
     gap: 6px;
-    padding: 6px 6px 0 0;
+    padding-top: 6px;
+    padding-right: max(6px, env(safe-area-inset-right));
   }
 
   .tools-btn {
@@ -1150,24 +1153,31 @@ body.zooming .leaflet-control-attribution {
   }
 
   .tools-panel {
-    width: min(320px, 92vw);
-    max-height: 60vh;
+    width: min(320px, calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right)));
+    max-height: 56vh;
   }
 
   .ui-layer {
-    bottom: 16px;
-    width: 94vw;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    transform: none;
+    width: auto;
+    padding-left: max(8px, env(safe-area-inset-left));
+    padding-right: max(8px, env(safe-area-inset-right));
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
   }
 
   .leaflet-top {
-    margin-top: 120px;
+    margin-top: 72px;
   }
 
   .controls-card {
     flex-wrap: wrap;
-    padding: 12px 14px;
-    gap: 10px;
-    justify-content: center;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 10px 12px;
+    gap: 8px;
   }
 
   .jog-controls {
@@ -1176,9 +1186,11 @@ body.zooming .leaflet-control-attribution {
 
   .info-panel {
     order: 2;
-    align-items: center;
+    margin-left: auto;
+    align-items: flex-end;
+    min-width: 0;
     flex-direction: row;
-    gap: 10px;
+    gap: 8px;
   }
 
   .label-sub {
@@ -1190,19 +1202,22 @@ body.zooming .leaflet-control-attribution {
     order: 3;
     flex-basis: 100%;
     width: 100%;
-    margin-top: 8px;
-    height: 40px;
+    margin-top: 2px;
+    height: 36px;
   }
 
   .loader {
     position: absolute;
-    top: 16px;
-    left: 110px;
+    top: 10px;
+    right: 12px;
+    left: auto;
+    margin-right: 0;
   }
 
   .time-select {
-    font-size: 15px;
-    padding: 8px 34px 8px 10px;
+    font-size: 14px;
+    max-width: 160px;
+    padding: 8px 30px 8px 10px;
   }
 
   .shortcuts-content {
@@ -1215,6 +1230,11 @@ body.zooming .leaflet-control-attribution {
 
   .tick-label {
     display: none;
+  }
+
+  .toast {
+    top: calc(12px + env(safe-area-inset-top));
+    max-width: 90vw;
   }
 }
 

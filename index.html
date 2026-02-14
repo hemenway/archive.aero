@@ -648,7 +648,12 @@
         this.pmtilesAccessSeq = 0;
         this.pmtilesCacheLimit = DeviceInfo.isMobileSafari ? 10 : 20;
         this.activeKeys = [];
-        this.compositeLayer = new CompositePMTilesLayer({
+        this.frameRequestToken = 0;
+        this.overlayOpacity = 1;
+        this.activeCompositeIndex = 0;
+        this.compositeLayers = [];
+
+        const layerOptions = {
           minZoom: 0,
           maxZoom: 14,
           minNativeZoom: 0,
@@ -658,9 +663,18 @@
           keepBuffer: 1,
           updateWhenIdle: true,
           updateWhenZooming: false,
+          zIndex: 10,
           useImageBitmap: !DeviceInfo.isMobileSafari
-        });
-        this.compositeLayer.addTo(this.map);
+        };
+
+        // Keep one layer visible while the next date's layer preloads.
+        for (let i = 0; i < 2; i++) {
+          const layer = new CompositePMTilesLayer(layerOptions);
+          layer.setOpacity(0);
+          layer.addTo(this.map);
+          this.compositeLayers.push(layer);
+        }
+        this.compositeLayer = this.compositeLayers[this.activeCompositeIndex];
         this.activeLayers = [this.compositeLayer];
 
         // Debounced version of showFrame for timeline scrubbing
@@ -696,66 +710,94 @@
         }
       }
 
+      waitForLayerLoad(layer, timeoutMs = 1800) {
+        return new Promise(resolve => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            layer.off('load', onLoad);
+            clearTimeout(timeout);
+            resolve();
+          };
+          const onLoad = () => finish();
+          const timeout = setTimeout(finish, timeoutMs);
+          layer.on('load', onLoad);
+        });
+      }
+
       async showFrame(selectedDateStr) {
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
-        const selectedDate = new Date(selectedDateStr);
-        const selectedTime = selectedDate.getTime();
+        try {
+          const selectedDate = new Date(selectedDateStr);
+          const selectedTime = selectedDate.getTime();
+          if (isNaN(selectedTime)) return;
 
-        if (isNaN(selectedTime)) {
+          const rangesInEffect = CONFIG.ranges.filter(range => {
+            return selectedTime >= range.startTime && selectedTime < range.endTime;
+          });
+
+          if (rangesInEffect.length === 0) {
+            Utils.toast('No charts available for selected date');
+            return;
+          }
+
+          rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+          const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
+          const activeKeys = rangesInEffect.map(range => range.key);
+
+          const sameKeys = this.activeKeys.length === activeKeys.length
+            && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
+          if (sameKeys) {
+            this.overlayOpacity = opacityValue;
+            this.compositeLayers[this.activeCompositeIndex].setOpacity(opacityValue);
+            return;
+          }
+
+          const sources = rangesInEffect.map(range => {
+            const pmtilesSource = this.getPMTilesInstance(range.key, range.url);
+            return { key: range.key, pmtiles: pmtilesSource };
+          });
+
+          const requestToken = ++this.frameRequestToken;
+          const nextIndex = this.activeCompositeIndex === 0 ? 1 : 0;
+          const nextLayer = this.compositeLayers[nextIndex];
+          const activeLayer = this.compositeLayers[this.activeCompositeIndex];
+
+          nextLayer.setOpacity(0);
+          nextLayer.setSources(sources);
+          nextLayer.bringToFront();
+
+          await this.waitForLayerLoad(nextLayer, 1800);
+          if (requestToken !== this.frameRequestToken) return;
+
+          this.overlayOpacity = opacityValue;
+          nextLayer.setOpacity(opacityValue);
+          activeLayer.setOpacity(0);
+          this.activeCompositeIndex = nextIndex;
+          this.compositeLayer = nextLayer;
+          this.activeLayers = [this.compositeLayer];
+          this.activeKeys = activeKeys;
+          this.prunePMTilesInstances(activeKeys);
+
+          // Update effective layers count in chart info
+          const chartInfoEffective = document.getElementById('chartInfoEffective');
+          if (chartInfoEffective) {
+            chartInfoEffective.textContent = sources.length.toString();
+          }
+        } finally {
           clearTimeout(spinnerTimeout);
           loader.classList.remove('active');
-          return;
         }
-
-        const rangesInEffect = CONFIG.ranges.filter(range => {
-          return selectedTime >= range.startTime && selectedTime < range.endTime;
-        });
-
-        if (rangesInEffect.length === 0) {
-          clearTimeout(spinnerTimeout);
-          loader.classList.remove('active');
-          Utils.toast('No charts available for selected date');
-          return;
-        }
-
-        rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
-
-        const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
-        const activeKeys = rangesInEffect.map(range => range.key);
-
-        const sameKeys = this.activeKeys.length === activeKeys.length
-          && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
-
-        if (sameKeys) {
-          this.compositeLayer.setOpacity(opacityValue);
-          clearTimeout(spinnerTimeout);
-          loader.classList.remove('active');
-          return;
-        }
-
-        const sources = rangesInEffect.map(range => {
-          const pmtilesSource = this.getPMTilesInstance(range.key, range.url);
-          return { key: range.key, pmtiles: pmtilesSource };
-        });
-
-        this.compositeLayer.setSources(sources);
-        this.compositeLayer.setOpacity(opacityValue);
-        this.activeKeys = activeKeys;
-        this.prunePMTilesInstances(activeKeys);
-
-        // Update effective layers count in chart info
-        const chartInfoEffective = document.getElementById('chartInfoEffective');
-        if (chartInfoEffective) {
-          chartInfoEffective.textContent = sources.length.toString();
-        }
-
-        clearTimeout(spinnerTimeout);
-        loader.classList.remove('active');
       }
 
       setOpacity(opacity) {
-        this.activeLayers.forEach(layer => layer.setOpacity(opacity));
+        this.overlayOpacity = opacity;
+        const activeLayer = this.compositeLayers[this.activeCompositeIndex];
+        if (activeLayer) {
+          activeLayer.setOpacity(opacity);
+        }
       }
     }
 
