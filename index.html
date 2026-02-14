@@ -430,16 +430,22 @@
         const version = this.sourceVersion;
         const placement = this._normalizeCoords(coords);
         const { z, x, y } = placement;
+        let hasChartData = false;
+        const finish = () => {
+          tile._hasChartData = hasChartData;
+          done(null, tile);
+        };
 
         const render = async () => {
           for (const source of this.sources) {
             if (!this._map || version !== this.sourceVersion) {
-              done(null, tile);
+              finish();
               return;
             }
             try {
               const result = await source.pmtiles.getZxy(z, x, y);
               if (result && result.data) {
+                hasChartData = true;
                 await this._drawTileData(ctx, result.data, placement);
               }
             } catch (e) {
@@ -447,10 +453,10 @@
             }
           }
           if (!this._map || version !== this.sourceVersion) {
-            done(null, tile);
+            finish();
             return;
           }
-          done(null, tile);
+          finish();
         };
 
         render();
@@ -710,19 +716,35 @@
         }
       }
 
-      waitForLayerLoad(layer, timeoutMs = 1800) {
+      layerHasChartData(layer) {
+        if (!layer || !layer._tiles) return false;
+        const tileEntries = Object.values(layer._tiles);
+        return tileEntries.some(entry => entry?.el?._hasChartData === true);
+      }
+
+      waitForLayerReady(layer, timeoutMs = 3200) {
         return new Promise(resolve => {
           let settled = false;
-          const finish = () => {
+          const finish = (isReady) => {
             if (settled) return;
             settled = true;
-            layer.off('load', onLoad);
+            layer.off('load', onTileEvent);
+            layer.off('tileload', onTileEvent);
+            clearInterval(poll);
             clearTimeout(timeout);
-            resolve();
+            resolve(isReady);
           };
-          const onLoad = () => finish();
-          const timeout = setTimeout(finish, timeoutMs);
-          layer.on('load', onLoad);
+          const checkReady = () => {
+            if (this.layerHasChartData(layer)) {
+              finish(true);
+            }
+          };
+          const onTileEvent = () => checkReady();
+          const poll = setInterval(checkReady, 120);
+          const timeout = setTimeout(() => finish(this.layerHasChartData(layer)), timeoutMs);
+          layer.on('load', onTileEvent);
+          layer.on('tileload', onTileEvent);
+          checkReady();
         });
       }
 
@@ -767,14 +789,21 @@
 
           nextLayer.setOpacity(0);
           nextLayer.setSources(sources);
-          nextLayer.bringToFront();
-
-          await this.waitForLayerLoad(nextLayer, 1800);
+          const nextLayerReady = await this.waitForLayerReady(nextLayer, 3200);
           if (requestToken !== this.frameRequestToken) return;
+          if (!nextLayerReady && this.layerHasChartData(activeLayer)) {
+            // Keep the previous layer visible instead of exposing the basemap.
+            nextLayer.setOpacity(0);
+            return;
+          }
 
           this.overlayOpacity = opacityValue;
+          nextLayer.bringToFront();
           nextLayer.setOpacity(opacityValue);
-          activeLayer.setOpacity(0);
+          requestAnimationFrame(() => {
+            if (requestToken !== this.frameRequestToken) return;
+            activeLayer.setOpacity(0);
+          });
           this.activeCompositeIndex = nextIndex;
           this.compositeLayer = nextLayer;
           this.activeLayers = [this.compositeLayer];
