@@ -700,21 +700,6 @@ body.zooming .leaflet-control-attribution {
   height: 18px;
   width: 3px;
   opacity: 1;
-  filter: drop-shadow(0 0 8px var(--primary));
-  animation: pulse 2s ease-in-out infinite;
-  will-change: filter, transform;
-}
-
-@keyframes pulse {
-
-  0%,
-  100% {
-    filter: drop-shadow(0 0 8px var(--primary));
-  }
-
-  50% {
-    filter: drop-shadow(0 0 12px var(--primary)) drop-shadow(0 0 18px rgba(30, 144, 255, 0.5));
-  }
 }
 
 .tick.major {

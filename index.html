@@ -378,6 +378,7 @@
         this.sources = [];
         this.sourceVersion = 0;
         this.maxNativeZoom = options.maxNativeZoom ?? 11;
+        this.useImageBitmap = options.useImageBitmap ?? ('createImageBitmap' in window);
       }
 
       setSources(sources) {
@@ -390,20 +391,31 @@
         let z = coords.z;
         let x = coords.x;
         let y = coords.y;
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
         if (z > this.maxNativeZoom) {
           const zoomDiff = z - this.maxNativeZoom;
+          const divisor = Math.pow(2, zoomDiff);
+          offsetX = ((x % divisor) + divisor) % divisor;
+          offsetY = ((y % divisor) + divisor) % divisor;
           z = this.maxNativeZoom;
-          x = Math.floor(x / Math.pow(2, zoomDiff));
-          y = Math.floor(y / Math.pow(2, zoomDiff));
+          x = Math.floor(x / divisor);
+          y = Math.floor(y / divisor);
+          scale = divisor;
         }
-        return { z, x, y };
+        return { z, x, y, scale, offsetX, offsetY };
       }
 
-      async _drawTileData(ctx, data) {
+      async _drawTileData(ctx, data, placement) {
         const blob = new Blob([data], { type: 'image/webp' });
-        if ('createImageBitmap' in window) {
+        const sourceSize = 256 / placement.scale;
+        const sourceX = placement.offsetX * sourceSize;
+        const sourceY = placement.offsetY * sourceSize;
+
+        if (this.useImageBitmap && 'createImageBitmap' in window) {
           const bitmap = await createImageBitmap(blob);
-          ctx.drawImage(bitmap, 0, 0, 256, 256);
+          ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
           if (bitmap.close) bitmap.close();
           return;
         }
@@ -412,7 +424,7 @@
           const img = new Image();
           const url = URL.createObjectURL(blob);
           img.onload = () => {
-            ctx.drawImage(img, 0, 0, 256, 256);
+            ctx.drawImage(img, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
             URL.revokeObjectURL(url);
             resolve();
           };
@@ -430,7 +442,8 @@
         tile.height = 256;
         const ctx = tile.getContext('2d');
         const version = this.sourceVersion;
-        const { z, x, y } = this._normalizeCoords(coords);
+        const placement = this._normalizeCoords(coords);
+        const { z, x, y } = placement;
 
         const render = async () => {
           for (const source of this.sources) {
@@ -441,7 +454,7 @@
             try {
               const result = await source.pmtiles.getZxy(z, x, y);
               if (result && result.data) {
-                await this._drawTileData(ctx, result.data);
+                await this._drawTileData(ctx, result.data, placement);
               }
             } catch (e) {
               // Ignore missing tiles or fetch errors.
@@ -631,8 +644,8 @@
           fadeAnimation: true,
           zoomAnimation: true,
           attributionControl: true,
-          zoomSnap: 0.25,
-          zoomDelta: 0.5,
+          zoomSnap: 1,
+          zoomDelta: 1,
           wheelPxPerZoomLevel: 120
         }).setView(CONFIG.initialView.center, CONFIG.initialView.zoom);
 
@@ -646,6 +659,9 @@
         this.cache = {};
         this.activeLayers = [];
         this.pmtilesInstances = {}; // Cache for PMTiles instances
+        this.pmtilesAccess = {};
+        this.pmtilesAccessSeq = 0;
+        this.pmtilesCacheLimit = DeviceInfo.isMobileSafari ? 10 : 20;
         this.activeKeys = [];
         this.useCompositeTiles = CONFIG.compositeTiles;
 
@@ -659,7 +675,8 @@
             opacity: 0,
             keepBuffer: 1,
             updateWhenIdle: true,
-            updateWhenZooming: false
+            updateWhenZooming: false,
+            useImageBitmap: !DeviceInfo.isMobileSafari
           });
           this.compositeLayer.addTo(this.map);
           this.activeLayers = [this.compositeLayer];
@@ -670,15 +687,40 @@
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), debounceDelay);
       }
 
+      getPMTilesInstance(key, customUrl) {
+        let pmtilesSource = this.pmtilesInstances[key];
+        if (!pmtilesSource) {
+          const pmtilesUrl = Utils.buildPMTilesUrl(key, customUrl);
+          pmtilesSource = new pmtiles.PMTiles(pmtilesUrl);
+          this.pmtilesInstances[key] = pmtilesSource;
+        }
+        this.pmtilesAccessSeq += 1;
+        this.pmtilesAccess[key] = this.pmtilesAccessSeq;
+        return pmtilesSource;
+      }
+
+      prunePMTilesInstances(activeKeys = []) {
+        const keys = Object.keys(this.pmtilesInstances);
+        if (keys.length <= this.pmtilesCacheLimit) return;
+
+        const protectedKeys = new Set(activeKeys);
+        const evictable = keys
+          .filter(key => !protectedKeys.has(key))
+          .sort((a, b) => (this.pmtilesAccess[a] || 0) - (this.pmtilesAccess[b] || 0));
+
+        while (Object.keys(this.pmtilesInstances).length > this.pmtilesCacheLimit && evictable.length) {
+          const key = evictable.shift();
+          delete this.pmtilesInstances[key];
+          delete this.pmtilesAccess[key];
+        }
+      }
+
       getLayerData(key, customUrl) {
         if (this.cache[key]) return this.cache[key];
 
-        const pmtilesUrl = Utils.buildPMTilesUrl(key, customUrl);
-
         // Create a PMTiles-backed raster tile layer
         // Using the pmtiles library to create a tile source
-        const p = new pmtiles.PMTiles(pmtilesUrl);
-        this.pmtilesInstances[key] = p;
+        const p = this.getPMTilesInstance(key, customUrl);
 
         // Create a Leaflet tile layer that fetches from PMTiles
         const layer = L.tileLayer('', {
@@ -697,21 +739,34 @@
         // Override the getTileUrl method to use PMTiles
         const maxNativeZoom = 11;
         layer.createTile = function (coords, done) {
-          const tile = document.createElement('img');
-          tile.alt = '';
-          tile.setAttribute('role', 'presentation');
+          const tile = document.createElement('canvas');
+          tile.width = 256;
+          tile.height = 256;
+          const ctx = tile.getContext('2d');
+          const canUseImageBitmap = !DeviceInfo.isMobileSafari && ('createImageBitmap' in window);
 
           // Handle overzoom - fetch tile from maxNativeZoom and let Leaflet scale it
           let z = coords.z;
           let x = coords.x;
           let y = coords.y;
+          let scale = 1;
+          let offsetX = 0;
+          let offsetY = 0;
 
           if (z > maxNativeZoom) {
             const zoomDiff = z - maxNativeZoom;
+            const divisor = Math.pow(2, zoomDiff);
+            offsetX = ((x % divisor) + divisor) % divisor;
+            offsetY = ((y % divisor) + divisor) % divisor;
             z = maxNativeZoom;
-            x = Math.floor(x / Math.pow(2, zoomDiff));
-            y = Math.floor(y / Math.pow(2, zoomDiff));
+            x = Math.floor(x / divisor);
+            y = Math.floor(y / divisor);
+            scale = divisor;
           }
+
+          const sourceSize = 256 / scale;
+          const sourceX = offsetX * sourceSize;
+          const sourceY = offsetY * sourceSize;
 
           p.getZxy(z, x, y).then(result => {
             // If layer was removed before data arrived, abort
@@ -719,28 +774,44 @@
 
             if (result && result.data) {
               const blob = new Blob([result.data], { type: 'image/webp' });
+
+              if (canUseImageBitmap) {
+                createImageBitmap(blob).then(bitmap => {
+                  if (!layer._map) {
+                    if (bitmap.close) bitmap.close();
+                    return;
+                  }
+                  ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
+                  if (bitmap.close) bitmap.close();
+                  done(null, tile);
+                }).catch(() => {
+                  if (!layer._map) return;
+                  done(null, tile);
+                });
+                return;
+              }
+
               const objectUrl = URL.createObjectURL(blob);
-              tile.src = objectUrl;
-              tile.onload = () => {
+              const img = new Image();
+              img.onload = () => {
                 URL.revokeObjectURL(objectUrl);
-                // Skip callback if layer is no longer on a map to avoid Leaflet null _map errors
+                if (!layer._map) return;
+                ctx.drawImage(img, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
+                done(null, tile);
+              };
+              img.onerror = () => {
+                URL.revokeObjectURL(objectUrl);
                 if (!layer._map) return;
                 done(null, tile);
               };
-              tile.onerror = () => {
-                URL.revokeObjectURL(objectUrl);
-                if (!layer._map) return;
-                done(new Error('Tile load error'), tile);
-              };
+              img.src = objectUrl;
             } else {
-              // No tile data - return transparent tile
-              tile.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+              // No tile data - keep transparent tile
               if (!layer._map) return;
               done(null, tile);
             }
-          }).catch(err => {
+          }).catch(() => {
             // Return transparent tile on error
-            tile.src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
             if (!layer._map) return;
             done(null, tile);
           });
@@ -802,23 +873,14 @@
           }
 
           const sources = rangesInEffect.map(range => {
-            let pmtilesSource = this.pmtilesInstances[range.key];
-            if (!pmtilesSource) {
-              const pmtilesUrl = Utils.buildPMTilesUrl(range.key, range.url);
-              pmtilesSource = new pmtiles.PMTiles(pmtilesUrl);
-              this.pmtilesInstances[range.key] = pmtilesSource;
-            }
+            const pmtilesSource = this.getPMTilesInstance(range.key, range.url);
             return { key: range.key, pmtiles: pmtilesSource };
           });
 
           this.compositeLayer.setSources(sources);
           this.compositeLayer.setOpacity(opacityValue);
           this.activeKeys = activeKeys;
-
-          const activeSet = new Set(activeKeys);
-          Object.keys(this.pmtilesInstances).forEach(key => {
-            if (!activeSet.has(key)) delete this.pmtilesInstances[key];
-          });
+          this.prunePMTilesInstances(activeKeys);
 
           // Update effective layers count in chart info
           const chartInfoEffective = document.getElementById('chartInfoEffective');
@@ -853,6 +915,7 @@
         });
 
         this.activeLayers = newLayers;
+        this.prunePMTilesInstances(activeKeys);
 
         // Update effective layers count in chart info
         const chartInfoEffective = document.getElementById('chartInfoEffective');
@@ -882,6 +945,8 @@
 
         this.currentIndex = 0;
         this.selectedDate = null;
+        this.activeTickIndex = null;
+        this.frameTimes = dates;
         this.isPlaying = false;
         this.playInterval = null;
         this.playbackSpeed = 1;
@@ -897,6 +962,8 @@
           lblRange: document.getElementById('lblRange'),
           ticks: document.getElementById('ticksContainer')
         };
+
+        this.tickElements = [];
 
         this.initUI();
         this.initControls();
@@ -1181,6 +1248,7 @@
           }
 
           this.ui.ticks.appendChild(tick);
+          this.tickElements.push(tick);
         });
 
         // Jog Controls
@@ -1200,12 +1268,7 @@
           if (!trackRect) updateTrackRect();
           const x = Math.max(0, Math.min(clientX - trackRect.left, trackRect.width));
           const pct = (x / trackRect.width) * 100;
-
-          let closestIdx = 0, minDiff = Infinity;
-          this.frames.forEach((f, i) => {
-            const diff = Math.abs(f.pct - pct);
-            if (diff < minDiff) { minDiff = diff; closestIdx = i; }
-          });
+          const closestIdx = this.findClosestFrameIndexByPct(pct);
 
           if (closestIdx !== this.currentIndex) this.update(closestIdx, true);
         };
@@ -1238,23 +1301,52 @@
         window.addEventListener('resize', () => { trackRect = null; });
       }
 
-      updateByDate(dateStr, lazy = false) {
-        const selectedTime = new Date(dateStr).getTime();
-        let bestIdx = 0;
-        let bestTime = -Infinity;
+      findClosestFrameIndexByPct(pct) {
+        const n = this.frames.length;
+        if (n === 0) return 0;
+        if (pct <= this.frames[0].pct) return 0;
+        if (pct >= this.frames[n - 1].pct) return n - 1;
 
-        this.frames.forEach((f, i) => {
-          const frameTime = new Date(f.date).getTime();
-          if (frameTime <= selectedTime && frameTime > bestTime) {
-            bestTime = frameTime;
-            bestIdx = i;
+        let lo = 0;
+        let hi = n - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (this.frames[mid].pct < pct) {
+            lo = mid + 1;
+          } else {
+            hi = mid;
           }
-        });
-
-        if (bestTime === -Infinity) {
-          bestIdx = 0;
         }
 
+        const right = lo;
+        const left = Math.max(0, right - 1);
+        return (Math.abs(this.frames[right].pct - pct) < Math.abs(this.frames[left].pct - pct)) ? right : left;
+      }
+
+      findFrameIndexByDate(selectedTime) {
+        let lo = 0;
+        let hi = this.frameTimes.length - 1;
+        let bestIdx = 0;
+
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          const frameTime = this.frameTimes[mid];
+          if (frameTime <= selectedTime) {
+            bestIdx = mid;
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+
+        return bestIdx;
+      }
+
+      updateByDate(dateStr, lazy = false) {
+        const selectedTime = new Date(dateStr).getTime();
+        if (isNaN(selectedTime)) return;
+
+        const bestIdx = this.findFrameIndexByDate(selectedTime);
         this.update(bestIdx, lazy, dateStr);
       }
 
@@ -1272,9 +1364,13 @@
         this.ui.handle.style.left = `${f.pct}%`;
         this.ui.progress.style.width = `${f.pct}%`;
 
-        Array.from(this.ui.ticks.children).forEach((tick, i) => {
-          if (i === index) tick.classList.add('active'); else tick.classList.remove('active');
-        });
+        if (this.activeTickIndex !== null && this.tickElements[this.activeTickIndex]) {
+          this.tickElements[this.activeTickIndex].classList.remove('active');
+        }
+        if (this.tickElements[index]) {
+          this.tickElements[index].classList.add('active');
+        }
+        this.activeTickIndex = index;
 
         if (lazy) {
           this.mapCtrl.showFrameDebounced(selectedDate);
@@ -1384,7 +1480,6 @@
       const locateBtn = document.getElementById('locateBtn');
       locateBtn?.addEventListener('click', () => {
         if ('geolocation' in navigator) {
-          Utils.toast('Getting your location...');
           navigator.geolocation.getCurrentPosition(
             (position) => {
               const lat = position.coords.latitude;
@@ -1547,7 +1642,6 @@
             const lng = parseFloat(data.longitude);
             if (!isNaN(lat) && !isNaN(lng)) {
               mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
-              Utils.toast('Centered on your approximate location');
             }
           })
           .catch(e => console.log('Auto-geolocation failed', e)); // Silent fail
