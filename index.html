@@ -773,54 +773,16 @@
         return this.getLayerTileStats(layer).chart > 0;
       }
 
-      waitForLayerReady(layer, timeoutMs = 3200, minChartTiles = 1, minLoadRatio = 0.75) {
-        return new Promise(resolve => {
-          let settled = false;
-          const finish = (isReady) => {
-            if (settled) return;
-            settled = true;
-            layer.off('load', onTileEvent);
-            layer.off('tileload', onTileEvent);
-            clearInterval(poll);
-            clearTimeout(timeout);
-            resolve(isReady);
-          };
-          const checkReady = () => {
-            const stats = this.getLayerTileStats(layer);
-            if (stats.visible === 0) return;
-            const loadRatio = stats.visible > 0 ? (stats.loaded / stats.visible) : 0;
-            if (stats.chart >= minChartTiles && loadRatio >= minLoadRatio) {
-              finish(true);
-            }
-          };
-          const onTileEvent = () => checkReady();
-          const poll = setInterval(checkReady, 120);
-          const timeout = setTimeout(() => {
-            const stats = this.getLayerTileStats(layer);
-            finish(stats.chart >= minChartTiles && stats.visible > 0);
-          }, timeoutMs);
-          layer.on('load', onTileEvent);
-          layer.on('tileload', onTileEvent);
-          checkReady();
-        });
-      }
-
-      waitForLayerLoadComplete(layer, timeoutMs = 1400) {
+      waitForLayerLoadStrict(layer) {
         return new Promise(resolve => {
           if (!layer || !layer._loading) {
             resolve();
             return;
           }
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
+          const onLoad = () => {
             layer.off('load', onLoad);
-            clearTimeout(timeout);
             resolve();
           };
-          const onLoad = () => finish();
-          const timeout = setTimeout(finish, timeoutMs);
           layer.on('load', onLoad);
         });
       }
@@ -863,24 +825,14 @@
           const nextIndex = this.activeCompositeIndex === 0 ? 1 : 0;
           const nextLayer = this.compositeLayers[nextIndex];
           const activeLayer = this.compositeLayers[this.activeCompositeIndex];
-          const activeStats = this.getLayerTileStats(activeLayer);
-          const minChartTiles = activeStats.chart > 0
-            ? Math.max(1, Math.floor(activeStats.chart * 0.6))
-            : 1;
 
           nextLayer.setOpacity(0);
           nextLayer.setSources(sources);
-          const nextLayerReady = await this.waitForLayerReady(nextLayer, 3200, minChartTiles, 0.75);
+          await this.waitForLayerLoadStrict(nextLayer);
           if (requestToken !== this.frameRequestToken) return;
-          if (!nextLayerReady && this.layerHasChartData(activeLayer)) {
-            // Keep the previous layer visible instead of exposing the basemap.
-            nextLayer.setOpacity(0);
-            return;
-          }
 
-          await this.waitForLayerLoadComplete(nextLayer, 1400);
-          if (requestToken !== this.frameRequestToken) return;
-          if (!this.layerHasChartData(nextLayer) && this.layerHasChartData(activeLayer)) {
+          if (this.layerHasChartData(activeLayer) && !this.layerHasChartData(nextLayer)) {
+            // Strict no-flash mode: never swap to an empty/transparent overlay.
             nextLayer.setOpacity(0);
             return;
           }
