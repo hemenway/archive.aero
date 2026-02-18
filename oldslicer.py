@@ -113,28 +113,47 @@ def _auto_postprocess_settings(
     return threads, cache_mb
 
 
-def _overview_levels_for_mbtiles(mbtiles_path: Path) -> List[str]:
-    """
-    Compute overview levels so the smallest pyramid level is near 256 px.
-    Avoids generating unnecessary deep overviews on small charts.
-    """
-    default_levels = ["2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"]
+def _mbtiles_zoom_range(mbtiles_path: Path) -> Optional[Tuple[int, int]]:
+    """Return (min_zoom, max_zoom) from MBTiles tiles table."""
     try:
-        ds = gdal.Open(str(mbtiles_path))
-        if not ds:
-            return default_levels
-        min_dim = min(ds.RasterXSize, ds.RasterYSize)
-        ds = None
+        import sqlite3
+        db_uri = f"file:{mbtiles_path}?mode=ro"
+        with sqlite3.connect(db_uri, uri=True) as conn:
+            row = conn.execute("SELECT MIN(zoom_level), MAX(zoom_level) FROM tiles").fetchone()
+            if not row:
+                return None
+            min_zoom, max_zoom = row
+            if min_zoom is None or max_zoom is None:
+                return None
+            return int(min_zoom), int(max_zoom)
+    except Exception:
+        return None
+
+
+def _overview_levels_for_mbtiles(mbtiles_path: Path, target_min_zoom: int = 7) -> List[str]:
+    """
+    Compute gdaladdo overview factors to push MBTiles down to target_min_zoom.
+    """
+    target_min_zoom = max(0, int(target_min_zoom))
+    default_levels = ["2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"]
+
+    zoom_range = _mbtiles_zoom_range(mbtiles_path)
+    if zoom_range:
+        _min_zoom, max_zoom = zoom_range
+        if max_zoom <= target_min_zoom:
+            return []
 
         levels: List[str] = []
-        level = 2
-        while level <= 1024 and (min_dim // level) >= 256:
-            levels.append(str(level))
-            level *= 2
+        factor = 2
+        current_zoom = max_zoom - 1
+        while current_zoom >= target_min_zoom and factor <= 1024:
+            levels.append(str(factor))
+            factor *= 2
+            current_zoom -= 1
+        if levels:
+            return levels
 
-        return levels if levels else ["2"]
-    except Exception:
-        return default_levels
+    return default_levels
 
 # Set minimal GDAL global defaults (defer thread decisions to phase-specific config)
 available_ram_mb = _get_available_ram_mb(default_mb=4096)
@@ -289,6 +308,7 @@ def postprocess_tif_worker(args):
     quiet_external_tools = bool(args[8]) if len(args) > 8 else True
     output_stem = args[9] if len(args) > 9 else None
     clip_projwin = args[10] if len(args) > 10 else None
+    target_min_zoom = args[11] if len(args) > 11 else 7
 
     input_raster = Path(input_raster)
     output_dir = Path(output_dir)
@@ -301,6 +321,11 @@ def postprocess_tif_worker(args):
     except Exception:
         mbtiles_quality = 80
     mbtiles_quality = max(1, min(100, mbtiles_quality))
+    try:
+        target_min_zoom = int(target_min_zoom)
+    except Exception:
+        target_min_zoom = 7
+    target_min_zoom = max(0, target_min_zoom)
     gdal_threads, gdal_cache_mb = _auto_postprocess_settings(
         worker_count=1,
         requested_threads=requested_threads,
@@ -369,28 +394,29 @@ def postprocess_tif_worker(args):
                 'stage_times': stage_times
             }
 
-        overview_levels = _overview_levels_for_mbtiles(mbtiles_path)
-        ok, rc, err_tail, elapsed_sec = run([
-            "gdaladdo", "-q",
-            "--config", "GDAL_NUM_THREADS", str(gdal_threads),
-            "--config", "OGR_SQLITE_JOURNAL", "WAL",
-            "--config", "OGR_SQLITE_CACHE", str(ogr_sqlite_cache_mb),
-            "--config", "GDAL_CACHEMAX", str(gdal_cache_mb),
-            "-r", "bilinear",
-            str(mbtiles_path),
-            *overview_levels
-        ])
-        stage_times["gdaladdo"] = elapsed_sec
-        if not ok:
-            error_msg = f"gdaladdo failed (exit {rc})"
-            if err_tail:
-                error_msg += f"\n{err_tail}"
-            return {
-                'success': False,
-                'input_raster': str(input_raster),
-                'error': error_msg,
-                'stage_times': stage_times
-            }
+        overview_levels = _overview_levels_for_mbtiles(mbtiles_path, target_min_zoom=target_min_zoom)
+        if overview_levels:
+            ok, rc, err_tail, elapsed_sec = run([
+                "gdaladdo", "-q",
+                "--config", "GDAL_NUM_THREADS", str(gdal_threads),
+                "--config", "OGR_SQLITE_JOURNAL", "WAL",
+                "--config", "OGR_SQLITE_CACHE", str(ogr_sqlite_cache_mb),
+                "--config", "GDAL_CACHEMAX", str(gdal_cache_mb),
+                "-r", "nearest",
+                str(mbtiles_path),
+                *overview_levels
+            ])
+            stage_times["gdaladdo"] = elapsed_sec
+            if not ok:
+                error_msg = f"gdaladdo failed (exit {rc})"
+                if err_tail:
+                    error_msg += f"\n{err_tail}"
+                return {
+                    'success': False,
+                    'input_raster': str(input_raster),
+                    'error': error_msg,
+                    'stage_times': stage_times
+                }
 
         ok, rc, err_tail, elapsed_sec = run(["pmtiles", "convert", str(mbtiles_path), str(pmtiles_path)])
         stage_times["pmtiles_convert"] = elapsed_sec
@@ -494,7 +520,7 @@ class ChartSlicer:
         self.last_download_time = 0  # Track last download time for throttling
         self._date_cache: Dict[str, Optional[datetime.date]] = {}
         self.date_key_map: Dict[str, Tuple[str, str]] = {}
-        self.upload_root = Path("/Users/ryanhemenway/Desktop")
+        self.upload_root = Path("/Users/ryanhemenway/Desktop/export")
         self.upload_remote = None
         self.upload_jobs = 1
         self.postprocess_threads: Union[int, str] = "AUTO"
@@ -510,7 +536,8 @@ class ChartSlicer:
         ]
         if not self.quiet_external_tools:
             self.rclone_flags.extend(["-P", "--stats", "1s"])
-        self.mbtiles_quality = 72
+        self.mbtiles_quality = 85
+        self.mbtiles_min_zoom = 7
         self.max_postprocess_backlog = 10
         self.parallel_warp = 0
         # In threaded warp mode we already parallelize by job; avoid extra internal threads on Apple Silicon.
@@ -948,7 +975,8 @@ class ChartSlicer:
                         post_cache_mb,
                         quiet_tools,
                         output_stem,
-                        getattr(self, 'clip_projwin', None)
+                        getattr(self, 'clip_projwin', None),
+                        getattr(self, 'mbtiles_min_zoom', 7)
                     )
                 )
                 futures[future] = {
@@ -1060,7 +1088,8 @@ class ChartSlicer:
                 post_cache_mb,
                 bool(getattr(self, 'quiet_external_tools', True)),
                 tiff_path.stem,
-                getattr(self, 'clip_projwin', None)
+                getattr(self, 'clip_projwin', None),
+                getattr(self, 'mbtiles_min_zoom', 7)
             )
         )
         if result.get('success'):
@@ -2650,7 +2679,7 @@ def main():
         epilog="""
 Examples:
   %(prog)s
-  %(prog)s -s /Volumes/projects/rawtiffs -o /Users/ryanhemenway/Desktop -c early_master_dole.csv -b shapefiles
+  %(prog)s -s /Volumes/projects/rawtiffs -o /Users/ryanhemenway/Desktop/export -c early_master_dole.csv -b shapefiles
         """
     )
 
@@ -2664,8 +2693,8 @@ Examples:
     parser.add_argument(
         "-o", "--output",
         type=Path,
-        default=Path("/Users/ryanhemenway/Desktop"),
-        help="Output directory for PMTiles (default: /Users/ryanhemenway/Desktop)"
+        default=Path("/Users/ryanhemenway/Desktop/export"),
+        help="Output directory for PMTiles (default: /Users/ryanhemenway/Desktop/export)"
     )
 
     parser.add_argument(
@@ -2753,8 +2782,15 @@ Examples:
     parser.add_argument(
         "--mbtiles-quality",
         type=int,
-        default=72,
-        help="WEBP quality for MBTiles tiles (1-100, default: 72 for faster encode)"
+        default=85,
+        help="WEBP quality for MBTiles tiles (1-100, default: 85 for better chart readability)"
+    )
+
+    parser.add_argument(
+        "--min-zoom",
+        type=int,
+        default=7,
+        help="Ensure PMTiles include at least this minimum zoom level via MBTiles overviews (default: 7)"
     )
 
     parser.add_argument(
@@ -2854,6 +2890,7 @@ Examples:
         if "--stats" not in slicer.rclone_flags:
             slicer.rclone_flags.extend(["--stats", "1s"])
     slicer.mbtiles_quality = args.mbtiles_quality
+    slicer.mbtiles_min_zoom = max(0, args.min_zoom)
     if args.compression != 'AUTO':
         slicer.log("Warning: --compression is ignored (GeoTIFF phase removed).")
     if args.num_threads != '4':
