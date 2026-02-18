@@ -573,7 +573,7 @@ body.zooming .leaflet-control-attribution {
   bottom: 30px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(1000px, 94vw);
+  width: min(1060px, 95vw);
   z-index: 1000;
   pointer-events: none;
 }

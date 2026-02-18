@@ -91,6 +91,15 @@
           </div>
 
           <div class="tool-section">
+            <span class="tool-label">Layer Loading</span>
+            <button class="tool-button" id="layerLoadModeBtn" type="button" aria-pressed="true">
+              <span id="layerLoadModeValue">Wait for full load</span>
+              <span id="layerLoadModeBadge">Smooth</span>
+            </button>
+            <div class="tool-hint" id="layerLoadModeHint">Swaps layers after tiles load (350ms scrub debounce).</div>
+          </div>
+
+          <div class="tool-section">
             <span class="tool-label">My Location</span>
             <button class="tool-button" id="locateBtn">
               <span>Center Map</span>
@@ -697,7 +706,6 @@
         this.overlayOpacity = 1;
         this.activeCompositeIndex = 0;
         this.compositeLayers = [];
-        this.lastUnavailableToastAt = 0;
 
         const layerOptions = {
           minZoom: 0,
@@ -724,9 +732,20 @@
         this.compositeLayer = this.compositeLayers[this.activeCompositeIndex];
         this.activeLayers = [this.compositeLayer];
 
-        // Debounced version of showFrame for timeline scrubbing
-        const debounceDelay = 350;
-        this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), debounceDelay);
+        this.setLoadingMode('wait');
+      }
+
+      setLoadingMode(mode = 'wait') {
+        const normalizedMode = mode === 'fast' ? 'fast' : 'wait';
+        this.loadingMode = normalizedMode;
+        this.waitForFullLayerLoad = normalizedMode === 'wait';
+        this.scrubDebounceDelay = this.waitForFullLayerLoad ? 350 : 25;
+        this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), this.scrubDebounceDelay);
+        this.frameRequestToken += 1;
+      }
+
+      getLoadingMode() {
+        return this.loadingMode;
       }
 
       getPMTilesInstance(key, customUrl) {
@@ -847,36 +866,33 @@
 
           nextLayer.setOpacity(0);
           nextLayer.setSources(sources);
-          await this.waitForLayerLoadStrict(nextLayer);
-          if (requestToken !== this.frameRequestToken) return;
+          if (this.waitForFullLayerLoad) {
+            await this.waitForLayerLoadStrict(nextLayer);
+            if (requestToken !== this.frameRequestToken) return;
 
-          const nextStats = this.getLayerTileStats(nextLayer);
-          const minChartTiles = activeStats.chart > 0 ? Math.max(1, Math.floor(activeStats.chart * 0.55)) : 1;
+            const nextStats = this.getLayerTileStats(nextLayer);
+            const minChartTiles = activeStats.chart > 0 ? Math.max(1, Math.floor(activeStats.chart * 0.55)) : 1;
 
-          if (nextStats.chart === 0) {
-            // No chart tiles available for this date: clear historical overlay.
-            activeLayer.setOpacity(0);
-            nextLayer.setOpacity(0);
-            this.activeCompositeIndex = nextIndex;
-            this.compositeLayer = nextLayer;
-            this.activeLayers = [this.compositeLayer];
-            this.activeKeys = [];
-            const chartInfoEffective = document.getElementById('chartInfoEffective');
-            if (chartInfoEffective) {
-              chartInfoEffective.textContent = '0';
+            if (nextStats.chart === 0) {
+              // No chart tiles available for this date: clear historical overlay.
+              activeLayer.setOpacity(0);
+              nextLayer.setOpacity(0);
+              this.activeCompositeIndex = nextIndex;
+              this.compositeLayer = nextLayer;
+              this.activeLayers = [this.compositeLayer];
+              this.activeKeys = [];
+              const chartInfoEffective = document.getElementById('chartInfoEffective');
+              if (chartInfoEffective) {
+                chartInfoEffective.textContent = '0';
+              }
+              return;
             }
-            const now = Date.now();
-            if (now - this.lastUnavailableToastAt > 2500) {
-              this.lastUnavailableToastAt = now;
-              Utils.toast('Selected chart is still uploading');
-            }
-            return;
-          }
 
-          if (activeStats.chart > 0 && nextStats.chart < minChartTiles) {
-            // Avoid swapping to sparse coverage that causes visible basemap flashes.
-            nextLayer.setOpacity(0);
-            return;
+            if (activeStats.chart > 0 && nextStats.chart < minChartTiles) {
+              // Avoid swapping to sparse coverage that causes visible basemap flashes.
+              nextLayer.setOpacity(0);
+              return;
+            }
           }
 
           this.overlayOpacity = opacityValue;
@@ -1008,6 +1024,41 @@
         const toolsBtn = document.getElementById('toolsBtn');
         const toolOpacitySlider = document.getElementById('toolOpacitySlider');
         const toolOpacityValue = document.getElementById('toolOpacityValue');
+        const layerLoadModeBtn = document.getElementById('layerLoadModeBtn');
+        const layerLoadModeValue = document.getElementById('layerLoadModeValue');
+        const layerLoadModeBadge = document.getElementById('layerLoadModeBadge');
+        const layerLoadModeHint = document.getElementById('layerLoadModeHint');
+
+        const syncLayerLoadModeUI = () => {
+          const mode = this.mapCtrl.getLoadingMode();
+          const isWaitMode = mode === 'wait';
+          if (layerLoadModeValue) {
+            layerLoadModeValue.textContent = isWaitMode ? 'Wait for full load' : 'Fast scrubbing';
+          }
+          if (layerLoadModeBadge) {
+            layerLoadModeBadge.textContent = isWaitMode ? 'Smooth' : 'Instant';
+          }
+          if (layerLoadModeHint) {
+            layerLoadModeHint.textContent = isWaitMode
+              ? 'Swaps layers after tiles load (350ms scrub debounce).'
+              : 'Swaps layers immediately (25ms scrub debounce).';
+          }
+          if (layerLoadModeBtn) {
+            layerLoadModeBtn.classList.toggle('active', !isWaitMode);
+            layerLoadModeBtn.setAttribute('aria-pressed', String(!isWaitMode));
+          }
+        };
+
+        layerLoadModeBtn?.addEventListener('click', () => {
+          const nextMode = this.mapCtrl.getLoadingMode() === 'wait' ? 'fast' : 'wait';
+          this.mapCtrl.setLoadingMode(nextMode);
+          syncLayerLoadModeUI();
+          if (this.selectedDate) {
+            this.mapCtrl.showFrame(this.selectedDate);
+          }
+        });
+
+        syncLayerLoadModeUI();
 
         toolsBtn?.addEventListener('click', (event) => {
           event.stopPropagation();
@@ -1204,9 +1255,9 @@
           this.updateByDate(selectedDate);
         });
 
-        // ticks with year labels
+        // ticks with decade labels
         const years = new Set();
-        this.frames.forEach((f, i) => {
+        this.frames.forEach((f) => {
           const tick = document.createElement('div');
           tick.className = 'tick';
           tick.style.left = `${f.pct}%`;
@@ -1214,11 +1265,11 @@
           // Extract year from date
           const year = f.date.split('-')[0];
 
-          // Mark as major tick if it's a new year or every 5th year
+          // Mark as major tick only for decade years.
           if (!years.has(year)) {
             years.add(year);
-            const yearNum = parseInt(year);
-            if (yearNum % 5 === 0 || i === 0 || i === this.frames.length - 1) {
+            const yearNum = parseInt(year, 10);
+            if (yearNum % 10 === 0) {
               tick.classList.add('major');
               const label = document.createElement('div');
               label.className = 'tick-label';
