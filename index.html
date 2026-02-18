@@ -796,9 +796,20 @@
           const selectedTime = selectedDate.getTime();
           if (isNaN(selectedTime)) return;
 
-          const rangesInEffect = CONFIG.ranges.filter(range => {
-            return selectedTime >= range.startTime && selectedTime < range.endTime;
-          });
+          const pre1995Cutoff = new Date('1995-01-01').getTime();
+          let rangesInEffect;
+          if (selectedTime < pre1995Cutoff) {
+            const sixMonthLookbackDate = new Date(selectedDate);
+            sixMonthLookbackDate.setMonth(sixMonthLookbackDate.getMonth() - 6);
+            const sixMonthLookbackTime = sixMonthLookbackDate.getTime();
+            rangesInEffect = CONFIG.ranges.filter(range => {
+              return range.startTime >= sixMonthLookbackTime && range.startTime <= selectedTime;
+            });
+          } else {
+            rangesInEffect = CONFIG.ranges.filter(range => {
+              return selectedTime >= range.startTime && selectedTime < range.endTime;
+            });
+          }
 
           if (rangesInEffect.length === 0) {
             this.compositeLayers.forEach(layer => layer.setOpacity(0));

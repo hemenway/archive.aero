@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-FAA Chart Newslicer - CLI tool for processing sectional charts
-Creates COGs for each date for 56 locations.
+FAA Chart Oldslicer - CLI tool for processing sectional charts
+Optimized defaults for early_master_dole.csv testing.
 """
 
 import os
 import sys
 import csv
 import re
+import json
 import argparse
 import zipfile
 try:
@@ -24,7 +25,7 @@ import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 try:
-    from osgeo import gdal, ogr
+    from osgeo import gdal, ogr, osr
     gdal.UseExceptions()
 except ImportError:
     print("ERROR: GDAL is required but not installed.")
@@ -82,9 +83,9 @@ def _auto_postprocess_settings(
 
     req_threads = str(requested_threads).strip().upper() if requested_threads is not None else "AUTO"
     if req_threads == "AUTO":
-        # On Apple Silicon, avoid saturating all logical cores per job for better perf/watt.
+        # On Apple Silicon, favor throughput for this old-dataset test workflow.
         if IS_APPLE_SILICON:
-            threads = max(2, min(6, per_worker_cpu))
+            threads = max(2, min(8, per_worker_cpu))
         else:
             threads = max(1, per_worker_cpu)
     else:
@@ -276,7 +277,7 @@ def create_geotiff_worker(args):
 
 
 def postprocess_tif_worker(args):
-    """Convert a mosaic raster (VRT/TIFF) to MBTiles/PMTiles and upload PMTiles via rclone."""
+    """Convert a mosaic raster (VRT/TIFF) to MBTiles/PMTiles and optionally upload PMTiles via rclone."""
     if len(args) < 4:
         raise ValueError("postprocess_tif_worker expected at least 4 args")
 
@@ -293,6 +294,7 @@ def postprocess_tif_worker(args):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_stem = str(output_stem).strip() if output_stem else input_raster.stem
+    remote = str(remote).strip() if remote else ""
 
     try:
         mbtiles_quality = int(mbtiles_quality)
@@ -427,19 +429,20 @@ def postprocess_tif_worker(args):
             cleaned_flags.append(flag)
         upload_flags = cleaned_flags
 
-    upload_cmd = ["rclone", "copyto", str(pmtiles_path), f"{remote}/{pmtiles_path.name}"] + upload_flags
-    ok, rc, err_tail, elapsed_sec = run(upload_cmd)
-    stage_times["rclone_upload"] = elapsed_sec
-    if not ok:
-        error_msg = f"rclone upload failed (exit {rc})"
-        if err_tail:
-            error_msg += f"\n{err_tail}"
-        return {
-            'success': False,
-            'input_raster': str(input_raster),
-            'error': error_msg,
-            'stage_times': stage_times
-        }
+    if remote:
+        upload_cmd = ["rclone", "copyto", str(pmtiles_path), f"{remote}/{pmtiles_path.name}"] + upload_flags
+        ok, rc, err_tail, elapsed_sec = run(upload_cmd)
+        stage_times["rclone_upload"] = elapsed_sec
+        if not ok:
+            error_msg = f"rclone upload failed (exit {rc})"
+            if err_tail:
+                error_msg += f"\n{err_tail}"
+            return {
+                'success': False,
+                'input_raster': str(input_raster),
+                'error': error_msg,
+                'stage_times': stage_times
+            }
 
     deleted_input = False
     delete_error = None
@@ -483,7 +486,7 @@ class ChartSlicer:
         self.output_dir = output_dir
         self.csv_file = csv_file
         self.shape_dir = shape_dir
-        self.temp_dir = temp_dir if temp_dir else Path("/Volumes/projects/.temp")
+        self.temp_dir = temp_dir if temp_dir else Path("/Volumes/drive/oldslicer_temp")
         self.dole_data = defaultdict(list)
         self.srs_cache = {}  # Cache for shapefile SRS lookups
         self.preview_mode = preview_mode  # If True, only report what would be downloaded
@@ -491,8 +494,8 @@ class ChartSlicer:
         self.last_download_time = 0  # Track last download time for throttling
         self._date_cache: Dict[str, Optional[datetime.date]] = {}
         self.date_key_map: Dict[str, Tuple[str, str]] = {}
-        self.upload_root = Path("/Users/ryanhemenway/Desktop/sync")
-        self.upload_remote = "r2:charts/sectionals"
+        self.upload_root = Path("/Users/ryanhemenway/Desktop")
+        self.upload_remote = None
         self.upload_jobs = 1
         self.postprocess_threads: Union[int, str] = "AUTO"
         self.postprocess_cache_mb: Optional[int] = None
@@ -507,7 +510,7 @@ class ChartSlicer:
         ]
         if not self.quiet_external_tools:
             self.rclone_flags.extend(["-P", "--stats", "1s"])
-        self.mbtiles_quality = 80
+        self.mbtiles_quality = 72
         self.max_postprocess_backlog = 10
         self.parallel_warp = 0
         # In threaded warp mode we already parallelize by job; avoid extra internal threads on Apple Silicon.
@@ -552,14 +555,157 @@ class ChartSlicer:
             name = name.replace('__', '_')
         return name.lower()
 
+    @staticmethod
+    def _row_pick(row: Dict[str, str], keys: List[str]) -> str:
+        """Return first non-empty value from a list of possible CSV keys."""
+        for key in keys:
+            value = row.get(key)
+            if value is None:
+                continue
+            value_str = str(value).strip()
+            if value_str:
+                return value_str
+        return ""
+
+    def _row_float(self, row: Dict[str, str], keys: List[str]) -> Optional[float]:
+        """Parse first available key as float."""
+        value = self._row_pick(row, keys)
+        if not value:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_lcc_crs(self, lat1: str, lat2: str, lat0: str, lon0: str) -> str:
+        if not (lat1 and lat2 and lat0 and lon0):
+            return ""
+        return (
+            f"+proj=lcc +lat_1={lat1} +lat_2={lat2} +lat_0={lat0} "
+            f"+lon_0={lon0} +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+        )
+
+    def _build_gcp_warp_context(self, row: Dict[str, str]) -> Optional[Dict[str, object]]:
+        """
+        Build per-row GCP warp inputs:
+        - pixel corners (tl/tr/br/bl x,y)
+        - projected GCP coordinates in source CRS
+        - EPSG:4269 cutline polygon
+        """
+        pixels = []
+        for x_key, y_key in (("tl_x", "tl_y"), ("tr_x", "tr_y"), ("br_x", "br_y"), ("bl_x", "bl_y")):
+            px = self._row_float(row, [x_key, x_key.upper()])
+            py = self._row_float(row, [y_key, y_key.upper()])
+            if px is None or py is None:
+                return None
+            pixels.append((px, py))
+
+        gcp_geo = []
+        has_all_gcp_geo = True
+        for lat_key, lon_key in (
+            ("gcp_tl_lat", "gcp_tl_lon"),
+            ("gcp_tr_lat", "gcp_tr_lon"),
+            ("gcp_br_lat", "gcp_br_lon"),
+            ("gcp_bl_lat", "gcp_bl_lon"),
+        ):
+            lat = self._row_float(row, [lat_key, lat_key.upper()])
+            lon = self._row_float(row, [lon_key, lon_key.upper()])
+            if lat is None or lon is None:
+                has_all_gcp_geo = False
+                break
+            gcp_geo.append((lon, lat))
+
+        west = self._row_float(row, ["Left bounds", "Left cut bounds", "left_bounds", "left_cut_bounds"])
+        east = self._row_float(row, ["Right bounds", "Right cut bounds", "right_bounds", "right_cut_bounds"])
+        north = self._row_float(row, ["Top bounds", "Top cut bounds", "top_bounds", "top_cut_bounds"])
+        south = self._row_float(row, ["Bottom bounds", "Bottom cut bounds", "bottom_bounds", "bottom_cut_bounds"])
+
+        bounds_ok = all(v is not None for v in (west, east, north, south))
+        if bounds_ok:
+            if west > 0:
+                west = -west
+            if east > 0:
+                east = -east
+            if west > east:
+                west, east = east, west
+            if south > north:
+                south, north = north, south
+
+        if not has_all_gcp_geo and not bounds_ok:
+            return None
+
+        if not has_all_gcp_geo and bounds_ok:
+            gcp_geo = [
+                (west, north),
+                (east, north),
+                (east, south),
+                (west, south),
+            ]
+
+        # Prefer explicit CRS from CSV; otherwise synthesize LCC from projection fields.
+        crs_str = self._row_pick(row, ["crs", "CRS"])
+        if not crs_str:
+            lat1 = self._row_pick(row, ["proj_lat1", "PROJ_LAT1"]) or "33.0"
+            lat2 = self._row_pick(row, ["proj_lat2", "PROJ_LAT2"]) or "45.0"
+            lat0 = self._row_pick(row, ["proj_lat0", "PROJ_LAT0"]) or "39.0"
+            lon0 = self._row_pick(row, ["proj_lon0", "PROJ_LON0"])
+            if not lon0:
+                if bounds_ok:
+                    lon0 = str((west + east) / 2.0)
+                else:
+                    lon0 = "-96.0"
+            crs_str = self._build_lcc_crs(lat1, lat2, lat0, lon0) or \
+                "+proj=lcc +lat_1=33.0 +lat_2=45.0 +lat_0=39.0 +lon_0=-96.0 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+
+        src_srs = osr.SpatialReference()
+        dst_srs = osr.SpatialReference()
+        if src_srs.ImportFromEPSG(4269) != 0:
+            return None
+        if dst_srs.SetFromUserInput(crs_str) != 0:
+            return None
+        if hasattr(src_srs, "SetAxisMappingStrategy") and hasattr(osr, "OAMS_TRADITIONAL_GIS_ORDER"):
+            src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+        transformer = osr.CoordinateTransformation(src_srs, dst_srs)
+        projected = []
+        for lon, lat in gcp_geo:
+            x, y, _z = transformer.TransformPoint(float(lon), float(lat))
+            projected.append((x, y))
+
+        if bounds_ok:
+            cutline_coords = [
+                [west, north],
+                [east, north],
+                [east, south],
+                [west, south],
+                [west, north],
+            ]
+        else:
+            cutline_coords = [[lon, lat] for lon, lat in gcp_geo]
+            cutline_coords.append([gcp_geo[0][0], gcp_geo[0][1]])
+
+        return {
+            "pixels": pixels,
+            "projected": projected,
+            "source_crs": crs_str,
+            "cutline_coords": cutline_coords,
+        }
+
     def _date_from_str(self, date_str: str) -> Optional[datetime.date]:
-        """Parse YYYY-MM-DD date strings with caching."""
+        """Parse date strings with caching (YYYY-MM-DD, YYYY-Month, or YYYY)."""
+        date_str = (date_str or "").strip()
         if date_str in self._date_cache:
             return self._date_cache[date_str]
-        try:
-            parsed = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-        except ValueError:
-            parsed = None
+
+        parsed = None
+        for fmt in ("%Y-%m-%d", "%Y-%B", "%Y-%b", "%Y"):
+            try:
+                parsed = datetime.datetime.strptime(date_str, fmt).date()
+                break
+            except ValueError:
+                continue
+
         self._date_cache[date_str] = parsed
         return parsed
 
@@ -750,9 +896,12 @@ class ChartSlicer:
 
         _recompute_postprocess_settings()
 
-        self.log(f"\n=== Post-Processing: Raster → MBTiles → Overviews → PMTiles → Upload ===")
+        self.log(f"\n=== Post-Processing: Raster → MBTiles → Overviews → PMTiles ===")
         self.log(f"Output: {output_dir}")
-        self.log(f"Remote: {self.upload_remote}")
+        if self.upload_remote:
+            self.log(f"Remote: {self.upload_remote}")
+        else:
+            self.log("Remote: disabled (local PMTiles only)")
         self.log(f"Workers upper bound: {worker_upper_bound}")
         self.log(f"Postprocess GDAL threads/worker: {post_threads}")
         self.log(f"Postprocess GDAL cache/worker: {post_cache_mb}MB")
@@ -851,8 +1000,9 @@ class ChartSlicer:
 
                     if result.get('success'):
                         successes += 1
+                        status = "Uploaded" if self.upload_remote else "Created"
                         msg = (
-                            f"  ✓ Uploaded [{idx}/{total_jobs}]: "
+                            f"  ✓ {status} [{idx}/{total_jobs}]: "
                             f"{Path(result.get('pmtiles', '')).name} ({total_elapsed:.1f}s){stage_summary}"
                         )
                         if result.get('deleted_input'):
@@ -914,7 +1064,8 @@ class ChartSlicer:
             )
         )
         if result.get('success'):
-            msg = f"  ✓ Uploaded: {Path(result.get('pmtiles', '')).name}"
+            status = "Uploaded" if self.upload_remote else "Created"
+            msg = f"  ✓ {status}: {Path(result.get('pmtiles', '')).name}"
             if result.get('deleted_input'):
                 msg += " (deleted input TIFF)"
             elif result.get('delete_error'):
@@ -931,37 +1082,101 @@ class ChartSlicer:
         self.log(f"Loading CSV: {self.csv_file.name}...")
         self.dole_data = defaultdict(list)
         self.date_key_map = {}
+        total_rows = 0
+        accepted_rows = 0
+        skipped_missing_filename = 0
+        skipped_missing_gcp_xy = 0
+
+        def _pick(row: Dict[str, str], keys: List[str]) -> str:
+            for key in keys:
+                value = row.get(key)
+                if value is None:
+                    continue
+                value_str = str(value).strip()
+                if value_str:
+                    return value_str
+            return ""
+
+        def _has_complete_numeric_gcp_xy(row: Dict[str, str]) -> bool:
+            gcp_keys = ("tl_x", "tl_y", "tr_x", "tr_y", "br_x", "br_y", "bl_x", "bl_y")
+            for key in gcp_keys:
+                value = _pick(row, [key, key.upper()])
+                if not value:
+                    return False
+                try:
+                    float(value)
+                except (TypeError, ValueError):
+                    return False
+            return True
 
         with open(self.csv_file, 'r', encoding='utf-8', errors='replace') as f:
             reader = csv.DictReader(f)
-            for row in reader:
-                start_date = row.get('date')
-                end_date = row.get('end_date') or start_date
-                if not start_date:
+            for row_idx, row in enumerate(reader, start=1):
+                total_rows += 1
+                filename = _pick(row, ['filename', 'tif_filename', 'Filename', 'TIF Filename'])
+                if not filename:
+                    skipped_missing_filename += 1
                     continue
 
-                # Support newer CSV schema where filename is stored as tif_filename
-                if not row.get('filename') and row.get('tif_filename'):
-                    row['filename'] = row.get('tif_filename')
+                # Oldslicer test workflow: process only rows with full numeric GCP pixel XY.
+                if not _has_complete_numeric_gcp_xy(row):
+                    skipped_missing_gcp_xy += 1
+                    continue
 
-                link = row.get('download_link', '')
+                location = _pick(row, ['location', 'Location'])
+                edition = _pick(row, ['edition', 'Edition', 'Web Edition Number'])
+                link = _pick(row, ['download_link', 'Download Link'])
+
+                start_date_raw = _pick(row, ['date', 'Date', 'start_date', 'Start Date'])
+                end_date_raw = _pick(row, ['end_date', 'End Date']) or start_date_raw
+
+                # Normalize date representations so YYYY-Month and YYYY can be grouped/sorted.
+                start_date = start_date_raw
+                end_date = end_date_raw
+                parsed_start = self._date_from_str(start_date_raw)
+                parsed_end = self._date_from_str(end_date_raw)
+                if parsed_start:
+                    start_date = parsed_start.isoformat()
+                if parsed_end:
+                    end_date = parsed_end.isoformat()
+
+                # For undated/ambiguous rows, avoid cross-location collisions by uniquifying key.
+                if not start_date:
+                    start_date = f"undated_{Path(filename).stem}"
+                    end_date = start_date
+
                 timestamp = None
                 if 'web.archive.org/web/' in link:
                     match = re.search(r'/web/(\d{14})/', link)
                     if match:
                         timestamp = match.group(1)
+
+                row['filename'] = filename
+                row['location'] = location
+                row['edition'] = edition
+                row['download_link'] = link
+                row['date'] = start_date
                 row['wayback_ts'] = timestamp
                 row['start_date'] = start_date
                 row['end_date'] = end_date
                 date_key = self._date_range_key(start_date, end_date)
                 if not date_key:
                     continue
+
+                if not parsed_start:
+                    date_key = f"{date_key}__{Path(filename).stem or f'row{row_idx}'}"
+
                 row['date_key'] = date_key
                 self.dole_data[date_key].append(row)
                 if date_key not in self.date_key_map:
                     self.date_key_map[date_key] = (start_date, end_date)
+                accepted_rows += 1
 
         self.log(f"Loaded {len(self.dole_data)} date ranges.")
+        self.log(
+            f"Accepted {accepted_rows}/{total_rows} CSV rows with complete numeric GCP XY "
+            f"(skipped {skipped_missing_gcp_xy} missing GCP XY, {skipped_missing_filename} missing filename)."
+        )
 
     def _build_source_index(self):
         """
@@ -1155,8 +1370,36 @@ class ChartSlicer:
 
         Respects self.download_delay and self.preview_mode settings.
         """
+        def _exists_locally(filename: str) -> bool:
+            """Return True when a referenced source already exists anywhere under source_dir."""
+            if not filename:
+                return False
+
+            # Fast path: global file-name index built by _build_source_index()
+            indexed_path = self.files_by_name.get(filename)
+            if indexed_path and indexed_path.exists():
+                return True
+
+            if filename.endswith('.zip'):
+                # Extracted ZIP content indexed by folder stem
+                dir_name = filename[:-4]
+                indexed_tifs = self.tifs_by_dir.get(dir_name, [])
+                if indexed_tifs and any(p.exists() for p in indexed_tifs):
+                    return True
+
+                # Fallback for direct unzipped folder at source root
+                dir_path = self.source_dir / dir_name
+                if dir_path.exists() and dir_path.is_dir():
+                    return True
+
+                return False
+
+            # Fallback for non-indexed direct path at source root
+            return (self.source_dir / filename).exists()
+
         # Collect all files that need downloading
         missing_files = []  # List of (filename, download_link, location, date, is_zip)
+        seen_missing = set()
 
         for date in self.dole_data:
             if allowed_dates is not None and date not in allowed_dates:
@@ -1169,21 +1412,21 @@ class ChartSlicer:
                 if not filename or not download_link:
                     continue
 
-                # Check if file exists locally
-                if filename.endswith('.zip'):
-                    # ZIP files become directories after extraction
-                    dir_name = filename[:-4]
-                    dir_path = self.source_dir / dir_name
-                    if not dir_path.exists():
-                        missing_files.append((filename, download_link, location, date, True))
-                else:
-                    # Direct TIF files
-                    file_path = self.source_dir / filename
-                    if not file_path.exists():
-                        missing_files.append((filename, download_link, location, date, False))
+                # Check if file exists locally (index-aware; supports nested folders)
+                if not _exists_locally(filename):
+                    if filename not in seen_missing:
+                        missing_files.append((filename, download_link, location, date, filename.endswith('.zip')))
+                        seen_missing.add(filename)
 
         if not missing_files:
             self.log("No missing files to download.")
+            return
+
+        if requests is None:
+            self.log(
+                f"Skipping download phase: requests is not installed and {len(missing_files)} source files are missing locally."
+            )
+            self.log("Continuing with locally available files only.")
             return
 
         # Sort by date (latest first to match processing order)
@@ -1389,7 +1632,7 @@ class ChartSlicer:
         return result
 
     def _prepare_warp_job(self, src_file_info: Union[Path, Tuple[Path, Optional[str]]], location: str, edition: str,
-                          shp_path: Path, temp_dir: Path, date: str) -> List[Dict]:
+                          shp_path: Optional[Path], temp_dir: Path, date: str, record: Optional[Dict] = None) -> List[Dict]:
         """
         Prepare warp job parameters for parallel processing.
 
@@ -1422,7 +1665,8 @@ class ChartSlicer:
                 'shapefile': shp_path,
                 'output_tiff': temp_tif,
                 'location': norm_loc,
-                'date': date
+                'date': date,
+                'record': record
             })
 
         return jobs
@@ -1432,7 +1676,8 @@ class ChartSlicer:
         success = self.warp_and_cut(
             job['input_tiff'],
             job['shapefile'],
-            job['output_tiff']
+            job['output_tiff'],
+            record=job.get('record')
         )
 
         return {
@@ -1443,12 +1688,15 @@ class ChartSlicer:
             'attempt_id': job.get('attempt_id')
         }
 
-    def warp_and_cut(self, input_tiff: Path, shapefile: Path, output_tiff: Path) -> bool:
+    def warp_and_cut(self, input_tiff: Path, shapefile: Optional[Path], output_tiff: Path, record: Optional[Dict] = None) -> bool:
         """Warp and cut TIFF using shapefile as cutline.
 
         If self.warp_output is set to "vrt", write a VRT instead of a TIFF
         to avoid the intermediate write/read of warped GeoTIFFs.
         """
+        if record is not None:
+            return self.warp_and_cut_from_row_gcps(input_tiff, record, output_tiff)
+
         try:
             warp_out = getattr(self, 'warp_output', 'tif').lower()
             to_vrt = warp_out == 'vrt'
@@ -1543,6 +1791,108 @@ class ChartSlicer:
         except Exception as e:
             self.log(f"      ✗ Error warping {input_tiff.name}: {e}")
             return False
+
+    def warp_and_cut_from_row_gcps(self, input_tiff: Path, row: Dict, output_tiff: Path) -> bool:
+        """Warp and clip using the row's 4 GCP corners + bounds (process_from_csv-style)."""
+        context = self._build_gcp_warp_context(row)
+        if not context:
+            self.log(f"      ✗ Missing/invalid GCP metadata for {input_tiff.name}")
+            return False
+
+        warp_out = getattr(self, 'warp_output', 'tif').lower()
+        to_vrt = warp_out == 'vrt'
+        self.log(f"    Warping {input_tiff.name} from row GCPs to {'VRT' if to_vrt else 'TIFF'}...")
+
+        sanitized_stem = self.sanitize_filename(input_tiff.stem)
+        if to_vrt:
+            temp_gcp_vrt = output_tiff.parent / f"{sanitized_stem}_srcgcp.vrt"
+        else:
+            temp_gcp_vrt = Path(f"/vsimem/{sanitized_stem}_srcgcp.vrt")
+        cutline_json = output_tiff.parent / f"{sanitized_stem}_cutline.geojson"
+
+        try:
+            gcps = []
+            for idx in range(4):
+                px, py = context["pixels"][idx]
+                mx, my = context["projected"][idx]
+                gcps.append(gdal.GCP(float(mx), float(my), 0.0, float(px), float(py)))
+
+            translate_options = gdal.TranslateOptions(
+                format="VRT",
+                GCPs=gcps,
+                outputSRS=str(context["source_crs"])
+            )
+            ds_vrt = gdal.Translate(str(temp_gcp_vrt), str(input_tiff), options=translate_options)
+            if not ds_vrt:
+                self.log(f"      ✗ Failed to build GCP VRT for {input_tiff.name}")
+                return False
+            ds_vrt = None
+
+            with open(cutline_json, "w", encoding="utf-8") as f:
+                json.dump({
+                    "type": "FeatureCollection",
+                    "features": [{
+                        "type": "Feature",
+                        "properties": {},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [context["cutline_coords"]],
+                        }
+                    }]
+                }, f)
+
+            def _run_warp(transformer_opts):
+                warp_options = gdal.WarpOptions(
+                    format="VRT" if to_vrt else "GTiff",
+                    dstSRS='EPSG:3857',
+                    cutlineDSName=str(cutline_json),
+                    cutlineSRS='EPSG:4269',
+                    cropToCutline=True,
+                    dstAlpha=True,
+                    resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
+                    polynomialOrder=1,
+                    creationOptions=None if to_vrt else ['TILED=YES', 'BIGTIFF=YES'],
+                    multithread=getattr(self, 'warp_multithread', True),
+                    transformerOptions=transformer_opts or None,
+                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
+                )
+                return gdal.Warp(str(output_tiff), str(temp_gcp_vrt), options=warp_options)
+
+            transformer_opts = getattr(self, 'transformer_options', None)
+            ds = None
+            try:
+                ds = _run_warp(transformer_opts)
+            except Exception:
+                if transformer_opts:
+                    self.log("      ⚠ Warp failed with strict transformer options; retrying with relaxed options...")
+                    ds = _run_warp(['ALLOW_BALLPARK=YES'])
+                else:
+                    raise
+
+            if ds:
+                ds = None
+                if output_tiff.exists() and output_tiff.stat().st_size > 1024:
+                    self.log(f"      ✓ Warp complete: {output_tiff.name}")
+                    return True
+
+            self.log(f"      ✗ Warp failed for {input_tiff.name}")
+            return False
+        except Exception as e:
+            self.log(f"      ✗ Error warping {input_tiff.name} from row GCPs: {e}")
+            return False
+        finally:
+            try:
+                if str(temp_gcp_vrt).startswith("/vsimem/"):
+                    gdal.Unlink(str(temp_gcp_vrt))
+                elif (not to_vrt) and Path(temp_gcp_vrt).exists():
+                    Path(temp_gcp_vrt).unlink()
+            except Exception:
+                pass
+            try:
+                if cutline_json.exists():
+                    cutline_json.unlink()
+            except Exception:
+                pass
 
     def build_vrt(self, input_files: List[Path], output_vrt: Path) -> bool:
         """Combine multiple TIFFs/VRTs into a single VRT."""
@@ -1782,9 +2132,10 @@ class ChartSlicer:
                     edition = rec.get('edition', '')
                     timestamp = rec.get('wayback_ts')
 
-                    # Find shapefile
+                    # Oldslicer primarily uses per-row GCP metadata; shapefiles are fallback only.
+                    has_gcp_context = self._build_gcp_warp_context(rec) is not None
                     shp_path = self.find_shapefile(location)
-                    shapefile_found = "YES" if shp_path else "NO"
+                    shapefile_found = "YES" if (has_gcp_context or shp_path) else "NO"
 
                     # Find source files
                     filename = rec.get('filename', '')
@@ -2040,8 +2391,8 @@ class ChartSlicer:
                 else:
                     warp_worker_upper_bound = max(2, cpu_count - 2)
                     if IS_APPLE_SILICON:
-                        # Keep some headroom for system + upload threads on M-series SoCs.
-                        warp_worker_upper_bound = min(warp_worker_upper_bound, 6)
+                        # Keep some headroom, but prioritize speed on M-series SoCs.
+                        warp_worker_upper_bound = min(warp_worker_upper_bound, 8)
 
                 warp_worker_target = warp_worker_upper_bound
                 warp_round_rate_ema = None
@@ -2069,13 +2420,17 @@ class ChartSlicer:
                         attempt_total = len(state['records'])
                         attempt_label = f" (option {attempt_num}/{attempt_total})" if attempt_total > 1 else ""
 
-                        # Find shapefile
-                        shp_path = self.find_shapefile(location)
-                        if not shp_path:
-                            self.log(f"    {location}: No shapefile found")
-                            state['done'] = True
-                            made_progress = True
-                            continue
+                        # Oldslicer mode: use per-row GCP corners + bounds as cutline source.
+                        # Keep shapefile as fallback only when row metadata is incomplete.
+                        gcp_context = self._build_gcp_warp_context(rec)
+                        shp_path = None
+                        if not gcp_context:
+                            shp_path = self.find_shapefile(location)
+                            if not shp_path:
+                                self.log(f"    {location} (edition {edition}){attempt_label}: no valid GCP context and no shapefile fallback")
+                                state['done'] = True
+                                made_progress = True
+                                continue
 
                         # Find source files (use filename from CSV if available)
                         download_link = rec.get('download_link', '')
@@ -2097,7 +2452,7 @@ class ChartSlicer:
 
                         # Prepare warp jobs for this record attempt
                         for src_file_info in found_files:
-                            jobs = self._prepare_warp_job(src_file_info, location, edition, shp_path, temp_dir, date)
+                            jobs = self._prepare_warp_job(src_file_info, location, edition, shp_path, temp_dir, date, record=rec)
                             for job in jobs:
                                 job['attempt_id'] = attempt_id
                             warp_jobs.extend(jobs)
@@ -2290,34 +2645,34 @@ class ChartSlicer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="FAA Chart Newslicer - Process sectional charts to COGs",
+        description="FAA Chart Oldslicer - Process sectional charts to PMTiles",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s
-  %(prog)s -s /path/to/charts -o /path/to/output -c master_dole.csv -b shapefiles
+  %(prog)s -s /Volumes/projects/rawtiffs -o /Users/ryanhemenway/Desktop -c early_master_dole.csv -b shapefiles
         """
     )
 
     parser.add_argument(
         "-s", "--source",
         type=Path,
-        default=Path("/Volumes/drive/newrawtiffs"),
-        help="Source directory containing TIFF/ZIP files (default: /Volumes/drive/newrawtiffs)"
+        default=Path("/Volumes/projects/rawtiffs"),
+        help="Source directory containing TIFF/ZIP files (default: /Volumes/projects/rawtiffs)"
     )
 
     parser.add_argument(
         "-o", "--output",
         type=Path,
-        default=Path("/Volumes/drive/sync"),
-        help="Output directory for COGs (default: /Volumes/drive/sync)"
+        default=Path("/Users/ryanhemenway/Desktop"),
+        help="Output directory for PMTiles (default: /Users/ryanhemenway/Desktop)"
     )
 
     parser.add_argument(
         "-c", "--csv",
         type=Path,
-        default=Path("/Users/ryanhemenway/archive.aero/master_dole.csv"),
-        help="Master Dole CSV file (default: /Users/ryanhemenway/archive.aero/master_dole.csv)"
+        default=Path("/Users/ryanhemenway/archive.aero/early_master_dole.csv"),
+        help="Early Master Dole CSV file (default: /Users/ryanhemenway/archive.aero/early_master_dole.csv)"
     )
 
     parser.add_argument(
@@ -2330,8 +2685,8 @@ Examples:
     parser.add_argument(
         "-t", "--temp-dir",
         type=Path,
-        default=Path("/Volumes/projects/.temp"),
-        help="Temporary directory for intermediate files (default: /Volumes/projects/.temp)"
+        default=Path("/Volumes/drive/oldslicer_temp"),
+        help="Temporary directory for intermediate files (default: /Volumes/drive/oldslicer_temp)"
     )
 
     parser.add_argument(
@@ -2346,8 +2701,8 @@ Examples:
         "--warp-output",
         type=str,
         choices=['tif', 'vrt'],
-        default='tif',
-        help="Intermediate warp output format: 'tif' (default) writes cutlines to disk, 'vrt' keeps them virtual to reduce I/O"
+        default='vrt',
+        help="Intermediate warp output format: 'tif' writes cutlines to disk, 'vrt' (default) keeps them virtual to reduce I/O"
     )
 
     parser.add_argument(
@@ -2386,7 +2741,7 @@ Examples:
         "--parallel-warp",
         type=int,
         default=0,
-        help="Number of parallel warp jobs (default: auto; Apple Silicon auto mode caps at 6 for better perf/watt)"
+        help="Number of parallel warp jobs (default: auto; Apple Silicon auto mode caps at 8 for throughput)"
     )
 
     parser.add_argument(
@@ -2398,15 +2753,22 @@ Examples:
     parser.add_argument(
         "--mbtiles-quality",
         type=int,
-        default=80,
-        help="WEBP quality for MBTiles tiles (1-100, default: 80)"
+        default=72,
+        help="WEBP quality for MBTiles tiles (1-100, default: 72 for faster encode)"
     )
 
     parser.add_argument(
         "--upload-jobs",
         type=int,
-        default=1,
-        help="Parallel postprocess/upload jobs (default: 1)"
+        default=2,
+        help="Parallel postprocess jobs (default: 2)"
+    )
+
+    parser.add_argument(
+        "--upload-remote",
+        type=str,
+        default="",
+        help="Optional rclone destination (example: r2:charts/sectionals). Leave empty to skip upload."
     )
 
     parser.add_argument(
@@ -2473,6 +2835,8 @@ Examples:
     slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles,
                          preview_mode=False, download_delay=args.download_delay,
                          temp_dir=args.temp_dir)
+    slicer.upload_root = args.output
+    slicer.upload_remote = args.upload_remote.strip() if args.upload_remote else None
     slicer.warp_output = args.warp_output
     slicer.clip_projwin = tuple(args.clip_projwin) if args.clip_projwin else None
     slicer.parallel_warp = args.parallel_warp
