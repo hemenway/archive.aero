@@ -10,6 +10,8 @@ import csv
 import re
 import argparse
 import zipfile
+import sqlite3
+import math
 try:
     import requests
 except ImportError:
@@ -24,7 +26,7 @@ import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
 
 try:
-    from osgeo import gdal, ogr
+    from osgeo import gdal, ogr, osr
     gdal.UseExceptions()
 except ImportError:
     print("ERROR: GDAL is required but not installed.")
@@ -82,9 +84,9 @@ def _auto_postprocess_settings(
 
     req_threads = str(requested_threads).strip().upper() if requested_threads is not None else "AUTO"
     if req_threads == "AUTO":
-        # On Apple Silicon, avoid saturating all logical cores per job for better perf/watt.
+        # Use all available per-worker CPU threads in AUTO mode.
         if IS_APPLE_SILICON:
-            threads = max(2, min(6, per_worker_cpu))
+            threads = max(2, per_worker_cpu)
         else:
             threads = max(1, per_worker_cpu)
     else:
@@ -308,6 +310,7 @@ def postprocess_tif_worker(args):
 
     mbtiles_path = output_dir / f"{output_stem}.mbtiles"
     pmtiles_path = output_dir / f"{output_stem}.pmtiles"
+    partial_db_path = output_dir / f"{output_stem}.partial_tiles.db"
     stage_times: Dict[str, float] = {}
 
     def run(cmd):
@@ -340,6 +343,21 @@ def postprocess_tif_worker(args):
                 pmtiles_path.unlink()
             except Exception:
                 pass
+        # Clean stale partial tile sidecars from prior interrupted/failed attempts.
+        for stale_path in (
+            partial_db_path,
+            Path(str(partial_db_path) + "-journal"),
+            Path(str(partial_db_path) + "-wal"),
+            Path(str(partial_db_path) + "-shm"),
+            Path(str(mbtiles_path) + "-journal"),
+            Path(str(mbtiles_path) + "-wal"),
+            Path(str(mbtiles_path) + "-shm"),
+        ):
+            if stale_path.exists():
+                try:
+                    stale_path.unlink()
+                except Exception:
+                    pass
         translate_cmd = [
             "gdal_translate", "-q", "-of", "MBTILES",
             "--config", "GDAL_NUM_THREADS", str(gdal_threads),
@@ -517,8 +535,8 @@ class ChartSlicer:
             "dallas_ft_worth": "dallas_ft_worth",
             "mariana_islands_inset": "mariana_islands",
         }
-        # Prefer a single best coordinate operation to avoid PROJ multi-op artifacts/warnings.
-        self.transformer_options = ['ONLY_BEST=YES', 'ALLOW_BALLPARK=NO']
+        # Use default PROJ transformer selection to avoid strict-op failures on Alaska/dateline charts.
+        self.transformer_options = None
 
         # File index caches for O(1) lookups
         self.files_by_name: Dict[str, Path] = {}  # Direct TIFs and ZIPs
@@ -576,6 +594,33 @@ class ChartSlicer:
         start_date = self.date_key_map.get(date_key, (date_key, None))[0]
         parsed = self._date_from_str(start_date)
         return parsed if parsed else datetime.date.min
+
+    def _date_from_stem(self, stem: str) -> Optional[datetime.date]:
+        """Best-effort parse of a date from postprocess output stems."""
+        if not stem:
+            return None
+        if stem in self.date_key_map:
+            start_date = self.date_key_map.get(stem, (None, None))[0]
+            if start_date:
+                return self._date_from_str(start_date)
+
+        # Handles stems like YYYY-MM-DD and YYYY-MM-DD_to_YYYY-MM-DD.
+        match = re.search(r"\d{4}-\d{2}-\d{2}", stem)
+        if not match:
+            return None
+        return self._date_from_str(match.group(0))
+
+    def _postprocess_sort_key(self, stem: str) -> Tuple[int, int, str]:
+        """
+        Sort postprocess jobs newest-to-oldest, starting from 2025 and going backward.
+        Dates after 2025 are kept, but processed after the <=2025 backlog.
+        """
+        date_obj = self._date_from_stem(stem)
+        if date_obj:
+            if date_obj.year <= 2025:
+                return (0, -date_obj.toordinal(), stem)
+            return (1, -date_obj.toordinal(), stem)
+        return (2, 0, stem)
 
     def _run_postprocess_upload_stage(
         self,
@@ -649,7 +694,8 @@ class ChartSlicer:
             if current_input.stat().st_mtime >= existing_input.stat().st_mtime:
                 jobs_by_stem[stem] = job
 
-        jobs: List[Dict[str, Union[Path, str]]] = [jobs_by_stem[k] for k in sorted(jobs_by_stem.keys())]
+        ordered_stems = sorted(jobs_by_stem.keys(), key=self._postprocess_sort_key)
+        jobs: List[Dict[str, Union[Path, str]]] = [jobs_by_stem[k] for k in ordered_stems]
         if skipped_up_to_date > 0:
             self.log(f"  ✓ Skipping {skipped_up_to_date} jobs with up-to-date local PMTiles")
 
@@ -760,9 +806,162 @@ class ChartSlicer:
 
         successes = 0
         failures = 0
-        heartbeat_sec = 60
+        live_status_enabled = bool(sys.stdout.isatty())
+        heartbeat_sec = 3 if live_status_enabled else 60
         total_jobs = len(jobs)
         self.log(f"Jobs to process: {total_jobs}")
+
+        live_line_len = 0
+        live_line_active = False
+        row_range_cache: Dict[Tuple[str, int], Optional[Tuple[int, int]]] = {}
+
+        def _clear_live_status_line() -> None:
+            nonlocal live_line_len, live_line_active
+            if not live_line_active:
+                return
+            print()
+            live_line_len = 0
+            live_line_active = False
+
+        def _emit_live_status_line(message: str) -> None:
+            nonlocal live_line_len, live_line_active
+            if not live_status_enabled:
+                self.log(message)
+                return
+            ts = datetime.datetime.now().strftime("%H:%M:%S")
+            line = f"[{ts}] {message}"
+            pad = max(0, live_line_len - len(line))
+            print("\r" + line + (" " * pad), end="", flush=True)
+            live_line_len = len(line)
+            live_line_active = True
+
+        def _mercator_y_to_lat(y_merc: float) -> float:
+            return math.degrees(math.atan(math.sinh(float(y_merc) / 6378137.0)))
+
+        def _lat_to_xyz_row(lat_deg: float, zoom: int) -> int:
+            lat_clamped = max(-85.05112878, min(85.05112878, float(lat_deg)))
+            lat_rad = math.radians(lat_clamped)
+            n = float(1 << int(zoom))
+            y = (1.0 - math.log(math.tan(lat_rad) + (1.0 / math.cos(lat_rad))) / math.pi) * 0.5 * n
+            row = int(y)
+            return max(0, min((1 << int(zoom)) - 1, row))
+
+        def _zoom_row_range_for_input(input_raster: Path, zoom_level: int) -> Optional[Tuple[int, int]]:
+            cache_key = (str(input_raster), int(zoom_level))
+            if cache_key in row_range_cache:
+                return row_range_cache[cache_key]
+            try:
+                ds = gdal.Open(str(input_raster))
+                if not ds:
+                    row_range_cache[cache_key] = None
+                    return None
+                gt = ds.GetGeoTransform(can_return_null=True)
+                if gt is None:
+                    ds = None
+                    row_range_cache[cache_key] = None
+                    return None
+                x_size = ds.RasterXSize
+                y_size = ds.RasterYSize
+                ds = None
+                # VRT mosaics are expected in EPSG:3857 here; we only need vertical bounds for frontier percentage.
+                y_top = float(gt[3])
+                y_bottom = float(gt[3]) + (float(gt[4]) * float(x_size)) + (float(gt[5]) * float(y_size))
+                y_max = max(y_top, y_bottom)
+                y_min = min(y_top, y_bottom)
+                lat_n = _mercator_y_to_lat(y_max)
+                lat_s = _mercator_y_to_lat(y_min)
+                row_n = _lat_to_xyz_row(lat_n, int(zoom_level))
+                row_s = _lat_to_xyz_row(lat_s, int(zoom_level))
+                if row_s < row_n:
+                    row_n, row_s = row_s, row_n
+                row_range_cache[cache_key] = (row_n, row_s)
+                return row_range_cache[cache_key]
+            except Exception:
+                row_range_cache[cache_key] = None
+                return None
+
+        def _read_partial_frontier(partial_db_path: Path) -> Optional[Tuple[int, int, int, int, int]]:
+            # Returns (min_zoom, max_zoom, min_row, max_row, count)
+            if not partial_db_path.exists():
+                return None
+            conn = None
+            try:
+                conn = sqlite3.connect(
+                    # nolock=1 avoids taking shared locks that can interfere with GDAL's writer.
+                    f"file:{partial_db_path}?mode=ro&nolock=1",
+                    uri=True,
+                    timeout=0.2
+                )
+                conn.execute("PRAGMA query_only=ON")
+                conn.execute("PRAGMA read_uncommitted=1")
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT min(zoom_level), max(zoom_level), min(tile_row), max(tile_row), count(*) "
+                    "FROM partial_tiles WHERE zoom_level >= 0 AND tile_row >= 0"
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                min_zoom, max_zoom, min_row, max_row, count = row
+                if max_zoom is None or max_row is None:
+                    return None
+                return (
+                    int(min_zoom if min_zoom is not None else max_zoom),
+                    int(max_zoom),
+                    int(min_row if min_row is not None else max_row),
+                    int(max_row),
+                    int(count if count is not None else 0),
+                )
+            except Exception:
+                return None
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        def _worker_status_segment(info: Dict, now_ts: float) -> str:
+            idx = int(info.get('idx') or 0)
+            input_path = Path(info.get('input_path'))
+            stem = str(info.get('stem') or input_path.stem)
+            elapsed = int(max(0.0, now_ts - float(info.get('start') or now_ts)))
+
+            mbtiles_path = output_dir / f"{stem}.mbtiles"
+            pmtiles_path = output_dir / f"{stem}.pmtiles"
+            partial_db_path = output_dir / f"{stem}.partial_tiles.db"
+
+            display_name = input_path.name
+            if display_name.startswith("mosaic_"):
+                display_name = display_name[len("mosaic_"):]
+            if display_name.endswith(".vrt"):
+                display_name = display_name[:-4]
+
+            if partial_db_path.exists():
+                frontier = _read_partial_frontier(partial_db_path)
+                if frontier:
+                    _min_z, max_z, min_row, max_row, _count = frontier
+                    row_range = _zoom_row_range_for_input(input_path, int(max_z))
+                    if row_range:
+                        row_n, row_s = row_range
+                        denom = max(1, (row_s - row_n + 1))
+                        pct = ((max_row - row_n + 1) / denom) * 100.0
+                        pct = max(0.0, min(100.0, pct))
+                        return (
+                            f"[{idx}/{total_jobs}] {display_name} "
+                            f"translate {pct:.1f}% z{max_z} frontier y{min_row}->{max_row}/{row_s} ({elapsed}s)"
+                        )
+                    return (
+                        f"[{idx}/{total_jobs}] {display_name} "
+                        f"translate z{max_z} frontier y{min_row}->{max_row} ({elapsed}s)"
+                    )
+                return f"[{idx}/{total_jobs}] {display_name} translate (warming up) ({elapsed}s)"
+
+            if pmtiles_path.exists():
+                return f"[{idx}/{total_jobs}] {display_name} upload/finish ({elapsed}s)"
+            if mbtiles_path.exists():
+                return f"[{idx}/{total_jobs}] {display_name} gdaladdo/convert ({elapsed}s)"
+            return f"[{idx}/{total_jobs}] {display_name} starting ({elapsed}s)"
 
         _maybe_tune_postprocess(force=True, hint="startup")
         self.log(f"Adaptive workers at start: {adaptive_workers}")
@@ -806,7 +1005,8 @@ class ChartSlicer:
                     'input_path': input_path,
                     'idx': idx,
                     'start': time.time(),
-                    'input_size_mb': input_size_mb
+                    'input_size_mb': input_size_mb,
+                    'stem': output_stem
                 }
                 return True
 
@@ -817,16 +1017,17 @@ class ChartSlicer:
                 done, not_done = wait(futures, timeout=heartbeat_sec, return_when=FIRST_COMPLETED)
                 if not done:
                     now = time.time()
-                    active = []
-                    for f in not_done:
-                        info = futures[f]
-                        elapsed = int(now - info['start'])
-                        active.append(f"[{info['idx']}/{total_jobs}] {info['input_path'].name} ({elapsed}s)")
                     queued = total_jobs - next_job_index
-                    self.log(f"  ⏳ Active: {', '.join(active)} | queued: {queued} | target workers: {adaptive_workers}")
+                    segments = []
+                    for fut in sorted(not_done, key=lambda x: futures[x]['idx']):
+                        segments.append(_worker_status_segment(futures[fut], now))
+                    _emit_live_status_line(
+                        f"  ⏳ Active: {' | '.join(segments)} | queued: {queued} | target workers: {adaptive_workers}"
+                    )
                     continue
 
                 for future in done:
+                    _clear_live_status_line()
                     info = futures.pop(future)
                     input_path = info['input_path']
                     idx = info['idx']
@@ -889,6 +1090,7 @@ class ChartSlicer:
                     while len(futures) < adaptive_workers and submit_next():
                         pass
 
+        _clear_live_status_line()
         self.log(f"Post-processing complete: {successes} succeeded, {failures} failed")
 
     def _postprocess_single_tiff(self, tiff_path: Path) -> bool:
@@ -1388,6 +1590,148 @@ class ChartSlicer:
         self.srs_cache[shapefile_key] = result
         return result
 
+    def _pick_shapefile_for_source(self, location: str, src_file: Path, default_shp: Optional[Path]) -> Optional[Path]:
+        """
+        Prefer directional shapefile variants (east/west/north/south) when the source filename
+        encodes a directional split chart, e.g. Western Aleutian Islands East/West.
+        """
+        if default_shp is None:
+            return None
+
+        norm_loc = self.normalize_name(location)
+        stem_norm = self.normalize_name(src_file.stem)
+        for suffix in ("_east", "_west", "_north", "_south"):
+            if suffix in stem_norm:
+                variant_key = f"{norm_loc}{suffix}"
+                variant = self.shapefile_index.get(variant_key)
+                if variant:
+                    return variant
+        return default_shp
+
+    def _antimeridian_split_bounds_3857(self, input_tiff: Path) -> Optional[List[Tuple[float, float, float, float]]]:
+        """
+        Return split output bounds (EPSG:3857) for sources that cross the antimeridian.
+        When a source spans +180/-180 in geographic space, a single warp can balloon to nearly
+        world width. Splitting into east/west output windows keeps extents narrow.
+        """
+        try:
+            ds = gdal.Open(str(input_tiff))
+            if not ds:
+                return None
+
+            gt = ds.GetGeoTransform(can_return_null=True)
+            projection = ds.GetProjection()
+            if gt is None or not projection:
+                ds = None
+                return None
+
+            x_size = ds.RasterXSize
+            y_size = ds.RasterYSize
+            ds = None
+
+            src_srs = osr.SpatialReference()
+            if src_srs.ImportFromWkt(projection) != 0:
+                return None
+            geo_srs = osr.SpatialReference()
+            if geo_srs.ImportFromEPSG(4326) != 0:
+                return None
+            merc_srs = osr.SpatialReference()
+            if merc_srs.ImportFromEPSG(3857) != 0:
+                return None
+
+            if hasattr(src_srs, "SetAxisMappingStrategy") and hasattr(osr, "OAMS_TRADITIONAL_GIS_ORDER"):
+                src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                geo_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                merc_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+            to_geo = osr.CoordinateTransformation(src_srs, geo_srs)
+            to_merc = osr.CoordinateTransformation(geo_srs, merc_srs)
+
+            corners_px = [
+                (0.0, 0.0),
+                (float(x_size), 0.0),
+                (float(x_size), float(y_size)),
+                (0.0, float(y_size)),
+            ]
+            lon_lat: List[Tuple[float, float]] = []
+            for px, py in corners_px:
+                x = gt[0] + (px * gt[1]) + (py * gt[2])
+                y = gt[3] + (px * gt[4]) + (py * gt[5])
+                lon, lat, _ = to_geo.TransformPoint(float(x), float(y))
+                while lon > 180.0:
+                    lon -= 360.0
+                while lon < -180.0:
+                    lon += 360.0
+                lon_lat.append((lon, lat))
+
+            lons = [p[0] for p in lon_lat]
+            lats = [p[1] for p in lon_lat]
+            if not lons or not lats:
+                return None
+
+            # Detect dateline crossing by large longitudinal jump between neighboring corners.
+            max_jump = 0.0
+            for idx in range(len(lons)):
+                prev = lons[idx - 1]
+                curr = lons[idx]
+                jump = abs(curr - prev)
+                if jump > max_jump:
+                    max_jump = jump
+            if max_jump < 180.0:
+                return None
+
+            pos_lons = [lon for lon in lons if lon >= 0.0]
+            neg_lons = [lon for lon in lons if lon < 0.0]
+            if not pos_lons or not neg_lons:
+                return None
+
+            lat_margin = 0.25
+            lon_margin = 0.25
+            lat_min = max(-85.0, min(lats) - lat_margin)
+            lat_max = min(85.0, max(lats) + lat_margin)
+            east_lon_min = max(-180.0, min(pos_lons) - lon_margin)
+            west_lon_max = min(180.0, max(neg_lons) + lon_margin)
+
+            lon_windows = [
+                (east_lon_min, 180.0),
+                (-180.0, west_lon_max),
+            ]
+
+            split_bounds: List[Tuple[float, float, float, float]] = []
+            for lon_min, lon_max in lon_windows:
+                if lon_max <= lon_min:
+                    continue
+                min_x, min_y, _ = to_merc.TransformPoint(float(lon_min), float(lat_min))
+                max_x, max_y, _ = to_merc.TransformPoint(float(lon_max), float(lat_max))
+                bounds = (
+                    min(min_x, max_x),
+                    min(min_y, max_y),
+                    max(min_x, max_x),
+                    max(min_y, max_y),
+                )
+                if (bounds[2] - bounds[0]) > 1000 and (bounds[3] - bounds[1]) > 1000:
+                    split_bounds.append(bounds)
+
+            return split_bounds if split_bounds else None
+        except Exception:
+            return None
+
+    def _is_world_width_warp(self, output_raster: Path) -> bool:
+        """Detect pathological outputs that balloon to near full-world width in EPSG:3857."""
+        try:
+            ds = gdal.Open(str(output_raster))
+            if not ds:
+                return False
+            gt = ds.GetGeoTransform(can_return_null=True)
+            if gt is None:
+                ds = None
+                return False
+            width_m = abs(float(gt[1])) * float(ds.RasterXSize)
+            ds = None
+            return width_m >= 35000000.0
+        except Exception:
+            return False
+
     def _prepare_warp_job(self, src_file_info: Union[Path, Tuple[Path, Optional[str]]], location: str, edition: str,
                           shp_path: Path, temp_dir: Path, date: str) -> List[Dict]:
         """
@@ -1417,9 +1761,10 @@ class ChartSlicer:
         for tiff in tiffs_to_warp:
             sanitized_stem = self.sanitize_filename(tiff.stem)
             temp_tif = temp_dir / f"{norm_loc}_{sanitized_stem}{suffix}"
+            selected_shp = self._pick_shapefile_for_source(location, tiff, shp_path)
             jobs.append({
                 'input_tiff': tiff,
-                'shapefile': shp_path,
+                'shapefile': selected_shp,
                 'output_tiff': temp_tif,
                 'location': norm_loc,
                 'date': date
@@ -1443,12 +1788,16 @@ class ChartSlicer:
             'attempt_id': job.get('attempt_id')
         }
 
-    def warp_and_cut(self, input_tiff: Path, shapefile: Path, output_tiff: Path) -> bool:
+    def warp_and_cut(self, input_tiff: Path, shapefile: Optional[Path], output_tiff: Path) -> bool:
         """Warp and cut TIFF using shapefile as cutline.
 
         If self.warp_output is set to "vrt", write a VRT instead of a TIFF
         to avoid the intermediate write/read of warped GeoTIFFs.
         """
+        if not shapefile:
+            self.log(f"      ✗ No shapefile available for {input_tiff.name}")
+            return False
+
         try:
             warp_out = getattr(self, 'warp_output', 'tif').lower()
             to_vrt = warp_out == 'vrt'
@@ -1486,42 +1835,188 @@ class ChartSlicer:
 
             # Get the actual SRS of the shapefile (don't hardcode EPSG:4326)
             shapefile_srs = self.get_shapefile_srs(shapefile)
+            split_bounds = self._antimeridian_split_bounds_3857(input_tiff)
+            if split_bounds:
+                self.log(f"      ↺ Antimeridian source detected; splitting warp into {len(split_bounds)} windows")
 
             # Step 2: Warp with cutline. Write GTiff (default) or VRT when requested
             # Note: Not specifying xRes/yRes allows GDAL to maintain source resolution during warp
             # Don't compress intermediates to reduce CPU load and improve parallel performance
-            def _run_warp(transformer_opts):
+            def _safe_unlink(path: Path) -> None:
+                try:
+                    if path.exists():
+                        path.unlink()
+                except Exception:
+                    pass
+
+            def _run_warp(
+                transformer_opts,
+                output_path: Path,
+                output_bounds: Optional[Tuple[float, float, float, float]] = None,
+                force_vrt_output: bool = False
+            ) -> bool:
+                output_format = "VRT" if (to_vrt or force_vrt_output) else "GTiff"
+                crop_to_cutline = output_bounds is None
+                if output_format == "GTiff":
+                    creation_opts = ['TILED=YES', 'BIGTIFF=YES']
+                else:
+                    creation_opts = None
+                _safe_unlink(output_path)
                 warp_options = gdal.WarpOptions(
-                    format="VRT" if to_vrt else "GTiff",
+                    format=output_format,
                     dstSRS='EPSG:3857',
                     cutlineDSName=str(shapefile),
                     cutlineSRS=shapefile_srs,
-                    cropToCutline=True,
+                    cropToCutline=crop_to_cutline,
                     dstAlpha=True,
                     resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
-                    creationOptions=None if to_vrt else ['TILED=YES', 'BIGTIFF=YES'],
+                    creationOptions=creation_opts,
                     multithread=getattr(self, 'warp_multithread', True),
                     transformerOptions=transformer_opts or None,
-                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
+                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE'],
+                    outputBounds=output_bounds
                 )
-                return gdal.Warp(str(output_tiff), warp_source, options=warp_options)
+                ds_out = gdal.Warp(str(output_path), warp_source, options=warp_options)
+                if not ds_out:
+                    return False
+                ds_out = None
+                return output_path.exists() and output_path.stat().st_size > 1024
+
+            def _translate_vrt_to_tiff(src_vrt: Path, dst_tiff: Path) -> bool:
+                _safe_unlink(dst_tiff)
+                translate_opts = gdal.TranslateOptions(
+                    format="GTiff",
+                    creationOptions=['TILED=YES', 'BIGTIFF=YES']
+                )
+                ds_out = gdal.Translate(str(dst_tiff), str(src_vrt), options=translate_opts)
+                if not ds_out:
+                    return False
+                ds_out = None
+                return dst_tiff.exists() and dst_tiff.stat().st_size > 1024
+
+            def _raster_pixel_area(path: Path) -> int:
+                try:
+                    ds_area = gdal.Open(str(path))
+                    if not ds_area:
+                        return 0
+                    area = int(ds_area.RasterXSize) * int(ds_area.RasterYSize)
+                    ds_area = None
+                    return area
+                except Exception:
+                    return 0
+
+            def _run_split_warp(transformer_opts, bounds_list: List[Tuple[float, float, float, float]]) -> bool:
+                if not bounds_list:
+                    return False
+
+                part_vrts: List[Path] = []
+                part_items: List[Tuple[Path, Tuple[float, float, float, float]]] = []
+                merged_vrt: Optional[Path] = None
+                try:
+                    for idx, bounds in enumerate(bounds_list):
+                        part_vrt = output_tiff.parent / f"{output_tiff.stem}_am_part{idx}.vrt"
+                        if _run_warp(transformer_opts, part_vrt, output_bounds=bounds, force_vrt_output=True):
+                            part_vrts.append(part_vrt)
+                            part_items.append((part_vrt, bounds))
+                        else:
+                            _safe_unlink(part_vrt)
+
+                    if not part_vrts:
+                        return False
+
+                    if len(part_vrts) == 1:
+                        if to_vrt:
+                            _safe_unlink(output_tiff)
+                            part_vrts[0].replace(output_tiff)
+                            part_vrts.clear()
+                            return output_tiff.exists() and output_tiff.stat().st_size > 0
+                        return _translate_vrt_to_tiff(part_vrts[0], output_tiff)
+
+                    # If parts are on opposite sides of the WebMercator antimeridian,
+                    # merging them into one VRT yields a full-world canvas. Pick one side.
+                    has_pos = any(bounds[0] >= 0.0 for _, bounds in part_items)
+                    has_neg = any(bounds[2] <= 0.0 for _, bounds in part_items)
+                    if has_pos and has_neg:
+                        stem_norm = self.normalize_name(input_tiff.stem)
+                        preferred = None
+                        if "_east" in stem_norm:
+                            preferred = "neg"
+                        elif "_west" in stem_norm:
+                            preferred = "pos"
+
+                        selected_item: Optional[Tuple[Path, Tuple[float, float, float, float]]] = None
+                        if preferred == "neg":
+                            neg_items = [item for item in part_items if item[1][2] <= 0.0]
+                            if neg_items:
+                                selected_item = max(neg_items, key=lambda item: _raster_pixel_area(item[0]))
+                        elif preferred == "pos":
+                            pos_items = [item for item in part_items if item[1][0] >= 0.0]
+                            if pos_items:
+                                selected_item = max(pos_items, key=lambda item: _raster_pixel_area(item[0]))
+
+                        if selected_item is None:
+                            selected_item = max(part_items, key=lambda item: _raster_pixel_area(item[0]))
+
+                        selected_vrt = selected_item[0]
+                        side = "west-hemisphere" if selected_item[1][2] <= 0.0 else "east-hemisphere"
+                        self.log(f"      ↺ Antimeridian split spans both world edges; using {side} window for {input_tiff.name}")
+
+                        if to_vrt:
+                            _safe_unlink(output_tiff)
+                            selected_vrt.replace(output_tiff)
+                            part_vrts.remove(selected_vrt)
+                            return output_tiff.exists() and output_tiff.stat().st_size > 0
+                        return _translate_vrt_to_tiff(selected_vrt, output_tiff)
+
+                    merged_vrt = output_tiff if to_vrt else (output_tiff.parent / f"{output_tiff.stem}_am_merge.vrt")
+                    if (not to_vrt) and merged_vrt.exists():
+                        _safe_unlink(merged_vrt)
+
+                    merge_ds = gdal.BuildVRT(str(merged_vrt), [str(p) for p in part_vrts])
+                    if not merge_ds:
+                        return False
+                    merge_ds = None
+
+                    if to_vrt:
+                        return merged_vrt.exists() and merged_vrt.stat().st_size > 0
+                    return _translate_vrt_to_tiff(merged_vrt, output_tiff)
+                finally:
+                    for part in part_vrts:
+                        _safe_unlink(part)
+                    if merged_vrt and (not to_vrt):
+                        _safe_unlink(merged_vrt)
+
+            def _run_once(transformer_opts) -> bool:
+                if split_bounds:
+                    return _run_split_warp(transformer_opts, split_bounds)
+                return _run_warp(transformer_opts, output_tiff)
 
             transformer_opts = getattr(self, 'transformer_options', None)
-            ds = None
+            success = False
             try:
-                ds = _run_warp(transformer_opts)
+                success = _run_once(transformer_opts)
             except Exception as e:
                 if transformer_opts:
                     self.log(f"      ⚠ Warp failed with strict transformer options; retrying with relaxed options...")
                     try:
-                        ds = _run_warp(['ALLOW_BALLPARK=YES'])
+                        success = _run_once(['ALLOW_BALLPARK=YES'])
                     except Exception:
                         raise e
                 else:
                     raise e
-            if ds is None and transformer_opts:
+            if (not success) and transformer_opts:
                 self.log(f"      ⚠ Warp returned no dataset with strict transformer options; retrying with relaxed options...")
-                ds = _run_warp(['ALLOW_BALLPARK=YES'])
+                success = _run_once(['ALLOW_BALLPARK=YES'])
+
+            # Safety guard: if output still spans near full-world width, retry with split bounds.
+            if success and self._is_world_width_warp(output_tiff):
+                self.log("      ⚠ Detected near-world-width warp output; forcing antimeridian split retry...")
+                forced_bounds = split_bounds or self._antimeridian_split_bounds_3857(input_tiff)
+                if forced_bounds:
+                    success = _run_split_warp(['ALLOW_BALLPARK=YES'], forced_bounds)
+                if success and self._is_world_width_warp(output_tiff):
+                    self.log("      ✗ Warp still produced pathological full-world width after retry")
+                    success = False
 
             # Cleanup
             if temp_vrt_name and (not to_vrt) and temp_vrt_name.startswith("/vsimem/"):
@@ -1530,17 +2025,22 @@ class ChartSlicer:
                 except:
                     pass
 
-            if ds:
-                ds = None
+            if success:
                 file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
                 size_label = f"{file_size_mb:.1f} MB" if not to_vrt else f"{output_tiff.stat().st_size} bytes"
                 self.log(f"      ✓ Created {output_tiff.name} ({size_label})")
                 return True
-            else:
-                self.log(f"      ✗ Warp failed for {input_tiff.name}")
-                return False
+
+            _safe_unlink(output_tiff)
+            self.log(f"      ✗ Warp failed for {input_tiff.name}")
+            return False
 
         except Exception as e:
+            try:
+                if output_tiff.exists():
+                    output_tiff.unlink()
+            except Exception:
+                pass
             self.log(f"      ✗ Error warping {input_tiff.name}: {e}")
             return False
 
@@ -1869,6 +2369,7 @@ class ChartSlicer:
         date_dirs = [d for d in self.temp_dir.iterdir() if d.is_dir()]
 
         found_count = 0
+        skipped_pathological = 0
         for date_dir in date_dirs:
             date = date_dir.name
 
@@ -1885,6 +2386,9 @@ class ChartSlicer:
                     continue
                 # Skip RGBA intermediate VRTs
                 if "_rgba.vrt" in vrt_file.name:
+                    continue
+                if self._is_world_width_warp(vrt_file):
+                    skipped_pathological += 1
                     continue
 
                 # Track per-location combined VRTs: {location}_{date}.vrt
@@ -1907,6 +2411,9 @@ class ChartSlicer:
 
             # Collect warped TIFs: {location}_{original_stem}.tif
             for tif_file in date_dir.glob("*.tif"):
+                if self._is_world_width_warp(tif_file):
+                    skipped_pathological += 1
+                    continue
                 stem = tif_file.stem
                 for loc in all_locations:
                     if stem.startswith(f"{loc}_"):
@@ -1929,6 +2436,8 @@ class ChartSlicer:
             self.log(f"  Restored {total_pairs} location-date entries from {len(vrt_library)} locations")
         else:
             self.log("  No existing VRTs found (fresh run)")
+        if skipped_pathological > 0:
+            self.log(f"  Skipped {skipped_pathological} pathological intermediates with near-world extents")
 
         return vrt_library
 
@@ -2192,6 +2701,9 @@ class ChartSlicer:
                         if result['success'] and result['output_tiff']:
                             output_file = result['output_tiff']
                             if output_file.exists() and output_file.stat().st_size > 1024:
+                                if self._is_world_width_warp(output_file):
+                                    self.log(f"      Warning: Skipping pathological full-world warp: {output_file.name}")
+                                    continue
                                 outputs_by_attempt[result.get('attempt_id')].append(output_file)
                             else:
                                 self.log(f"      Warning: Skipping invalid warped file: {output_file.name}")
@@ -2346,8 +2858,8 @@ Examples:
         "--warp-output",
         type=str,
         choices=['tif', 'vrt'],
-        default='tif',
-        help="Intermediate warp output format: 'tif' (default) writes cutlines to disk, 'vrt' keeps them virtual to reduce I/O"
+        default='vrt',
+        help="Intermediate warp output format: 'tif' writes cutlines to disk, 'vrt' (default) keeps them virtual to reduce I/O"
     )
 
     parser.add_argument(

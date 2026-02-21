@@ -130,12 +130,12 @@ def _mbtiles_zoom_range(mbtiles_path: Path) -> Optional[Tuple[int, int]]:
         return None
 
 
-def _overview_levels_for_mbtiles(mbtiles_path: Path, target_min_zoom: int = 7) -> List[str]:
+def _overview_levels_for_mbtiles(mbtiles_path: Path, target_min_zoom: int = 0) -> List[str]:
     """
     Compute gdaladdo overview factors to push MBTiles down to target_min_zoom.
     """
     target_min_zoom = max(0, int(target_min_zoom))
-    default_levels = ["2", "4", "8", "16", "32", "64", "128", "256", "512", "1024"]
+    default_levels = ["2", "4", "8", "16", "32", "64", "128", "256", "512", "1024", "2048"]
 
     zoom_range = _mbtiles_zoom_range(mbtiles_path)
     if zoom_range:
@@ -146,7 +146,7 @@ def _overview_levels_for_mbtiles(mbtiles_path: Path, target_min_zoom: int = 7) -
         levels: List[str] = []
         factor = 2
         current_zoom = max_zoom - 1
-        while current_zoom >= target_min_zoom and factor <= 1024:
+        while current_zoom >= target_min_zoom:
             levels.append(str(factor))
             factor *= 2
             current_zoom -= 1
@@ -308,7 +308,7 @@ def postprocess_tif_worker(args):
     quiet_external_tools = bool(args[8]) if len(args) > 8 else True
     output_stem = args[9] if len(args) > 9 else None
     clip_projwin = args[10] if len(args) > 10 else None
-    target_min_zoom = args[11] if len(args) > 11 else 7
+    target_min_zoom = args[11] if len(args) > 11 else 0
 
     input_raster = Path(input_raster)
     output_dir = Path(output_dir)
@@ -324,7 +324,7 @@ def postprocess_tif_worker(args):
     try:
         target_min_zoom = int(target_min_zoom)
     except Exception:
-        target_min_zoom = 7
+        target_min_zoom = 0
     target_min_zoom = max(0, target_min_zoom)
     gdal_threads, gdal_cache_mb = _auto_postprocess_settings(
         worker_count=1,
@@ -537,7 +537,7 @@ class ChartSlicer:
         if not self.quiet_external_tools:
             self.rclone_flags.extend(["-P", "--stats", "1s"])
         self.mbtiles_quality = 85
-        self.mbtiles_min_zoom = 7
+        self.mbtiles_min_zoom = 0
         self.max_postprocess_backlog = 10
         self.parallel_warp = 0
         # In threaded warp mode we already parallelize by job; avoid extra internal threads on Apple Silicon.
@@ -976,7 +976,7 @@ class ChartSlicer:
                         quiet_tools,
                         output_stem,
                         getattr(self, 'clip_projwin', None),
-                        getattr(self, 'mbtiles_min_zoom', 7)
+                        getattr(self, 'mbtiles_min_zoom', 0)
                     )
                 )
                 futures[future] = {
@@ -1089,7 +1089,7 @@ class ChartSlicer:
                 bool(getattr(self, 'quiet_external_tools', True)),
                 tiff_path.stem,
                 getattr(self, 'clip_projwin', None),
-                getattr(self, 'mbtiles_min_zoom', 7)
+                getattr(self, 'mbtiles_min_zoom', 0)
             )
         )
         if result.get('success'):
@@ -2789,8 +2789,8 @@ Examples:
     parser.add_argument(
         "--min-zoom",
         type=int,
-        default=7,
-        help="Ensure PMTiles include at least this minimum zoom level via MBTiles overviews (default: 7)"
+        default=0,
+        help="Ensure PMTiles include at least this minimum zoom level via MBTiles overviews (default: 0)"
     )
 
     parser.add_argument(

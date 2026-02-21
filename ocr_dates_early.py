@@ -91,10 +91,63 @@ MONTH_YEAR_PATTERN = re.compile(
     rf'\b({MONTH_TOKEN})\.?\s+(\d{{4}})\b',
     re.IGNORECASE
 )
+# Early chart format: "June 22, 1967" (MONTH DD, YYYY)
+MONTH_DAY_YEAR_PATTERN = re.compile(
+    rf'\b({MONTH_TOKEN})\.?\s+(\d{{1,2}}),?\s+(\d{{4}})\b',
+    re.IGNORECASE
+)
 YEAR_PATTERN = re.compile(r'\b(19\d{2}|20\d{2})\b')
 
 # Edition pattern: e.g., "100TH EDITION" or just a number before EDITION
 EDITION_PATTERN = re.compile(r'(\d+)\s*(?:TH|ST|ND|RD)?\s*EDITION', re.IGNORECASE)
+# Fallback: garbled token before EDITION (e.g., "SQM EDITION" for "59TH EDITION")
+EDITION_GARBLED_PATTERN = re.compile(r'(\S{2,6})\s+EDITION\b', re.IGNORECASE)
+# Common OCR digit substitutions
+_OCR_DIGIT_MAP = str.maketrans('SOIlZBGQsqo', '50112869590')
+_EDITION_SKIP_WORDS = frozenset([
+    'NEXT', 'THIS', 'EACH', 'SAME', 'NEW', 'LAST', 'FIRST',
+    'FOR', 'THE', 'PER', 'ANY', 'ALL', 'ONE', 'LATEST',
+])
+
+
+def _find_dates_in_text(text):
+    """Find all dates in text, supporting both DD MONTH YYYY and MONTH DD, YYYY formats.
+    Returns list of (day_str, month_str, year_str) tuples in order of appearance."""
+    results = []
+    # DD MONTH YYYY (e.g., "22 June 1967")
+    for m in DATE_PATTERN.finditer(text):
+        results.append((m.start(), m.group(1), m.group(2), m.group(3)))
+    # MONTH DD, YYYY (e.g., "June 22, 1967") - common on early charts
+    for m in MONTH_DAY_YEAR_PATTERN.finditer(text):
+        results.append((m.start(), m.group(2), m.group(1), m.group(3)))
+    results.sort(key=lambda r: r[0])
+    return [(day, month, year) for _, day, month, year in results]
+
+
+def _extract_edition_number(text):
+    """Extract edition number from text, handling common OCR garbling."""
+    if not text:
+        return None
+    # Primary: clean digits before EDITION
+    m = EDITION_PATTERN.search(text)
+    if m:
+        num = int(m.group(1))
+        if 1 <= num <= 300:
+            return m.group(1)
+    # Fallback: try to recover garbled digits (e.g., "SQM" → "59")
+    m = EDITION_GARBLED_PATTERN.search(text)
+    if m:
+        raw = m.group(1).upper()
+        if raw in _EDITION_SKIP_WORDS:
+            return None
+        cleaned = raw.translate(_OCR_DIGIT_MAP)
+        digits = re.sub(r'[^\d]', '', cleaned)
+        if digits:
+            num = int(digits)
+            if 1 <= num <= 300:
+                return digits
+    return None
+
 
 # OCR settings tuned for date-panel text
 OCR_TARGET_WIDTH_MIN = 2200
@@ -650,6 +703,12 @@ def _line_has_primary_time_marker(line_upper):
 
 def _is_amendment_context(line_upper):
     """True when line refers to amendments/data-received metadata, not edition dates."""
+    # On early charts, "amendments effective [DATE]" IS the primary effective date.
+    # Don't penalize lines that combine EDITION + EFFECTIVE or "amendments effective".
+    if 'EDITION' in line_upper and 'EFFECTIVE' in line_upper:
+        return False
+    if re.search(r'AMEND\w*\s+EFFECTIVE', line_upper):
+        return False
     blocked_terms = (
         'AMEND',
         'DATA RECEIVED',
@@ -687,17 +746,12 @@ def parse_dates_from_text(text):
         return None, None, None
 
     normalized = _normalize_ocr_text_for_dates(text)
-    dates = DATE_PATTERN.findall(normalized)
+    dates = _find_dates_in_text(normalized)
     month_years = MONTH_YEAR_PATTERN.findall(normalized)
     years = YEAR_PATTERN.findall(normalized)
-    edition_match = EDITION_PATTERN.search(normalized)
-
     effective_date = None
     to_date = None
-    edition = None
-
-    if edition_match:
-        edition = edition_match.group(1)
+    edition = _extract_edition_number(normalized)
 
     # Look for EFFECTIVE ... date and TO ... date in the text
     lines = normalized.split('\n')
@@ -707,14 +761,14 @@ def parse_dates_from_text(text):
 
     for i, line in enumerate(lines):
         line_upper = line.upper().strip()
-        line_dates = DATE_PATTERN.findall(line)
+        line_dates = _find_dates_in_text(line)
         line_score = _effective_line_score(line_upper)
 
         if 'EFFECTIVE' in line_upper and line_dates:
             effective_candidates.append((line_score, i, line_dates[0]))
             to_inline = re.search(r'\bTO\b', line_upper)
             if to_inline:
-                to_inline_dates = DATE_PATTERN.findall(line_upper[to_inline.start():])
+                to_inline_dates = _find_dates_in_text(line_upper[to_inline.start():])
                 if to_inline_dates:
                     to_candidates.append((line_score + 1, i, to_inline_dates[0]))
         elif re.match(r'^\W*TO\b', line_upper) and line_dates:
@@ -765,7 +819,7 @@ def parse_dates_from_text(text):
                 break
         if effective_match:
             eff_chunk = normalized[effective_match.start():effective_match.start() + 200]
-            eff_dates = DATE_PATTERN.findall(eff_chunk)
+            eff_dates = _find_dates_in_text(eff_chunk)
             if eff_dates:
                 d, m, y = eff_dates[0]
                 effective_date = format_date(d, m, y)
@@ -778,7 +832,7 @@ def parse_dates_from_text(text):
         if to_match:
             absolute_to = to_search_start + to_match.start()
             to_chunk = normalized[absolute_to:absolute_to + 200]
-            to_dates = DATE_PATTERN.findall(to_chunk)
+            to_dates = _find_dates_in_text(to_chunk)
             if to_dates:
                 d, m, y = to_dates[0]
                 to_date = format_date(d, m, y)
@@ -950,7 +1004,7 @@ def _candidate_parse_score(text, effective, to_date, edition, expected_effective
     if _is_amendment_context(normalized):
         score -= 40
 
-    date_count = len(DATE_PATTERN.findall(normalized))
+    date_count = len(_find_dates_in_text(normalized))
     month_year_count = len(MONTH_YEAR_PATTERN.findall(normalized))
     if month_year_count:
         score += 6
@@ -1144,6 +1198,7 @@ def process_record(record, index, total, source_dir=None):
 
     best_text = ''
     best_candidate = None
+    best_edition_candidate = None
     timed_out = False
     deadline = None
     if OCR_RECORD_TIMEOUT_SEC and OCR_RECORD_TIMEOUT_SEC > 0:
@@ -1179,6 +1234,10 @@ def process_record(record, index, total, source_dir=None):
             if (best_candidate is None) or (score > best_candidate['score']):
                 best_candidate = candidate
 
+            # Track best candidate that found an edition number
+            if edition and ((best_edition_candidate is None) or (score > best_edition_candidate['score'])):
+                best_edition_candidate = candidate
+
             # Early exit only on very high-confidence full parse.
             if effective and to_date and score >= HIGH_CONFIDENCE_PARSE_SCORE:
                 break
@@ -1205,6 +1264,9 @@ def process_record(record, index, total, source_dir=None):
         result['ocr_effective'] = best_candidate['effective']
         result['ocr_to'] = best_candidate['to_date']
         result['ocr_edition'] = best_candidate['edition']
+        # Fill in edition from secondary candidate if the best one didn't capture it
+        if not result['ocr_edition'] and best_edition_candidate:
+            result['ocr_edition'] = best_edition_candidate['edition']
     else:
         result['ocr_text'] = best_text.strip()
         result['ocr_effective'] = None
