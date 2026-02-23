@@ -680,7 +680,10 @@ body.zooming .leaflet-control-attribution {
   height: 100%;
   background: var(--primary);
   border-radius: 4px;
-  width: 0%;
+  width: 100%;
+  transform-origin: left center;
+  transform: scaleX(var(--progress-scale, 0));
+  will-change: transform;
   pointer-events: none;
 }
 
@@ -721,16 +724,20 @@ body.zooming .leaflet-control-attribution {
 
 /* Slider Handle */
 .handle {
+  --handle-position: 0%;
+  --handle-scale: 1;
   position: absolute;
+  left: 0;
   width: 22px;
   height: 22px;
   background: linear-gradient(135deg, #fff 0%, #e0e0e0 100%);
   border-radius: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate3d(var(--handle-position), -50%, 0) translateX(-50%) scale(var(--handle-scale));
   box-shadow: 0 0 0 4px rgba(30, 144, 255, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
   cursor: grab;
-  transition: transform 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
+  transition: box-shadow 0.2s var(--transition-smooth);
+  will-change: transform;
   z-index: 2;
 }
 
@@ -744,13 +751,13 @@ body.zooming .leaflet-control-attribution {
 }
 
 .handle:hover {
-  transform: translate(-50%, -50%) scale(1.1);
+  --handle-scale: 1.1;
   box-shadow: 0 0 0 5px rgba(30, 144, 255, 0.6), 0 4px 16px rgba(0, 0, 0, 0.4);
 }
 
 .handle:active {
   cursor: grabbing;
-  transform: translate(-50%, -50%) scale(1.2);
+  --handle-scale: 1.2;
 }
 
 /* Info Panel */

@@ -742,10 +742,10 @@
         this.compositeLayer = this.compositeLayers[this.activeCompositeIndex];
         this.activeLayers = [this.compositeLayer];
 
-        this.setLoadingMode('wait');
+        this.setLoadingMode('fast');
       }
 
-      setLoadingMode(mode = 'wait') {
+      setLoadingMode(mode = 'fast') {
         const normalizedMode = mode === 'fast' ? 'fast' : 'wait';
         this.loadingMode = normalizedMode;
         this.waitForFullLayerLoad = normalizedMode === 'wait';
@@ -1402,8 +1402,9 @@
           this.ui.timeSelect.value = selectedDate;
         }
 
-        this.ui.handle.style.left = `${f.pct}%`;
-        this.ui.progress.style.width = `${f.pct}%`;
+        const pct = Number.isFinite(f.pct) ? Math.max(0, Math.min(100, f.pct)) : 0;
+        this.ui.handle.style.setProperty('--handle-position', `${pct}%`);
+        this.ui.progress.style.setProperty('--progress-scale', String(pct / 100));
 
         if (this.activeTickIndex !== null && this.tickElements[this.activeTickIndex]) {
           this.tickElements[this.activeTickIndex].classList.remove('active');
