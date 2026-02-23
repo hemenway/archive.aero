@@ -724,7 +724,7 @@ body.zooming .leaflet-control-attribution {
 
 /* Slider Handle */
 .handle {
-  --handle-position: 0%;
+  --handle-position-px: 0px;
   --handle-scale: 1;
   position: absolute;
   left: 0;
@@ -733,7 +733,7 @@ body.zooming .leaflet-control-attribution {
   background: linear-gradient(135deg, #fff 0%, #e0e0e0 100%);
   border-radius: 50%;
   top: 50%;
-  transform: translate3d(var(--handle-position), -50%, 0) translateX(-50%) scale(var(--handle-scale));
+  transform: translate3d(var(--handle-position-px), -50%, 0) translateX(-50%) scale(var(--handle-scale));
   box-shadow: 0 0 0 4px rgba(30, 144, 255, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
   cursor: grab;
   transition: box-shadow 0.2s var(--transition-smooth);

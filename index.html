@@ -953,6 +953,7 @@
         this.selectedDate = null;
         this.activeTickIndex = null;
         this.frameTimes = dates;
+        this.trackWidthPx = null;
         this.isPlaying = false;
         this.playInterval = null;
         this.playbackSpeed = 1;
@@ -1303,6 +1304,7 @@
 
         const updateTrackRect = () => {
           trackRect = this.ui.track.getBoundingClientRect();
+          this.trackWidthPx = trackRect.width;
         };
 
         const handleInput = (clientX) => {
@@ -1339,7 +1341,7 @@
         window.addEventListener('touchmove', moveDrag, { passive: false });
         window.addEventListener('mouseup', endDrag);
         window.addEventListener('touchend', endDrag);
-        window.addEventListener('resize', () => { trackRect = null; });
+        window.addEventListener('resize', () => { trackRect = null; this.trackWidthPx = null; });
       }
 
       findClosestFrameIndexByPct(pct) {
@@ -1403,7 +1405,8 @@
         }
 
         const pct = Number.isFinite(f.pct) ? Math.max(0, Math.min(100, f.pct)) : 0;
-        this.ui.handle.style.setProperty('--handle-position', `${pct}%`);
+        const trackWidth = this.trackWidthPx ?? this.ui.track?.getBoundingClientRect().width ?? 0;
+        this.ui.handle.style.setProperty('--handle-position-px', `${trackWidth * (pct / 100)}px`);
         this.ui.progress.style.setProperty('--progress-scale', String(pct / 100));
 
         if (this.activeTickIndex !== null && this.tickElements[this.activeTickIndex]) {
