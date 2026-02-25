@@ -664,6 +664,7 @@ body.zooming .leaflet-control-attribution {
 /* Timeline Track */
 .timeline-track-wrapper {
   flex: 1;
+  min-width: 0;
   position: relative;
   height: 50px;
   display: flex;
@@ -1509,40 +1510,6 @@ body.zooming .leaflet-control-attribution {
   opacity: 0.8;
 }
 
-/* Speed Control */
-.speed-control {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-left: 8px;
-}
-
-.speed-btn {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 700;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), color 0.2s var(--transition-smooth);
-}
-
-.speed-btn:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: var(--text-light);
-}
-
-.speed-btn.active {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: white;
-}
-
 /* Chart Info Panel */
 .chart-info-panel {
   position: absolute;
@@ -1666,10 +1633,6 @@ body.zooming .leaflet-control-attribution {
   .search-input {
     width: 100%;
     font-size: 16px;
-  }
-
-  .speed-control {
-    display: none;
   }
 
   .chart-info-panel {
