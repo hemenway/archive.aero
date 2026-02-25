@@ -706,7 +706,7 @@ def postprocess_tif_worker(args):
         gdal2tiles_base = [
             "gdal2tiles.py",
             "--profile=mercator",
-            "--resampling=bilinear",
+            "--resampling=lanczos",
             "--zoom=0-",
             "--exclude",
             "--webviewer=none",

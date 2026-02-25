@@ -2,204 +2,243 @@ SLICER.PY - FAA Chart Processing Tool
 ================================================================================
 
 PURPOSE:
-CLI tool for processing FAA sectional chart sources into date-keyed GeoTIFF
-mosaics, then post-processing to MBTiles/PMTiles and uploading PMTiles.
+CLI tool for processing FAA sectional chart sources into date-keyed mosaic VRTs,
+then post-processing to MBTiles/PMTiles and uploading PMTiles.
 
-CURRENT TARGET:
+CURRENT TARGET (GENERATED FROM slicer.py):
 - File: slicer.py
-- Length: 2420 lines
-- Supports single-date and date-range keys from CSV (date/end_date)
+- Length: 3414 lines
+- class ChartSlicer: lines 876-3146
+- main(): lines 3149-3409
+- Default runtime path: review -> download -> warp+cut -> mosaic VRT -> MBTiles -> PMTiles -> upload
+- Legacy GeoTIFF creation functions remain in code but are not on the default main path
 
-ARCHITECTURE:
+ARCHITECTURE (CURRENT):
 - Index-first lookup design (source file index + shapefile index)
-- Multi-phase pipeline:
-  review -> download missing -> warp+clip -> build date mosaic VRT -> GeoTIFF
-  -> MBTiles -> PMTiles -> upload
-- Parallelism:
-  - ThreadPoolExecutor for warp and postprocess/upload tasks
-  - ProcessPoolExecutor for GeoTIFF creation
+- Runtime state builds a per-location/date VRT library for resume-friendly mosaics
+- Adaptive parallelism:
+  - ThreadPoolExecutor for warp jobs (_warp_worker -> warp_and_cut)
+  - ThreadPoolExecutor for postprocess/upload jobs (_run_postprocess_upload_stage -> postprocess_tif_worker)
+- Deprecated CLI flags for GeoTIFF compression/threading remain for compatibility
 
 ================================================================================
 FILE STRUCTURE (CURRENT)
 ================================================================================
 
 TOP-LEVEL HELPERS
-- _get_available_ram_mb()                                 lines 36-44
-  - Returns available RAM (psutil if present, fallback if not)
-
-- _auto_postprocess_settings()                            lines 45-87
-  - Picks per-worker GDAL threads/cache (Apple Silicon aware)
-
-- _overview_levels_for_mbtiles()                          lines 88-120
-  - Computes overview pyramid levels based on MBTiles raster size
-
-- _configure_gdal_for_phase()                             lines 121-144
-  - Sets GDAL thread/cache knobs for warp vs GeoTIFF phases
+- _get_memory_snapshot_mb()                             lines 44-63
+- _recommended_free_ram_floor_mb()                      lines 66-69
+- _get_available_ram_mb()                               lines 72-74
+- _auto_postprocess_settings()                          lines 77-117
+- _configure_gdal_for_phase()                           lines 130-151
 
 WORKER FUNCTIONS
-- create_geotiff_worker(args)                             lines 145-250
-  - VRT -> GeoTIFF worker used by ProcessPoolExecutor
-  - Handles compression options and ZSTD->LZW fallback on errors
-
-- postprocess_tif_worker(args)                            lines 251-427
-  - GeoTIFF -> MBTiles -> PMTiles -> rclone upload
-  - Nested helper run(cmd)                                lines 284-427
-  - Tracks stage times and supports optional GeoTIFF deletion
+- create_geotiff_worker(args)                           lines 154-257 (legacy path)
+- postprocess_tif_worker(args)                          lines 260-873
+  - Nested helpers inside postprocess_tif_worker():
+    - _remove_path() lines 301-308
+    - _write_status() lines 310-333
+    - _count_tiles_in_folder() lines 335-343
+    - _estimate_total_tiles_from_tilemap() lines 345-402
+    - run() lines 404-421
+    - run_monitored() lines 423-482
+    - _read_bounds_from_tilemap() lines 484-499
+    - _pack_tiles_dir_to_mbtiles() lines 501-629
+    - fail() lines 631-640
 
 MAIN CLASS
-- class ChartSlicer                                      starts line 428
+- class ChartSlicer                                     starts line 876 (ends 3146)
 
-CLASS SETUP/UTILS
-- _check_zstd_support()                                   lines 432-443
-- __init__()                                              lines 444-501
-  - Core paths, caches, flags, compression defaults, upload config
-- log()                                                   lines 502-512
-- normalize_name()                                        lines 513-519
-- sanitize_filename()                                     lines 520-531
-- _date_from_str()                                        lines 532-542
-- _date_range_key()                                       lines 543-550
-- _date_key_sort_key()                                    lines 551-556
+SETUP + NAMING/DATE HELPERS
+- _check_zstd_support()                                 lines 880-890
+- __init__()                                            lines 892-942
+- log()                                                 lines 944-947
+- normalize_name()                                      lines 949-954
+- sanitize_filename()                                   lines 956-966
+- _date_from_str()                                      lines 968-977
+- _date_range_key()                                     lines 979-985
+- _date_key_sort_key()                                  lines 987-991
+- _date_from_stem()                                     lines 993-1006
+- _postprocess_sort_key()                               lines 1008-1018
 
-POSTPROCESS STAGE
-- _run_postprocess_upload_stage()                         lines 557-682
-  - Bounded queue of TIFF postprocess jobs with heartbeats
-- _postprocess_single_tiff()                              lines 683-715
+POSTPROCESS ORCHESTRATION
+- _run_postprocess_upload_stage()                       lines 1020-1439
+- _postprocess_single_tiff()                            lines 1441-1474
 
 CSV + INDEX BUILD
-- load_dole_data()                                        lines 716-752
-  - Loads CSV into date_key buckets
-  - Supports fallback from tif_filename -> filename
-  - Adds wayback_ts parsing from web.archive.org URLs
-- _build_source_index()                                   lines 753-784
-  - files_by_name and tifs_by_dir caches
-- _build_shapefile_index()                                lines 785-811
-  - normalized shapefile lookup cache
+- load_dole_data()                                      lines 1477-1512
+- _build_source_index()                                 lines 1514-1544
+- _build_shapefile_index()                              lines 1546-1571
 
 DOWNLOAD + FILE RESOLUTION
-- download_file()                                         lines 812-892
-  - throttling + retry + adaptive backoff
-- extract_zip()                                           lines 893-930
-- _download_missing_files()                               lines 931-1026
-- resolve_filename()                                      lines 1027-1113
-- find_files()                                            lines 1114-1129
-- find_shapefile()                                        lines 1130-1144
+- download_file()                                       lines 1573-1656
+- extract_zip()                                         lines 1658-1694
+- _download_missing_files()                             lines 1696-1790
+- resolve_filename()                                    lines 1792-1877
+- find_files()                                          lines 1879-1893
+- find_shapefile()                                      lines 1895-1908
 
 GEOSPATIAL PIPELINE
-- get_shapefile_srs()                                     lines 1145-1173
-- _prepare_warp_job()                                     lines 1174-1212
-- _warp_worker()                                          lines 1213-1228
-- warp_and_cut()                                          lines 1229-1329
-  - Cutline warp to EPSG:3857, optional VRT intermediate output
-  - Strict transformer options with relaxed fallback retry
-- build_vrt()                                             lines 1330-1370
-- create_geotiff()                                        lines 1371-1478
+- get_shapefile_srs()                                   lines 1910-1937
+- _pick_shapefile_for_source()                          lines 1939-1955
+- _antimeridian_split_bounds_3857()                     lines 1957-2063
+- _is_world_width_warp()                                lines 2065-2079
+- _prepare_warp_job()                                   lines 2081-2119
+- _warp_worker()                                        lines 2121-2135
+- warp_and_cut()                                        lines 2137-2391
+- build_vrt()                                           lines 2393-2432
+- create_geotiff()                                      lines 2434-2540
 
 REVIEW + EXECUTION ORCHESTRATION
-- _save_review_csv()                                      lines 1479-1530
-- generate_review_report()                                lines 1531-1633
-  - Builds matrix-style review CSV and prompts y/n
-- _rebuild_vrt_library()                                  lines 1634-1717
-  - Resume support by scanning temp intermediates
-- process_all_dates()                                     lines 1718-2162
-  - Main date-loop orchestration
+- _save_review_csv()                                    lines 2542-2592
+- generate_review_report()                              lines 2594-2695
+- _rebuild_vrt_library()                                lines 2697-2788
+- process_all_dates()                                   lines 2790-3146
 
 ENTRY POINT
-- main()                                                  lines 2163-2420
-  - argparse setup, path validation, slicer config wiring
-  - review prompt, date-range prompt, then process_all_dates()
+- main()                                                lines 3149-3409
 
 ================================================================================
 CLI ARGUMENTS (CURRENT)
 ================================================================================
 
-- -s, --source
-- -o, --output
-- -c, --csv
-- -b, --shapefiles
-- -t, --temp-dir
-- -r, --resample
-- --warp-output
-- --clip-projwin ULX ULY LRX LRY
-- --compression
-- --num-threads
-- --parallel-geotiff
-- --parallel-warp
-- --warp-multithread
-- --mbtiles-quality
-- --upload-jobs
-- --postprocess-threads
-- --postprocess-cache-mb
-- --verbose-external-tools
-- --postprocess-only
-- --download-delay
+- -s --source  (main(): line 3160)
+- -o --output  (main(): line 3167)
+- -c --csv  (main(): line 3174)
+- -b --shapefiles  (main(): line 3181)
+- -t --temp-dir  (main(): line 3188)
+- -r --resample  (main(): line 3195)
+- --warp-output  (main(): line 3203)
+- --clip-projwin  (main(): line 3211)
+- --compression  (main(): line 3221)
+- --num-threads  (main(): line 3229)
+- --parallel-geotiff  (main(): line 3236)
+- --parallel-warp  (main(): line 3243)
+- --warp-multithread  (main(): line 3250)
+- --mbtiles-quality  (main(): line 3256)
+- --upload-jobs  (main(): line 3263)
+- --postprocess-threads  (main(): line 3270)
+- --postprocess-cache-mb  (main(): line 3277)
+- --verbose-external-tools  (main(): line 3284)
+- --postprocess-only  (main(): line 3290)
+- --reprocess-existing  (main(): line 3296)
+- --download-delay  (main(): line 3302)
 
 ================================================================================
-PROCESSING FLOW (CURRENT)
+PROCESSING FLOW (CURRENT DEFAULT PATH)
 ================================================================================
 
-1. Startup and validation
-   - parse args, verify source/csv/shapefile paths, create output/temp dirs
-
-2. Initialize slicer state
-   - set compression/resample/parallel/upload options from CLI
-
-3. Optional postprocess-only path
-   - skip warp/GeoTIFF creation
-   - run TIFF -> MBTiles -> PMTiles -> upload against existing output TIFFs
-
-4. Pre-processing review path (default full run)
-   - load_dole_data()
-   - build source + shapefile indexes
-   - set preview_mode=True
-   - generate_review_report() and require y/n confirmation
-
-5. Date scope selection
-   - prompt for all dates or explicit YYYY-MM-DD range
-   - set preview_mode=False
-
-6. process_all_dates()
-   - compute locations and sorted date keys
-   - download missing files up front (throttled)
-   - rebuild temp VRT library for resume support
-   - per date:
-     - skip if output GeoTIFF already exists
-     - group records by (location, edition)
-     - run parallel warp jobs with duplicate-row fallback attempts
-     - build date mosaic VRT
-     - queue GeoTIFF job
-   - run queued GeoTIFF jobs in process pool
-   - retry failed GeoTIFF jobs sequentially
-
-7. Postprocess/upload stage
-   - for each valid output GeoTIFF:
-     - gdal_translate -> MBTiles (WEBP tiles)
-     - gdaladdo overviews
-     - pmtiles convert
-     - rclone copyto remote
-     - optional delete input GeoTIFF
+1. Startup + path validation in main() (parse args, validate source/csv/shapefiles, mkdir output/temp).
+2. Instantiate ChartSlicer and apply runtime options/compatibility warnings from CLI flags.
+3. If --postprocess-only: call _run_postprocess_upload_stage() and return (no review/warp/mosaic).
+4. Full path: load_dole_data(), then _build_source_index() and _build_shapefile_index().
+5. Preview/review phase: generate_review_report() writes review CSV and prompts for confirmation.
+6. Prompt for all dates or a YYYY-MM-DD date range in main(), then call process_all_dates(date_range).
+7. process_all_dates(): filter date keys, download missing sources up front via _download_missing_files().
+8. Resume support: rebuild per-location/date runtime library via _rebuild_vrt_library().
+9. Per date: group CSV rows by (location, edition), find sources/shapefiles, build warp jobs.
+10. Warp phase: adaptive ThreadPoolExecutor runs _warp_worker() -> warp_and_cut(), with duplicate-row fallback.
+11. Collect valid warped rasters into vrt_library and build a date mosaic VRT via build_vrt().
+12. Queue (mosaic_vrt, date) into postprocess_jobs for downstream conversion/upload.
+13. Postprocess phase: _run_postprocess_upload_stage() dedupes jobs, tunes workers, runs postprocess_tif_worker().
+14. Worker converts raster -> tiles -> MBTiles -> PMTiles and uploads via rclone, with status heartbeat JSON files.
 
 ================================================================================
-KEY STATE STRUCTURES
+KEY RUNTIME STATE (CURRENT)
 ================================================================================
 
-- self.dole_data:
-  Dict[date_key, List[csv_row]]
-  where date_key is "YYYY-MM-DD" or "YYYY-MM-DD_to_YYYY-MM-DD"
+- self.dole_data: Dict[date_key, List[csv_row]] populated by load_dole_data()
+- self.date_key_map: Dict[date_key, (start_date, end_date)] for range sorting/filtering
+- self.files_by_name + self.tifs_by_dir: source lookup caches built by _build_source_index()
+- self.shapefile_index: normalized location -> shapefile path cache
+- vrt_library (runtime local in process_all_dates): per-location/date warped raster registry
+- postprocess_jobs (runtime local in process_all_dates): queue of (mosaic_vrt, date) tuples
+- jobs_by_stem (runtime local in _run_postprocess_upload_stage): dedupe latest input per output stem
+- self.upload_root / self.postprocess_tiles_temp_root: local PMTiles output and temp tile/status directories
 
-- self.date_key_map:
-  Dict[date_key, (start_date, end_date)]
+================================================================================
+FOSSFLOW_GRAPH_SPEC (TAB-SEPARATED, PARSEABLE)
+================================================================================
 
-- self.files_by_name:
-  Dict[file_name, Path] for O(1) source lookup
-
-- self.tifs_by_dir:
-  Dict[zip_stem_dir, List[Path]] for extracted ZIP contents
-
-- self.shapefile_index:
-  Dict[normalized_location, Path] for O(1) shapefile lookup
-
-- vrt_library (runtime):
-  Dict[normalized_location, Dict[date_key, List[Path]]]
-  used to build per-date mosaics and support resume behavior
+BEGIN FOSSFLOW_GRAPH_SPEC
+META	title	Slicer.py Runtime Flow (Current main path + branches)
+META	description	High-level control/data flow for slicer.py generated from the current source layout
+COLOR	blue	#0066cc
+COLOR	green	#00aa00
+COLOR	orange	#ff9900
+COLOR	purple	#9900cc
+COLOR	red	#cc0000
+NODE	user	isoflow__person	40	260	User	interactive	Answers review/date prompts and confirms execution
+NODE	cli_args	isoflow__web_app	220	60	Argparse CLI	3149-3409	Parses CLI flags and defaults
+NODE	main	isoflow__api	220	260	main()	3149-3409	Entry point: validates paths, configures slicer, chooses run mode
+NODE	path_validate	isoflow__shield	400	60	Path Validation	3149-3409	Checks source/CSV/shapefile paths and creates output/temp dirs
+NODE	init_slicer	isoflow__microservice	400	260	ChartSlicer init	892-942	Instantiates ChartSlicer and applies runtime options
+NODE	postprocess_only	isoflow__gateway	580	60	Postprocess-Only Branch	3149-3409	Optional fast path: skip review/warp/mosaic and run postprocess stage
+NODE	load_dole	isoflow__microservice	580	260	load_dole_data()	1477-1512	Loads master CSV into date buckets and date_key_map
+NODE	build_indexes	isoflow__microservice	760	260	Build Indexes	1514-1544; 1546-1571	Builds source and shapefile lookup indexes
+NODE	review_report	isoflow__logs	580	460	generate_review_report()	2594-2695	Creates review matrix CSV and prompts for confirmation
+NODE	date_prompt	isoflow__authentication	760	460	Date Range Prompt	3149-3409	Interactive all/range selection before processing
+NODE	process_dates	isoflow__api	940	360	process_all_dates()	2790-3146	Main runtime pipeline for download, warp, mosaic, and postprocess queueing
+NODE	download_missing	isoflow__gateway	940	60	_download_missing_files()	1696-1790	Downloads missing archives/files and extracts ZIPs
+NODE	rebuild_vrt	isoflow__database	940	660	_rebuild_vrt_library()	2697-2788	Resume support: reconstructs temp VRT/warp library from temp dir
+NODE	find_inputs	isoflow__microservice	1120	160	find_files()/find_shapefile()	1879-1893; 1895-1908	Resolves source TIFFs/ZIP contents and cutline shapefiles
+NODE	prepare_warp	isoflow__microservice	1120	360	_prepare_warp_job()	2081-2119	Builds per-source warp job payloads and output paths
+NODE	warp_pool	isoflow__load_balancer	1300	360	Warp ThreadPool	2790-3146	Adaptive parallel warp scheduler with fallback across duplicate CSV rows
+NODE	warp_cut	isoflow__microservice	1480	360	warp_and_cut()	2137-2391	GDAL warp to EPSG:3857 + cutline crop + antimeridian handling
+NODE	vrt_library	isoflow__database	1480	660	vrt_library (runtime)	2790-3146	Per-location/date registry of warped rasters used to build mosaics
+NODE	build_vrt	isoflow__microservice	1660	360	build_vrt()	2393-2432	Builds date mosaic VRT from all location sources
+NODE	pp_queue	isoflow__queue	1660	560	postprocess_jobs	2790-3146	Queue of (mosaic_vrt/date) jobs for MBTiles/PMTiles conversion
+NODE	run_postprocess	isoflow__load_balancer	1840	360	_run_postprocess_upload_stage()	1020-1439	Discovers jobs, dedupes by stem, adaptively schedules workers
+NODE	pp_worker	isoflow__microservice	2020	260	postprocess_tif_worker()	260-873	gdal2tiles -> pack MBTiles -> PMTiles convert -> rclone upload
+NODE	pp_status	isoflow__monitoring	2020	520	Worker Status JSON	1020-1439	Per-worker status files used for live progress/heartbeat display
+NODE	pmtiles_out	isoflow__database	2200	260	PMTiles Outputs	1020-1439	Local PMTiles files in upload_root (and remote copy via rclone)
+NODE	dole_data	isoflow__database	400	660	self.dole_data	1477-1512	CSV rows bucketed by date_key
+NODE	date_key_map	isoflow__redis	580	660	self.date_key_map	1477-1512	Maps date_key -> (start_date, end_date)
+NODE	source_index	isoflow__database	760	660	self.files_by_name / tifs_by_dir	1514-1544	Index-first source lookup caches
+NODE	shp_index	isoflow__database	760	760	self.shapefile_index	1546-1571	Normalized location -> shapefile path cache
+NODE	review_csv	isoflow__logs	580	760	Review CSV	2542-2592	Matrix-style review artifact written before processing
+NODE	legacy_geotiff	isoflow__backup	1840	660	Legacy GeoTIFF Path (retained)	154-257; 2434-2540	GeoTIFF worker/method still exist but are not on the default main path
+EDGE	e01	user	cli_args	Run CLI with flags	purple
+EDGE	e02	cli_args	main	args = parse_args()	green
+EDGE	e03	main	path_validate	Validate paths / mkdir	green
+EDGE	e04	path_validate	init_slicer	Create ChartSlicer	green
+EDGE	e05	main	postprocess_only	if --postprocess-only	orange
+EDGE	e06	postprocess_only	run_postprocess	Skip warp+mosaic	orange
+EDGE	e07	init_slicer	load_dole	Full run path	green
+EDGE	e08	load_dole	dole_data	write date buckets	blue
+EDGE	e09	load_dole	date_key_map	write date ranges	blue
+EDGE	e10	load_dole	build_indexes	build lookup indexes	green
+EDGE	e11	build_indexes	source_index	write source indexes	blue
+EDGE	e12	build_indexes	shp_index	write shapefile index	blue
+EDGE	e13	build_indexes	review_report	preview review phase	green
+EDGE	e14	review_report	review_csv	save matrix CSV	blue
+EDGE	e15	user	review_report	Confirm y/n	purple
+EDGE	e16	review_report	date_prompt	review passed	green
+EDGE	e17	user	date_prompt	Choose all/range	purple
+EDGE	e18	date_prompt	process_dates	date_range	green
+EDGE	e19	dole_data	process_dates	read date buckets	blue
+EDGE	e20	date_key_map	process_dates	sort/filter date keys	blue
+EDGE	e21	process_dates	download_missing	prep downloads	green
+EDGE	e22	download_missing	source_index	consult cached source index	blue
+EDGE	e23	download_missing	rebuild_vrt	prep complete	green
+EDGE	e24	process_dates	rebuild_vrt	resume temp library	green
+EDGE	e25	rebuild_vrt	vrt_library	seed runtime library	blue
+EDGE	e26	process_dates	find_inputs	per-date record groups	green
+EDGE	e27	source_index	find_inputs	resolve source files	blue
+EDGE	e28	shp_index	find_inputs	resolve cutlines	blue
+EDGE	e29	find_inputs	prepare_warp	source/shapefile pairs	green
+EDGE	e30	prepare_warp	warp_pool	enqueue warp jobs	green
+EDGE	e31	warp_pool	warp_cut	ThreadPoolExecutor + _warp_worker	green
+EDGE	e32	warp_cut	vrt_library	store valid warped rasters	blue
+EDGE	e33	vrt_library	build_vrt	collect mosaic sources	blue
+EDGE	e34	build_vrt	pp_queue	queue mosaic VRT by date	green
+EDGE	e35	process_dates	pp_queue	append (mosaic_vrt, date)	blue
+EDGE	e36	pp_queue	run_postprocess	submit queued jobs	green
+EDGE	e37	run_postprocess	pp_worker	adaptive worker scheduling	green
+EDGE	e38	run_postprocess	pp_status	write/read worker status files	blue
+EDGE	e39	pp_worker	pmtiles_out	mbtiles->pmtiles->upload	green
+EDGE	e40	legacy_geotiff	pp_worker	historical raster path (non-default)	orange
+EDGE	e41	run_postprocess	pmtiles_out	dedupe by stem / skip up-to-date	blue
+END FOSSFLOW_GRAPH_SPEC
 
 ================================================================================
