@@ -374,6 +374,22 @@
           clearTimeout(timeout);
           timeout = setTimeout(later, wait);
         };
+      },
+      preventDoubleTapZoom: (el) => {
+        if (!el || !DeviceInfo.isIOS) return;
+
+        let lastTouchEnd = 0;
+        el.addEventListener('touchend', (event) => {
+          const now = event.timeStamp || performance.now();
+          if (now - lastTouchEnd > 0 && now - lastTouchEnd < 350) {
+            // Preserve the second tap action while suppressing Safari page zoom.
+            event.preventDefault();
+            if (typeof event.currentTarget?.click === 'function') {
+              event.currentTarget.click();
+            }
+          }
+          lastTouchEnd = now;
+        }, { passive: false });
       }
     };
 
@@ -712,6 +728,7 @@
         this.pmtilesCacheLimit = DeviceInfo.isMobileSafari ? 18 : 48;
         this.tileDataCache = new LRUCache(DeviceInfo.isMobileSafari ? 350 : 1600);
         this.activeKeys = [];
+        this.seenCompositeSignatures = new Set();
         this.frameRequestToken = 0;
         this.overlayOpacity = 1;
         this.activeCompositeIndex = 0;
@@ -817,6 +834,60 @@
         });
       }
 
+      waitForLayerChartPaint(layer, minChartTiles = 1, timeoutMs = 120) {
+        return new Promise(resolve => {
+          if (!layer) {
+            resolve({ visible: 0, loaded: 0, chart: 0 });
+            return;
+          }
+
+          let done = false;
+          let timeoutId = null;
+          let rafId = null;
+
+          const cleanup = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            if (rafId) cancelAnimationFrame(rafId);
+            layer.off('tileload', checkAndMaybeResolve);
+            layer.off('load', checkAndMaybeResolve);
+          };
+
+          const finish = (stats) => {
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve(stats || this.getLayerTileStats(layer));
+          };
+
+          const checkAndMaybeResolve = () => {
+            if (done) return;
+            const stats = this.getLayerTileStats(layer);
+            if (stats.chart >= minChartTiles) {
+              finish(stats);
+              return;
+            }
+            // If there are no tiles in view or the layer finished with sparse/empty coverage, don't wait.
+            if (!layer._loading && (stats.visible === 0 || stats.loaded === stats.visible)) {
+              finish(stats);
+            }
+          };
+
+          const poll = () => {
+            checkAndMaybeResolve();
+            if (done) return;
+            rafId = requestAnimationFrame(poll);
+          };
+
+          layer.on('tileload', checkAndMaybeResolve);
+          layer.on('load', checkAndMaybeResolve);
+          timeoutId = setTimeout(() => finish(), timeoutMs);
+          checkAndMaybeResolve();
+          if (!done) {
+            rafId = requestAnimationFrame(poll);
+          }
+        });
+      }
+
       async showFrame(selectedDateStr) {
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
@@ -854,6 +925,7 @@
           rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
           const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
           const activeKeys = rangesInEffect.map(range => range.key);
+          const nextCompositeSignature = activeKeys.join('|');
 
           const sameKeys = this.activeKeys.length === activeKeys.length
             && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
@@ -873,9 +945,15 @@
           const nextLayer = this.compositeLayers[nextIndex];
           const activeLayer = this.compositeLayers[this.activeCompositeIndex];
           const activeStats = this.getLayerTileStats(activeLayer);
+          const seenCompositeBefore = this.seenCompositeSignatures.has(nextCompositeSignature);
 
           nextLayer.setOpacity(0);
           nextLayer.setSources(sources);
+          if (!this.waitForFullLayerLoad && seenCompositeBefore && activeStats.chart > 0) {
+            const warmSwapMinChartTiles = Math.min(6, Math.max(1, Math.floor(activeStats.chart * 0.35)));
+            await this.waitForLayerChartPaint(nextLayer, warmSwapMinChartTiles, 120);
+            if (requestToken !== this.frameRequestToken) return;
+          }
           if (this.waitForFullLayerLoad) {
             await this.waitForLayerLoadStrict(nextLayer);
             if (requestToken !== this.frameRequestToken) return;
@@ -916,6 +994,7 @@
           this.compositeLayer = nextLayer;
           this.activeLayers = [this.compositeLayer];
           this.activeKeys = activeKeys;
+          this.seenCompositeSignatures.add(nextCompositeSignature);
           this.prunePMTilesInstances(activeKeys);
 
           // Update effective layers count in chart info
@@ -1135,6 +1214,10 @@
               Utils.toast('Please manually copy the URL');
             }
           }
+        });
+
+        document.querySelectorAll('button, .leaflet-control-zoom a').forEach((el) => {
+          Utils.preventDoubleTapZoom(el);
         });
 
         // Play button

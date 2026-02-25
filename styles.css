@@ -350,6 +350,11 @@ body {
   will-change: transform;
 }
 
+button,
+.leaflet-control-zoom a {
+  touch-action: manipulation;
+}
+
 body.zooming .header-bar,
 body.zooming .menu-panel,
 body.zooming .controls-card,
