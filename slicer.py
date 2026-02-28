@@ -27,6 +27,7 @@ from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict, deque
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from dole_dataset import load_combined_rows
 
 try:
     from osgeo import gdal, ogr, osr
@@ -258,7 +259,7 @@ def create_geotiff_worker(args):
 
 
 def postprocess_tif_worker(args):
-    """Convert a mosaic raster (VRT/TIFF) to MBTiles/PMTiles and upload PMTiles via rclone."""
+    """Convert a mosaic raster (VRT/TIFF) to MBTiles/PMTiles and optionally upload via rclone."""
     if len(args) < 4:
         raise ValueError("postprocess_tif_worker expected at least 4 args")
 
@@ -271,6 +272,7 @@ def postprocess_tif_worker(args):
     output_stem = args[9] if len(args) > 9 else None
     clip_projwin = args[10] if len(args) > 10 else None
     temp_tiles_root = args[11] if len(args) > 11 else Path("/Volumes/drive/sync")
+    mbtiles_min_zoom = args[12] if len(args) > 12 else 2
 
     input_raster = Path(input_raster)
     output_dir = Path(output_dir)
@@ -278,6 +280,7 @@ def postprocess_tif_worker(args):
     temp_tiles_root = Path(temp_tiles_root)
     temp_tiles_root.mkdir(parents=True, exist_ok=True)
     output_stem = str(output_stem).strip() if output_stem else input_raster.stem
+    remote = str(remote).strip() if remote else ""
     tiles_tmp_dir = temp_tiles_root / f"{output_stem}__tiles_tmp"
     clip_vrt_path = temp_tiles_root / f"{output_stem}__clip_tmp.vrt"
 
@@ -286,6 +289,11 @@ def postprocess_tif_worker(args):
     except Exception:
         mbtiles_quality = 80
     mbtiles_quality = max(1, min(100, mbtiles_quality))
+    try:
+        mbtiles_min_zoom = int(mbtiles_min_zoom)
+    except Exception:
+        mbtiles_min_zoom = 2
+    mbtiles_min_zoom = max(0, mbtiles_min_zoom)
     gdal_threads, gdal_cache_mb = _auto_postprocess_settings(
         worker_count=1,
         requested_threads=requested_threads,
@@ -707,7 +715,7 @@ def postprocess_tif_worker(args):
             "gdal2tiles.py",
             "--profile=mercator",
             "--resampling=lanczos",
-            "--zoom=0-",
+            f"--zoom={mbtiles_min_zoom}-",
             "--exclude",
             "--webviewer=none",
             "--processes", str(max(1, gdal_threads)),
@@ -825,32 +833,33 @@ def postprocess_tif_worker(args):
     if not (pmtiles_path.exists() and pmtiles_path.stat().st_size > 0):
         return fail("pmtiles output missing")
 
-    _write_status("upload", 0.0, "starting")
-    upload_flags = list(rclone_flags)
-    if quiet_external_tools:
-        cleaned_flags = []
-        skip_next = False
-        for flag in upload_flags:
-            if skip_next:
-                skip_next = False
-                continue
-            if flag in {"-P", "--progress"}:
-                continue
-            if flag == "--stats":
-                skip_next = True
-                continue
-            cleaned_flags.append(flag)
-        upload_flags = cleaned_flags
+    if remote:
+        _write_status("upload", 0.0, "starting")
+        upload_flags = list(rclone_flags)
+        if quiet_external_tools:
+            cleaned_flags = []
+            skip_next = False
+            for flag in upload_flags:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if flag in {"-P", "--progress"}:
+                    continue
+                if flag == "--stats":
+                    skip_next = True
+                    continue
+                cleaned_flags.append(flag)
+            upload_flags = cleaned_flags
 
-    upload_cmd = ["rclone", "copyto", str(pmtiles_path), f"{remote}/{pmtiles_path.name}"] + upload_flags
-    ok, rc, err_tail, elapsed_sec = run(upload_cmd)
-    stage_times["rclone_upload"] = elapsed_sec
-    if not ok:
-        error_msg = f"rclone upload failed (exit {rc})"
-        if err_tail:
-            error_msg += f"\n{err_tail}"
-        return fail(error_msg)
-    _write_status("upload", 100.0, "done")
+        upload_cmd = ["rclone", "copyto", str(pmtiles_path), f"{remote}/{pmtiles_path.name}"] + upload_flags
+        ok, rc, err_tail, elapsed_sec = run(upload_cmd)
+        stage_times["rclone_upload"] = elapsed_sec
+        if not ok:
+            error_msg = f"rclone upload failed (exit {rc})"
+            if err_tail:
+                error_msg += f"\n{err_tail}"
+            return fail(error_msg)
+        _write_status("upload", 100.0, "done")
 
     deleted_input = False
     delete_error = None
@@ -921,6 +930,7 @@ class ChartSlicer:
         if not self.quiet_external_tools:
             self.rclone_flags.extend(["-P", "--stats", "1s"])
         self.mbtiles_quality = 80
+        self.mbtiles_min_zoom = 2
         self.max_postprocess_backlog = 10
         self.parallel_warp = 0
         # In threaded warp mode we already parallelize by job; avoid extra internal threads on Apple Silicon.
@@ -948,7 +958,7 @@ class ChartSlicer:
 
     def normalize_name(self, name: str) -> str:
         """Normalize chart name consistently."""
-        norm = name.strip().lower().replace(' ', '_').replace('-', '_').replace('.', '_')
+        norm = name.strip().lower().replace(' ', '_').replace('-', '_').replace('.', '_').replace(',', '')
         while '__' in norm:
             norm = norm.replace('__', '_')
         return self.abbreviations.get(norm, norm)
@@ -964,6 +974,143 @@ class ChartSlicer:
         while '__' in name:
             name = name.replace('__', '_')
         return name.lower()
+
+    @staticmethod
+    def _row_pick(row: Dict[str, str], keys: List[str]) -> str:
+        """Return first non-empty value from a list of possible CSV keys."""
+        for key in keys:
+            value = row.get(key)
+            if value is None:
+                continue
+            value_str = str(value).strip()
+            if value_str:
+                return value_str
+        return ""
+
+    def _row_float(self, row: Dict[str, str], keys: List[str]) -> Optional[float]:
+        """Parse first available key as float."""
+        value = self._row_pick(row, keys)
+        if not value:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _build_lcc_crs(self, lat1: str, lat2: str, lat0: str, lon0: str) -> str:
+        if not (lat1 and lat2 and lat0 and lon0):
+            return ""
+        return (
+            f"+proj=lcc +lat_1={lat1} +lat_2={lat2} +lat_0={lat0} "
+            f"+lon_0={lon0} +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+        )
+
+    def _build_gcp_warp_context(self, row: Dict[str, str]) -> Optional[Dict[str, object]]:
+        """
+        Build per-row GCP warp inputs:
+        - pixel corners (tl/tr/br/bl x,y)
+        - projected GCP coordinates in source CRS
+        - EPSG:4269 cutline polygon
+        """
+        pixels = []
+        for x_key, y_key in (("tl_x", "tl_y"), ("tr_x", "tr_y"), ("br_x", "br_y"), ("bl_x", "bl_y")):
+            px = self._row_float(row, [x_key, x_key.upper()])
+            py = self._row_float(row, [y_key, y_key.upper()])
+            if px is None or py is None:
+                return None
+            pixels.append((px, py))
+
+        gcp_geo = []
+        has_all_gcp_geo = True
+        for lat_key, lon_key in (
+            ("gcp_tl_lat", "gcp_tl_lon"),
+            ("gcp_tr_lat", "gcp_tr_lon"),
+            ("gcp_br_lat", "gcp_br_lon"),
+            ("gcp_bl_lat", "gcp_bl_lon"),
+        ):
+            lat = self._row_float(row, [lat_key, lat_key.upper()])
+            lon = self._row_float(row, [lon_key, lon_key.upper()])
+            if lat is None or lon is None:
+                has_all_gcp_geo = False
+                break
+            gcp_geo.append((lon, lat))
+
+        west = self._row_float(row, ["Left bounds", "Left cut bounds", "left_bounds", "left_cut_bounds"])
+        east = self._row_float(row, ["Right bounds", "Right cut bounds", "right_bounds", "right_cut_bounds"])
+        north = self._row_float(row, ["Top bounds", "Top cut bounds", "top_bounds", "top_cut_bounds"])
+        south = self._row_float(row, ["Bottom bounds", "Bottom cut bounds", "bottom_bounds", "bottom_cut_bounds"])
+
+        bounds_ok = all(v is not None for v in (west, east, north, south))
+        if bounds_ok:
+            if west > 0:
+                west = -west
+            if east > 0:
+                east = -east
+            if west > east:
+                west, east = east, west
+            if south > north:
+                south, north = north, south
+
+        if not has_all_gcp_geo and not bounds_ok:
+            return None
+
+        if not has_all_gcp_geo and bounds_ok:
+            gcp_geo = [
+                (west, north),
+                (east, north),
+                (east, south),
+                (west, south),
+            ]
+
+        # Prefer explicit CRS from CSV; otherwise synthesize LCC from projection fields.
+        crs_str = self._row_pick(row, ["crs", "CRS"])
+        if not crs_str:
+            lat1 = self._row_pick(row, ["proj_lat1", "PROJ_LAT1"]) or "33.0"
+            lat2 = self._row_pick(row, ["proj_lat2", "PROJ_LAT2"]) or "45.0"
+            lat0 = self._row_pick(row, ["proj_lat0", "PROJ_LAT0"]) or "39.0"
+            lon0 = self._row_pick(row, ["proj_lon0", "PROJ_LON0"])
+            if not lon0:
+                if bounds_ok:
+                    lon0 = str((west + east) / 2.0)
+                else:
+                    lon0 = "-96.0"
+            crs_str = self._build_lcc_crs(lat1, lat2, lat0, lon0) or \
+                "+proj=lcc +lat_1=33.0 +lat_2=45.0 +lat_0=39.0 +lon_0=-96.0 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+
+        src_srs = osr.SpatialReference()
+        dst_srs = osr.SpatialReference()
+        if src_srs.ImportFromEPSG(4269) != 0:
+            return None
+        if dst_srs.SetFromUserInput(crs_str) != 0:
+            return None
+        if hasattr(src_srs, "SetAxisMappingStrategy") and hasattr(osr, "OAMS_TRADITIONAL_GIS_ORDER"):
+            src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+        transformer = osr.CoordinateTransformation(src_srs, dst_srs)
+        projected = []
+        for lon, lat in gcp_geo:
+            x, y, _z = transformer.TransformPoint(float(lon), float(lat))
+            projected.append((x, y))
+
+        if bounds_ok:
+            cutline_coords = [
+                [west, north],
+                [east, north],
+                [east, south],
+                [west, south],
+                [west, north],
+            ]
+        else:
+            cutline_coords = [[lon, lat] for lon, lat in gcp_geo]
+            cutline_coords.append([gcp_geo[0][0], gcp_geo[0][1]])
+
+        return {
+            "pixels": pixels,
+            "projected": projected,
+            "cutline_coords": cutline_coords,
+            "source_crs": crs_str,
+        }
 
     def _date_from_str(self, date_str: str) -> Optional[datetime.date]:
         """Parse YYYY-MM-DD date strings with caching."""
@@ -1196,7 +1343,10 @@ class ChartSlicer:
         self.log(f"\n=== Post-Processing: gdal2tiles -> pack_mbtiles -> pmtiles -> upload ===")
         self.log(f"Final output: {output_dir}")
         self.log(f"Temp tile root: {temp_tiles_root}")
-        self.log(f"Remote: {self.upload_remote}")
+        if self.upload_remote:
+            self.log(f"Remote: {self.upload_remote}")
+        else:
+            self.log("Remote: disabled (local PMTiles only)")
         self.log(f"Workers upper bound: {worker_upper_bound}")
         self.log(f"Postprocess GDAL threads/worker: {post_threads}")
         self.log(f"Postprocess GDAL cache/worker: {post_cache_mb}MB")
@@ -1331,7 +1481,8 @@ class ChartSlicer:
                         quiet_tools,
                         output_stem,
                         getattr(self, 'clip_projwin', None),
-                        temp_tiles_root
+                        temp_tiles_root,
+                        self.mbtiles_min_zoom,
                     )
                 )
                 futures[future] = {
@@ -1397,8 +1548,9 @@ class ChartSlicer:
 
                     if result.get('success'):
                         successes += 1
+                        status = "Uploaded" if self.upload_remote else "Created"
                         msg = (
-                            f"  ✓ Uploaded [{idx}/{total_jobs}]: "
+                            f"  ✓ {status} [{idx}/{total_jobs}]: "
                             f"{Path(result.get('pmtiles', '')).name} ({total_elapsed:.1f}s){stage_summary}"
                         )
                         if result.get('deleted_input'):
@@ -1458,11 +1610,13 @@ class ChartSlicer:
                 bool(getattr(self, 'quiet_external_tools', True)),
                 tiff_path.stem,
                 getattr(self, 'clip_projwin', None),
-                self.postprocess_tiles_temp_root
+                self.postprocess_tiles_temp_root,
+                self.mbtiles_min_zoom,
             )
         )
         if result.get('success'):
-            msg = f"  ✓ Uploaded: {Path(result.get('pmtiles', '')).name}"
+            status = "Uploaded" if self.upload_remote else "Created"
+            msg = f"  ✓ {status}: {Path(result.get('pmtiles', '')).name}"
             if result.get('deleted_input'):
                 msg += " (deleted input TIFF)"
             elif result.get('delete_error'):
@@ -1475,41 +1629,72 @@ class ChartSlicer:
 
 
     def load_dole_data(self):
-        """Load CSV data."""
+        """Load CSV data (combined or legacy) into date-keyed groups."""
         self.log(f"Loading CSV: {self.csv_file.name}...")
         self.dole_data = defaultdict(list)
         self.date_key_map = {}
+        total_rows = 0
+        accepted_rows = 0
+        skipped_missing_filename = 0
+        undated_rows = 0
 
-        with open(self.csv_file, 'r', encoding='utf-8', errors='replace') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                start_date = row.get('date')
-                end_date = row.get('end_date') or start_date
-                if not start_date:
-                    continue
+        normalized_rows = load_combined_rows(self.csv_file)
+        for row_idx, row in enumerate(normalized_rows, start=1):
+            total_rows += 1
 
-                # Support newer CSV schema where filename is stored as tif_filename
-                if not row.get('filename') and row.get('tif_filename'):
-                    row['filename'] = row.get('tif_filename')
+            filename = (row.get('filename') or '').strip()
+            if not filename:
+                skipped_missing_filename += 1
+                continue
 
-                link = row.get('download_link', '')
-                timestamp = None
-                if 'web.archive.org/web/' in link:
-                    match = re.search(r'/web/(\d{14})/', link)
-                    if match:
-                        timestamp = match.group(1)
-                row['wayback_ts'] = timestamp
-                row['start_date'] = start_date
-                row['end_date'] = end_date
+            link = row.get('download_link', '')
+            timestamp = None
+            if 'web.archive.org/web/' in link:
+                match = re.search(r'/web/(\d{14})/', link)
+                if match:
+                    timestamp = match.group(1)
+            row['wayback_ts'] = timestamp
+
+            start_date_raw = str(row.get('date') or '').strip()
+            end_date_raw = str(row.get('end_date') or start_date_raw).strip()
+
+            parsed_start = self._date_from_str(start_date_raw) if start_date_raw else None
+            parsed_end = self._date_from_str(end_date_raw) if end_date_raw else parsed_start
+
+            start_date = parsed_start.isoformat() if parsed_start else start_date_raw
+            end_date = parsed_end.isoformat() if parsed_end else (end_date_raw or start_date)
+
+            if start_date:
                 date_key = self._date_range_key(start_date, end_date)
                 if not date_key:
                     continue
-                row['date_key'] = date_key
-                self.dole_data[date_key].append(row)
-                if date_key not in self.date_key_map:
-                    self.date_key_map[date_key] = (start_date, end_date)
+            else:
+                undated_rows += 1
+                date_key = f"undated_{Path(filename).stem or f'row{row_idx}'}"
+
+            if not row.get('candidate_group'):
+                norm_loc = self.normalize_name(row.get('location', ''))
+                if start_date and norm_loc:
+                    row['candidate_group'] = f"{start_date}|{norm_loc}"
+                else:
+                    row['candidate_group'] = f"undated_{Path(filename).stem or f'row{row_idx}'}"
+
+            if not row.get('candidate_rank'):
+                row['candidate_rank'] = "3"
+
+            row['start_date'] = start_date
+            row['end_date'] = end_date if start_date else ""
+            row['date_key'] = date_key
+            self.dole_data[date_key].append(row)
+            if date_key not in self.date_key_map:
+                self.date_key_map[date_key] = (start_date, end_date)
+            accepted_rows += 1
 
         self.log(f"Loaded {len(self.dole_data)} date ranges.")
+        self.log(
+            f"Accepted {accepted_rows}/{total_rows} rows "
+            f"(undated={undated_rows}, missing filename skipped={skipped_missing_filename})."
+        )
 
     def _build_source_index(self):
         """
@@ -2079,7 +2264,7 @@ class ChartSlicer:
             return False
 
     def _prepare_warp_job(self, src_file_info: Union[Path, Tuple[Path, Optional[str]]], location: str, edition: str,
-                          shp_path: Path, temp_dir: Path, date: str) -> List[Dict]:
+                          shp_path: Optional[Path], temp_dir: Path, date: str, record: Optional[Dict] = None) -> List[Dict]:
         """
         Prepare warp job parameters for parallel processing.
 
@@ -2107,13 +2292,14 @@ class ChartSlicer:
         for tiff in tiffs_to_warp:
             sanitized_stem = self.sanitize_filename(tiff.stem)
             temp_tif = temp_dir / f"{norm_loc}_{sanitized_stem}{suffix}"
-            selected_shp = self._pick_shapefile_for_source(location, tiff, shp_path)
+            selected_shp = self._pick_shapefile_for_source(location, tiff, shp_path) if shp_path else None
             jobs.append({
                 'input_tiff': tiff,
                 'shapefile': selected_shp,
                 'output_tiff': temp_tif,
                 'location': norm_loc,
-                'date': date
+                'date': date,
+                'record': record,
             })
 
         return jobs
@@ -2123,7 +2309,8 @@ class ChartSlicer:
         success = self.warp_and_cut(
             job['input_tiff'],
             job['shapefile'],
-            job['output_tiff']
+            job['output_tiff'],
+            record=job.get('record'),
         )
 
         return {
@@ -2134,12 +2321,23 @@ class ChartSlicer:
             'attempt_id': job.get('attempt_id')
         }
 
-    def warp_and_cut(self, input_tiff: Path, shapefile: Optional[Path], output_tiff: Path) -> bool:
+    def warp_and_cut(self, input_tiff: Path, shapefile: Optional[Path], output_tiff: Path, record: Optional[Dict] = None) -> bool:
         """Warp and cut TIFF using shapefile as cutline.
 
         If self.warp_output is set to "vrt", write a VRT instead of a TIFF
         to avoid the intermediate write/read of warped GeoTIFFs.
         """
+        if record is not None:
+            context = self._build_gcp_warp_context(record)
+            if context:
+                if self.warp_and_cut_from_row_gcps(input_tiff, record, output_tiff):
+                    return True
+                if shapefile:
+                    self.log(f"      ⚠ GCP warp failed for {input_tiff.name}; falling back to shapefile warp")
+            elif not shapefile:
+                self.log(f"      ✗ Missing/invalid GCP metadata and no shapefile fallback for {input_tiff.name}")
+                return False
+
         if not shapefile:
             self.log(f"      ✗ No shapefile available for {input_tiff.name}")
             return False
@@ -2389,6 +2587,111 @@ class ChartSlicer:
                 pass
             self.log(f"      ✗ Error warping {input_tiff.name}: {e}")
             return False
+
+    def warp_and_cut_from_row_gcps(self, input_tiff: Path, row: Dict, output_tiff: Path) -> bool:
+        """Warp and clip using row GCP metadata and inferred bounds."""
+        context = self._build_gcp_warp_context(row)
+        if not context:
+            self.log(f"      ✗ Missing/invalid GCP metadata for {input_tiff.name}")
+            return False
+
+        warp_out = getattr(self, 'warp_output', 'tif').lower()
+        to_vrt = warp_out == 'vrt'
+        self.log(f"    Warping {input_tiff.name} from row GCPs to {'VRT' if to_vrt else 'TIFF'}...")
+
+        sanitized_stem = self.sanitize_filename(input_tiff.stem)
+        if to_vrt:
+            temp_gcp_vrt = output_tiff.parent / f"{sanitized_stem}_srcgcp.vrt"
+        else:
+            temp_gcp_vrt = Path(f"/vsimem/{sanitized_stem}_srcgcp.vrt")
+        cutline_json = output_tiff.parent / f"{sanitized_stem}_cutline.geojson"
+
+        try:
+            gcps = []
+            for idx in range(4):
+                px, py = context["pixels"][idx]
+                mx, my = context["projected"][idx]
+                gcps.append(gdal.GCP(float(mx), float(my), 0.0, float(px), float(py)))
+
+            translate_options = gdal.TranslateOptions(
+                format="VRT",
+                GCPs=gcps,
+                outputSRS=str(context["source_crs"])
+            )
+            ds_vrt = gdal.Translate(str(temp_gcp_vrt), str(input_tiff), options=translate_options)
+            if not ds_vrt:
+                self.log(f"      ✗ Failed to build GCP VRT for {input_tiff.name}")
+                return False
+            ds_vrt = None
+
+            with open(cutline_json, "w", encoding="utf-8") as f:
+                json.dump({
+                    "type": "FeatureCollection",
+                    "features": [{
+                        "type": "Feature",
+                        "properties": {},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [context["cutline_coords"]],
+                        }
+                    }]
+                }, f)
+
+            def _run_warp(transformer_opts):
+                warp_options = gdal.WarpOptions(
+                    format="VRT" if to_vrt else "GTiff",
+                    dstSRS='EPSG:3857',
+                    cutlineDSName=str(cutline_json),
+                    cutlineSRS='EPSG:4269',
+                    cropToCutline=True,
+                    dstAlpha=True,
+                    resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
+                    polynomialOrder=1,
+                    creationOptions=None if to_vrt else ['TILED=YES', 'BIGTIFF=YES'],
+                    multithread=getattr(self, 'warp_multithread', True),
+                    transformerOptions=transformer_opts or None,
+                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
+                )
+                return gdal.Warp(str(output_tiff), str(temp_gcp_vrt), options=warp_options)
+
+            transformer_opts = getattr(self, 'transformer_options', None)
+            ds = None
+            try:
+                ds = _run_warp(transformer_opts)
+            except Exception:
+                if transformer_opts:
+                    self.log("      ⚠ Warp failed with strict transformer options; retrying with relaxed options...")
+                    ds = _run_warp(['ALLOW_BALLPARK=YES'])
+                else:
+                    raise
+
+            if ds:
+                ds = None
+                if output_tiff.exists() and output_tiff.stat().st_size > 1024:
+                    if self._is_world_width_warp(output_tiff):
+                        self.log(f"      ✗ GCP warp produced pathological full-world width: {output_tiff.name}")
+                        return False
+                    self.log(f"      ✓ Warp complete: {output_tiff.name}")
+                    return True
+
+            self.log(f"      ✗ Warp failed for {input_tiff.name}")
+            return False
+        except Exception as e:
+            self.log(f"      ✗ Error warping {input_tiff.name} from row GCPs: {e}")
+            return False
+        finally:
+            try:
+                if str(temp_gcp_vrt).startswith("/vsimem/"):
+                    gdal.Unlink(str(temp_gcp_vrt))
+                elif (not to_vrt) and Path(temp_gcp_vrt).exists():
+                    Path(temp_gcp_vrt).unlink()
+            except Exception:
+                pass
+            try:
+                if cutline_json.exists():
+                    cutline_json.unlink()
+            except Exception:
+                pass
 
     def build_vrt(self, input_files: List[Path], output_vrt: Path) -> bool:
         """Combine multiple TIFFs/VRTs into a single VRT."""
@@ -2855,17 +3158,23 @@ class ChartSlicer:
 
             records = self.dole_data[date]
 
-            # Group records by exact (location, edition) to handle duplicate rows with fallback
+            # Group records by candidate_group so early/master overlap rows are alternatives.
             record_groups = []
             record_group_map = {}
             for rec in records:
                 location = (rec.get('location') or '').strip()
                 edition = (rec.get('edition') or '').strip()
-                key = (location, edition)
+                candidate_group = (rec.get('candidate_group') or '').strip()
+                if not candidate_group:
+                    norm_loc = self.normalize_name(location)
+                    candidate_group = f"{date}|{norm_loc}" if norm_loc else f"{date}|row"
+                    rec['candidate_group'] = candidate_group
+                key = candidate_group
                 if key not in record_group_map:
                     record_group_map[key] = {
                         'location': location,
                         'edition': edition,
+                        'candidate_group': candidate_group,
                         'records': []
                     }
                     record_groups.append(record_group_map[key])
@@ -2877,10 +3186,15 @@ class ChartSlicer:
             # Prepare group state for fallback attempts
             group_states = []
             for group in record_groups:
+                group['records'].sort(
+                    key=lambda r: int(str(r.get('candidate_rank', '')).strip())
+                    if str(r.get('candidate_rank', '')).strip().isdigit() else 9999
+                )
                 norm_loc = self.normalize_name(group['location'])
                 group_states.append({
                     'location': group['location'],
                     'edition': group['edition'],
+                    'candidate_group': group['candidate_group'],
                     'norm_loc': norm_loc,
                     'records': group['records'],
                     'next_index': 0,
@@ -2924,13 +3238,19 @@ class ChartSlicer:
                         attempt_total = len(state['records'])
                         attempt_label = f" (option {attempt_num}/{attempt_total})" if attempt_total > 1 else ""
 
-                        # Find shapefile
-                        shp_path = self.find_shapefile(location)
-                        if not shp_path:
-                            self.log(f"    {location}: No shapefile found")
-                            state['done'] = True
-                            made_progress = True
-                            continue
+                        # Prefer per-row GCP context when available; fallback to shapefile warp.
+                        gcp_context = self._build_gcp_warp_context(rec)
+                        shp_path = None
+                        if not gcp_context:
+                            shp_path = self.find_shapefile(location)
+                            if not shp_path:
+                                self.log(
+                                    f"    {location} (edition {edition}){attempt_label}: "
+                                    "no valid GCP context and no shapefile fallback"
+                                )
+                                state['done'] = True
+                                made_progress = True
+                                continue
 
                         # Find source files (use filename from CSV if available)
                         download_link = rec.get('download_link', '')
@@ -2947,12 +3267,20 @@ class ChartSlicer:
 
                         self.log(f"    {location} (edition {edition}){attempt_label}: {filename if filename else 'pattern match'}")
 
-                        attempt_id = (state['location'], state['edition'], state['next_index'])
+                        attempt_id = (state['candidate_group'], state['next_index'])
                         attempt_map[attempt_id] = state
 
                         # Prepare warp jobs for this record attempt
                         for src_file_info in found_files:
-                            jobs = self._prepare_warp_job(src_file_info, location, edition, shp_path, temp_dir, date)
+                            jobs = self._prepare_warp_job(
+                                src_file_info,
+                                location,
+                                edition,
+                                shp_path,
+                                temp_dir,
+                                date,
+                                record=rec,
+                            )
                             for job in jobs:
                                 job['attempt_id'] = attempt_id
                             warp_jobs.extend(jobs)
@@ -3148,12 +3476,12 @@ class ChartSlicer:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="FAA Chart Newslicer - Process sectional charts to COGs",
+        description="FAA Chart Slicer - Process sectional charts to PMTiles",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s
-  %(prog)s -s /path/to/charts -o /path/to/output -c master_dole.csv -b shapefiles
+  %(prog)s -s /path/to/charts -o /path/to/output -c master_dole_combined.csv -b shapefiles
         """
     )
 
@@ -3168,14 +3496,14 @@ Examples:
         "-o", "--output",
         type=Path,
         default=Path("/Volumes/drive/sync"),
-        help="Output directory for COGs (default: /Volumes/drive/sync)"
+        help="Output directory for PMTiles/MBTiles artifacts (default: /Volumes/drive/sync)"
     )
 
     parser.add_argument(
         "-c", "--csv",
         type=Path,
-        default=Path("/Users/ryanhemenway/archive.aero/master_dole.csv"),
-        help="Master Dole CSV file (default: /Users/ryanhemenway/archive.aero/master_dole.csv)"
+        default=Path("/Users/ryanhemenway/archive.aero/master_dole_combined.csv"),
+        help="Master Dole CSV file (default: /Users/ryanhemenway/archive.aero/master_dole_combined.csv)"
     )
 
     parser.add_argument(
@@ -3268,6 +3596,20 @@ Examples:
     )
 
     parser.add_argument(
+        "--upload-remote",
+        type=str,
+        default="r2:charts/sectionals",
+        help="Optional rclone destination (example: r2:charts/sectionals). Use '' to disable upload."
+    )
+
+    parser.add_argument(
+        "--min-zoom",
+        type=int,
+        default=2,
+        help="Minimum gdal2tiles zoom level to generate (default: 2)"
+    )
+
+    parser.add_argument(
         "--postprocess-threads",
         type=str,
         default="AUTO",
@@ -3331,6 +3673,9 @@ Examples:
     slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles,
                          preview_mode=False, download_delay=args.download_delay,
                          temp_dir=args.temp_dir)
+    slicer.upload_root = args.output
+    slicer.upload_remote = args.upload_remote.strip() if args.upload_remote else None
+    slicer.mbtiles_min_zoom = max(0, args.min_zoom)
     slicer.warp_output = args.warp_output
     slicer.clip_projwin = tuple(args.clip_projwin) if args.clip_projwin else None
     slicer.parallel_warp = args.parallel_warp

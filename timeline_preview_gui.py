@@ -3,13 +3,14 @@
 Interactive local timeline viewer for sectional chart TIFFs.
 
 - Reads master_dole-style CSV via analyze_dole.py helpers
-- Resolves files from /Volumes/drive/newrawtiffs recursively
+- Resolves files from /Volumes/projects/rawtiffs recursively
 - Lets you click a timeline segment to open the matched TIFF in Quick Look
 """
 
 import argparse
 import csv
 import os
+import re
 import subprocess
 import sys
 import tkinter as tk
@@ -20,11 +21,17 @@ from tkinter import messagebox, simpledialog, ttk
 from analyze_dole import analyze_csv, build_file_index, resolve_tif_file
 
 
-DEFAULT_CSV = "/Users/ryanhemenway/archive.aero/master_dole.csv"
+DEFAULT_CSV = "/Users/ryanhemenway/archive.aero/master_dole_combined.csv"
+LEGACY_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole.csv"
 EARLY_CSV = "/Users/ryanhemenway/archive.aero/early_master_dole.csv"
-CSV_PRESETS = [DEFAULT_CSV, EARLY_CSV]
-DEFAULT_TIF_DIR = "/Volumes/drive/newrawtiffs"
+CSV_PRESETS = [DEFAULT_CSV, LEGACY_MASTER_CSV, EARLY_CSV]
+DEFAULT_TIF_DIR = "/Volumes/projects/rawtiffs"
 EARLY_TIF_DIR = "/Volumes/projects/rawtiffs"
+STATE_SUFFIX_RE = re.compile(r",\s*[A-Z]{2}$")
+
+
+def _location_has_state_suffix(name):
+    return bool(STATE_SUFFIX_RE.search((name or "").strip()))
 
 
 def _is_early_csv_path(csv_path):
@@ -92,6 +99,7 @@ class TimelinePreviewApp(tk.Tk):
     LABEL_WIDTH = 190
     HEADER_HEIGHT = 32
     ROW_HEIGHT = 24
+    GROUP_HEADER_HEIGHT = 22
     MIN_SEGMENT_PX = 3
     TIMELINE_PAD_RIGHT = 40
     DAY_PX = 0.38  # ~2100px across ~15 years
@@ -127,6 +135,7 @@ class TimelinePreviewApp(tk.Tk):
         self.item_to_segment = {}
         self.selected_item = None
         self.selected_segment = None
+        self.sticky_text_items = {}
 
         self._build_ui()
         self._bind_events()
@@ -178,7 +187,7 @@ class TimelinePreviewApp(tk.Tk):
 
         self.canvas = tk.Canvas(main, bg="white", highlightthickness=0)
         y_scroll = ttk.Scrollbar(main, orient="vertical", command=self.canvas.yview)
-        x_scroll = ttk.Scrollbar(self, orient="horizontal", command=self.canvas.xview)
+        x_scroll = ttk.Scrollbar(self, orient="horizontal", command=self._on_xscroll)
         self.canvas.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
 
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -254,7 +263,30 @@ class TimelinePreviewApp(tk.Tk):
         if delta != 0:
             units = 1 if delta > 0 else -1
             self.canvas.xview_scroll(units, "units")
+            self._refresh_sticky_text_items()
         return "break"
+
+    def _on_xscroll(self, *args):
+        self.canvas.xview(*args)
+        self._refresh_sticky_text_items()
+
+    def _register_sticky_text(self, item_id, base_x):
+        self.sticky_text_items[item_id] = float(base_x)
+        return item_id
+
+    def _refresh_sticky_text_items(self):
+        if not self.sticky_text_items:
+            return
+        left_x = self.canvas.canvasx(0)
+        for item_id, base_x in list(self.sticky_text_items.items()):
+            if item_id not in self.canvas.find_all():
+                self.sticky_text_items.pop(item_id, None)
+                continue
+            coords = self.canvas.coords(item_id)
+            if len(coords) < 2:
+                continue
+            self.canvas.coords(item_id, left_x + base_x, coords[1])
+            self.canvas.tag_raise(item_id)
 
     def focus_filter(self):
         self.filter_entry.focus_set()
@@ -302,16 +334,19 @@ class TimelinePreviewApp(tk.Tk):
         self.item_to_segment.clear()
         self.selected_item = None
         self.selected_segment = None
+        self.sticky_text_items.clear()
 
         width = self.LABEL_WIDTH + self.timeline_width + self.TIMELINE_PAD_RIGHT
-        height = self.HEADER_HEIGHT + max(1, len(self.rows_filtered)) * self.ROW_HEIGHT + 10
+        content_height = self._content_height()
+        height = self.HEADER_HEIGHT + content_height + 10
 
         self._draw_background(width, height)
-        self._draw_header()
+        self._draw_header(self.HEADER_HEIGHT + content_height)
         self._draw_rows()
 
         self.canvas.configure(scrollregion=(0, 0, width, height))
         self.canvas.xview_moveto(0)
+        self._refresh_sticky_text_items()
 
     def reload_selected_csv(self):
         target_csv = (self.csv_choice_var.get() or self.csv_path).strip()
@@ -376,7 +411,23 @@ class TimelinePreviewApp(tk.Tk):
         self.canvas.create_rectangle(0, 0, width, self.HEADER_HEIGHT, fill="#f5f7fa", outline="")
         self.canvas.create_line(self.LABEL_WIDTH, 0, self.LABEL_WIDTH, height, fill="#b0bec5")
 
-    def _draw_header(self):
+    def _grouped_rows(self):
+        with_state = [row for row in self.rows_filtered if row.get("has_state_name")]
+        without_state = [row for row in self.rows_filtered if not row.get("has_state_name")]
+        sections = []
+        if with_state:
+            sections.append(("Locations with state in name", with_state))
+        if without_state:
+            sections.append(("Locations without state in name", without_state))
+        return sections
+
+    def _content_height(self):
+        sections = self._grouped_rows()
+        if not sections:
+            return self.ROW_HEIGHT + 16
+        return sum(self.GROUP_HEADER_HEIGHT + (len(section_rows) * self.ROW_HEIGHT) for _name, section_rows in sections)
+
+    def _draw_header(self, content_bottom):
         # Year ticks
         for y in range(self.min_date.year, self.max_date.year + 1):
             year_date = date(y, 1, 1)
@@ -384,16 +435,28 @@ class TimelinePreviewApp(tk.Tk):
                 year_date = self.min_date
             offset = (year_date - self.min_date).days
             x = self.LABEL_WIDTH + int(offset * self.DAY_PX)
-            self.canvas.create_line(x, 0, x, self.HEADER_HEIGHT + len(self.rows_filtered) * self.ROW_HEIGHT,
+            self.canvas.create_line(x, 0, x, content_bottom,
                                     fill="#eceff1")
             self.canvas.create_text(x + 4, self.HEADER_HEIGHT // 2, anchor="w",
                                     text=str(y), fill="#455a64", font=("Helvetica", 10, "bold"))
 
-        self.canvas.create_text(10, self.HEADER_HEIGHT // 2, anchor="w",
-                                text="Location", fill="#263238", font=("Helvetica", 10, "bold"))
+        self._register_sticky_text(
+            self.canvas.create_text(
+                10,
+                self.HEADER_HEIGHT // 2,
+                anchor="w",
+                text="Location",
+                fill="#263238",
+                font=("Helvetica", 10, "bold"),
+            ),
+            10,
+        )
 
     def _draw_rows(self):
-        if not self.rows_filtered:
+        sections = self._grouped_rows()
+        full_width = self.LABEL_WIDTH + self.timeline_width + self.TIMELINE_PAD_RIGHT
+
+        if not sections:
             self.canvas.create_text(
                 self.LABEL_WIDTH + 20,
                 self.HEADER_HEIGHT + 30,
@@ -404,47 +467,82 @@ class TimelinePreviewApp(tk.Tk):
             )
             return
 
-        for i, row in enumerate(self.rows_filtered):
-            y = self.HEADER_HEIGHT + i * self.ROW_HEIGHT
-            y_mid = y + self.ROW_HEIGHT // 2
-            if i % 2 == 0:
-                self.canvas.create_rectangle(0, y, self.LABEL_WIDTH + self.timeline_width + self.TIMELINE_PAD_RIGHT,
-                                             y + self.ROW_HEIGHT, fill="#fcfdff", outline="")
-            self.canvas.create_line(0, y + self.ROW_HEIGHT, self.LABEL_WIDTH + self.timeline_width + self.TIMELINE_PAD_RIGHT,
-                                    y + self.ROW_HEIGHT, fill="#f0f3f6")
-            self.canvas.create_text(8, y_mid, anchor="w", text=row["location"], fill="#263238",
-                                    font=("Helvetica", 10))
+        y_cursor = self.HEADER_HEIGHT
+        draw_idx = 0
+        is_early_csv = _is_early_csv_path(self.csv_path)
 
-            is_early_csv = _is_early_csv_path(self.csv_path)
-            for seg in row["segments"]:
-                x1, x2 = self._segment_x(seg)
-                y1 = y + 4
-                y2 = y + self.ROW_HEIGHT - 4
+        for section_name, section_rows in sections:
+            header_top = y_cursor
+            header_bottom = header_top + self.GROUP_HEADER_HEIGHT
+            self.canvas.create_rectangle(0, header_top, full_width, header_bottom, fill="#eef3f8", outline="")
+            self._register_sticky_text(
+                self.canvas.create_text(
+                    8,
+                    header_top + (self.GROUP_HEADER_HEIGHT // 2),
+                    anchor="w",
+                    text=f"{section_name} ({len(section_rows)})",
+                    fill="#34495e",
+                    font=("Helvetica", 9, "bold"),
+                ),
+                8,
+            )
+            self.canvas.create_line(0, header_bottom, full_width, header_bottom, fill="#d7e0e8")
+            y_cursor = header_bottom
 
-                if seg.file_path and os.path.exists(seg.file_path):
-                    fill = "#f39c12" if seg.edition == "Unknown" else "#2f80ed"
-                    outline = "#1f2d3d"
-                else:
-                    fill = "#cfd8dc"
-                    outline = "#90a4ae"
+            for row in section_rows:
+                y = y_cursor
+                y_mid = y + self.ROW_HEIGHT // 2
+                if draw_idx % 2 == 0:
+                    self.canvas.create_rectangle(0, y, full_width, y + self.ROW_HEIGHT, fill="#fcfdff", outline="")
+                self.canvas.create_line(0, y + self.ROW_HEIGHT, full_width, y + self.ROW_HEIGHT, fill="#f0f3f6")
+                self._register_sticky_text(
+                    self.canvas.create_text(
+                        8,
+                        y_mid,
+                        anchor="w",
+                        text=row["location"],
+                        fill="#263238",
+                        font=("Helvetica", 10),
+                    ),
+                    8,
+                )
 
-                item = self.canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline=outline, width=1)
-                self.item_to_segment[item] = seg
+                for seg in row["segments"]:
+                    x1, x2 = self._segment_x(seg)
+                    y1 = y + 4
+                    y2 = y + self.ROW_HEIGHT - 4
 
-                label_text = str(seg.edition or "")
-                label_width = x2 - x1
-                min_label_px = 16 if is_early_csv else 24
-                label_font = ("Helvetica", 7, "bold") if is_early_csv else ("Helvetica", 8, "bold")
+                    if seg.file_path and os.path.exists(seg.file_path):
+                        fill = "#f39c12" if seg.edition == "Unknown" else "#2f80ed"
+                        outline = "#1f2d3d"
+                    else:
+                        fill = "#cfd8dc"
+                        outline = "#90a4ae"
 
-                # Early-master segments are much shorter (fixed 56-day spans), so use a
-                # smaller font and lower threshold to show known edition numbers on-block.
-                if is_early_csv and label_text == "Unknown":
-                    label_text = ""
+                    item = self.canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline=outline, width=1)
+                    self.item_to_segment[item] = seg
 
-                if label_width >= min_label_px and label_text:
-                    self.canvas.create_text((x1 + x2) / 2, y_mid, text=label_text,
-                                            fill="white" if fill in {"#2f80ed", "#f39c12"} else "#263238",
-                                            font=label_font)
+                    label_text = str(seg.edition or "")
+                    label_width = x2 - x1
+                    min_label_px = 16 if is_early_csv else 24
+                    label_font = ("Helvetica", 7, "bold") if is_early_csv else ("Helvetica", 8, "bold")
+
+                    # Early-master segments are much shorter (fixed 56-day spans), so use a
+                    # smaller font and lower threshold to show known edition numbers on-block.
+                    if is_early_csv and label_text == "Unknown":
+                        label_text = ""
+
+                    if label_width >= min_label_px and label_text:
+                        self.canvas.create_text(
+                            (x1 + x2) / 2,
+                            y_mid,
+                            text=label_text,
+                            fill="white" if fill in {"#2f80ed", "#f39c12"} else "#263238",
+                            font=label_font,
+                        )
+
+                y_cursor += self.ROW_HEIGHT
+                draw_idx += 1
 
     def _segment_x(self, seg):
         start_offset = (seg.start_date - self.min_date).days
@@ -614,7 +712,13 @@ def build_rows(locations_data, file_index):
                 )
             )
 
-        rows.append({"location": location, "segments": segments})
+        rows.append(
+            {
+                "location": location,
+                "segments": segments,
+                "has_state_name": _location_has_state_suffix(location),
+            }
+        )
 
     return rows, min_date, max_date
 
