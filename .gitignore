@@ -36,6 +36,16 @@ env/
 .DS_Store
 Thumbs.db
 
+# Secrets / local env
+.env
+.env.*
+*.env
+*.secrets
+secrets.json
+credentials.json
+google_api_key.txt
+gemini_api_key.txt
+
 # Project specific
 aligned/
 debug_sort.py
@@ -76,3 +86,11 @@ early_master_dole.csv.bak
 foreflight-map.har
 archive.aero.har
 master_dole_combined.csv
+edition_check_results_gpt51.jsonl
+edition_check_results_redo_bad.jsonl
+edition_check_results_rerun_remaining.jsonl
+edition_check_results.jsonl
+master_dole_combined copy.csv
+master_dole_combined.csv.bak
+master_dole_scanned.csv
+master_dole_scanned.csv.bak
