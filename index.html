@@ -106,7 +106,7 @@
               <span id="layerLoadModeValue">Wait for full load</span>
               <span id="layerLoadModeBadge">Smooth</span>
             </button>
-            <div class="tool-hint" id="layerLoadModeHint">Swaps layers after tiles load (350ms scrub debounce).</div>
+            <div class="tool-hint" id="layerLoadModeHint">Swaps layers after tiles load (150ms scrub debounce).</div>
           </div>
 
           <div class="tool-section">
@@ -395,6 +395,7 @@
         this.maxNativeZoom = options.maxNativeZoom ?? 11;
         this.useImageBitmap = options.useImageBitmap ?? ('createImageBitmap' in window);
         this.tileDataCache = options.tileDataCache || null;
+        this.tileBitmapCache = options.tileBitmapCache || null;
       }
 
       setSources(sources) {
@@ -423,30 +424,29 @@
         return { z, x, y, scale, offsetX, offsetY };
       }
 
-      async _drawTileData(ctx, data, placement) {
+      async _prepareBitmap(data, cacheKey) {
+        if (cacheKey && this.tileBitmapCache) {
+          const cached = this.tileBitmapCache.get(cacheKey);
+          if (cached) return cached;
+        }
         const blob = new Blob([data], { type: 'image/webp' });
-        const sourceSize = 256 / placement.scale;
-        const sourceX = placement.offsetX * sourceSize;
-        const sourceY = placement.offsetY * sourceSize;
-
         if (this.useImageBitmap && 'createImageBitmap' in window) {
           const bitmap = await createImageBitmap(blob);
-          ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
-          if (bitmap.close) bitmap.close();
-          return;
+          if (cacheKey && this.tileBitmapCache) {
+            this.tileBitmapCache.set(cacheKey, bitmap);
+          }
+          return bitmap;
         }
-
-        await new Promise(resolve => {
+        return await new Promise(resolve => {
           const img = new Image();
           const url = URL.createObjectURL(blob);
           img.onload = () => {
-            ctx.drawImage(img, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
-            URL.revokeObjectURL(url);
-            resolve();
+            img._objectUrl = url;
+            resolve(img);
           };
           img.onerror = () => {
             URL.revokeObjectURL(url);
-            resolve();
+            resolve(null);
           };
           img.src = url;
         });
@@ -460,6 +460,9 @@
         const version = this.sourceVersion;
         const placement = this._normalizeCoords(coords);
         const { z, x, y } = placement;
+        const sourceSize = 256 / placement.scale;
+        const sourceX = placement.offsetX * sourceSize;
+        const sourceY = placement.offsetY * sourceSize;
         let hasChartData = false;
         const finish = () => {
           tile._hasChartData = hasChartData;
@@ -467,15 +470,12 @@
         };
 
         const render = async () => {
-          for (const source of this.sources) {
-            if (!this._map || version !== this.sourceVersion) {
-              finish();
-              return;
-            }
-            try {
-              const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
-              let tileData = cacheKey && this.tileDataCache ? this.tileDataCache.get(cacheKey) : null;
-              if (!tileData) {
+          const sourcesSnapshot = this.sources.slice();
+          const fetches = sourcesSnapshot.map(async source => {
+            const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
+            let tileData = cacheKey && this.tileDataCache ? this.tileDataCache.get(cacheKey) : null;
+            if (!tileData) {
+              try {
                 const result = await source.pmtiles.getZxy(z, x, y);
                 if (result && result.data) {
                   tileData = result.data;
@@ -483,18 +483,37 @@
                     this.tileDataCache.set(cacheKey, tileData);
                   }
                 }
+              } catch (e) {
+                // Ignore missing tiles or fetch errors.
               }
-              if (tileData) {
-                hasChartData = true;
-                await this._drawTileData(ctx, tileData, placement);
-              }
-            } catch (e) {
-              // Ignore missing tiles or fetch errors.
             }
-          }
+            return { cacheKey, tileData };
+          });
+
+          const fetched = await Promise.all(fetches);
           if (!this._map || version !== this.sourceVersion) {
             finish();
             return;
+          }
+
+          const bitmaps = await Promise.all(
+            fetched.map(({ cacheKey, tileData }) =>
+              tileData ? this._prepareBitmap(tileData, cacheKey).catch(() => null) : Promise.resolve(null)
+            )
+          );
+          if (!this._map || version !== this.sourceVersion) {
+            finish();
+            return;
+          }
+
+          for (const bitmap of bitmaps) {
+            if (!bitmap) continue;
+            hasChartData = true;
+            ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
+            if (bitmap._objectUrl) {
+              URL.revokeObjectURL(bitmap._objectUrl);
+              bitmap._objectUrl = null;
+            }
           }
           finish();
         };
@@ -705,7 +724,8 @@
           attributionControl: true,
           zoomSnap: 1,
           zoomDelta: 1,
-          wheelPxPerZoomLevel: 120
+          wheelPxPerZoomLevel: 120,
+          wheelDebounceTime: 60
         }).setView(CONFIG.initialView.center, CONFIG.initialView.zoom);
 
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -719,8 +739,9 @@
         this.pmtilesInstances = {}; // Cache for PMTiles instances
         this.pmtilesAccess = {};
         this.pmtilesAccessSeq = 0;
-        this.pmtilesCacheLimit = DeviceInfo.isMobileSafari ? 18 : 48;
+        this.pmtilesCacheLimit = DeviceInfo.isMobileSafari ? 18 : 96;
         this.tileDataCache = new LRUCache(DeviceInfo.isMobileSafari ? 350 : 1600);
+        this.tileBitmapCache = new LRUCache(DeviceInfo.isMobileSafari ? 200 : 800);
         this.activeKeys = [];
         this.frameRequestToken = 0;
         this.overlayOpacity = 1;
@@ -734,12 +755,13 @@
           maxNativeZoom: 11,
           tileSize: 256,
           opacity: 0,
-          keepBuffer: 1,
+          keepBuffer: DeviceInfo.isMobileSafari ? 1 : 2,
           updateWhenIdle: true,
           updateWhenZooming: false,
           zIndex: 10,
           useImageBitmap: !DeviceInfo.isMobileSafari,
-          tileDataCache: this.tileDataCache
+          tileDataCache: this.tileDataCache,
+          tileBitmapCache: this.tileBitmapCache
         };
 
         // Keep one layer visible while the next date's layer preloads.
@@ -759,7 +781,7 @@
         const normalizedMode = mode === 'fast' ? 'fast' : 'wait';
         this.loadingMode = normalizedMode;
         this.waitForFullLayerLoad = normalizedMode === 'wait';
-        this.scrubDebounceDelay = this.waitForFullLayerLoad ? 350 : 25;
+        this.scrubDebounceDelay = this.waitForFullLayerLoad ? 150 : 25;
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), this.scrubDebounceDelay);
         this.frameRequestToken += 1;
       }
@@ -827,28 +849,60 @@
         });
       }
 
+      _rangesForDate(selectedDateStr) {
+        const selectedDate = new Date(selectedDateStr);
+        const selectedTime = selectedDate.getTime();
+        if (isNaN(selectedTime)) return [];
+        const pre1995Cutoff = new Date('1995-01-01').getTime();
+        if (selectedTime < pre1995Cutoff) {
+          const sixMonthLookbackDate = new Date(selectedDate);
+          sixMonthLookbackDate.setMonth(sixMonthLookbackDate.getMonth() - 6);
+          const sixMonthLookbackTime = sixMonthLookbackDate.getTime();
+          return CONFIG.ranges.filter(range => (
+            range.startTime >= sixMonthLookbackTime && range.startTime <= selectedTime
+          ));
+        }
+        return CONFIG.ranges.filter(range => (
+          selectedTime >= range.startTime && selectedTime < range.endTime
+        ));
+      }
+
+      prefetchDates(dateStrs) {
+        const layer = this.compositeLayers[this.activeCompositeIndex];
+        if (!layer || !layer._tiles) return;
+        const coords = Object.values(layer._tiles)
+          .filter(t => t && t.current && t.coords)
+          .map(t => t.coords)
+          .slice(0, 40);
+        if (coords.length === 0) return;
+
+        for (const dateStr of dateStrs) {
+          if (!dateStr) continue;
+          const ranges = this._rangesForDate(dateStr);
+          for (const range of ranges) {
+            const src = this.getPMTilesInstance(range.key, range.url);
+            for (const c of coords) {
+              const placement = layer._normalizeCoords(c);
+              const cacheKey = `${range.key}|${placement.z}|${placement.x}|${placement.y}`;
+              if (this.tileDataCache.get(cacheKey)) continue;
+              src.getZxy(placement.z, placement.x, placement.y).then(result => {
+                if (result && result.data) {
+                  this.tileDataCache.set(cacheKey, result.data);
+                }
+              }).catch(() => {});
+            }
+          }
+        }
+      }
+
       async showFrame(selectedDateStr) {
         const loader = document.getElementById('loader');
         const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
         try {
-          const selectedDate = new Date(selectedDateStr);
-          const selectedTime = selectedDate.getTime();
+          const selectedTime = new Date(selectedDateStr).getTime();
           if (isNaN(selectedTime)) return;
 
-          const pre1995Cutoff = new Date('1995-01-01').getTime();
-          let rangesInEffect;
-          if (selectedTime < pre1995Cutoff) {
-            const sixMonthLookbackDate = new Date(selectedDate);
-            sixMonthLookbackDate.setMonth(sixMonthLookbackDate.getMonth() - 6);
-            const sixMonthLookbackTime = sixMonthLookbackDate.getTime();
-            rangesInEffect = CONFIG.ranges.filter(range => {
-              return range.startTime >= sixMonthLookbackTime && range.startTime <= selectedTime;
-            });
-          } else {
-            rangesInEffect = CONFIG.ranges.filter(range => {
-              return selectedTime >= range.startTime && selectedTime < range.endTime;
-            });
-          }
+          const rangesInEffect = this._rangesForDate(selectedDateStr);
 
           if (rangesInEffect.length === 0) {
             this.compositeLayers.forEach(layer => layer.setOpacity(0));
@@ -1061,7 +1115,7 @@
           }
           if (layerLoadModeHint) {
             layerLoadModeHint.textContent = isWaitMode
-              ? 'Swaps layers after tiles load (350ms scrub debounce).'
+              ? 'Swaps layers after tiles load (150ms scrub debounce).'
               : 'Swaps layers immediately (25ms scrub debounce).';
           }
           if (layerLoadModeBtn) {
@@ -1406,10 +1460,22 @@
         }
         this.activeTickIndex = index;
 
+        const adjacent = [
+          this.frames[index - 1]?.date,
+          this.frames[index + 1]?.date
+        ].filter(Boolean);
+
         if (lazy) {
           this.mapCtrl.showFrameDebounced(selectedDate);
         } else {
-          this.mapCtrl.showFrame(selectedDate);
+          const result = this.mapCtrl.showFrame(selectedDate);
+          if (result && typeof result.then === 'function') {
+            result.then(() => {
+              if (this.currentIndex === index) {
+                this.mapCtrl.prefetchDates(adjacent);
+              }
+            }).catch(() => {});
+          }
         }
       }
 
@@ -1440,6 +1506,21 @@
       setTimeout(() => warningOverlay.classList.add('visible'), 1500);
       setTimeout(() => warningOverlay.classList.remove('visible'), 8000);
 
+      const urlParams = new URLSearchParams(window.location.search);
+      const dateParam = urlParams.get('date');
+      const latParam = urlParams.get('lat');
+      const lngParam = urlParams.get('lng');
+      const zoomParam = urlParams.get('zoom');
+
+      // Kick off IP geolocation in parallel with data load so we can set the
+      // map view correctly before the first tile round-trip fires.
+      const ipGeoPromise = (!latParam || !lngParam)
+        ? Promise.race([
+            fetch('https://get.geojs.io/v1/ip/geo.json').then(r => r.json()),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('ipgeo-timeout')), 1200))
+          ]).catch(() => null)
+        : Promise.resolve(null);
+
       await loadData(); // Fetch and parse CSV first
       updateLoading(40, 'Initializing map...');
 
@@ -1450,6 +1531,26 @@
       }
 
       const mapCtrl = new MapController('map');
+
+      // Apply URL view or IP-based view BEFORE TimelineApp triggers the first
+      // showFrame, so we don't fetch tiles for a location we're about to leave.
+      if (latParam && lngParam && zoomParam) {
+        const lat = parseFloat(latParam);
+        const lng = parseFloat(lngParam);
+        const zoom = parseInt(zoomParam);
+        if (!isNaN(lat) && !isNaN(lng) && !isNaN(zoom)) {
+          mapCtrl.map.setView([lat, lng], zoom);
+        }
+      } else {
+        const ipGeo = await ipGeoPromise;
+        if (ipGeo) {
+          const lat = parseFloat(ipGeo.latitude);
+          const lng = parseFloat(ipGeo.longitude);
+          if (!isNaN(lat) && !isNaN(lng)) {
+            mapCtrl.map.setView([lat, lng], 10);
+          }
+        }
+      }
       const zoomState = { count: 0, timeout: null };
       const setZooming = (isZooming) => {
         if (isZooming) {
@@ -1488,24 +1589,8 @@
       const timelineApp = new TimelineApp(mapCtrl);
       updateLoading(90, 'Almost ready...');
 
-      // Handle URL parameters for shared links
-      const urlParams = new URLSearchParams(window.location.search);
-      const dateParam = urlParams.get('date');
-      const latParam = urlParams.get('lat');
-      const lngParam = urlParams.get('lng');
-      const zoomParam = urlParams.get('zoom');
-
-      // Set map position from URL if available
-      if (latParam && lngParam && zoomParam) {
-        const lat = parseFloat(latParam);
-        const lng = parseFloat(lngParam);
-        const zoom = parseInt(zoomParam);
-        if (!isNaN(lat) && !isNaN(lng) && !isNaN(zoom)) {
-          mapCtrl.map.setView([lat, lng], zoom);
-        }
-      }
-
-      // Set timeframe from URL if available
+      // Set timeframe from URL if available (view was already applied before
+      // TimelineApp created the first tile request).
       if (dateParam) {
         timelineApp.updateByDate(dateParam);
       }
@@ -1582,20 +1667,6 @@
         loadingSplash.classList.add('hidden');
       }, 300);
 
-      // Initial IP Geolocation (Non-precise, privacy friendly)
-      // Only runs if no location params provided in URL
-      if (!latParam || !lngParam) {
-        fetch('https://get.geojs.io/v1/ip/geo.json')
-          .then(response => response.json())
-          .then(data => {
-            const lat = parseFloat(data.latitude);
-            const lng = parseFloat(data.longitude);
-            if (!isNaN(lat) && !isNaN(lng)) {
-              mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
-            }
-          })
-          .catch(e => console.log('Auto-geolocation failed', e)); // Silent fail
-      }
     }
 
     document.addEventListener('DOMContentLoaded', initApp);
