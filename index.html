@@ -780,8 +780,9 @@
       setLoadingMode(mode = 'fast') {
         const normalizedMode = mode === 'fast' ? 'fast' : 'wait';
         this.loadingMode = normalizedMode;
-        this.waitForFullLayerLoad = normalizedMode === 'wait';
-        this.scrubDebounceDelay = this.waitForFullLayerLoad ? 150 : 25;
+        const isWait = normalizedMode === 'wait';
+        this.scrubDebounceDelay = isWait ? 150 : 25;
+        this.layerReadyTimeoutMs = isWait ? 600 : 120;
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), this.scrubDebounceDelay);
         this.frameRequestToken += 1;
       }
@@ -846,6 +847,33 @@
             resolve();
           };
           layer.on('load', onLoad);
+        });
+      }
+
+      waitForLayerVisuallyReady(layer, minChartTiles, timeoutMs) {
+        return new Promise(resolve => {
+          if (!layer) {
+            resolve('empty');
+            return;
+          }
+          let done = false;
+          const finish = (reason) => {
+            if (done) return;
+            done = true;
+            layer.off('load', onLoad);
+            layer.off('tileload', onTile);
+            clearTimeout(timer);
+            resolve(reason);
+          };
+          const check = () => {
+            if (this.getLayerTileStats(layer).chart >= minChartTiles) finish('ready');
+          };
+          const onLoad = () => finish('loaded');
+          const onTile = () => check();
+          layer.on('load', onLoad);
+          layer.on('tileload', onTile);
+          const timer = setTimeout(() => finish('timeout'), Math.max(0, timeoutMs));
+          check();
         });
       }
 
@@ -940,15 +968,16 @@
 
           nextLayer.setOpacity(0);
           nextLayer.setSources(sources);
-          if (this.waitForFullLayerLoad) {
-            await this.waitForLayerLoadStrict(nextLayer);
-            if (requestToken !== this.frameRequestToken) return;
 
-            const nextStats = this.getLayerTileStats(nextLayer);
-            const minChartTiles = activeStats.chart > 0 ? Math.max(1, Math.floor(activeStats.chart * 0.55)) : 1;
+          const minChartTiles = activeStats.chart > 0 ? Math.max(1, Math.floor(activeStats.chart * 0.5)) : 1;
+          const readyReason = await this.waitForLayerVisuallyReady(nextLayer, minChartTiles, this.layerReadyTimeoutMs);
+          if (requestToken !== this.frameRequestToken) return;
 
-            if (nextStats.chart === 0) {
-              // No chart tiles available for this date: clear historical overlay.
+          const nextStats = this.getLayerTileStats(nextLayer);
+
+          if (nextStats.chart === 0) {
+            if (readyReason === 'loaded') {
+              // Fully loaded with no chart tiles: genuine coverage gap, clear overlay.
               activeLayer.setOpacity(0);
               nextLayer.setOpacity(0);
               this.activeCompositeIndex = nextIndex;
@@ -961,12 +990,16 @@
               }
               return;
             }
+            // Timed out before any chart tiles drew: keep old layer visible, skip swap.
+            nextLayer.setOpacity(0);
+            return;
+          }
 
-            if (activeStats.chart > 0 && nextStats.chart < minChartTiles) {
-              // Avoid swapping to sparse coverage that causes visible basemap flashes.
-              nextLayer.setOpacity(0);
-              return;
-            }
+          if (this.loadingMode === 'wait' && activeStats.chart > 0
+              && nextStats.chart < Math.max(1, Math.floor(activeStats.chart * 0.55))) {
+            // Wait mode: avoid swapping to sparse coverage that causes visible basemap flashes.
+            nextLayer.setOpacity(0);
+            return;
           }
 
           this.overlayOpacity = opacityValue;
