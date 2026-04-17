@@ -850,7 +850,7 @@
         });
       }
 
-      waitForLayerVisuallyReady(layer, minChartTiles, timeoutMs) {
+      waitForLayerFullyLoaded(layer, timeoutMs) {
         return new Promise(resolve => {
           if (!layer) {
             resolve('empty');
@@ -861,19 +861,13 @@
             if (done) return;
             done = true;
             layer.off('load', onLoad);
-            layer.off('tileload', onTile);
             clearTimeout(timer);
             resolve(reason);
           };
-          const check = () => {
-            if (this.getLayerTileStats(layer).chart >= minChartTiles) finish('ready');
-          };
           const onLoad = () => finish('loaded');
-          const onTile = () => check();
           layer.on('load', onLoad);
-          layer.on('tileload', onTile);
           const timer = setTimeout(() => finish('timeout'), Math.max(0, timeoutMs));
-          check();
+          if (!layer._loading) finish('loaded');
         });
       }
 
@@ -969,8 +963,7 @@
           nextLayer.setOpacity(0);
           nextLayer.setSources(sources);
 
-          const minChartTiles = activeStats.chart > 0 ? Math.max(1, Math.floor(activeStats.chart * 0.5)) : 1;
-          const readyReason = await this.waitForLayerVisuallyReady(nextLayer, minChartTiles, this.layerReadyTimeoutMs);
+          const readyReason = await this.waitForLayerFullyLoaded(nextLayer, this.layerReadyTimeoutMs);
           if (requestToken !== this.frameRequestToken) return;
 
           const nextStats = this.getLayerTileStats(nextLayer);
@@ -1005,10 +998,21 @@
           this.overlayOpacity = opacityValue;
           nextLayer.bringToFront();
           nextLayer.setOpacity(opacityValue);
-          requestAnimationFrame(() => {
-            if (requestToken !== this.frameRequestToken) return;
-            activeLayer.setOpacity(0);
-          });
+          if (readyReason === 'loaded') {
+            // Next layer fully drew all tiles -- safe to hide old layer immediately.
+            requestAnimationFrame(() => {
+              if (requestToken !== this.frameRequestToken) return;
+              activeLayer.setOpacity(0);
+            });
+          } else {
+            // Timed out mid-load: hold old layer under the new one so its tiles fill
+            // any still-blank spots in the new layer, then hide after a grace period.
+            const graceMs = 400;
+            setTimeout(() => {
+              if (requestToken !== this.frameRequestToken) return;
+              activeLayer.setOpacity(0);
+            }, graceMs);
+          }
           this.activeCompositeIndex = nextIndex;
           this.compositeLayer = nextLayer;
           this.activeLayers = [this.compositeLayer];
