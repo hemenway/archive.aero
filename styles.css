@@ -1680,3 +1680,19 @@ body.zooming .leaflet-control-attribution {
     --text-muted: rgba(255, 255, 255, 0.8);
   }
 }
+
+.local-mode-indicator {
+  position: fixed;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #ff6b00;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 4px;
+  z-index: 10000;
+  pointer-events: none;
+  letter-spacing: 1px;
+}

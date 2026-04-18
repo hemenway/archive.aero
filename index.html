@@ -297,8 +297,18 @@
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       ranges: [], // Full list of PMTiles ranges
       frames: [], // Unique timeline dates (start dates)
-      dateBounds: { min: null, max: null }
+      dateBounds: { min: null, max: null },
+      _baseUrlOverridden: false
     };
+
+    (function() {
+      const params = new URLSearchParams(window.location.search);
+      const baseUrlOverride = params.get('baseUrl');
+      if (baseUrlOverride) {
+        CONFIG.baseUrl = baseUrlOverride.endsWith('/') ? baseUrlOverride : baseUrlOverride + '/';
+        CONFIG._baseUrlOverridden = true;
+      }
+    })();
 
     /** UTILITIES **/
     const Utils = {
@@ -656,7 +666,7 @@
                   endDate: parsed.endDate,
                   startTime: parsed.startDate.getTime(),
                   endTime: parsed.endDate.getTime(),
-                  url: row.url || null
+                  url: CONFIG._baseUrlOverridden ? null : (row.url || null)
                 });
               });
               CONFIG.ranges = ranges.sort((a, b) => {
@@ -1487,6 +1497,14 @@
 
       const timelineApp = new TimelineApp(mapCtrl);
       updateLoading(90, 'Almost ready...');
+
+      if (CONFIG._baseUrlOverridden) {
+        const indicator = document.createElement('div');
+        indicator.className = 'local-mode-indicator';
+        indicator.textContent = 'LOCAL';
+        indicator.title = 'Loading tiles from: ' + CONFIG.baseUrl;
+        document.body.appendChild(indicator);
+      }
 
       // Handle URL parameters for shared links
       const urlParams = new URLSearchParams(window.location.search);
