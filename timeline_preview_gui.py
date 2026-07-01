@@ -28,10 +28,15 @@ from analyze_dole import analyze_csv, build_file_index, resolve_tif_file
 SCANNED_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole_scanned.csv"
 COMBINED_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole_combined.csv"
 CORRECTED_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole_corrected.csv"
-DEFAULT_CSV = SCANNED_MASTER_CSV
 LEGACY_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole.csv"
 EARLY_CSV = "/Users/ryanhemenway/archive.aero/early_master_dole.csv"
 CSV_PRESETS = [CORRECTED_MASTER_CSV, SCANNED_MASTER_CSV, COMBINED_MASTER_CSV, LEGACY_MASTER_CSV, EARLY_CSV]
+# Default to the preferred master CSV, but fall back to the first preset that
+# actually exists so the GUI opens even if a specific file is missing.
+DEFAULT_CSV = next(
+    (p for p in [SCANNED_MASTER_CSV, *CSV_PRESETS] if os.path.exists(p)),
+    SCANNED_MASTER_CSV,
+)
 DEFAULT_TIF_DIR = "/Volumes/projects/rawtiffs"
 EARLY_TIF_DIR = "/Volumes/projects/rawtiffs"
 STATE_SUFFIX_RE = re.compile(r",\s*[A-Z]{2}$")
@@ -2269,6 +2274,15 @@ def parse_args():
 def main():
     args = parse_args()
     tif_dir = _default_tif_dir_for_csv(args.csv, primary_tif_dir=args.tif_dir)
+
+    if not os.path.exists(args.csv):
+        print(f"CSV not found: {args.csv}", file=sys.stderr)
+        existing = [p for p in CSV_PRESETS if os.path.exists(p)]
+        if existing:
+            print("Available CSVs (pass one with --csv):", file=sys.stderr)
+            for p in existing:
+                print(f"  {p}", file=sys.stderr)
+        sys.exit(1)
 
     print(f"Loading CSV: {args.csv}")
     errors, locations_data = analyze_csv(args.csv)

@@ -762,8 +762,11 @@
         const layerOptions = {
           minZoom: 0,
           maxZoom: 14,
-          minNativeZoom: 0,
-          maxNativeZoom: 11,
+          // Archives are being regenerated to contain only z8–z12. Below z8 Leaflet
+          // clamps the request up to z8 and downscales it (fixes the zoom-out blanking);
+          // above z12 it clamps down to z12 and upscales.
+          minNativeZoom: 8,
+          maxNativeZoom: 12,
           tileSize: 256,
           opacity: 0,
           keepBuffer: DeviceInfo.isMobileSafari ? 1 : 2,

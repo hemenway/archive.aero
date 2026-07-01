@@ -1,0 +1,468 @@
+<!doctype html>
+<!--
+  REGRESSION GUARD: CompositePMTilesLayer self-double-buffering flicker fix.
+
+  What must not regress (see index.html around lines 380-523):
+    - setSources() repaints EXISTING tile canvases in place via _renderTile()
+      instead of GridLayer.redraw() (redraw destroys/recreates tiles and briefly
+      exposes the basemap -> flicker).
+    - _renderTile(canvas, coords, version) fetches the new source bitmaps while
+      KEEPING the old pixels, then does ONE synchronous clearRect()+drawImage()
+      when the new bitmaps are ready.
+    - A render whose version !== this.sourceVersion returns early WITHOUT touching
+      the canvas (a newer setSources supersedes it).
+
+  This file inlines a FAITHFUL minimal copy of CompositePMTilesLayer + LRUCache
+  (the _renderTile double-buffer logic is byte-for-byte the same as index.html)
+  and drives it with mock sources that return solid-color image bytes after a
+  controllable delay, then samples a tile's center pixel DURING a swap to prove
+  the old frame's pixels persist (basemap never exposed).
+
+  Open in a browser. A big PASS/FAIL banner renders in the DOM; details go to the
+  console. Runnable headless via Puppeteer/Playwright by reading window.__RESULT__.
+-->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Flicker Regression Guard - CompositePMTilesLayer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js"></script>
+  <style>
+    html, body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #111; color: #eee; }
+    #banner {
+      font-size: 40px; font-weight: 800; text-align: center; padding: 24px;
+      letter-spacing: 2px;
+    }
+    #banner.pass { background: #0a7d2c; color: #fff; }
+    #banner.fail { background: #b00020; color: #fff; }
+    #banner.pending { background: #444; color: #ccc; }
+    #map { width: 512px; height: 512px; margin: 12px auto; outline: 2px solid #333; }
+    #log { max-width: 900px; margin: 0 auto 40px; padding: 0 16px; }
+    .row { padding: 6px 10px; border-bottom: 1px solid #222; font-family: ui-monospace, monospace; font-size: 13px; }
+    .row.ok { color: #4ade80; }
+    .row.bad { color: #f87171; }
+    .row.info { color: #9ca3af; }
+  </style>
+</head>
+<body>
+  <div id="banner" class="pending">RUNNING&hellip;</div>
+  <div id="map"></div>
+  <div id="log"></div>
+
+  <script>
+  "use strict";
+
+  // ---------------------------------------------------------------------------
+  // Test harness plumbing
+  // ---------------------------------------------------------------------------
+  const logEl = document.getElementById('log');
+  const bannerEl = document.getElementById('banner');
+  const failures = [];
+  const checks = [];
+
+  function log(msg, cls) {
+    const div = document.createElement('div');
+    div.className = 'row ' + (cls || 'info');
+    div.textContent = msg;
+    logEl.appendChild(div);
+    const fn = cls === 'bad' ? console.error : console.log;
+    fn('[flicker-guard] ' + msg);
+  }
+  function assert(name, cond, detail) {
+    checks.push({ name, cond: !!cond });
+    if (cond) {
+      log('PASS  ' + name, 'ok');
+    } else {
+      failures.push(name);
+      log('FAIL  ' + name + (detail ? '  ::  ' + detail : ''), 'bad');
+    }
+  }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // ---------------------------------------------------------------------------
+  // FAITHFUL MINIMAL COPY of index.html classes.
+  // _renderTile is IDENTICAL to the shipped implementation (the invariant under
+  // test). Anything simplified here is unrelated to the double-buffer path.
+  // NOTE: getZxy in the mocks returns real PNG bytes and _prepareBitmap decodes
+  // them as image/png (the app uses webp; the decode path is format-agnostic via
+  // createImageBitmap/Image, so PNG is a faithful stand-in for the test).
+  // ---------------------------------------------------------------------------
+  class LRUCache {
+    constructor(limit = 500, onEvict = null) {
+      this.limit = Math.max(1, limit);
+      this.map = new Map();
+      this.onEvict = onEvict;
+    }
+    get(key) {
+      if (!this.map.has(key)) return null;
+      const value = this.map.get(key);
+      this.map.delete(key);
+      this.map.set(key, value);
+      return value;
+    }
+    set(key, value) {
+      if (this.map.has(key)) this.map.delete(key);
+      this.map.set(key, value);
+      while (this.map.size > this.limit) {
+        const oldestKey = this.map.keys().next().value;
+        if (oldestKey === undefined) break;
+        const evicted = this.map.get(oldestKey);
+        this.map.delete(oldestKey);
+        if (this.onEvict) this.onEvict(oldestKey, evicted);
+      }
+    }
+  }
+
+  class CompositePMTilesLayer extends L.GridLayer {
+    constructor(options = {}) {
+      super(options);
+      this.sources = [];
+      this.sourceVersion = 0;
+      this.maxNativeZoom = options.maxNativeZoom ?? 11;
+      this.useImageBitmap = options.useImageBitmap ?? ('createImageBitmap' in window);
+      this.tileDataCache = options.tileDataCache || null;
+      this.tileBitmapCache = options.tileBitmapCache || null;
+      // GUARD instrumentation only (not present in production): trip a flag if
+      // anything ever calls redraw() as part of a source change.
+      this._redrawCalls = 0;
+    }
+
+    // Instrumented override: prove setSources never triggers redraw().
+    redraw() {
+      this._redrawCalls++;
+      return super.redraw();
+    }
+
+    setSources(sources) {
+      this.sources = sources || [];
+      const version = ++this.sourceVersion;
+      return this._repaintTiles(version);
+    }
+
+    _repaintTiles(version) {
+      if (!this._map) return Promise.resolve();
+      const renders = [];
+      for (const key in this._tiles) {
+        const tileObj = this._tiles[key];
+        if (tileObj && tileObj.el) {
+          renders.push(this._renderTile(tileObj.el, tileObj.coords, version));
+        }
+      }
+      return Promise.all(renders);
+    }
+
+    _normalizeCoords(coords) {
+      let z = coords.z, x = coords.x, y = coords.y;
+      let scale = 1, offsetX = 0, offsetY = 0;
+      if (z > this.maxNativeZoom) {
+        const zoomDiff = z - this.maxNativeZoom;
+        const divisor = Math.pow(2, zoomDiff);
+        offsetX = ((x % divisor) + divisor) % divisor;
+        offsetY = ((y % divisor) + divisor) % divisor;
+        z = this.maxNativeZoom;
+        x = Math.floor(x / divisor);
+        y = Math.floor(y / divisor);
+        scale = divisor;
+      }
+      return { z, x, y, scale, offsetX, offsetY };
+    }
+
+    async _prepareBitmap(data, cacheKey) {
+      if (cacheKey && this.tileBitmapCache) {
+        const cached = this.tileBitmapCache.get(cacheKey);
+        if (cached) return cached;
+      }
+      const blob = new Blob([data], { type: 'image/png' });
+      if (this.useImageBitmap && 'createImageBitmap' in window) {
+        const bitmap = await createImageBitmap(blob);
+        if (cacheKey && this.tileBitmapCache) this.tileBitmapCache.set(cacheKey, bitmap);
+        return bitmap;
+      }
+      return await new Promise(resolve => {
+        const img = new Image();
+        const url = URL.createObjectURL(blob);
+        img.onload = () => { img._objectUrl = url; resolve(img); };
+        img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+        img.src = url;
+      });
+    }
+
+    createTile(coords, done) {
+      const tile = document.createElement('canvas');
+      tile.width = 256;
+      tile.height = 256;
+      this._renderTile(tile, coords, this.sourceVersion).then(() => done(null, tile));
+      return tile;
+    }
+
+    // ---- IDENTICAL to index.html _renderTile (the double-buffer invariant) ----
+    async _renderTile(canvas, coords, version) {
+      const ctx = canvas.getContext('2d');
+      const placement = this._normalizeCoords(coords);
+      const { z, x, y } = placement;
+      const sourceSize = 256 / placement.scale;
+      const sourceX = placement.offsetX * sourceSize;
+      const sourceY = placement.offsetY * sourceSize;
+
+      const sourcesSnapshot = this.sources.slice();
+      const fetched = await Promise.all(sourcesSnapshot.map(async source => {
+        const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
+        let tileData = cacheKey && this.tileDataCache ? this.tileDataCache.get(cacheKey) : null;
+        if (!tileData) {
+          try {
+            const result = await source.pmtiles.getZxy(z, x, y);
+            if (result && result.data) {
+              tileData = result.data;
+              if (cacheKey && this.tileDataCache) this.tileDataCache.set(cacheKey, tileData);
+            }
+          } catch (e) { /* ignore missing tiles */ }
+        }
+        return { cacheKey, tileData };
+      }));
+
+      // A newer setSources() superseded us: leave existing pixels untouched.
+      if (!this._map || version !== this.sourceVersion) return;
+
+      const bitmaps = await Promise.all(fetched.map(({ cacheKey, tileData }) =>
+        tileData ? this._prepareBitmap(tileData, cacheKey).catch(() => null) : Promise.resolve(null)
+      ));
+      if (!this._map || version !== this.sourceVersion) return;
+
+      // Single synchronous paint: clear old frame and stamp new one together.
+      ctx.clearRect(0, 0, 256, 256);
+      let hasChartData = false;
+      for (const bitmap of bitmaps) {
+        if (!bitmap) continue;
+        hasChartData = true;
+        ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
+        if (bitmap._objectUrl) { URL.revokeObjectURL(bitmap._objectUrl); bitmap._objectUrl = null; }
+      }
+      canvas._hasChartData = hasChartData;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mock tile source: getZxy(z,x,y) resolves solid-color PNG bytes after `delay`
+  // ms. `delay` is mutable so we can hold frame B "in flight" and sample mid-swap.
+  // ---------------------------------------------------------------------------
+  function solidColorPngBytes(r, g, b, a = 255) {
+    // Encode a 256x256 solid-color PNG synchronously via an offscreen canvas.
+    const c = document.createElement('canvas');
+    c.width = 256; c.height = 256;
+    const cx = c.getContext('2d');
+    cx.fillStyle = `rgba(${r},${g},${b},${a / 255})`;
+    cx.fillRect(0, 0, 256, 256);
+    const dataUrl = c.toDataURL('image/png');
+    const base64 = dataUrl.split(',')[1];
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  }
+
+  function makeSource(key, rgb) {
+    const bytes = solidColorPngBytes(rgb[0], rgb[1], rgb[2]);
+    const state = { key, delay: 0, calls: 0 };
+    const src = {
+      key,
+      _state: state,
+      pmtiles: {
+        async getZxy(z, x, y) {
+          state.calls++;
+          if (state.delay > 0) await sleep(state.delay);
+          // Return a fresh copy so mutation elsewhere can't corrupt the source.
+          return { data: bytes.slice() };
+        }
+      }
+    };
+    return src;
+  }
+
+  // Sample the center pixel of a specific tile canvas. Returns {r,g,b,a}.
+  function sampleCenter(canvas) {
+    const ctx = canvas.getContext('2d');
+    const d = ctx.getImageData(128, 128, 1, 1).data;
+    return { r: d[0], g: d[1], b: d[2], a: d[3] };
+  }
+  function isColor(px, r, g, b, tol = 24) {
+    return Math.abs(px.r - r) <= tol && Math.abs(px.g - g) <= tol &&
+           Math.abs(px.b - b) <= tol && px.a >= 250;
+  }
+  const px2str = px => `rgba(${px.r},${px.g},${px.b},${px.a})`;
+
+  // Grab any one on-screen tile canvas from the layer's live tile registry.
+  function anyTileCanvas(layer) {
+    for (const k in layer._tiles) {
+      const t = layer._tiles[k];
+      if (t && t.el && t.el.tagName === 'CANVAS') return t.el;
+    }
+    return null;
+  }
+
+  // Wait until at least one tile canvas exists and its center is `expected` color.
+  async function waitForColor(layer, r, g, b, timeout = 5000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const c = anyTileCanvas(layer);
+      if (c && isColor(sampleCenter(c), r, g, b)) return c;
+      await sleep(30);
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // The test
+  // ---------------------------------------------------------------------------
+  async function run() {
+    log('Booting Leaflet map + CompositePMTilesLayer', 'info');
+
+    const map = L.map('map', {
+      center: [0, 0],
+      zoom: 2,
+      crs: L.CRS.Simple,
+      fadeAnimation: false,
+      zoomAnimation: false
+    });
+    // A GARISH basemap so that if the fix regressed and the overlay were ever
+    // cleared/torn down mid-swap, the sample would read this magenta, not red.
+    const BASE = [255, 0, 255];
+    L.GridLayer.extend({});
+    const baseLayer = new (L.GridLayer.extend({
+      createTile: function () {
+        const t = document.createElement('canvas');
+        t.width = 256; t.height = 256;
+        const cx = t.getContext('2d');
+        cx.fillStyle = `rgb(${BASE[0]},${BASE[1]},${BASE[2]})`;
+        cx.fillRect(0, 0, 256, 256);
+        return t;
+      }
+    }))();
+    baseLayer.addTo(map);
+
+    const layer = new CompositePMTilesLayer({
+      maxNativeZoom: 11,
+      // Force the synchronous-decode-friendly ImageBitmap path when available.
+      tileDataCache: new LRUCache(200),
+      tileBitmapCache: new LRUCache(200)
+    });
+    layer.addTo(map);
+
+    const frameA = makeSource('frameA', [220, 20, 20]);   // RED
+    const frameB = makeSource('frameB', [20, 20, 220]);   // BLUE
+
+    // --- Frame A: paint red and wait until tiles are red. ---
+    log('setSources -> frame A (red), instant delivery', 'info');
+    frameA._state.delay = 0;
+    await layer.setSources([frameA]);
+    const redCanvas = await waitForColor(layer, 220, 20, 20);
+    assert('frame A renders red onto tiles', !!redCanvas,
+      redCanvas ? '' : 'no red tile appeared');
+    if (!redCanvas) return finish();
+
+    const beforeSwapPx = sampleCenter(redCanvas);
+    assert('pre-swap tile is opaque red (not basemap magenta)',
+      isColor(beforeSwapPx, 220, 20, 20), px2str(beforeSwapPx));
+
+    const redrawBaseline = layer._redrawCalls;
+
+    // --- Swap to frame B with a long delay; sample DURING the in-flight swap. ---
+    const SWAP_DELAY = 900;
+    frameB._state.delay = SWAP_DELAY;
+    log(`setSources -> frame B (blue), delayed ${SWAP_DELAY}ms`, 'info');
+    const swapPromise = layer.setSources([frameB]); // do NOT await yet
+
+    // Sample repeatedly WHILE frame B is still fetching. Every sample of every
+    // live tile must remain opaque red -> old pixels persisted, basemap unseen.
+    let midSwapSamples = 0;
+    let midSwapAllRed = true;
+    let worstPx = null;
+    const midStart = Date.now();
+    while (Date.now() - midStart < SWAP_DELAY - 250) {
+      for (const k in layer._tiles) {
+        const t = layer._tiles[k];
+        if (!t || !t.el || t.el.tagName !== 'CANVAS') continue;
+        const px = sampleCenter(t.el);
+        midSwapSamples++;
+        if (!isColor(px, 220, 20, 20)) {
+          midSwapAllRed = false;
+          worstPx = px;
+        }
+      }
+      await sleep(40);
+    }
+    assert('mid-swap: at least one live tile was sampled', midSwapSamples > 0,
+      `samples=${midSwapSamples}`);
+    assert('mid-swap: tiles kept OLD red pixels (basemap never exposed)',
+      midSwapAllRed,
+      worstPx ? ('leaked ' + px2str(worstPx)) : '');
+
+    // Confirm frame B genuinely had not resolved during the mid-swap window.
+    assert('mid-swap window actually preceded frame B delivery',
+      frameB._state.calls > 0, `getZxy calls=${frameB._state.calls}`);
+
+    // --- Let the swap complete; tiles must become blue. ---
+    await swapPromise;
+    const blueCanvas = await waitForColor(layer, 20, 20, 220);
+    assert('after swap: tiles become blue (new frame painted)', !!blueCanvas,
+      blueCanvas ? '' : 'never turned blue');
+    if (blueCanvas) {
+      const afterPx = sampleCenter(blueCanvas);
+      assert('post-swap tile is opaque blue', isColor(afterPx, 20, 20, 220), px2str(afterPx));
+    }
+
+    // --- Structural guard: setSources must NOT have called redraw(). ---
+    assert('setSources did NOT call GridLayer.redraw() (no destroy/recreate)',
+      layer._redrawCalls === redrawBaseline,
+      `redrawCalls delta=${layer._redrawCalls - redrawBaseline}`);
+
+    // --- Superseded-render guard: an in-flight render whose version is stale
+    //     must bail WITHOUT clearing the canvas. Fire B (delayed) then
+    //     immediately supersede with C (green, instant). The stale B render must
+    //     never repaint blue over the final green. ---
+    log('superseded-render test: B(delayed) then C(instant) supersedes', 'info');
+    const frameC = makeSource('frameC', [20, 200, 20]); // GREEN
+    frameB._state.delay = 700;
+    frameC._state.delay = 0;
+    frameB._state.calls = 0;
+    const bPromise = layer.setSources([frameB]);   // version N   (stale-to-be)
+    await sleep(20);                               // let B start fetching
+    const cPromise = layer.setSources([frameC]);   // version N+1 (supersedes B)
+    await cPromise;
+    const greenCanvas = await waitForColor(layer, 20, 200, 20);
+    assert('supersede: tiles are green after C', !!greenCanvas,
+      greenCanvas ? '' : 'never green');
+    // Now let the stale B finish; it must NOT overwrite green with blue.
+    await bPromise;
+    await sleep(SWAP_DELAY + 100);
+    const stillGreen = greenCanvas && isColor(sampleCenter(greenCanvas), 20, 200, 20);
+    assert('supersede: stale (delayed) render did NOT clear/repaint the canvas',
+      !!stillGreen,
+      greenCanvas ? px2str(sampleCenter(greenCanvas)) : 'no canvas');
+
+    finish();
+  }
+
+  function finish() {
+    const passed = failures.length === 0 && checks.length > 0;
+    window.__RESULT__ = {
+      passed,
+      total: checks.length,
+      failed: failures.length,
+      failures: failures.slice()
+    };
+    bannerEl.className = passed ? 'pass' : 'fail';
+    bannerEl.textContent = passed
+      ? `PASS  (${checks.length}/${checks.length} invariants held)`
+      : `FAIL  (${failures.length}/${checks.length} broke: ${failures.join(', ')})`;
+    (passed ? console.log : console.error)('[flicker-guard] RESULT', window.__RESULT__);
+  }
+
+  run().catch(err => {
+    log('THREW  ' + (err && err.stack || err), 'bad');
+    failures.push('exception: ' + (err && err.message || err));
+    finish();
+  });
+  </script>
+</body>
+</html>

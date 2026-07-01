@@ -14,7 +14,7 @@ const CORS_BASE = {
   "access-control-allow-methods": "GET, HEAD, OPTIONS",
   "access-control-allow-headers": "Range, If-Match, If-None-Match",
   "access-control-expose-headers":
-    "Content-Length, Content-Range, ETag, Accept-Ranges",
+    "Content-Length, Content-Range, ETag, Accept-Ranges, X-Cache",
   "access-control-max-age": "86400",
 };
 
@@ -36,6 +36,19 @@ function withCors(response, origin) {
     statusText: response.statusText,
     headers,
   });
+}
+
+// Files are re-uploaded under the same name while tuning, so cache only briefly
+// (both edge and browser) and lean on ETag revalidation to refresh changed
+// archives within ~5 min. stale-while-revalidate keeps panning smooth.
+const CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=60";
+
+// Edge entries are stored as 200 surrogates because Cloudflare's Cache API will
+// not store 206 responses. Flip back to 206 on the way out when the entry
+// carries a content-range (i.e. it answered a byte-range request).
+function fromCached(cached) {
+  const status = cached.headers.get("content-range") ? 206 : 200;
+  return new Response(cached.body, { status, headers: cached.headers });
 }
 
 export default {
@@ -62,32 +75,67 @@ export default {
     if (!key) return new Response("Not found", { status: 404 });
 
     const range = parseRange(request.headers.get("range"));
+    const ifNoneMatch = request.headers.get("if-none-match");
+
+    const r2Range = range
+      ? range.end !== undefined
+        ? { offset: range.offset, length: range.end - range.offset + 1 }
+        : { offset: range.offset }
+      : undefined;
+
+    // Cache key encodes the byte range as a query param (not a Range header, so
+    // the entry is a plain cacheable request) — each distinct range caches on
+    // its own and is shared across all visitors, draining R2 to ~1 read per
+    // range per TTL window.
+    const rangeTag = range ? `${range.offset}-${range.end ?? ""}` : "full";
+    const cacheKey = new Request(`${url.origin}${url.pathname}?r=${rangeTag}`);
 
     const cache = caches.default;
-    let response = await cache.match(request);
+    let response;
     let cacheStatus = "MISS";
 
-    if (response) {
+    const cached = await cache.match(cacheKey);
+    if (cached) {
       cacheStatus = "HIT";
+      const cachedEtag = cached.headers.get("etag");
+      // Revalidating client + unchanged file -> 304 straight from the edge,
+      // no R2 read at all.
+      if (ifNoneMatch && cachedEtag && ifNoneMatch === cachedEtag) {
+        return withCors(
+          new Response(null, {
+            status: 304,
+            headers: { etag: cachedEtag, "cache-control": CACHE_CONTROL },
+          }),
+          origin
+        );
+      }
+      response = fromCached(cached);
     } else {
-      const r2Range = range
-        ? range.end !== undefined
-          ? { offset: range.offset, length: range.end - range.offset + 1 }
-          : { offset: range.offset }
-        : undefined;
+      // Miss: read from R2. Forward the client's validator so an unchanged file
+      // costs a bodyless conditional read instead of a full range transfer.
+      const getOptions = r2Range ? { range: r2Range } : {};
+      if (ifNoneMatch) getOptions.onlyIf = { etagDoesNotMatch: ifNoneMatch };
 
-      const object = r2Range
-        ? await env.BUCKET.get(key, { range: r2Range })
-        : await env.BUCKET.get(key);
+      const object = await env.BUCKET.get(key, getOptions);
 
       if (!object) return new Response("Not found", { status: 404 });
+
+      // onlyIf precondition failed -> the client's cached copy is still current.
+      if (ifNoneMatch && !object.body) {
+        return withCors(
+          new Response(null, {
+            status: 304,
+            headers: { etag: object.httpEtag, "cache-control": CACHE_CONTROL },
+          }),
+          origin
+        );
+      }
 
       const headers = new Headers();
       object.writeHttpMetadata(headers);
       headers.set("etag", object.httpEtag);
       headers.set("accept-ranges", "bytes");
-      // .pmtiles archives are immutable per filename; cache aggressively.
-      headers.set("cache-control", "public, max-age=604800, immutable");
+      headers.set("cache-control", CACHE_CONTROL);
 
       if (range) {
         const total = object.size;
@@ -96,14 +144,19 @@ export default {
         const rangeEnd = rangeStart + rangeLen - 1;
         headers.set("content-range", `bytes ${rangeStart}-${rangeEnd}/${total}`);
         headers.set("content-length", String(rangeLen));
-        response = new Response(object.body, { status: 206, headers });
       } else {
         headers.set("content-length", String(object.size));
-        response = new Response(object.body, { status: 200, headers });
       }
 
-      ctx.waitUntil(cache.put(request, response.clone()));
+      // Store a 200 surrogate (206 is uncacheable), then serve the same bytes
+      // flipped back to 206 for range requests via fromCached().
+      const surrogate = new Response(object.body, { status: 200, headers });
+      ctx.waitUntil(cache.put(cacheKey, surrogate.clone()));
+      response = fromCached(surrogate);
     }
+
+    // Surface the edge result so cache behaviour is visible in DevTools/curl.
+    response.headers.set("x-cache", cacheStatus);
 
     // Log to Analytics Engine (sampled, skip tiny header/dir reads).
     if (env.TILES) {
