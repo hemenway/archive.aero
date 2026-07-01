@@ -22,16 +22,6 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
 
-  <!-- Google tag (gtag.js) -->
-  <script async src="https://www.googletagmanager.com/gtag/js?id=G-TDXZ23LY7J"></script>
-  <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag() { dataLayer.push(arguments); }
-    gtag('js', new Date());
-
-    gtag('config', 'G-TDXZ23LY7J');
-  </script>
-
 </head>
 
 <body>
@@ -102,11 +92,11 @@
 
           <div class="tool-section">
             <span class="tool-label">Layer Loading</span>
-            <button class="tool-button" id="layerLoadModeBtn" type="button" aria-pressed="true">
-              <span id="layerLoadModeValue">Wait for full load</span>
-              <span id="layerLoadModeBadge">Smooth</span>
+            <button class="tool-button active" id="layerLoadModeBtn" type="button" aria-pressed="true">
+              <span id="layerLoadModeValue">Fast scrubbing</span>
+              <span id="layerLoadModeBadge">Instant</span>
             </button>
-            <div class="tool-hint" id="layerLoadModeHint">Swaps layers after tiles load (150ms scrub debounce).</div>
+            <div class="tool-hint" id="layerLoadModeHint">Updates the map ~25ms after you stop scrubbing.</div>
           </div>
 
           <div class="tool-section">
@@ -400,8 +390,23 @@
 
       setSources(sources) {
         this.sources = sources || [];
-        this.sourceVersion += 1;
-        this.redraw();
+        const version = ++this.sourceVersion;
+        return this._repaintTiles(version);
+      }
+
+      // Re-render the sources onto the tiles already on screen instead of calling
+      // redraw() (which destroys and recreates every tile, briefly exposing the
+      // basemap). Returns a promise that resolves once every visible tile settles.
+      _repaintTiles(version) {
+        if (!this._map) return Promise.resolve();
+        const renders = [];
+        for (const key in this._tiles) {
+          const tileObj = this._tiles[key];
+          if (tileObj && tileObj.el) {
+            renders.push(this._renderTile(tileObj.el, tileObj.coords, version));
+          }
+        }
+        return Promise.all(renders);
       }
 
       _normalizeCoords(coords) {
@@ -456,77 +461,72 @@
         const tile = document.createElement('canvas');
         tile.width = 256;
         tile.height = 256;
-        const ctx = tile.getContext('2d');
-        const version = this.sourceVersion;
+        this._renderTile(tile, coords, this.sourceVersion).then(() => done(null, tile));
+        return tile;
+      }
+
+      // Renders the current sources onto an existing canvas tile, keeping the
+      // previously drawn pixels until the new bitmaps are ready. This tile-level
+      // double buffering is what prevents the basemap flicker on a layer swap:
+      // old chart pixels stay put until the exact frame the new ones paint over
+      // them, and a superseded render bails without touching the canvas.
+      async _renderTile(canvas, coords, version) {
+        const ctx = canvas.getContext('2d');
         const placement = this._normalizeCoords(coords);
         const { z, x, y } = placement;
         const sourceSize = 256 / placement.scale;
         const sourceX = placement.offsetX * sourceSize;
         const sourceY = placement.offsetY * sourceSize;
-        let hasChartData = false;
-        const finish = () => {
-          tile._hasChartData = hasChartData;
-          done(null, tile);
-        };
 
-        const render = async () => {
-          const sourcesSnapshot = this.sources.slice();
-          const fetches = sourcesSnapshot.map(async source => {
-            const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
-            let tileData = cacheKey && this.tileDataCache ? this.tileDataCache.get(cacheKey) : null;
-            if (!tileData) {
-              try {
-                const result = await source.pmtiles.getZxy(z, x, y);
-                if (result && result.data) {
-                  tileData = result.data;
-                  if (cacheKey && this.tileDataCache) {
-                    this.tileDataCache.set(cacheKey, tileData);
-                  }
-                }
-              } catch (e) {
-                // Ignore missing tiles or fetch errors.
+        const sourcesSnapshot = this.sources.slice();
+        const fetched = await Promise.all(sourcesSnapshot.map(async source => {
+          const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
+          let tileData = cacheKey && this.tileDataCache ? this.tileDataCache.get(cacheKey) : null;
+          if (!tileData) {
+            try {
+              const result = await source.pmtiles.getZxy(z, x, y);
+              if (result && result.data) {
+                tileData = result.data;
+                if (cacheKey && this.tileDataCache) this.tileDataCache.set(cacheKey, tileData);
               }
-            }
-            return { cacheKey, tileData };
-          });
-
-          const fetched = await Promise.all(fetches);
-          if (!this._map || version !== this.sourceVersion) {
-            finish();
-            return;
-          }
-
-          const bitmaps = await Promise.all(
-            fetched.map(({ cacheKey, tileData }) =>
-              tileData ? this._prepareBitmap(tileData, cacheKey).catch(() => null) : Promise.resolve(null)
-            )
-          );
-          if (!this._map || version !== this.sourceVersion) {
-            finish();
-            return;
-          }
-
-          for (const bitmap of bitmaps) {
-            if (!bitmap) continue;
-            hasChartData = true;
-            ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
-            if (bitmap._objectUrl) {
-              URL.revokeObjectURL(bitmap._objectUrl);
-              bitmap._objectUrl = null;
+            } catch (e) {
+              // Ignore missing tiles or fetch errors.
             }
           }
-          finish();
-        };
+          return { cacheKey, tileData };
+        }));
 
-        render();
-        return tile;
+        // A newer setSources() superseded us (or the layer was removed): leave the
+        // existing pixels untouched so the latest render owns the final paint.
+        if (!this._map || version !== this.sourceVersion) return;
+
+        const bitmaps = await Promise.all(fetched.map(({ cacheKey, tileData }) =>
+          tileData ? this._prepareBitmap(tileData, cacheKey).catch(() => null) : Promise.resolve(null)
+        ));
+        if (!this._map || version !== this.sourceVersion) return;
+
+        // Single synchronous paint: clear the old frame and stamp the new one in
+        // the same frame, so there is never a visible gap.
+        ctx.clearRect(0, 0, 256, 256);
+        let hasChartData = false;
+        for (const bitmap of bitmaps) {
+          if (!bitmap) continue;
+          hasChartData = true;
+          ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
+          if (bitmap._objectUrl) {
+            URL.revokeObjectURL(bitmap._objectUrl);
+            bitmap._objectUrl = null;
+          }
+        }
+        canvas._hasChartData = hasChartData;
       }
     }
 
     class LRUCache {
-      constructor(limit = 500) {
+      constructor(limit = 500, onEvict = null) {
         this.limit = Math.max(1, limit);
         this.map = new Map();
+        this.onEvict = onEvict;
       }
 
       get(key) {
@@ -545,7 +545,9 @@
         while (this.map.size > this.limit) {
           const oldestKey = this.map.keys().next().value;
           if (oldestKey === undefined) break;
+          const evicted = this.map.get(oldestKey);
           this.map.delete(oldestKey);
+          if (this.onEvict) this.onEvict(oldestKey, evicted);
         }
       }
     }
@@ -665,6 +667,9 @@
               results.data.forEach(row => {
                 const key = (row.date_iso || '').trim();
                 if (!key || key === '?') return;
+                // Start-only entries (no `_to_` end date) are data errors to be
+                // corrected upstream; skip them entirely so they're never shown.
+                if (!key.includes('_to_')) return;
                 const parsed = Utils.parseDateRangeKey(key);
                 if (!parsed) return;
                 ranges.push({
@@ -735,18 +740,24 @@
 
         L.control.zoom({ position: 'topright' }).addTo(this.map);
 
-        this.activeLayers = [];
         this.pmtilesInstances = {}; // Cache for PMTiles instances
         this.pmtilesAccess = {};
         this.pmtilesAccessSeq = 0;
         this.pmtilesCacheLimit = DeviceInfo.isMobileSafari ? 18 : 96;
         this.tileDataCache = new LRUCache(DeviceInfo.isMobileSafari ? 350 : 1600);
-        this.tileBitmapCache = new LRUCache(DeviceInfo.isMobileSafari ? 200 : 800);
+        // Evicted ImageBitmaps hold decoded pixel memory; free it explicitly.
+        this.tileBitmapCache = new LRUCache(DeviceInfo.isMobileSafari ? 200 : 800, (key, bitmap) => {
+          if (bitmap && typeof bitmap.close === 'function') bitmap.close();
+        });
         this.activeKeys = [];
-        this.frameRequestToken = 0;
         this.overlayOpacity = 1;
-        this.activeCompositeIndex = 0;
-        this.compositeLayers = [];
+
+        // DOM refs read on the hot scrub path, cached once.
+        this.els = {
+          loader: document.getElementById('loader'),
+          opacitySlider: document.getElementById('toolOpacitySlider'),
+          chartInfoEffective: document.getElementById('chartInfoEffective')
+        };
 
         const layerOptions = {
           minZoom: 0,
@@ -764,15 +775,11 @@
           tileBitmapCache: this.tileBitmapCache
         };
 
-        // Keep one layer visible while the next date's layer preloads.
-        for (let i = 0; i < 2; i++) {
-          const layer = new CompositePMTilesLayer(layerOptions);
-          layer.setOpacity(0);
-          layer.addTo(this.map);
-          this.compositeLayers.push(layer);
-        }
-        this.compositeLayer = this.compositeLayers[this.activeCompositeIndex];
-        this.activeLayers = [this.compositeLayer];
+        // A single self-double-buffering layer: each tile keeps the prior frame's
+        // pixels until the new frame is ready, so swaps never expose the basemap.
+        this.compositeLayer = new CompositePMTilesLayer(layerOptions);
+        this.compositeLayer.setOpacity(0);
+        this.compositeLayer.addTo(this.map);
 
         this.setLoadingMode('fast');
       }
@@ -780,11 +787,9 @@
       setLoadingMode(mode = 'fast') {
         const normalizedMode = mode === 'fast' ? 'fast' : 'wait';
         this.loadingMode = normalizedMode;
-        const isWait = normalizedMode === 'wait';
-        this.scrubDebounceDelay = isWait ? 150 : 25;
-        this.layerReadyTimeoutMs = isWait ? 600 : 120;
+        // The only remaining knob is how long a scrub must settle before we repaint.
+        this.scrubDebounceDelay = normalizedMode === 'wait' ? 150 : 25;
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), this.scrubDebounceDelay);
-        this.frameRequestToken += 1;
       }
 
       getLoadingMode() {
@@ -819,78 +824,17 @@
         }
       }
 
-      getLayerTileStats(layer) {
-        const stats = { visible: 0, loaded: 0, chart: 0 };
-        if (!layer || !layer._tiles) return stats;
-        const tileEntries = Object.values(layer._tiles);
-        tileEntries.forEach(entry => {
-          if (!entry || !entry.current) return;
-          stats.visible += 1;
-          if (entry.loaded) stats.loaded += 1;
-          if (entry?.el?._hasChartData === true) stats.chart += 1;
-        });
-        return stats;
-      }
-
-      layerHasChartData(layer) {
-        return this.getLayerTileStats(layer).chart > 0;
-      }
-
-      waitForLayerLoadStrict(layer) {
-        return new Promise(resolve => {
-          if (!layer || !layer._loading) {
-            resolve();
-            return;
-          }
-          const onLoad = () => {
-            layer.off('load', onLoad);
-            resolve();
-          };
-          layer.on('load', onLoad);
-        });
-      }
-
-      waitForLayerFullyLoaded(layer, timeoutMs) {
-        return new Promise(resolve => {
-          if (!layer) {
-            resolve('empty');
-            return;
-          }
-          let done = false;
-          const finish = (reason) => {
-            if (done) return;
-            done = true;
-            layer.off('load', onLoad);
-            clearTimeout(timer);
-            resolve(reason);
-          };
-          const onLoad = () => finish('loaded');
-          layer.on('load', onLoad);
-          const timer = setTimeout(() => finish('timeout'), Math.max(0, timeoutMs));
-          if (!layer._loading) finish('loaded');
-        });
-      }
-
       _rangesForDate(selectedDateStr) {
         const selectedDate = new Date(selectedDateStr);
         const selectedTime = selectedDate.getTime();
         if (isNaN(selectedTime)) return [];
-        const pre1995Cutoff = new Date('1995-01-01').getTime();
-        if (selectedTime < pre1995Cutoff) {
-          const sixMonthLookbackDate = new Date(selectedDate);
-          sixMonthLookbackDate.setMonth(sixMonthLookbackDate.getMonth() - 6);
-          const sixMonthLookbackTime = sixMonthLookbackDate.getTime();
-          return CONFIG.ranges.filter(range => (
-            range.startTime >= sixMonthLookbackTime && range.startTime <= selectedTime
-          ));
-        }
         return CONFIG.ranges.filter(range => (
           selectedTime >= range.startTime && selectedTime < range.endTime
         ));
       }
 
       prefetchDates(dateStrs) {
-        const layer = this.compositeLayers[this.activeCompositeIndex];
+        const layer = this.compositeLayer;
         if (!layer || !layer._tiles) return;
         const coords = Object.values(layer._tiles)
           .filter(t => t && t.current && t.coords)
@@ -918,124 +862,52 @@
       }
 
       async showFrame(selectedDateStr) {
-        const loader = document.getElementById('loader');
-        const spinnerTimeout = setTimeout(() => loader.classList.add('active'), 100);
+        const selectedTime = new Date(selectedDateStr).getTime();
+        if (isNaN(selectedTime)) return;
+
+        const opacityValue = parseFloat(this.els.opacitySlider?.value || 100) / 100;
+        this.overlayOpacity = opacityValue;
+        this.compositeLayer.setOpacity(opacityValue);
+
+        const rangesInEffect = this._rangesForDate(selectedDateStr);
+        if (rangesInEffect.length === 0) {
+          this.activeKeys = [];
+          this.compositeLayer.setSources([]);
+          if (this.els.chartInfoEffective) this.els.chartInfoEffective.textContent = '0';
+          Utils.toast('No charts available for selected date');
+          return;
+        }
+
+        rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+        const activeKeys = rangesInEffect.map(range => range.key);
+        const sameKeys = this.activeKeys.length === activeKeys.length
+          && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
+        if (sameKeys) return; // Only the opacity changed; already applied above.
+
+        const sources = rangesInEffect.map(range => ({
+          key: range.key,
+          pmtiles: this.getPMTilesInstance(range.key, range.url)
+        }));
+        this.activeKeys = activeKeys;
+
+        const loader = this.els.loader;
+        const spinnerTimeout = setTimeout(() => loader?.classList.add('active'), 100);
         try {
-          const selectedTime = new Date(selectedDateStr).getTime();
-          if (isNaN(selectedTime)) return;
-
-          const rangesInEffect = this._rangesForDate(selectedDateStr);
-
-          if (rangesInEffect.length === 0) {
-            this.compositeLayers.forEach(layer => layer.setOpacity(0));
-            this.activeKeys = [];
-            const chartInfoEffective = document.getElementById('chartInfoEffective');
-            if (chartInfoEffective) {
-              chartInfoEffective.textContent = '0';
-            }
-            Utils.toast('No charts available for selected date');
-            return;
-          }
-
-          rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
-          const opacityValue = parseFloat(document.getElementById('toolOpacitySlider')?.value || 100) / 100;
-          const activeKeys = rangesInEffect.map(range => range.key);
-
-          const sameKeys = this.activeKeys.length === activeKeys.length
-            && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
-          if (sameKeys) {
-            this.overlayOpacity = opacityValue;
-            this.compositeLayers[this.activeCompositeIndex].setOpacity(opacityValue);
-            return;
-          }
-
-          const sources = rangesInEffect.map(range => {
-            const pmtilesSource = this.getPMTilesInstance(range.key, range.url);
-            return { key: range.key, pmtiles: pmtilesSource };
-          });
-
-          const requestToken = ++this.frameRequestToken;
-          const nextIndex = this.activeCompositeIndex === 0 ? 1 : 0;
-          const nextLayer = this.compositeLayers[nextIndex];
-          const activeLayer = this.compositeLayers[this.activeCompositeIndex];
-          const activeStats = this.getLayerTileStats(activeLayer);
-
-          nextLayer.setOpacity(0);
-          nextLayer.setSources(sources);
-
-          const readyReason = await this.waitForLayerFullyLoaded(nextLayer, this.layerReadyTimeoutMs);
-          if (requestToken !== this.frameRequestToken) return;
-
-          const nextStats = this.getLayerTileStats(nextLayer);
-
-          if (nextStats.chart === 0) {
-            if (readyReason === 'loaded') {
-              // Fully loaded with no chart tiles: genuine coverage gap, clear overlay.
-              activeLayer.setOpacity(0);
-              nextLayer.setOpacity(0);
-              this.activeCompositeIndex = nextIndex;
-              this.compositeLayer = nextLayer;
-              this.activeLayers = [this.compositeLayer];
-              this.activeKeys = [];
-              const chartInfoEffective = document.getElementById('chartInfoEffective');
-              if (chartInfoEffective) {
-                chartInfoEffective.textContent = '0';
-              }
-              return;
-            }
-            // Timed out before any chart tiles drew: keep old layer visible, skip swap.
-            nextLayer.setOpacity(0);
-            return;
-          }
-
-          if (this.loadingMode === 'wait' && activeStats.chart > 0
-              && nextStats.chart < Math.max(1, Math.floor(activeStats.chart * 0.55))) {
-            // Wait mode: avoid swapping to sparse coverage that causes visible basemap flashes.
-            nextLayer.setOpacity(0);
-            return;
-          }
-
-          this.overlayOpacity = opacityValue;
-          nextLayer.bringToFront();
-          nextLayer.setOpacity(opacityValue);
-          if (readyReason === 'loaded') {
-            // Next layer fully drew all tiles -- safe to hide old layer immediately.
-            requestAnimationFrame(() => {
-              if (requestToken !== this.frameRequestToken) return;
-              activeLayer.setOpacity(0);
-            });
-          } else {
-            // Timed out mid-load: hold old layer under the new one so its tiles fill
-            // any still-blank spots in the new layer, then hide after a grace period.
-            const graceMs = 400;
-            setTimeout(() => {
-              if (requestToken !== this.frameRequestToken) return;
-              activeLayer.setOpacity(0);
-            }, graceMs);
-          }
-          this.activeCompositeIndex = nextIndex;
-          this.compositeLayer = nextLayer;
-          this.activeLayers = [this.compositeLayer];
-          this.activeKeys = activeKeys;
-          this.prunePMTilesInstances(activeKeys);
-
-          // Update effective layers count in chart info
-          const chartInfoEffective = document.getElementById('chartInfoEffective');
-          if (chartInfoEffective) {
-            chartInfoEffective.textContent = sources.length.toString();
-          }
+          // Tiles keep their old pixels until the new ones are painted, so this
+          // await never leaves the basemap exposed even on a slow round-trip.
+          await this.compositeLayer.setSources(sources);
         } finally {
           clearTimeout(spinnerTimeout);
-          loader.classList.remove('active');
+          loader?.classList.remove('active');
         }
+
+        this.prunePMTilesInstances(activeKeys);
+        if (this.els.chartInfoEffective) this.els.chartInfoEffective.textContent = sources.length.toString();
       }
 
       setOpacity(opacity) {
         this.overlayOpacity = opacity;
-        const activeLayer = this.compositeLayers[this.activeCompositeIndex];
-        if (activeLayer) {
-          activeLayer.setOpacity(opacity);
-        }
+        if (this.compositeLayer) this.compositeLayer.setOpacity(opacity);
       }
     }
 
@@ -1145,15 +1017,15 @@
           const mode = this.mapCtrl.getLoadingMode();
           const isWaitMode = mode === 'wait';
           if (layerLoadModeValue) {
-            layerLoadModeValue.textContent = isWaitMode ? 'Wait for full load' : 'Fast scrubbing';
+            layerLoadModeValue.textContent = isWaitMode ? 'Smooth scrubbing' : 'Fast scrubbing';
           }
           if (layerLoadModeBadge) {
-            layerLoadModeBadge.textContent = isWaitMode ? 'Smooth' : 'Instant';
+            layerLoadModeBadge.textContent = isWaitMode ? 'Relaxed' : 'Instant';
           }
           if (layerLoadModeHint) {
             layerLoadModeHint.textContent = isWaitMode
-              ? 'Swaps layers after tiles load (150ms scrub debounce).'
-              : 'Swaps layers immediately (25ms scrub debounce).';
+              ? 'Updates the map ~150ms after scrubbing settles.'
+              : 'Updates the map ~25ms after you stop scrubbing.';
           }
           if (layerLoadModeBtn) {
             layerLoadModeBtn.classList.toggle('active', !isWaitMode);
