@@ -1,0 +1,19 @@
+name = "archive-aero-tiles"
+main = "src/index.js"
+compatibility_date = "2025-05-01"
+
+# Custom domain attaches via dashboard or `routes` block.
+# routes = [{ pattern = "tiles.archive.aero", custom_domain = true }]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "charts"
+
+[[analytics_engine_datasets]]
+binding = "TILES"
+dataset = "tile_logs"
+
+[vars]
+ALLOWED_ORIGIN = "*"
+SAMPLE_RATE = "0.05"
+METADATA_BYTES = "1024"

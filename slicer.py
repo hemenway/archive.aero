@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FAA Chart Newslicer - CLI tool for processing sectional charts
-Creates COGs for each date for 56 locations.
+Pipeline: download -> warp/cut -> mosaic VRT -> GeoTIFF (one per date).
 """
 
 import os
@@ -75,49 +75,6 @@ def _get_available_ram_mb(default_mb: int = 4096) -> int:
     return _get_memory_snapshot_mb(default_available_mb=default_mb)["available_mb"]
 
 
-def _auto_postprocess_settings(
-    worker_count: int,
-    requested_threads: Union[int, str, None] = "AUTO",
-    requested_cache_mb: Optional[int] = None
-) -> Tuple[int, int]:
-    """Choose postprocess thread/cache settings with Apple Silicon-aware defaults."""
-    worker_count = max(1, int(worker_count or 1))
-    total_cpu = max(1, cpu_count)
-    per_worker_cpu = max(1, total_cpu // worker_count)
-    available_ram_mb = _get_available_ram_mb(default_mb=8192 if IS_APPLE_SILICON else 4096)
-
-    req_threads = str(requested_threads).strip().upper() if requested_threads is not None else "AUTO"
-    if req_threads == "AUTO":
-        # Use all available per-worker CPU threads in AUTO mode.
-        if IS_APPLE_SILICON:
-            threads = max(2, per_worker_cpu)
-        else:
-            threads = max(1, per_worker_cpu)
-    else:
-        try:
-            threads = int(req_threads)
-        except ValueError:
-            threads = per_worker_cpu
-        threads = max(1, min(threads, total_cpu))
-
-    cache_override = None
-    if requested_cache_mb is not None:
-        try:
-            parsed_cache = int(requested_cache_mb)
-            if parsed_cache > 0:
-                cache_override = parsed_cache
-        except (TypeError, ValueError):
-            cache_override = None
-
-    if cache_override is not None:
-        cache_mb = max(256, cache_override)
-    else:
-        cache_cap = 3072 if worker_count <= 2 else 2048
-        cache_mb = max(512, min(cache_cap, available_ram_mb // worker_count))
-
-    return threads, cache_mb
-
-
 # Set minimal GDAL global defaults (defer thread decisions to phase-specific config)
 available_ram_mb = _get_available_ram_mb(default_mb=4096)
 cache_size_mb = max(512, min(8192, available_ram_mb * 3 // 4))  # 75% of RAM, max 8GB
@@ -152,736 +109,6 @@ def _configure_gdal_for_phase(phase: str, workers: int = 1, available_ram_mb: in
         gdal.SetConfigOption('GDAL_CACHEMAX', str(max(512, min(8192, available_ram_mb * 3 // 4))))
 
 
-def create_geotiff_worker(args):
-    """Worker for parallel GeoTIFF creation."""
-    try:
-        input_vrt, output_tiff, date, compress, num_threads, clip_projwin, cache_size_mb = args
-    except ValueError:
-        input_vrt, output_tiff, date, compress, num_threads, clip_projwin = args
-        cache_size_mb = None
-
-    start_time = time.time()
-    output_tiff = Path(output_tiff)
-
-    try:
-        from osgeo import gdal
-        gdal.UseExceptions()
-    except Exception as e:
-        return {
-            'success': False,
-            'date': date,
-            'output_tiff': str(output_tiff),
-            'error': f"GDAL import failed: {e}"
-        }
-
-    try:
-        if cache_size_mb:
-            gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_size_mb))
-        if num_threads:
-            gdal.SetConfigOption('GDAL_NUM_THREADS', str(num_threads))
-    except Exception:
-        pass
-
-    output_tiff.parent.mkdir(parents=True, exist_ok=True)
-
-    attempted_lzw = False
-    current_compress = compress
-
-    while True:
-        try:
-            creation_opts = [
-                'TILED=YES',
-                'BIGTIFF=YES',
-                'BLOCKXSIZE=1024',
-                'BLOCKYSIZE=1024',
-                f'NUM_THREADS={num_threads}'
-            ]
-
-            if current_compress != 'NONE':
-                creation_opts.extend([
-                    f'COMPRESS={current_compress}',
-                    'PREDICTOR=2'
-                ])
-
-            translate_options = gdal.TranslateOptions(
-                format='GTiff',
-                creationOptions=creation_opts,
-                projWin=clip_projwin if clip_projwin else None
-            )
-
-            ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
-
-            if ds:
-                ds = None
-                file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
-                elapsed = time.time() - start_time
-                rate = file_size_mb / elapsed if elapsed > 0 else 0
-                return {
-                    'success': True,
-                    'date': date,
-                    'output_tiff': str(output_tiff),
-                    'elapsed': elapsed,
-                    'file_size_mb': file_size_mb,
-                    'rate': rate,
-                    'compress': current_compress
-                }
-
-            return {
-                'success': False,
-                'date': date,
-                'output_tiff': str(output_tiff),
-                'error': 'gdal.Translate returned None'
-            }
-
-        except Exception as e:
-            error_str = str(e).lower()
-            if current_compress == 'ZSTD' and not attempted_lzw and (
-                'zstd' in error_str or 'frame descriptor' in error_str or 'data corruption' in error_str
-            ):
-                attempted_lzw = True
-                current_compress = 'LZW'
-                try:
-                    if output_tiff.exists():
-                        output_tiff.unlink()
-                except Exception:
-                    pass
-                continue
-
-            import traceback
-            return {
-                'success': False,
-                'date': date,
-                'output_tiff': str(output_tiff),
-                'error': str(e),
-                'traceback': traceback.format_exc(),
-                'compress': current_compress
-            }
-
-
-def postprocess_tif_worker(args):
-    """Convert a mosaic raster (VRT/TIFF) to MBTiles/PMTiles and optionally upload via rclone."""
-    if len(args) < 4:
-        raise ValueError("postprocess_tif_worker expected at least 4 args")
-
-    input_raster, output_dir, remote, rclone_flags = args[:4]
-    delete_input = args[4] if len(args) > 4 else False
-    mbtiles_quality = args[5] if len(args) > 5 else 80
-    requested_threads = args[6] if len(args) > 6 else "AUTO"
-    requested_cache_mb = args[7] if len(args) > 7 else None
-    quiet_external_tools = bool(args[8]) if len(args) > 8 else True
-    output_stem = args[9] if len(args) > 9 else None
-    clip_projwin = args[10] if len(args) > 10 else None
-    temp_tiles_root = args[11] if len(args) > 11 else Path("/Volumes/drive/sync")
-    mbtiles_min_zoom = args[12] if len(args) > 12 else 2
-
-    input_raster = Path(input_raster)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    temp_tiles_root = Path(temp_tiles_root)
-    temp_tiles_root.mkdir(parents=True, exist_ok=True)
-    output_stem = str(output_stem).strip() if output_stem else input_raster.stem
-    remote = str(remote).strip() if remote else ""
-    tiles_tmp_dir = temp_tiles_root / f"{output_stem}__tiles_tmp"
-    clip_vrt_path = temp_tiles_root / f"{output_stem}__clip_tmp.vrt"
-
-    try:
-        mbtiles_quality = int(mbtiles_quality)
-    except Exception:
-        mbtiles_quality = 80
-    mbtiles_quality = max(1, min(100, mbtiles_quality))
-    try:
-        mbtiles_min_zoom = int(mbtiles_min_zoom)
-    except Exception:
-        mbtiles_min_zoom = 2
-    mbtiles_min_zoom = max(0, mbtiles_min_zoom)
-    gdal_threads, gdal_cache_mb = _auto_postprocess_settings(
-        worker_count=1,
-        requested_threads=requested_threads,
-        requested_cache_mb=requested_cache_mb
-    )
-
-    mbtiles_path = output_dir / f"{output_stem}.mbtiles"
-    pmtiles_path = output_dir / f"{output_stem}.pmtiles"
-    stage_times: Dict[str, float] = {}
-    status_path = temp_tiles_root / f"{output_stem}__postprocess_status.json"
-    tile_exts = {".webp", ".png", ".jpg", ".jpeg"}
-
-    def _remove_path(path: Path) -> None:
-        try:
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            elif path.exists():
-                path.unlink()
-        except Exception:
-            pass
-
-    def _write_status(stage: str, progress: Optional[float] = None, detail: str = "") -> None:
-        payload: Dict[str, Union[str, float]] = {
-            "stage": str(stage),
-            "updated": float(time.time())
-        }
-        if progress is not None:
-            try:
-                pct = float(progress)
-                payload["progress"] = max(0.0, min(100.0, pct))
-            except Exception:
-                pass
-        if detail:
-            payload["detail"] = str(detail)
-        tmp_status = status_path.with_suffix(status_path.suffix + ".tmp")
-        try:
-            with open(tmp_status, "w", encoding="utf-8") as f:
-                json.dump(payload, f, separators=(",", ":"))
-            os.replace(tmp_status, status_path)
-        except Exception:
-            try:
-                if tmp_status.exists():
-                    tmp_status.unlink()
-            except Exception:
-                pass
-
-    def _count_tiles_in_folder(tile_dir: Path) -> int:
-        if not tile_dir.exists():
-            return 0
-        count = 0
-        for root, _dirs, files in os.walk(tile_dir):
-            for filename in files:
-                if os.path.splitext(filename)[1].lower() in tile_exts:
-                    count += 1
-        return count
-
-    def _estimate_total_tiles_from_tilemap(tile_dir: Path) -> Optional[int]:
-        tilemap_path = tile_dir / "tilemapresource.xml"
-        if not tilemap_path.exists():
-            return None
-        try:
-            root = ET.parse(str(tilemap_path)).getroot()
-            bbox = root.find(".//BoundingBox")
-            if bbox is None:
-                return None
-            minx = float(bbox.attrib["minx"])
-            miny = float(bbox.attrib["miny"])
-            maxx = float(bbox.attrib["maxx"])
-            maxy = float(bbox.attrib["maxy"])
-            tile_sets = root.findall(".//TileSet")
-            if not tile_sets:
-                return None
-            zoom_levels = []
-            for tile_set in tile_sets:
-                order_val = tile_set.attrib.get("order")
-                if order_val is None:
-                    continue
-                if str(order_val).isdigit():
-                    zoom_levels.append(int(order_val))
-            if not zoom_levels:
-                return None
-            min_zoom = min(zoom_levels)
-            max_zoom = max(zoom_levels)
-
-            def _lon_to_xyz_col(lon_deg: float, zoom: int) -> int:
-                n = float(1 << int(zoom))
-                x = ((float(lon_deg) + 180.0) / 360.0) * n
-                col = int(math.floor(x))
-                return max(0, min((1 << int(zoom)) - 1, col))
-
-            def _lat_to_xyz_row(lat_deg: float, zoom: int) -> int:
-                lat_clamped = max(-85.05112878, min(85.05112878, float(lat_deg)))
-                lat_rad = math.radians(lat_clamped)
-                n = float(1 << int(zoom))
-                y = (1.0 - math.log(math.tan(lat_rad) + (1.0 / math.cos(lat_rad))) / math.pi) * 0.5 * n
-                row = int(math.floor(y))
-                return max(0, min((1 << int(zoom)) - 1, row))
-
-            total_tiles = 0
-            lon_w = min(minx, maxx)
-            lon_e = max(minx, maxx)
-            lat_s = min(miny, maxy)
-            lat_n = max(miny, maxy)
-            for zoom in range(min_zoom, max_zoom + 1):
-                x0 = _lon_to_xyz_col(lon_w, zoom)
-                x1 = _lon_to_xyz_col(lon_e, zoom)
-                y_n = _lat_to_xyz_row(lat_n, zoom)
-                y_s = _lat_to_xyz_row(lat_s, zoom)
-                y0 = min(y_n, y_s)
-                y1 = max(y_n, y_s)
-                total_tiles += max(0, (x1 - x0 + 1)) * max(0, (y1 - y0 + 1))
-            return total_tiles if total_tiles > 0 else None
-        except Exception:
-            return None
-
-    def run(cmd, env_overrides: Optional[Dict[str, str]] = None):
-        stage_start = time.time()
-        env = None
-        if env_overrides:
-            env = os.environ.copy()
-            env.update({k: str(v) for k, v in env_overrides.items() if v is not None})
-        try:
-            if quiet_external_tools:
-                result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-                tail = ""
-                if result.returncode != 0 and result.stdout:
-                    lines = [line for line in result.stdout.strip().splitlines() if line.strip()]
-                    tail = "\n".join(lines[-8:])
-                return result.returncode == 0, result.returncode, tail, time.time() - stage_start
-            result = subprocess.run(cmd, env=env)
-            return result.returncode == 0, result.returncode, "", time.time() - stage_start
-        except FileNotFoundError as e:
-            return False, 127, str(e), time.time() - stage_start
-
-    def run_monitored(
-        cmd,
-        env_overrides: Optional[Dict[str, str]] = None,
-        poll_cb=None,
-        poll_interval_sec: float = 30.0
-    ):
-        stage_start = time.time()
-        env = None
-        if env_overrides:
-            env = os.environ.copy()
-            env.update({k: str(v) for k, v in env_overrides.items() if v is not None})
-
-        proc = None
-        log_fh = None
-        log_path = None
-        err_tail = ""
-        try:
-            if quiet_external_tools:
-                log_path = temp_tiles_root / f"{output_stem}__cmd.log"
-                log_fh = open(log_path, "w", encoding="utf-8", errors="replace")
-                proc = subprocess.Popen(cmd, stdout=log_fh, stderr=subprocess.STDOUT, text=True, env=env)
-            else:
-                proc = subprocess.Popen(cmd, env=env)
-
-            next_poll = time.time()
-            while True:
-                rc = proc.poll()
-                if rc is not None:
-                    break
-                now_ts = time.time()
-                if poll_cb is not None and now_ts >= next_poll:
-                    try:
-                        poll_cb(now_ts)
-                    except Exception:
-                        pass
-                    next_poll = now_ts + max(1.0, float(poll_interval_sec or 1.0))
-                time.sleep(1.0)
-
-            if quiet_external_tools and rc != 0 and log_path and log_path.exists():
-                try:
-                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                        lines = [line for line in f.read().splitlines() if line.strip()]
-                    err_tail = "\n".join(lines[-8:])
-                except Exception:
-                    err_tail = ""
-
-            return rc == 0, int(rc), err_tail, time.time() - stage_start
-        except FileNotFoundError as e:
-            return False, 127, str(e), time.time() - stage_start
-        finally:
-            if log_fh:
-                try:
-                    log_fh.close()
-                except Exception:
-                    pass
-            if log_path and log_path.exists():
-                try:
-                    log_path.unlink()
-                except Exception:
-                    pass
-
-    def _read_bounds_from_tilemap(tile_dir: Path) -> Optional[Tuple[float, float, float, float]]:
-        tilemap_path = tile_dir / "tilemapresource.xml"
-        if not tilemap_path.exists():
-            return None
-        try:
-            root = ET.parse(str(tilemap_path)).getroot()
-            bbox = root.find(".//BoundingBox")
-            if bbox is None:
-                return None
-            minx = float(bbox.attrib.get("minx"))
-            miny = float(bbox.attrib.get("miny"))
-            maxx = float(bbox.attrib.get("maxx"))
-            maxy = float(bbox.attrib.get("maxy"))
-            return (minx, miny, maxx, maxy)
-        except Exception:
-            return None
-
-    def _pack_tiles_dir_to_mbtiles(
-        tile_dir: Path,
-        mbtiles_file: Path,
-        name: str,
-        total_tiles_hint: Optional[int] = None,
-        progress_cb=None
-    ) -> Tuple[bool, str, int, str]:
-        tile_count = 0
-        min_zoom = None
-        max_zoom = None
-        format_counts: Dict[str, int] = defaultdict(int)
-        bounds = _read_bounds_from_tilemap(tile_dir)
-        conn = None
-        try:
-            if mbtiles_file.exists():
-                mbtiles_file.unlink()
-            conn = sqlite3.connect(str(mbtiles_file))
-            cur = conn.cursor()
-            cur.execute("PRAGMA journal_mode=DELETE")
-            cur.execute("PRAGMA synchronous=OFF")
-            cur.execute("PRAGMA temp_store=MEMORY")
-            cur.execute("PRAGMA locking_mode=EXCLUSIVE")
-            cur.execute("PRAGMA cache_size=-131072")
-            cur.execute("CREATE TABLE IF NOT EXISTS metadata (name text, value text)")
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS tiles ("
-                "zoom_level integer, tile_column integer, tile_row integer, tile_data blob)"
-            )
-            cur.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS tile_index "
-                "ON tiles (zoom_level, tile_column, tile_row)"
-            )
-
-            insert_sql = (
-                "INSERT OR REPLACE INTO tiles (zoom_level, tile_column, tile_row, tile_data) "
-                "VALUES (?, ?, ?, ?)"
-            )
-            allowed_exts = {".webp": "webp", ".png": "png", ".jpg": "jpg", ".jpeg": "jpg"}
-            batch = []
-            batch_size = 1024
-            last_progress = 0.0
-
-            cur.execute("BEGIN")
-            for z_entry in os.scandir(tile_dir):
-                if not z_entry.is_dir() or not z_entry.name.isdigit():
-                    continue
-                z = int(z_entry.name)
-                if min_zoom is None or z < min_zoom:
-                    min_zoom = z
-                if max_zoom is None or z > max_zoom:
-                    max_zoom = z
-                for x_entry in os.scandir(z_entry.path):
-                    if not x_entry.is_dir() or not x_entry.name.isdigit():
-                        continue
-                    x = int(x_entry.name)
-                    for y_entry in os.scandir(x_entry.path):
-                        if not y_entry.is_file():
-                            continue
-                        y_name, ext = os.path.splitext(y_entry.name)
-                        ext_lc = ext.lower()
-                        if ext_lc not in allowed_exts:
-                            continue
-                        if not y_name.isdigit():
-                            continue
-                        y = int(y_name)
-                        with open(y_entry.path, "rb") as f:
-                            tile_blob = f.read()
-                        batch.append((z, x, y, sqlite3.Binary(tile_blob)))
-                        tile_count += 1
-                        format_counts[allowed_exts[ext_lc]] += 1
-                        if len(batch) >= batch_size:
-                            cur.executemany(insert_sql, batch)
-                            batch.clear()
-                        if progress_cb and (tile_count % 5000 == 0 or (time.time() - last_progress) >= 2.0):
-                            try:
-                                progress_cb(tile_count, total_tiles_hint)
-                            except Exception:
-                                pass
-                            last_progress = time.time()
-
-            if batch:
-                cur.executemany(insert_sql, batch)
-                batch.clear()
-            cur.execute("COMMIT")
-
-            if tile_count <= 0:
-                return False, "no tiles found in gdal2tiles output folder", 0, ""
-
-            tile_format = max(format_counts.items(), key=lambda kv: kv[1])[0] if format_counts else "png"
-            metadata_rows = [
-                ("name", name),
-                ("type", "baselayer"),
-                ("version", "1"),
-                ("format", tile_format),
-            ]
-            if min_zoom is not None:
-                metadata_rows.append(("minzoom", str(min_zoom)))
-            if max_zoom is not None:
-                metadata_rows.append(("maxzoom", str(max_zoom)))
-            if bounds:
-                minx, miny, maxx, maxy = bounds
-                metadata_rows.append(("bounds", f"{minx:.8f},{miny:.8f},{maxx:.8f},{maxy:.8f}"))
-                if max_zoom is not None:
-                    cx = (minx + maxx) / 2.0
-                    cy = (miny + maxy) / 2.0
-                    metadata_rows.append(("center", f"{cx:.8f},{cy:.8f},{max_zoom}"))
-            for key, value in metadata_rows:
-                cur.execute("DELETE FROM metadata WHERE name=?", (key,))
-                cur.execute("INSERT INTO metadata (name, value) VALUES (?, ?)", (key, value))
-            conn.commit()
-            if progress_cb:
-                try:
-                    progress_cb(tile_count, total_tiles_hint)
-                except Exception:
-                    pass
-            return True, "", tile_count, tile_format
-        except Exception as e:
-            if conn:
-                try:
-                    conn.rollback()
-                except Exception:
-                    pass
-            return False, str(e), tile_count, ""
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-
-    def fail(error_msg: str):
-        _write_status("failed", None, str(error_msg))
-        _remove_path(tiles_tmp_dir)
-        _remove_path(clip_vrt_path)
-        return {
-            'success': False,
-            'input_raster': str(input_raster),
-            'error': error_msg,
-            'stage_times': stage_times
-        }
-
-    _remove_path(tiles_tmp_dir)
-    _remove_path(clip_vrt_path)
-    _write_status("starting", 0.0, "initializing")
-
-    input_mtime = input_raster.stat().st_mtime if input_raster.exists() else 0
-    pmtiles_up_to_date = (
-        pmtiles_path.exists()
-        and pmtiles_path.stat().st_size > 0
-        and pmtiles_path.stat().st_mtime >= input_mtime
-    )
-
-    if not pmtiles_up_to_date:
-        if mbtiles_path.exists():
-            try:
-                mbtiles_path.unlink()
-            except Exception:
-                pass
-        if pmtiles_path.exists():
-            try:
-                pmtiles_path.unlink()
-            except Exception:
-                pass
-        for stale_path in (
-            Path(str(mbtiles_path) + "-journal"),
-            Path(str(mbtiles_path) + "-wal"),
-            Path(str(mbtiles_path) + "-shm"),
-        ):
-            if stale_path.exists():
-                try:
-                    stale_path.unlink()
-                except Exception:
-                    pass
-
-        gdal_env = {
-            "GDAL_CACHEMAX": str(gdal_cache_mb),
-            "GDAL_NUM_THREADS": str(gdal_threads),
-        }
-
-        raster_for_tiles = input_raster
-        if clip_projwin:
-            try:
-                ulx, uly, lrx, lry = clip_projwin
-                _write_status("clip_projwin", 0.0, "clipping")
-                ok, rc, err_tail, elapsed_sec = run(
-                    [
-                        "gdal_translate", "-q", "-of", "VRT",
-                        "--config", "GDAL_NUM_THREADS", str(gdal_threads),
-                        "--config", "GDAL_CACHEMAX", str(gdal_cache_mb),
-                        "-projwin", str(ulx), str(uly), str(lrx), str(lry),
-                        str(input_raster), str(clip_vrt_path)
-                    ],
-                    env_overrides=gdal_env
-                )
-                stage_times["clip_projwin"] = elapsed_sec
-                if not ok:
-                    error_msg = f"gdal_translate clip failed (exit {rc})"
-                    if err_tail:
-                        error_msg += f"\n{err_tail}"
-                    return fail(error_msg)
-                raster_for_tiles = clip_vrt_path
-                _write_status("clip_projwin", 100.0, "done")
-            except Exception:
-                pass
-
-        gdal2tiles_base = [
-            "gdal2tiles.py",
-            "--profile=mercator",
-            "--resampling=lanczos",
-            f"--zoom={mbtiles_min_zoom}-",
-            "--exclude",
-            "--webviewer=none",
-            "--processes", str(max(1, gdal_threads)),
-        ]
-        if quiet_external_tools:
-            gdal2tiles_base.insert(1, "--quiet")
-
-        gdal2tiles_cmd = gdal2tiles_base + [
-            "--tiledriver=WEBP",
-            f"--webp-quality={mbtiles_quality}",
-            str(raster_for_tiles),
-            str(tiles_tmp_dir)
-        ]
-        gdal_expected_total = {"value": None}
-        _write_status("gdal2tiles", 0.0, "warming up")
-
-        def _gdal2tiles_poll(_now_ts: float) -> None:
-            expected_total = gdal_expected_total["value"]
-            if expected_total is None:
-                expected_total = _estimate_total_tiles_from_tilemap(tiles_tmp_dir)
-                if expected_total:
-                    gdal_expected_total["value"] = expected_total
-            generated_tiles = _count_tiles_in_folder(tiles_tmp_dir)
-            detail = f"{generated_tiles:,} tiles"
-            progress = None
-            if expected_total and expected_total > 0:
-                detail = f"{generated_tiles:,}/{expected_total:,} tiles"
-                progress = min(99.0, max(0.0, (float(generated_tiles) / float(expected_total)) * 100.0))
-            _write_status("gdal2tiles", progress, detail)
-
-        ok, rc, err_tail, elapsed_sec = run_monitored(
-            gdal2tiles_cmd,
-            env_overrides=gdal_env,
-            poll_cb=_gdal2tiles_poll,
-            poll_interval_sec=45.0
-        )
-        stage_times["gdal2tiles"] = elapsed_sec
-        if not ok:
-            error_msg = f"gdal2tiles.py failed (exit {rc})"
-            if err_tail:
-                error_msg += f"\n{err_tail}"
-            return fail(error_msg)
-
-        generated_tiles = _count_tiles_in_folder(tiles_tmp_dir)
-        expected_total = gdal_expected_total["value"] or _estimate_total_tiles_from_tilemap(tiles_tmp_dir)
-        gdal_detail = f"{generated_tiles:,} tiles"
-        if expected_total and expected_total > 0:
-            gdal_detail = f"{generated_tiles:,}/{expected_total:,} tiles"
-        _write_status("gdal2tiles", 100.0, gdal_detail)
-
-        pack_start = time.time()
-        total_tiles_hint = generated_tiles if generated_tiles > 0 else None
-        _write_status("pack_mbtiles", 0.0, "preparing")
-
-        def _pack_progress(done_tiles: int, total_hint: Optional[int]) -> None:
-            detail = f"{done_tiles:,} tiles"
-            progress = None
-            if total_hint and total_hint > 0:
-                detail = f"{done_tiles:,}/{total_hint:,} tiles"
-                progress = min(99.0, max(0.0, (float(done_tiles) / float(total_hint)) * 100.0))
-            _write_status("pack_mbtiles", progress, detail)
-
-        packed_ok, pack_err, tile_count, tile_format = _pack_tiles_dir_to_mbtiles(
-            tiles_tmp_dir,
-            mbtiles_path,
-            output_stem,
-            total_tiles_hint=total_tiles_hint,
-            progress_cb=_pack_progress
-        )
-        stage_times["pack_mbtiles"] = time.time() - pack_start
-        if not packed_ok:
-            return fail(f"pack_mbtiles failed: {pack_err}")
-        if tile_count <= 0:
-            return fail("pack_mbtiles produced MBTiles with zero tiles")
-        if not tile_format:
-            return fail("pack_mbtiles could not determine tile format")
-        pack_detail = f"{tile_count:,} tiles"
-        if total_tiles_hint and total_tiles_hint > 0:
-            pack_detail = f"{tile_count:,}/{total_tiles_hint:,} tiles"
-        _write_status("pack_mbtiles", 100.0, pack_detail)
-
-        _write_status("pmtiles_convert", 0.0, "converting")
-        mbtiles_size_bytes = mbtiles_path.stat().st_size if mbtiles_path.exists() else 0
-
-        def _pmtiles_poll(_now_ts: float) -> None:
-            if not pmtiles_path.exists():
-                return
-            try:
-                out_size = pmtiles_path.stat().st_size
-            except Exception:
-                return
-            detail = f"{(out_size / (1024 * 1024)):.1f}MB"
-            progress = None
-            if mbtiles_size_bytes > 0:
-                progress = min(99.0, max(0.0, (float(out_size) / float(mbtiles_size_bytes)) * 100.0))
-                detail = f"{(out_size / (1024 * 1024)):.1f}MB / {(mbtiles_size_bytes / (1024 * 1024)):.1f}MB"
-            _write_status("pmtiles_convert", progress, detail)
-
-        ok, rc, err_tail, elapsed_sec = run_monitored(
-            ["pmtiles", "convert", str(mbtiles_path), str(pmtiles_path)],
-            poll_cb=_pmtiles_poll,
-            poll_interval_sec=5.0
-        )
-        stage_times["pmtiles_convert"] = elapsed_sec
-        if not ok:
-            error_msg = f"pmtiles convert failed (exit {rc})"
-            if err_tail:
-                error_msg += f"\n{err_tail}"
-            return fail(error_msg)
-        _write_status("pmtiles_convert", 100.0, "done")
-
-    _remove_path(tiles_tmp_dir)
-    _remove_path(clip_vrt_path)
-
-    if not (pmtiles_path.exists() and pmtiles_path.stat().st_size > 0):
-        return fail("pmtiles output missing")
-
-    if remote:
-        _write_status("upload", 0.0, "starting")
-        upload_flags = list(rclone_flags)
-        if quiet_external_tools:
-            cleaned_flags = []
-            skip_next = False
-            for flag in upload_flags:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if flag in {"-P", "--progress"}:
-                    continue
-                if flag == "--stats":
-                    skip_next = True
-                    continue
-                cleaned_flags.append(flag)
-            upload_flags = cleaned_flags
-
-        upload_cmd = ["rclone", "copyto", str(pmtiles_path), f"{remote}/{pmtiles_path.name}"] + upload_flags
-        ok, rc, err_tail, elapsed_sec = run(upload_cmd)
-        stage_times["rclone_upload"] = elapsed_sec
-        if not ok:
-            error_msg = f"rclone upload failed (exit {rc})"
-            if err_tail:
-                error_msg += f"\n{err_tail}"
-            return fail(error_msg)
-        _write_status("upload", 100.0, "done")
-
-    deleted_input = False
-    delete_error = None
-    if delete_input and input_raster.suffix.lower() in {".tif", ".tiff"}:
-        try:
-            if input_raster.exists():
-                input_raster.unlink()
-                deleted_input = True
-        except Exception as e:
-            delete_error = str(e)
-
-    _write_status("done", 100.0, "complete")
-    return {
-        'success': True,
-        'input_raster': str(input_raster),
-        'pmtiles': str(pmtiles_path),
-        'stage_times': stage_times,
-        'deleted_input': deleted_input,
-        'delete_error': delete_error
-    }
-
-
 class ChartSlicer:
     """Process FAA charts and create COGs."""
 
@@ -912,26 +139,14 @@ class ChartSlicer:
         self.last_download_time = 0  # Track last download time for throttling
         self._date_cache: Dict[str, Optional[datetime.date]] = {}
         self.date_key_map: Dict[str, Tuple[str, str]] = {}
-        self.upload_root = Path("/Users/ryanhemenway/Desktop/sync")
-        self.postprocess_tiles_temp_root = Path("/Volumes/drive/sync")
-        self.upload_remote = "r2:charts/sectionals"
-        self.upload_jobs = 1
-        self.postprocess_threads: Union[int, str] = "AUTO"
-        self.postprocess_cache_mb: Optional[int] = None
-        self.skip_existing_postprocess = True
-        self.quiet_external_tools = True
-        self.delete_geotiff_after_mbtiles = True
-        self.rclone_flags = [
-            "--s3-upload-concurrency", "16",
-            "--s3-chunk-size", "128M",
-            "--buffer-size", "128M",
-            "--s3-disable-checksum"
-        ]
-        if not self.quiet_external_tools:
-            self.rclone_flags.extend(["-P", "--stats", "1s"])
-        self.mbtiles_quality = 80
-        self.mbtiles_min_zoom = 2
-        self.max_postprocess_backlog = 10
+        # GeoTIFF output settings (final pipeline stage: mosaic VRT -> GeoTIFF)
+        self.geotiff_compress = 'ZSTD'
+        self.num_threads = '4'
+        self.clip_projwin: Optional[Tuple[float, float, float, float]] = None
+        # GeoTIFF progress/ETA tracking (populated in process_all_dates)
+        self.geotiff_total_planned = 0
+        self.geotiff_completed = 0
+        self.geotiff_times: List[float] = []
         self.parallel_warp = 0
         # In threaded warp mode we already parallelize by job; avoid extra internal threads on Apple Silicon.
         self.warp_multithread = not IS_APPLE_SILICON
@@ -1079,9 +294,15 @@ class ChartSlicer:
 
         src_srs = osr.SpatialReference()
         dst_srs = osr.SpatialReference()
-        if src_srs.ImportFromEPSG(4269) != 0:
-            return None
-        if dst_srs.SetFromUserInput(crs_str) != 0:
+        try:
+            if src_srs.ImportFromEPSG(4269) != 0:
+                return None
+            if dst_srs.SetFromUserInput(crs_str) != 0:
+                return None
+        except RuntimeError as e:
+            # Malformed CRS (e.g. +lon_0=NaN) raises rather than returning non-zero
+            # when GDAL exceptions are enabled. Skip GCP warp; fall back to shapefile.
+            self.log(f"    invalid CRS, falling back to shapefile warp: {crs_str!r} ({e})")
             return None
         if hasattr(src_srs, "SetAxisMappingStrategy") and hasattr(osr, "OAMS_TRADITIONAL_GIS_ORDER"):
             src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
@@ -1136,497 +357,6 @@ class ChartSlicer:
         start_date = self.date_key_map.get(date_key, (date_key, None))[0]
         parsed = self._date_from_str(start_date)
         return parsed if parsed else datetime.date.min
-
-    def _date_from_stem(self, stem: str) -> Optional[datetime.date]:
-        """Best-effort parse of a date from postprocess output stems."""
-        if not stem:
-            return None
-        if stem in self.date_key_map:
-            start_date = self.date_key_map.get(stem, (None, None))[0]
-            if start_date:
-                return self._date_from_str(start_date)
-
-        # Handles stems like YYYY-MM-DD and YYYY-MM-DD_to_YYYY-MM-DD.
-        match = re.search(r"\d{4}-\d{2}-\d{2}", stem)
-        if not match:
-            return None
-        return self._date_from_str(match.group(0))
-
-    def _postprocess_sort_key(self, stem: str) -> Tuple[int, int, str]:
-        """
-        Sort postprocess jobs newest-to-oldest, starting from 2025 and going backward.
-        Dates after 2025 are kept, but processed after the <=2025 backlog.
-        """
-        date_obj = self._date_from_stem(stem)
-        if date_obj:
-            if date_obj.year <= 2025:
-                return (0, -date_obj.toordinal(), stem)
-            return (1, -date_obj.toordinal(), stem)
-        return (2, 0, stem)
-
-    def _run_postprocess_upload_stage(
-        self,
-        input_dir: Optional[Path] = None,
-        input_jobs: Optional[List[Tuple[Path, str]]] = None
-    ) -> None:
-        """Convert mosaic rasters to MBTiles/PMTiles and upload PMTiles."""
-        output_dir = self.upload_root
-        temp_tiles_root = self.postprocess_tiles_temp_root
-        output_dir.mkdir(parents=True, exist_ok=True)
-        temp_tiles_root.mkdir(parents=True, exist_ok=True)
-
-        discovered_jobs: List[Dict[str, Union[Path, str]]] = []
-        skipped_up_to_date = 0
-
-        def _add_job(input_path: Path, output_stem: Optional[str] = None) -> None:
-            nonlocal skipped_up_to_date
-            if not input_path.exists():
-                return
-            min_size = 128 if input_path.suffix.lower() == ".vrt" else 1024 * 1024
-            if input_path.stat().st_size <= min_size:
-                return
-            stem = (str(output_stem).strip() if output_stem else input_path.stem).strip()
-            if not stem:
-                return
-            pmtiles_path = output_dir / f"{stem}.pmtiles"
-            if getattr(self, 'skip_existing_postprocess', True):
-                input_mtime = input_path.stat().st_mtime
-                if pmtiles_path.exists() and pmtiles_path.stat().st_size > 0 and pmtiles_path.stat().st_mtime >= input_mtime:
-                    skipped_up_to_date += 1
-                    return
-            discovered_jobs.append({
-                "input": input_path,
-                "stem": stem
-            })
-
-        if input_jobs:
-            for entry in input_jobs:
-                if not entry:
-                    continue
-                input_path = Path(entry[0])
-                output_stem = entry[1] if len(entry) > 1 else None
-                _add_job(input_path, output_stem)
-        else:
-            scan_dir = Path(input_dir) if input_dir else self.output_dir
-            for tif in sorted(scan_dir.glob("*.tif")):
-                _add_job(tif, tif.stem)
-            for tif in sorted(scan_dir.glob("*.tiff")):
-                _add_job(tif, tif.stem)
-
-            for mosaic_vrt in sorted(self.temp_dir.glob("*/mosaic_*.vrt")):
-                stem = mosaic_vrt.stem
-                if stem.startswith("mosaic_"):
-                    stem = stem[len("mosaic_"):]
-                _add_job(mosaic_vrt, stem)
-
-        if not discovered_jobs:
-            scan_desc = str(input_dir) if input_dir else str(self.output_dir)
-            if skipped_up_to_date > 0:
-                self.log(f"  ✓ Skipping {skipped_up_to_date} jobs with up-to-date local PMTiles")
-            self.log(f"  ⊘ No postprocess inputs found (checked {scan_desc} and {self.temp_dir})")
-            return
-
-        jobs_by_stem: Dict[str, Dict[str, Union[Path, str]]] = {}
-        for job in discovered_jobs:
-            stem = str(job["stem"])
-            existing = jobs_by_stem.get(stem)
-            if not existing:
-                jobs_by_stem[stem] = job
-                continue
-            current_input = Path(job["input"])
-            existing_input = Path(existing["input"])
-            if current_input.stat().st_mtime >= existing_input.stat().st_mtime:
-                jobs_by_stem[stem] = job
-
-        ordered_stems = sorted(jobs_by_stem.keys(), key=self._postprocess_sort_key)
-        jobs: List[Dict[str, Union[Path, str]]] = [jobs_by_stem[k] for k in ordered_stems]
-        if skipped_up_to_date > 0:
-            self.log(f"  ✓ Skipping {skipped_up_to_date} jobs with up-to-date local PMTiles")
-
-        worker_upper_bound = max(1, min(self.upload_jobs, len(jobs)))
-        adaptive_workers = worker_upper_bound
-        post_threads = 1
-        post_cache_mb = 512
-        quiet_tools = bool(getattr(self, 'quiet_external_tools', True))
-        throughput_history = deque(maxlen=8)
-        recent_failures = deque(maxlen=6)
-        completions = 0
-        last_tune_completion = -99
-        next_job_index = 0
-
-        def _recompute_postprocess_settings() -> None:
-            nonlocal post_threads, post_cache_mb
-            post_threads, post_cache_mb = _auto_postprocess_settings(
-                worker_count=max(1, adaptive_workers),
-                requested_threads=getattr(self, 'postprocess_threads', "AUTO"),
-                requested_cache_mb=getattr(self, 'postprocess_cache_mb', None)
-            )
-
-        def _postprocess_memory_cap(cache_mb: int) -> Tuple[int, Dict[str, int], int, int]:
-            mem_snapshot = _get_memory_snapshot_mb(
-                default_available_mb=8192 if IS_APPLE_SILICON else 4096,
-                default_total_mb=16384 if IS_APPLE_SILICON else 8192
-            )
-            reserve_mb = _recommended_free_ram_floor_mb(mem_snapshot["total_mb"])
-            est_worker_mb = max(640, int(cache_mb or 0) + 192)
-            budget_mb = max(0, mem_snapshot["available_mb"] - reserve_mb)
-            cap = max(1, min(worker_upper_bound, (budget_mb // est_worker_mb) if budget_mb > 0 else 1))
-            return cap, mem_snapshot, reserve_mb, est_worker_mb
-
-        def _maybe_tune_postprocess(force: bool = False, hint: str = "") -> None:
-            nonlocal adaptive_workers, post_threads, post_cache_mb, last_tune_completion
-            if not force and (completions - last_tune_completion) < 4:
-                return
-
-            previous_workers = adaptive_workers
-            reason = hint or "adaptive"
-
-            memory_cap, mem_snapshot, reserve_mb, est_worker_mb = _postprocess_memory_cap(post_cache_mb)
-            if adaptive_workers > memory_cap:
-                adaptive_workers = memory_cap
-                reason = f"memory pressure ({mem_snapshot['available_mb']}MB free)"
-
-            queue_remaining = total_jobs - next_job_index
-            if adaptive_workers > 1 and sum(recent_failures) >= 2:
-                adaptive_workers = max(1, adaptive_workers - 1)
-                reason = "recent worker failures"
-
-            if adaptive_workers > 1 and len(throughput_history) >= 4 and queue_remaining > 0:
-                recent_window = list(throughput_history)[-3:]
-                recent_rate = sum(recent_window) / len(recent_window)
-                baseline_rate = sum(throughput_history) / len(throughput_history)
-                if recent_rate < (baseline_rate * 0.72):
-                    adaptive_workers = max(1, adaptive_workers - 1)
-                    reason = f"throughput drop ({recent_rate:.2f}MB/s)"
-
-            if (
-                adaptive_workers < worker_upper_bound
-                and queue_remaining > adaptive_workers
-                and len(throughput_history) >= 4
-                and sum(recent_failures) == 0
-            ):
-                recent_window = list(throughput_history)[-3:]
-                recent_rate = sum(recent_window) / len(recent_window)
-                baseline_rate = sum(throughput_history) / len(throughput_history)
-                if recent_rate >= (baseline_rate * 0.95):
-                    trial_workers = adaptive_workers + 1
-                    trial_threads, trial_cache = _auto_postprocess_settings(
-                        worker_count=trial_workers,
-                        requested_threads=getattr(self, 'postprocess_threads', "AUTO"),
-                        requested_cache_mb=getattr(self, 'postprocess_cache_mb', None)
-                    )
-                    trial_cap, trial_mem_snapshot, _, _ = _postprocess_memory_cap(trial_cache)
-                    if trial_workers <= trial_cap:
-                        adaptive_workers = trial_workers
-                        mem_snapshot = trial_mem_snapshot
-                        post_threads = trial_threads
-                        post_cache_mb = trial_cache
-                        reason = f"throughput stable ({recent_rate:.2f}MB/s)"
-
-            if adaptive_workers != previous_workers:
-                post_threads, post_cache_mb = _auto_postprocess_settings(
-                    worker_count=max(1, adaptive_workers),
-                    requested_threads=getattr(self, 'postprocess_threads', "AUTO"),
-                    requested_cache_mb=getattr(self, 'postprocess_cache_mb', None)
-                )
-                self.log(
-                    f"  ↺ Autotune postprocess: workers {previous_workers}->{adaptive_workers}, "
-                    f"threads/worker={post_threads}, cache/worker={post_cache_mb}MB "
-                    f"({reason}; free={mem_snapshot['available_mb']}MB, floor={reserve_mb}MB, est/worker={est_worker_mb}MB)"
-                )
-                last_tune_completion = completions
-            elif force and last_tune_completion < 0:
-                last_tune_completion = completions
-
-        _recompute_postprocess_settings()
-
-        self.log(f"\n=== Post-Processing: gdal2tiles -> pack_mbtiles -> pmtiles -> upload ===")
-        self.log(f"Final output: {output_dir}")
-        self.log(f"Temp tile root: {temp_tiles_root}")
-        if self.upload_remote:
-            self.log(f"Remote: {self.upload_remote}")
-        else:
-            self.log("Remote: disabled (local PMTiles only)")
-        self.log(f"Workers upper bound: {worker_upper_bound}")
-        self.log(f"Postprocess GDAL threads/worker: {post_threads}")
-        self.log(f"Postprocess GDAL cache/worker: {post_cache_mb}MB")
-        self.log(f"External tool output: {'quiet' if quiet_tools else 'verbose'}")
-
-        successes = 0
-        failures = 0
-        live_status_enabled = bool(sys.stdout.isatty())
-        heartbeat_sec = 3 if live_status_enabled else 60
-        total_jobs = len(jobs)
-        self.log(f"Jobs to process: {total_jobs}")
-
-        live_line_len = 0
-        live_line_active = False
-        def _clear_live_status_line() -> None:
-            nonlocal live_line_len, live_line_active
-            if not live_line_active:
-                return
-            print()
-            live_line_len = 0
-            live_line_active = False
-
-        def _emit_live_status_line(message: str) -> None:
-            nonlocal live_line_len, live_line_active
-            if not live_status_enabled:
-                self.log(message)
-                return
-            ts = datetime.datetime.now().strftime("%H:%M:%S")
-            line = f"[{ts}] {message}"
-            pad = max(0, live_line_len - len(line))
-            print("\r" + line + (" " * pad), end="", flush=True)
-            live_line_len = len(line)
-            live_line_active = True
-
-        def _format_progress_bar(progress_pct: Optional[float], width: int = 14) -> str:
-            if progress_pct is None:
-                return ""
-            try:
-                pct = max(0.0, min(100.0, float(progress_pct)))
-            except Exception:
-                return ""
-            filled = int(round((pct / 100.0) * width))
-            filled = max(0, min(width, filled))
-            return f"[{'#' * filled}{'-' * (width - filled)}] {pct:4.1f}%"
-
-        def _read_worker_status(stem: str, start_ts: float) -> Optional[Dict[str, Union[str, float]]]:
-            status_file = temp_tiles_root / f"{stem}__postprocess_status.json"
-            if not status_file.exists():
-                return None
-            try:
-                if status_file.stat().st_mtime < (float(start_ts) - 2.0):
-                    return None
-                with open(status_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if not isinstance(data, dict):
-                    return None
-                return data
-            except Exception:
-                return None
-
-        def _worker_status_segment(info: Dict, now_ts: float) -> str:
-            idx = int(info.get('idx') or 0)
-            input_path = Path(info.get('input_path'))
-            stem = str(info.get('stem') or input_path.stem)
-            elapsed = int(max(0.0, now_ts - float(info.get('start') or now_ts)))
-            start_ts = float(info.get('start') or now_ts)
-
-            mbtiles_path = output_dir / f"{stem}.mbtiles"
-            pmtiles_path = output_dir / f"{stem}.pmtiles"
-            tiles_tmp_path = temp_tiles_root / f"{stem}__tiles_tmp"
-
-            display_name = input_path.name
-            if display_name.startswith("mosaic_"):
-                display_name = display_name[len("mosaic_"):]
-            if display_name.endswith(".vrt"):
-                display_name = display_name[:-4]
-
-            status_data = _read_worker_status(stem, start_ts)
-            if status_data:
-                stage_raw = str(status_data.get("stage") or "working").strip()
-                stage_label = stage_raw.replace("_", " ")
-                detail = str(status_data.get("detail") or "").strip()
-                bar = _format_progress_bar(status_data.get("progress"))
-                status_text = stage_label
-                if bar:
-                    status_text = f"{status_text} {bar}"
-                if detail:
-                    status_text = f"{status_text} {detail}"
-                return f"[{idx}/{total_jobs}] {display_name} {status_text} ({elapsed}s)"
-
-            if pmtiles_path.exists():
-                return f"[{idx}/{total_jobs}] {display_name} upload/finish ({elapsed}s)"
-            if mbtiles_path.exists():
-                return f"[{idx}/{total_jobs}] {display_name} pmtiles convert/upload ({elapsed}s)"
-            if tiles_tmp_path.exists():
-                return f"[{idx}/{total_jobs}] {display_name} gdal2tiles/pack ({elapsed}s)"
-            return f"[{idx}/{total_jobs}] {display_name} starting ({elapsed}s)"
-
-        _maybe_tune_postprocess(force=True, hint="startup")
-        self.log(f"Adaptive workers at start: {adaptive_workers}")
-
-        with ThreadPoolExecutor(max_workers=worker_upper_bound) as executor:
-            futures = {}
-            next_job_index = 0
-
-            def submit_next() -> bool:
-                nonlocal next_job_index
-                if next_job_index >= total_jobs:
-                    return False
-
-                job = jobs[next_job_index]
-                input_path = Path(job["input"])
-                output_stem = str(job["stem"])
-                idx = next_job_index + 1
-                next_job_index += 1
-                input_size_mb = input_path.stat().st_size / (1024 * 1024) if input_path.exists() else 0
-                self.log(
-                    f"  → Starting [{idx}/{total_jobs}]: {input_path.name} ({input_size_mb:.1f} MB) "
-                    f"[workers={adaptive_workers}, threads={post_threads}, cache={post_cache_mb}MB]"
-                )
-                future = executor.submit(
-                    postprocess_tif_worker,
-                    (
-                        input_path,
-                        output_dir,
-                        self.upload_remote,
-                        self.rclone_flags,
-                        self.delete_geotiff_after_mbtiles,
-                        self.mbtiles_quality,
-                        post_threads,
-                        post_cache_mb,
-                        quiet_tools,
-                        output_stem,
-                        getattr(self, 'clip_projwin', None),
-                        temp_tiles_root,
-                        self.mbtiles_min_zoom,
-                    )
-                )
-                futures[future] = {
-                    'input_path': input_path,
-                    'idx': idx,
-                    'start': time.time(),
-                    'input_size_mb': input_size_mb,
-                    'stem': output_stem
-                }
-                return True
-
-            for _ in range(min(adaptive_workers, total_jobs)):
-                submit_next()
-
-            while futures:
-                done, not_done = wait(futures, timeout=heartbeat_sec, return_when=FIRST_COMPLETED)
-                if not done:
-                    now = time.time()
-                    queued = total_jobs - next_job_index
-                    segments = []
-                    for fut in sorted(not_done, key=lambda x: futures[x]['idx']):
-                        segments.append(_worker_status_segment(futures[fut], now))
-                    _emit_live_status_line(
-                        f"  ⏳ Active: {' | '.join(segments)} | queued: {queued} | target workers: {adaptive_workers}"
-                    )
-                    continue
-
-                for future in done:
-                    _clear_live_status_line()
-                    info = futures.pop(future)
-                    input_path = info['input_path']
-                    idx = info['idx']
-                    total_elapsed = time.time() - info['start']
-
-                    try:
-                        result = future.result()
-                    except Exception as e:
-                        status_file = temp_tiles_root / f"{str(info.get('stem') or input_path.stem)}__postprocess_status.json"
-                        if status_file.exists():
-                            try:
-                                status_file.unlink()
-                            except Exception:
-                                pass
-                        failures += 1
-                        completions += 1
-                        recent_failures.append(1)
-                        self.log(f"  ✗ Post-process failed [{idx}/{total_jobs}] {input_path.name}: {e}")
-                        _maybe_tune_postprocess(hint="worker exception")
-                        while len(futures) < adaptive_workers and submit_next():
-                            pass
-                        continue
-
-                    stage_times = result.get('stage_times') or {}
-                    stage_summary = ", ".join(f"{k}={v:.1f}s" for k, v in stage_times.items())
-                    if stage_summary:
-                        stage_summary = f" [{stage_summary}]"
-                    status_file = temp_tiles_root / f"{str(info.get('stem') or input_path.stem)}__postprocess_status.json"
-                    if status_file.exists():
-                        try:
-                            status_file.unlink()
-                        except Exception:
-                            pass
-
-                    if result.get('success'):
-                        successes += 1
-                        status = "Uploaded" if self.upload_remote else "Created"
-                        msg = (
-                            f"  ✓ {status} [{idx}/{total_jobs}]: "
-                            f"{Path(result.get('pmtiles', '')).name} ({total_elapsed:.1f}s){stage_summary}"
-                        )
-                        if result.get('deleted_input'):
-                            msg += " (deleted input TIFF)"
-                        elif result.get('delete_error'):
-                            msg += f" (delete failed: {result.get('delete_error')})"
-                        self.log(msg)
-                    else:
-                        failures += 1
-                        recent_failures.append(1)
-                        self.log(
-                            f"  ✗ Failed [{idx}/{total_jobs}]: {input_path.name} ({total_elapsed:.1f}s){stage_summary} - "
-                            f"{result.get('error', 'unknown error')}"
-                        )
-
-                    if result.get('success'):
-                        recent_failures.append(0)
-
-                    output_size_mb = 0.0
-                    pmtiles_path = result.get('pmtiles')
-                    if pmtiles_path:
-                        try:
-                            output_size_mb = Path(pmtiles_path).stat().st_size / (1024 * 1024)
-                        except Exception:
-                            output_size_mb = 0.0
-                    if output_size_mb <= 0:
-                        output_size_mb = float(info.get('input_size_mb') or 0.0)
-                    if output_size_mb > 0 and total_elapsed > 0:
-                        throughput_history.append(output_size_mb / total_elapsed)
-
-                    completions += 1
-                    _maybe_tune_postprocess()
-
-                    while len(futures) < adaptive_workers and submit_next():
-                        pass
-
-        _clear_live_status_line()
-        self.log(f"Post-processing complete: {successes} succeeded, {failures} failed")
-
-    def _postprocess_single_tiff(self, tiff_path: Path) -> bool:
-        """Convert a single raster input to MBTiles/PMTiles and upload."""
-        post_threads, post_cache_mb = _auto_postprocess_settings(
-            worker_count=1,
-            requested_threads=getattr(self, 'postprocess_threads', "AUTO"),
-            requested_cache_mb=getattr(self, 'postprocess_cache_mb', None)
-        )
-        result = postprocess_tif_worker(
-            (
-                tiff_path,
-                self.upload_root,
-                self.upload_remote,
-                self.rclone_flags,
-                self.delete_geotiff_after_mbtiles,
-                self.mbtiles_quality,
-                post_threads,
-                post_cache_mb,
-                bool(getattr(self, 'quiet_external_tools', True)),
-                tiff_path.stem,
-                getattr(self, 'clip_projwin', None),
-                self.postprocess_tiles_temp_root,
-                self.mbtiles_min_zoom,
-            )
-        )
-        if result.get('success'):
-            status = "Uploaded" if self.upload_remote else "Created"
-            msg = f"  ✓ {status}: {Path(result.get('pmtiles', '')).name}"
-            if result.get('deleted_input'):
-                msg += " (deleted input TIFF)"
-            elif result.get('delete_error'):
-                msg += f" (delete failed: {result.get('delete_error')})"
-            self.log(msg)
-            return True
-
-        self.log(f"  ✗ Post-process failed for {tiff_path.name}: {result.get('error', 'unknown error')}")
-        return False
-
 
     def load_dole_data(self):
         """Load CSV data (combined or legacy) into date-keyed groups."""
@@ -2734,6 +1464,47 @@ class ChartSlicer:
             self.log(f"      {traceback.format_exc()}")
             return False
 
+    def _make_geotiff_progress_cb(self, start_time: float):
+        """Build a GDAL progress callback that logs per-job and overall ETA every 5%.
+
+        Shared by create_geotiff (Translate) and create_mosaic_geotiff (Warp).
+        """
+        progress_state = {'last_pct': -5}
+
+        def progress_cb(complete, message, cb_data):
+            pct = int(complete * 100)
+            if pct - progress_state['last_pct'] >= 5:
+                progress_state['last_pct'] = pct
+                elapsed = time.time() - start_time
+                # Per-job ETA
+                if pct > 0:
+                    est_total = elapsed * 100 / pct
+                    eta_sec = max(0, est_total - elapsed)
+                    eta_min = eta_sec / 60
+                    self.log(f"      GeoTIFF progress: {pct}% | ETA {eta_min:.1f} min")
+                else:
+                    eta_sec = 0
+                    self.log(f"      GeoTIFF progress: {pct}%")
+
+                # Overall ETA (based on completed GeoTIFFs)
+                # remaining = total_planned - completed (current job counts as in-progress, not completed)
+                completed = getattr(self, 'geotiff_completed', 0)
+                total_planned = getattr(self, 'geotiff_total_planned', 0)
+                remaining_jobs = max(0, total_planned - completed)
+                durations = getattr(self, 'geotiff_times', [])
+                if durations and remaining_jobs > 0:
+                    avg_sec = sum(durations) / len(durations)
+                    # Current job remaining + future jobs
+                    overall_sec = eta_sec + (remaining_jobs - 1) * avg_sec if pct > 0 else remaining_jobs * avg_sec
+                    overall_hours = overall_sec / 3600
+                    if overall_hours >= 1:
+                        self.log(f"      Overall ETA: {overall_hours:.1f} hours ({remaining_jobs} GeoTIFFs remaining, avg {avg_sec/60:.1f} min each)")
+                    else:
+                        self.log(f"      Overall ETA: {overall_sec/60:.1f} min ({remaining_jobs} GeoTIFFs remaining)")
+            return 1
+
+        return progress_cb
+
     def create_geotiff(self, input_vrt: Path, output_tiff: Path, compress: str = 'LZW') -> Tuple[bool, Optional[float]]:
         """Convert VRT to optimized GeoTIFF using Translate with multithreading.
 
@@ -2767,6 +1538,9 @@ class ChartSlicer:
                     f'COMPRESS={compress}',
                     'PREDICTOR=2'
                 ])
+                if compress == 'ZSTD':
+                    # Lowest ZSTD level = fastest (GDAL otherwise defaults to the slower level 9)
+                    creation_opts.append('ZSTD_LEVEL=1')
 
             # Optional clipping window (projWin) if user supplied --clip-projwin
             projwin = getattr(self, 'clip_projwin', None)
@@ -2776,38 +1550,7 @@ class ChartSlicer:
 
             # Simple progress reporter for long translates (logs every 5%)
             start_time = time.time()
-            progress_state = {'last_pct': -5}
-
-            def progress_cb(complete, message, cb_data):
-                pct = int(complete * 100)
-                if pct - progress_state['last_pct'] >= 5:
-                    progress_state['last_pct'] = pct
-                    elapsed = time.time() - start_time
-                    # Per-job ETA
-                    if pct > 0:
-                        est_total = elapsed * 100 / pct
-                        eta_sec = max(0, est_total - elapsed)
-                        eta_min = eta_sec / 60
-                        self.log(f"      GeoTIFF progress: {pct}% | ETA {eta_min:.1f} min")
-                    else:
-                        self.log(f"      GeoTIFF progress: {pct}%")
-
-                    # Overall ETA (based on completed GeoTIFFs)
-                    # remaining = total_planned - completed (current job counts as in-progress, not completed)
-                    completed = getattr(self, 'geotiff_completed', 0)
-                    total_planned = getattr(self, 'geotiff_total_planned', 0)
-                    remaining_jobs = max(0, total_planned - completed)
-                    durations = getattr(self, 'geotiff_times', [])
-                    if durations and remaining_jobs > 0:
-                        avg_sec = sum(durations) / len(durations)
-                        # Current job remaining + future jobs
-                        overall_sec = eta_sec + (remaining_jobs - 1) * avg_sec if pct > 0 else remaining_jobs * avg_sec
-                        overall_hours = overall_sec / 3600
-                        if overall_hours >= 1:
-                            self.log(f"      Overall ETA: {overall_hours:.1f} hours ({remaining_jobs} GeoTIFFs remaining, avg {avg_sec/60:.1f} min each)")
-                        else:
-                            self.log(f"      Overall ETA: {overall_sec/60:.1f} min ({remaining_jobs} GeoTIFFs remaining)")
-                return 1
+            progress_cb = self._make_geotiff_progress_cb(start_time)
 
             # Use gdal.Translate - faster than Warp when no reprojection needed
             translate_options = gdal.TranslateOptions(
@@ -2838,6 +1581,121 @@ class ChartSlicer:
                 return self.create_geotiff(input_vrt, output_tiff, compress='LZW')
 
             self.log(f"    Error creating GeoTIFF: {e}")
+            import traceback
+            self.log(f"    {traceback.format_exc()}")
+            return False, None
+
+    def create_mosaic_geotiff(self, input_files: List[Path], output_tiff: Path, compress: str = 'LZW') -> Tuple[bool, Optional[float]]:
+        """Mosaic the individual warped chart rasters directly into one GeoTIFF.
+
+        Uses gdal.Warp straight from the per-chart VRTs, so there is no
+        intermediate mosaic VRT on disk - the charts stay virtual and the
+        mosaic is the only materialized artifact. Overlapping charts composite
+        via their alpha bands (last opaque source wins), matching the previous
+        BuildVRT(resolution='highest') + Translate path.
+        """
+        try:
+            # Validate inputs (skip missing/empty/corrupt-small files), same as build_vrt
+            valid_files = []
+            for f in input_files:
+                if not f.exists():
+                    self.log(f"      Warning: Input file not found: {f.name}")
+                    continue
+                file_size = f.stat().st_size
+                if file_size < 1024:  # Skip files smaller than 1KB (likely corrupt/empty)
+                    self.log(f"      Warning: Skipping {f.name} (too small: {file_size} bytes)")
+                    continue
+                valid_files.append(f)
+
+            if not valid_files:
+                self.log(f"      ✗ No valid input files for mosaic")
+                return False, None
+
+            num_threads = getattr(self, 'num_threads', '4')
+            if compress == 'NONE':
+                self.log(f"    Creating mosaic GeoTIFF with no compression ({num_threads} threads)...")
+            else:
+                self.log(f"    Creating mosaic GeoTIFF with {compress} compression ({num_threads} threads)...")
+
+            # Match build_vrt's resolution='highest': use the finest source pixel size
+            finest_xres = None
+            finest_yres = None
+            for f in valid_files:
+                src = gdal.Open(str(f))
+                if src is None:
+                    continue
+                gt = src.GetGeoTransform()
+                src = None
+                if gt:
+                    xr, yr = abs(gt[1]), abs(gt[5])
+                    if xr > 0 and (finest_xres is None or xr < finest_xres):
+                        finest_xres = xr
+                    if yr > 0 and (finest_yres is None or yr < finest_yres):
+                        finest_yres = yr
+
+            # Configure GDAL for single-process mosaic creation (use all CPUs)
+            _configure_gdal_for_phase('geotiff', workers=1)
+
+            creation_opts = [
+                'TILED=YES',
+                'BIGTIFF=YES',
+                'BLOCKXSIZE=1024',
+                'BLOCKYSIZE=1024',
+                f'NUM_THREADS={num_threads}'
+            ]
+            if compress != 'NONE':
+                creation_opts.extend([
+                    f'COMPRESS={compress}',
+                    'PREDICTOR=2'
+                ])
+                if compress == 'ZSTD':
+                    creation_opts.append('ZSTD_LEVEL=1')
+
+            # Optional clip window: projWin is ULX ULY LRX LRY -> Warp outputBounds is minX minY maxX maxY
+            output_bounds = None
+            projwin = getattr(self, 'clip_projwin', None)
+            if projwin:
+                ulx, uly, lrx, lry = projwin
+                output_bounds = (ulx, lry, lrx, uly)
+                self.log(f"    Applying clip bounds (minX,minY,maxX,maxY): ({ulx}, {lry}, {lrx}, {uly})")
+
+            start_time = time.time()
+            progress_cb = self._make_geotiff_progress_cb(start_time)
+
+            warp_kwargs = dict(
+                format='GTiff',
+                creationOptions=creation_opts,
+                resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
+                multithread=True,
+                outputBounds=output_bounds,
+                callback=progress_cb,
+            )
+            if finest_xres and finest_yres:
+                warp_kwargs['xRes'] = finest_xres
+                warp_kwargs['yRes'] = finest_yres
+
+            warp_options = gdal.WarpOptions(**warp_kwargs)
+            ds = gdal.Warp(str(output_tiff), [str(f) for f in valid_files], options=warp_options)
+
+            if ds:
+                ds = None
+                file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
+                elapsed = time.time() - start_time
+                rate = file_size_mb / elapsed if elapsed > 0 else 0
+                self.log(f"      ✓ Mosaic GeoTIFF created: {output_tiff.name} ({file_size_mb:.1f} MB in {elapsed:.1f}s, {rate:.1f} MB/s)")
+                return True, elapsed
+            else:
+                self.log(f"      ✗ Failed to create mosaic GeoTIFF")
+                return False, None
+
+        except Exception as e:
+            error_str = str(e).lower()
+            # If ZSTD compression fails, retry with LZW (same fallback as create_geotiff)
+            if compress == 'ZSTD' and ('zstd' in error_str or 'frame descriptor' in error_str or 'data corruption' in error_str):
+                self.log(f"    ZSTD error detected, retrying mosaic with LZW compression...")
+                return self.create_mosaic_geotiff(input_files, output_tiff, compress='LZW')
+
+            self.log(f"    Error creating mosaic GeoTIFF: {e}")
             import traceback
             self.log(f"    {traceback.format_exc()}")
             return False, None
@@ -2894,11 +1752,12 @@ class ChartSlicer:
         except Exception as e:
             self.log(f"Warning: Could not save review CSV: {e}")
 
-    def generate_review_report(self) -> bool:
+    def generate_review_report(self, auto_confirm: bool = False) -> bool:
         """
         Generate review report showing file matches for all dates.
         Saves CSV report and displays formatted summary.
         Returns True if user confirms to proceed, False otherwise.
+        When auto_confirm is True, skips the prompt and proceeds.
         """
         self.log("\n=== Generating Processing Review ===")
 
@@ -2986,6 +1845,11 @@ class ChartSlicer:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         csv_path = self.output_dir / f"processing_review_{timestamp}.csv"
         self._save_review_csv(report_data, csv_path)
+
+        # Non-interactive: proceed without prompting
+        if auto_confirm:
+            self.log("Auto-confirm enabled (--yes): proceeding with processing.")
+            return True
 
         # Get user confirmation
         while True:
@@ -3091,7 +1955,7 @@ class ChartSlicer:
         return vrt_library
 
     def process_all_dates(self, date_range: Optional[Tuple[datetime.date, datetime.date]] = None):
-        """Process date ranges in CSV and publish PMTiles, optionally limited by start date."""
+        """Process date ranges in CSV into mosaicked GeoTIFFs, optionally limited by start date."""
         self.log("\n=== Starting Chart Processing ===")
 
         # Get all locations from CSV (not shapefiles)
@@ -3141,7 +2005,10 @@ class ChartSlicer:
         # Process each date range (earliest to latest)
         total_dates = len(sorted_dates)
 
-        postprocess_jobs: List[Tuple[Path, str]] = []
+        # GeoTIFF progress/ETA tracking (read by create_geotiff's progress callback)
+        self.geotiff_total_planned = total_dates
+        self.geotiff_completed = 0
+        self.geotiff_times = []
 
         for date_idx, date in enumerate(sorted_dates, 1):
             self.log(f"\n[{date_idx}/{total_dates}] Processing range: {date}")
@@ -3149,11 +2016,12 @@ class ChartSlicer:
             temp_dir = self.temp_dir / date
             temp_dir.mkdir(parents=True, exist_ok=True)
 
-            mosaic_vrt = temp_dir / f"mosaic_{date}.vrt"
-            if mosaic_vrt.exists() and mosaic_vrt.stat().st_size > 0:
-                self.log(f"  ✓ Mosaic VRT already exists - skipping warp/mosaic build")
-                postprocess_jobs.append((mosaic_vrt, date))
-                self.log(f"  Queued MBTiles/PMTiles post-process")
+            output_tiff = self.output_dir / f"{date}.tif"
+
+            # Resume: skip dates whose final mosaic GeoTIFF already exists
+            if output_tiff.exists() and output_tiff.stat().st_size > 0:
+                self.log(f"  ✓ GeoTIFF already exists - skipping {output_tiff.name}")
+                self.geotiff_completed += 1
                 continue
 
             records = self.dole_data[date]
@@ -3447,36 +2315,27 @@ class ChartSlicer:
                 else:
                     mosaic_sources.append(entries)
 
-            # Create mosaic VRT and queue direct MBTiles/PMTiles post-process
+            # Mosaic the per-chart VRTs directly into the final GeoTIFF (no mosaic VRT)
             if mosaic_sources:
-                self.log(f"  Creating mosaic VRT from {len(mosaic_sources)} sources...")
+                self.log(f"  Mosaicking {len(mosaic_sources)} sources -> {output_tiff.name}...")
 
-                temp_dir.mkdir(parents=True, exist_ok=True)
-
-                mosaic_vrt = temp_dir / f"mosaic_{date}.vrt"
-                if self.build_vrt(mosaic_sources, mosaic_vrt):
-                    self.log(f"  ✓ Mosaic VRT created")
-
-                    postprocess_jobs.append((mosaic_vrt, date))
-                    self.log(f"  Queued MBTiles/PMTiles post-process")
-                    self.log(f"  ✓✓✓ {date.upper()} VRT COMPLETE")
+                ok, elapsed = self.create_mosaic_geotiff(mosaic_sources, output_tiff, compress=self.geotiff_compress)
+                if ok:
+                    self.geotiff_completed += 1
+                    if elapsed:
+                        self.geotiff_times.append(elapsed)
+                    self.log(f"  ✓✓✓ {date.upper()} GEOTIFF COMPLETE")
                 else:
-                    self.log(f"  ✗ Mosaic creation failed")
+                    self.log(f"  ✗ Mosaic GeoTIFF creation failed")
             else:
                 self.log(f"  Skipping {date} - no data available")
-
-        if postprocess_jobs:
-            # Post-process: convert mosaic rasters directly to MBTiles/PMTiles and upload
-            self._run_postprocess_upload_stage(input_dir=self.temp_dir, input_jobs=postprocess_jobs)
-        else:
-            self.log("No mosaics queued for post-processing.")
 
         self.log("\n=== Processing Complete ===")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="FAA Chart Slicer - Process sectional charts to PMTiles",
+        description="FAA Chart Slicer - Warp, cut, and mosaic sectional charts into GeoTIFFs",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -3488,22 +2347,22 @@ Examples:
     parser.add_argument(
         "-s", "--source",
         type=Path,
-        default=Path("/Volumes/drive/newrawtiffs"),
-        help="Source directory containing TIFF/ZIP files (default: /Volumes/drive/newrawtiffs)"
+        default=Path("/Volumes/projects/rawtiffs"),
+        help="Source directory containing TIFF/ZIP files (default: /Volumes/projects/rawtiffs)"
     )
 
     parser.add_argument(
         "-o", "--output",
         type=Path,
         default=Path("/Volumes/drive/sync"),
-        help="Output directory for PMTiles/MBTiles artifacts (default: /Volumes/drive/sync)"
+        help="Output directory for mosaicked GeoTIFFs (one {date}.tif per date) (default: /Volumes/drive/sync)"
     )
 
     parser.add_argument(
         "-c", "--csv",
         type=Path,
-        default=Path("/Users/ryanhemenway/archive.aero/master_dole_combined.csv"),
-        help="Master Dole CSV file (default: /Users/ryanhemenway/archive.aero/master_dole_combined.csv)"
+        default=Path("/Users/ryanhemenway/archive.aero/master_dole_scanned.csv"),
+        help="Master Dole CSV file (default: /Users/ryanhemenway/archive.aero/master_dole_scanned.csv)"
     )
 
     parser.add_argument(
@@ -3542,7 +2401,7 @@ Examples:
         nargs=4,
         metavar=('ULX', 'ULY', 'LRX', 'LRY'),
         default=None,
-        help="Optional projWin window (in target CRS, EPSG:3857) applied at VRT→MBTiles translate. "
+        help="Optional projWin window (in target CRS) applied when writing the GeoTIFF. "
              "Order: ULX ULY LRX LRY. Example for CONUS approx: --clip-projwin -13914936 6446276 -7347086 2753408"
     )
 
@@ -3550,22 +2409,16 @@ Examples:
         "--compression",
         type=str,
         choices=['AUTO', 'ZSTD', 'LZW', 'DEFLATE', 'NONE'],
-        default='AUTO',
-        help="Deprecated (GeoTIFF phase removed). Retained for CLI compatibility."
+        default='LZW',
+        help="GeoTIFF compression (default: LZW). ZSTD is fast lossless at ZSTD_LEVEL=1. "
+             "AUTO uses ZSTD when available, else LZW."
     )
 
     parser.add_argument(
         "--num-threads",
         type=str,
         default='4',
-        help="Deprecated (GeoTIFF phase removed). Retained for CLI compatibility."
-    )
-
-    parser.add_argument(
-        "--parallel-geotiff",
-        type=int,
-        default=4,
-        help="Deprecated (GeoTIFF phase removed). Retained for CLI compatibility."
+        help="GTiff NUM_THREADS creation option for GeoTIFF writing (default: 4; e.g. ALL_CPUS)"
     )
 
     parser.add_argument(
@@ -3582,70 +2435,38 @@ Examples:
     )
 
     parser.add_argument(
-        "--mbtiles-quality",
-        type=int,
-        default=80,
-        help="WEBP quality for MBTiles tiles (1-100, default: 80)"
-    )
-
-    parser.add_argument(
-        "--upload-jobs",
-        type=int,
-        default=1,
-        help="Parallel postprocess/upload jobs (default: 1)"
-    )
-
-    parser.add_argument(
-        "--upload-remote",
-        type=str,
-        default="r2:charts/sectionals",
-        help="Optional rclone destination (example: r2:charts/sectionals). Use '' to disable upload."
-    )
-
-    parser.add_argument(
-        "--min-zoom",
-        type=int,
-        default=2,
-        help="Minimum gdal2tiles zoom level to generate (default: 2)"
-    )
-
-    parser.add_argument(
-        "--postprocess-threads",
-        type=str,
-        default="AUTO",
-        help="GDAL threads per postprocess worker: AUTO or integer (default: AUTO)"
-    )
-
-    parser.add_argument(
-        "--postprocess-cache-mb",
-        type=int,
-        default=0,
-        help="GDAL cache per postprocess worker in MB (default: auto)"
-    )
-
-    parser.add_argument(
-        "--verbose-external-tools",
-        action="store_true",
-        help="Show raw output from gdal2tiles/pmtiles/rclone subprocesses"
-    )
-
-    parser.add_argument(
-        "--postprocess-only",
-        action="store_true",
-        help="Skip warp/mosaic creation and only post-process existing mosaic rasters to MBTiles/PMTiles + upload"
-    )
-
-    parser.add_argument(
-        "--reprocess-existing",
-        action="store_true",
-        help="Do not skip jobs that already have up-to-date local PMTiles; useful when forcing re-upload"
-    )
-
-    parser.add_argument(
         "--download-delay",
         type=float,
         default=8.0,
         help="Seconds to wait between downloads to avoid rate limiting (default: 8.0, try 12.0-20.0 if hitting connection errors)"
+    )
+
+    parser.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help="Skip the 'Proceed with processing?' prompt (non-interactive)"
+    )
+
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Process all dates without prompting (non-interactive; mutually exclusive with --start-date/--end-date)"
+    )
+
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Start of date range to process (use with --end-date for a one-line non-interactive run)"
+    )
+
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="End of date range to process (use with --start-date)"
     )
 
     args = parser.parse_args()
@@ -3673,32 +2494,18 @@ Examples:
     slicer = ChartSlicer(args.source, args.output, args.csv, args.shapefiles,
                          preview_mode=False, download_delay=args.download_delay,
                          temp_dir=args.temp_dir)
-    slicer.upload_root = args.output
-    slicer.upload_remote = args.upload_remote.strip() if args.upload_remote else None
-    slicer.mbtiles_min_zoom = max(0, args.min_zoom)
     slicer.warp_output = args.warp_output
     slicer.clip_projwin = tuple(args.clip_projwin) if args.clip_projwin else None
     slicer.parallel_warp = args.parallel_warp
     if args.warp_multithread:
         slicer.warp_multithread = True
 
-    slicer.upload_jobs = max(1, args.upload_jobs)
-    slicer.postprocess_threads = args.postprocess_threads
-    slicer.postprocess_cache_mb = args.postprocess_cache_mb if args.postprocess_cache_mb > 0 else None
-    slicer.skip_existing_postprocess = not args.reprocess_existing
-    slicer.quiet_external_tools = not args.verbose_external_tools
-    if args.verbose_external_tools:
-        if "-P" not in slicer.rclone_flags:
-            slicer.rclone_flags.insert(0, "-P")
-        if "--stats" not in slicer.rclone_flags:
-            slicer.rclone_flags.extend(["--stats", "1s"])
-    slicer.mbtiles_quality = args.mbtiles_quality
-    if args.compression != 'AUTO':
-        slicer.log("Warning: --compression is ignored (GeoTIFF phase removed).")
-    if args.num_threads != '4':
-        slicer.log("Warning: --num-threads is ignored (GeoTIFF phase removed).")
-    if args.parallel_geotiff != 4:
-        slicer.log("Warning: --parallel-geotiff is ignored (GeoTIFF phase removed).")
+    # GeoTIFF output settings
+    slicer.num_threads = args.num_threads
+    geotiff_compress = (args.compression or 'NONE').strip().upper()
+    if geotiff_compress == 'AUTO':
+        geotiff_compress = 'ZSTD' if ChartSlicer._check_zstd_support() else 'LZW'
+    slicer.geotiff_compress = geotiff_compress
 
     # Map resampling algorithm
     resample_map = {
@@ -3708,11 +2515,6 @@ Examples:
         'cubicspline': gdal.GRA_CubicSpline
     }
     slicer.resample_alg = resample_map[args.resample]
-
-    if args.postprocess_only:
-        slicer.log("Post-process only: skipping warp/mosaic creation.")
-        slicer._run_postprocess_upload_stage(input_dir=args.output)
-        return
 
     slicer.load_dole_data()
 
@@ -3724,8 +2526,28 @@ Examples:
     # This prevents rate limiting during the review report generation
     slicer.preview_mode = True
 
+    # Validate non-interactive date-range args early (before the slow review pass)
+    if args.all and (args.start_date or args.end_date):
+        print("ERROR: --all cannot be combined with --start-date/--end-date.")
+        sys.exit(1)
+    if bool(args.start_date) != bool(args.end_date):
+        print("ERROR: --start-date and --end-date must be provided together.")
+        sys.exit(1)
+
+    cli_date_range = None  # None = unresolved; sentinel handled below
+    if args.start_date and args.end_date:
+        start_dt = slicer._date_from_str(args.start_date)
+        end_dt = slicer._date_from_str(args.end_date)
+        if not start_dt or not end_dt:
+            print("ERROR: --start-date/--end-date must be valid YYYY-MM-DD dates.")
+            sys.exit(1)
+        if start_dt > end_dt:
+            start_dt, end_dt = end_dt, start_dt
+            print(f"Swapped range to {start_dt} - {end_dt}")
+        cli_date_range = (start_dt, end_dt)
+
     # Generate review report and get user confirmation (without downloading)
-    if not slicer.generate_review_report():
+    if not slicer.generate_review_report(auto_confirm=args.yes):
         print("Processing cancelled by user.")
         sys.exit(0)
 
@@ -3750,7 +2572,13 @@ Examples:
 
     # Now enable downloads for actual processing
     slicer.preview_mode = False
-    date_range = _prompt_date_range()
+    # Resolve date range non-interactively when CLI args supplied; else prompt.
+    if args.all:
+        date_range = None
+    elif cli_date_range is not None:
+        date_range = cli_date_range
+    else:
+        date_range = _prompt_date_range()
     slicer.process_all_dates(date_range=date_range)
 
 

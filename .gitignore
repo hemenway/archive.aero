@@ -94,3 +94,6 @@ master_dole_combined copy.csv
 master_dole_combined.csv.bak
 master_dole_scanned.csv
 master_dole_scanned.csv.bak
+/geotiff2pmtiles
+/.claude
+master_dole_corrected.csv
