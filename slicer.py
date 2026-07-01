@@ -6,27 +6,22 @@ Pipeline: download -> warp/cut -> mosaic VRT -> GeoTIFF (one per date).
 
 import os
 import sys
-import csv
 import re
 import json
-import math
 import argparse
 import zipfile
-import sqlite3
 import shutil
-import xml.etree.ElementTree as ET
 try:
     import requests
 except ImportError:
     requests = None
 import time
-import subprocess
 import platform
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
-from collections import defaultdict, deque
+from collections import defaultdict
 import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dole_dataset import load_combined_rows
 
 try:
@@ -40,6 +35,9 @@ except ImportError:
 import multiprocessing
 cpu_count = multiprocessing.cpu_count()
 IS_APPLE_SILICON = (sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"})
+
+# Warp outputs whose EPSG:3857 width reaches ~full-world are pathological (bad georef).
+WORLD_WIDTH_M = 35_000_000.0
 
 
 def _get_memory_snapshot_mb(
@@ -141,7 +139,7 @@ class ChartSlicer:
         self.date_key_map: Dict[str, Tuple[str, str]] = {}
         # GeoTIFF output settings (final pipeline stage: mosaic VRT -> GeoTIFF)
         self.geotiff_compress = 'ZSTD'
-        self.num_threads = '4'
+        self.num_threads = 'ALL_CPUS'
         self.clip_projwin: Optional[Tuple[float, float, float, float]] = None
         # GeoTIFF progress/ETA tracking (populated in process_all_dates)
         self.geotiff_total_planned = 0
@@ -162,9 +160,6 @@ class ChartSlicer:
         self.files_by_name: Dict[str, Path] = {}  # Direct TIFs and ZIPs
         self.tifs_by_dir: Dict[str, List[Path]] = {}  # Extracted folder -> TIF list
         self.shapefile_index: Dict[str, Path] = {}  # Normalized location -> shapefile path
-
-        # Kept for backward compatibility with existing CLI options.
-        self.compression = 'AUTO'
 
     def log(self, msg: str):
         """Print log message with timestamp."""
@@ -604,7 +599,6 @@ class ChartSlicer:
         except Exception as e:
             self.log(f"    ✗ Extraction failed: {e}")
             if extract_dir.exists():
-                import shutil
                 shutil.rmtree(extract_dir)
             return False
 
@@ -989,9 +983,42 @@ class ChartSlicer:
                 return False
             width_m = abs(float(gt[1])) * float(ds.RasterXSize)
             ds = None
-            return width_m >= 35000000.0
+            return width_m >= WORLD_WIDTH_M
         except Exception:
             return False
+
+    def _is_reusable_output(self, path: Path) -> bool:
+        """True only if `path` is a fully-readable, non-pathological warp output.
+
+        Used by warp_and_cut to decide whether an existing intermediate can be reused on
+        resume instead of re-warping. A corrupt/truncated leftover from an interrupted run
+        (bad VRT XML, missing TIFF directory, a VRT whose source is gone, or missing pixel
+        tiles) fails gdal.Open or the bottom-strip Checksum probe below and returns False,
+        so it gets re-warped rather than silently poisoning the date's mosaic. Near-world-
+        width outputs (bad georeferencing) are rejected too.
+        """
+        ds = None
+        try:
+            if not (path.exists() and path.stat().st_size > 1024):
+                return False
+            ds = gdal.Open(str(path))
+            if ds is None:
+                return False
+            gt = ds.GetGeoTransform(can_return_null=True)
+            if gt is None:
+                return False
+            if abs(float(gt[1])) * float(ds.RasterXSize) >= WORLD_WIDTH_M:
+                return False
+            # Force a read of the last rows so a truncated/partially-written raster
+            # (pixel data missing at EOF) raises here instead of at mosaic time.
+            strip = min(8, ds.RasterYSize)
+            for band_idx in range(1, ds.RasterCount + 1):
+                ds.GetRasterBand(band_idx).Checksum(0, ds.RasterYSize - strip, ds.RasterXSize, strip)
+            return True
+        except Exception:
+            return False
+        finally:
+            ds = None
 
     def _prepare_warp_job(self, src_file_info: Union[Path, Tuple[Path, Optional[str]]], location: str, edition: str,
                           shp_path: Optional[Path], temp_dir: Path, date: str, record: Optional[Dict] = None) -> List[Dict]:
@@ -1057,6 +1084,13 @@ class ChartSlicer:
         If self.warp_output is set to "vrt", write a VRT instead of a TIFF
         to avoid the intermediate write/read of warped GeoTIFFs.
         """
+        # Resume: reuse a fully-readable existing output instead of re-warping
+        # (see _is_reusable_output). output_tiff already carries the correct
+        # .tif/.vrt suffix from _prepare_warp_job.
+        if self._is_reusable_output(output_tiff):
+            self.log(f"      ↻ Reusing existing warp output {output_tiff.name}")
+            return True
+
         if record is not None:
             context = self._build_gcp_warp_context(record)
             if context:
@@ -1423,51 +1457,10 @@ class ChartSlicer:
             except Exception:
                 pass
 
-    def build_vrt(self, input_files: List[Path], output_vrt: Path) -> bool:
-        """Combine multiple TIFFs/VRTs into a single VRT."""
-        try:
-            # Validate input files before building VRT
-            valid_files = []
-            for f in input_files:
-                if not f.exists():
-                    self.log(f"      Warning: Input file not found: {f.name}")
-                    continue
-                file_size = f.stat().st_size
-                if file_size < 1024:  # Skip files smaller than 1KB (likely corrupt/empty)
-                    self.log(f"      Warning: Skipping {f.name} (too small: {file_size} bytes)")
-                    continue
-                valid_files.append(f)
-
-            if not valid_files:
-                self.log(f"      ✗ No valid input files for VRT")
-                return False
-
-            input_strs = [str(f) for f in valid_files]
-            # Don't add alpha - input files already have alpha from warp_and_cut
-            resample_alg = getattr(self, 'resample_alg', gdal.GRA_Bilinear)
-            vrt_options = gdal.BuildVRTOptions(resampleAlg=resample_alg, resolution='highest')
-            ds = gdal.BuildVRT(str(output_vrt), input_strs, options=vrt_options)
-
-            if ds:
-                ds = None
-                if output_vrt.exists():
-                    vrt_size_kb = output_vrt.stat().st_size / 1024
-                    self.log(f"      ✓ Built VRT: {output_vrt.name} ({vrt_size_kb:.1f} KB)")
-                return True
-            else:
-                self.log(f"      ✗ Failed to build VRT")
-                return False
-
-        except Exception as e:
-            self.log(f"      ✗ Error building VRT: {e}")
-            import traceback
-            self.log(f"      {traceback.format_exc()}")
-            return False
-
     def _make_geotiff_progress_cb(self, start_time: float):
         """Build a GDAL progress callback that logs per-job and overall ETA every 5%.
 
-        Shared by create_geotiff (Translate) and create_mosaic_geotiff (Warp).
+        Used by create_mosaic_geotiff (Warp) to report progress/ETA.
         """
         progress_state = {'last_pct': -5}
 
@@ -1505,86 +1498,6 @@ class ChartSlicer:
 
         return progress_cb
 
-    def create_geotiff(self, input_vrt: Path, output_tiff: Path, compress: str = 'LZW') -> Tuple[bool, Optional[float]]:
-        """Convert VRT to optimized GeoTIFF using Translate with multithreading.
-
-        Uses gdal.Translate instead of gdal.Warp because:
-        - VRT is already georeferenced, no reprojection needed
-        - Translate is faster for simple copy+compress operations
-        - NUM_THREADS creation option enables parallel compression
-        """
-        try:
-            # Log compression status
-            num_threads = getattr(self, 'num_threads', '4')
-            if compress == 'NONE':
-                self.log(f"    Creating GeoTIFF with no compression ({num_threads} threads)...")
-            else:
-                self.log(f"    Creating GeoTIFF with {compress} compression ({num_threads} threads)...")
-
-            # Configure GDAL for single-process GeoTIFF creation (use all CPUs)
-            _configure_gdal_for_phase('geotiff', workers=1)
-
-            # Build creation options based on compression
-            creation_opts = [
-                'TILED=YES',
-                'BIGTIFF=YES',
-                'BLOCKXSIZE=1024',
-                'BLOCKYSIZE=1024',
-                f'NUM_THREADS={num_threads}'
-            ]
-
-            if compress != 'NONE':
-                creation_opts.extend([
-                    f'COMPRESS={compress}',
-                    'PREDICTOR=2'
-                ])
-                if compress == 'ZSTD':
-                    # Lowest ZSTD level = fastest (GDAL otherwise defaults to the slower level 9)
-                    creation_opts.append('ZSTD_LEVEL=1')
-
-            # Optional clipping window (projWin) if user supplied --clip-projwin
-            projwin = getattr(self, 'clip_projwin', None)
-            if projwin:
-                ulx, uly, lrx, lry = projwin
-                self.log(f"    Applying projWin clip: UL({ulx}, {uly}) LR({lrx}, {lry})")
-
-            # Simple progress reporter for long translates (logs every 5%)
-            start_time = time.time()
-            progress_cb = self._make_geotiff_progress_cb(start_time)
-
-            # Use gdal.Translate - faster than Warp when no reprojection needed
-            translate_options = gdal.TranslateOptions(
-                format='GTiff',
-                creationOptions=creation_opts,
-                projWin=projwin if projwin else None,
-                callback=progress_cb
-            )
-
-            ds = gdal.Translate(str(output_tiff), str(input_vrt), options=translate_options)
-
-            if ds:
-                ds = None
-                file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
-                elapsed = time.time() - start_time
-                rate = file_size_mb / elapsed if elapsed > 0 else 0
-                self.log(f"      ✓ GeoTIFF created: {output_tiff.name} ({file_size_mb:.1f} MB in {elapsed:.1f}s, {rate:.1f} MB/s)")
-                return True, elapsed
-            else:
-                self.log(f"      ✗ Failed to create GeoTIFF")
-                return False, None
-
-        except Exception as e:
-            error_str = str(e).lower()
-            # If ZSTD decompression fails, try with LZW compression instead
-            if compress == 'ZSTD' and ('zstd' in error_str or 'frame descriptor' in error_str or 'data corruption' in error_str):
-                self.log(f"    ZSTD decompression error detected, retrying with LZW compression...")
-                return self.create_geotiff(input_vrt, output_tiff, compress='LZW')
-
-            self.log(f"    Error creating GeoTIFF: {e}")
-            import traceback
-            self.log(f"    {traceback.format_exc()}")
-            return False, None
-
     def create_mosaic_geotiff(self, input_files: List[Path], output_tiff: Path, compress: str = 'LZW') -> Tuple[bool, Optional[float]]:
         """Mosaic the individual warped chart rasters directly into one GeoTIFF.
 
@@ -1595,7 +1508,7 @@ class ChartSlicer:
         BuildVRT(resolution='highest') + Translate path.
         """
         try:
-            # Validate inputs (skip missing/empty/corrupt-small files), same as build_vrt
+            # Validate inputs (skip missing/empty/corrupt-small files)
             valid_files = []
             for f in input_files:
                 if not f.exists():
@@ -1611,27 +1524,16 @@ class ChartSlicer:
                 self.log(f"      ✗ No valid input files for mosaic")
                 return False, None
 
-            num_threads = getattr(self, 'num_threads', '4')
+            num_threads = getattr(self, 'num_threads', 'ALL_CPUS')
             if compress == 'NONE':
                 self.log(f"    Creating mosaic GeoTIFF with no compression ({num_threads} threads)...")
             else:
                 self.log(f"    Creating mosaic GeoTIFF with {compress} compression ({num_threads} threads)...")
 
-            # Match build_vrt's resolution='highest': use the finest source pixel size
-            finest_xres = None
-            finest_yres = None
-            for f in valid_files:
-                src = gdal.Open(str(f))
-                if src is None:
-                    continue
-                gt = src.GetGeoTransform()
-                src = None
-                if gt:
-                    xr, yr = abs(gt[1]), abs(gt[5])
-                    if xr > 0 and (finest_xres is None or xr < finest_xres):
-                        finest_xres = xr
-                    if yr > 0 and (finest_yres is None or yr < finest_yres):
-                        finest_yres = yr
+            # Output resolution: leave xRes/yRes unset so gdal.Warp matches the finest
+            # source pixel size on its own (equivalent to BuildVRT resolution='highest').
+            # Verified byte-identical to an explicit finest-res pre-scan, so no extra
+            # gdal.Open passes are needed here.
 
             # Configure GDAL for single-process mosaic creation (use all CPUs)
             _configure_gdal_for_phase('geotiff', workers=1)
@@ -1670,9 +1572,6 @@ class ChartSlicer:
                 outputBounds=output_bounds,
                 callback=progress_cb,
             )
-            if finest_xres and finest_yres:
-                warp_kwargs['xRes'] = finest_xres
-                warp_kwargs['yRes'] = finest_yres
 
             warp_options = gdal.WarpOptions(**warp_kwargs)
             ds = gdal.Warp(str(output_tiff), [str(f) for f in valid_files], options=warp_options)
@@ -1690,7 +1589,7 @@ class ChartSlicer:
 
         except Exception as e:
             error_str = str(e).lower()
-            # If ZSTD compression fails, retry with LZW (same fallback as create_geotiff)
+            # If ZSTD compression fails, retry with LZW
             if compress == 'ZSTD' and ('zstd' in error_str or 'frame descriptor' in error_str or 'data corruption' in error_str):
                 self.log(f"    ZSTD error detected, retrying mosaic with LZW compression...")
                 return self.create_mosaic_geotiff(input_files, output_tiff, compress='LZW')
@@ -1882,7 +1781,6 @@ class ChartSlicer:
         date_dirs = [d for d in self.temp_dir.iterdir() if d.is_dir()]
 
         found_count = 0
-        skipped_pathological = 0
         for date_dir in date_dirs:
             date = date_dir.name
 
@@ -1900,9 +1798,9 @@ class ChartSlicer:
                 # Skip RGBA intermediate VRTs
                 if "_rgba.vrt" in vrt_file.name:
                     continue
-                if self._is_world_width_warp(vrt_file):
-                    skipped_pathological += 1
-                    continue
+                # NOTE: world-width (pathological) filtering is deferred to mosaic-input
+                # assembly (see process_all_dates) so this rebuild stays pure filesystem
+                # globbing with no GDAL opens.
 
                 # Track per-location combined VRTs: {location}_{date}.vrt
                 stem = vrt_file.stem
@@ -1924,9 +1822,6 @@ class ChartSlicer:
 
             # Collect warped TIFs: {location}_{original_stem}.tif
             for tif_file in date_dir.glob("*.tif"):
-                if self._is_world_width_warp(tif_file):
-                    skipped_pathological += 1
-                    continue
                 stem = tif_file.stem
                 for loc in all_locations:
                     if stem.startswith(f"{loc}_"):
@@ -1949,8 +1844,6 @@ class ChartSlicer:
             self.log(f"  Restored {total_pairs} location-date entries from {len(vrt_library)} locations")
         else:
             self.log("  No existing VRTs found (fresh run)")
-        if skipped_pathological > 0:
-            self.log(f"  Skipped {skipped_pathological} pathological intermediates with near-world extents")
 
         return vrt_library
 
@@ -2005,7 +1898,7 @@ class ChartSlicer:
         # Process each date range (earliest to latest)
         total_dates = len(sorted_dates)
 
-        # GeoTIFF progress/ETA tracking (read by create_geotiff's progress callback)
+        # GeoTIFF progress/ETA tracking (read by the geotiff progress callback)
         self.geotiff_total_planned = total_dates
         self.geotiff_completed = 0
         self.geotiff_times = []
@@ -2304,16 +2197,22 @@ class ChartSlicer:
             else:
                 self.log(f"  No valid locations found with source files")
 
-            # Build mosaic inputs from exact date range matches only
+            # Build mosaic inputs from exact date range matches only.
+            # Filter pathological (near-world-width) sources here: freshly warped
+            # outputs are already screened at warp time (see outputs_by_attempt),
+            # so in practice this only opens genuinely orphaned rebuilt temps whose
+            # source file could no longer be found.
             mosaic_sources = []
             for location in all_locations:
                 entries = vrt_library.get(location, {}).get(date)
                 if not entries:
                     continue
-                if isinstance(entries, list):
-                    mosaic_sources.extend(entries)
-                else:
-                    mosaic_sources.append(entries)
+                candidates = entries if isinstance(entries, list) else [entries]
+                for entry in candidates:
+                    if self._is_world_width_warp(entry):
+                        self.log(f"      Warning: Skipping pathological full-world source: {entry.name}")
+                        continue
+                    mosaic_sources.append(entry)
 
             # Mosaic the per-chart VRTs directly into the final GeoTIFF (no mosaic VRT)
             if mosaic_sources:
@@ -2417,8 +2316,8 @@ Examples:
     parser.add_argument(
         "--num-threads",
         type=str,
-        default='4',
-        help="GTiff NUM_THREADS creation option for GeoTIFF writing (default: 4; e.g. ALL_CPUS)"
+        default='ALL_CPUS',
+        help="GTiff NUM_THREADS creation option for GeoTIFF writing (default: ALL_CPUS)"
     )
 
     parser.add_argument(
