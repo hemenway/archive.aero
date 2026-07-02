@@ -25,6 +25,19 @@ body {
   box-sizing: border-box;
 }
 
+/* Visually hidden but available to screen readers (e.g. the page h1). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -495,7 +508,10 @@ body.zooming .leaflet-control-attribution {
   opacity: 0;
   transform: translateY(-6px);
   pointer-events: none;
-  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
+  /* visibility:hidden takes the closed panel's controls out of the tab order and
+     the accessibility tree; delayed via the transition so the fade still plays. */
+  visibility: hidden;
+  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), visibility 0.2s var(--transition-smooth);
   z-index: 1200;
 }
 
@@ -503,6 +519,7 @@ body.zooming .leaflet-control-attribution {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
+  visibility: visible;
 }
 
 .tools-section {

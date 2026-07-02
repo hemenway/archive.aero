@@ -3,10 +3,21 @@
 
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>archive.aero - Historical Aeronautical Chart Viewer</title>
   <meta name="description"
-    content="Explore historical aeronautical charts and sectional maps. View how aviation charts have evolved over time with AeroMap's interactive timeline viewer." />
+    content="Explore historical aeronautical charts and sectional maps on archive.aero. See how U.S. aviation charts have evolved over time with an interactive timeline viewer." />
+  <link rel="canonical" href="https://archive.aero/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="archive.aero" />
+  <meta property="og:title" content="archive.aero — Historical Aeronautical Chart Viewer" />
+  <meta property="og:description"
+    content="Explore historical FAA sectional charts on an interactive timeline. See how U.S. aviation charts have evolved over time." />
+  <meta property="og:url" content="https://archive.aero/" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="archive.aero — Historical Aeronautical Chart Viewer" />
+  <meta name="twitter:description"
+    content="Explore historical FAA sectional charts on an interactive timeline viewer." />
   <link rel="icon"
     href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
 
@@ -15,9 +26,12 @@
   <link rel="preconnect" href="https://data.archive.aero" crossorigin>
   <link rel="preconnect" href="https://basemaps.cartocdn.com" crossorigin>
 
-  <link rel="preload" as="script" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin>
-  <link rel="preload" as="script" href="https://unpkg.com/papaparse@5.4.1/papaparse.min.js" crossorigin>
-  <link rel="preload" as="script" href="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin>
+  <link rel="preload" as="script" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"
+    integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH">
+  <link rel="preload" as="script" href="https://unpkg.com/papaparse@5.4.1/papaparse.min.js" crossorigin="anonymous"
+    integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs">
+  <link rel="preload" as="script" href="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin="anonymous"
+    integrity="sha384-4sbA4B4Oqxkzs6apu8HaZcGrL3BySmt0tO/LQf6al3hkgq8ijZFxkTkvxxZZ/3PU">
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="styles.css" />
@@ -25,6 +39,8 @@
 </head>
 
 <body>
+
+  <h1 class="sr-only">archive.aero — Historical Aeronautical Chart Viewer</h1>
 
   <!-- Loading Splash Screen -->
   <div class="loading-splash" id="loadingSplash" role="status" aria-live="polite">
@@ -60,11 +76,11 @@
     </div>
     <div class="header-right">
       <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="about-btn" title="About Me">
-        👨‍✈️ About
+        <span aria-hidden="true">👨‍✈️</span> About
       </a>
       <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn"
         title="Support this project">
-        ☕ Support
+        <span aria-hidden="true">☕</span> Support
       </a>
     </div>
   </div>
@@ -103,7 +119,7 @@
             <span class="tool-label">My Location</span>
             <button class="tool-button" id="locateBtn">
               <span>Center Map</span>
-              <span>🧭</span>
+              <span aria-hidden="true">🧭</span>
             </button>
           </div>
 
@@ -111,7 +127,7 @@
             <span class="tool-label">Fullscreen</span>
             <button class="tool-button" id="fullscreenBtn">
               <span>Toggle Fullscreen</span>
-              <span>⛶</span>
+              <span aria-hidden="true">⛶</span>
             </button>
           </div>
 
@@ -181,8 +197,8 @@
 
   <!-- Keyboard Shortcuts Overlay -->
   <div class="shortcuts-overlay" id="shortcutsOverlay">
-    <div class="shortcuts-content">
-      <h2>⌨️ Keyboard Shortcuts</h2>
+    <div class="shortcuts-content" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle">
+      <h2 id="shortcutsTitle">⌨️ Keyboard Shortcuts</h2>
       <div class="shortcut-item">
         <span class="shortcut-desc">Next timeframe</span>
         <span class="shortcut-key">→</span>
@@ -259,18 +275,21 @@
 
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin></script>
-  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js" crossorigin></script>
-  <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"
+    integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js" crossorigin="anonymous"
+    integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs"></script>
+  <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin="anonymous"
+    integrity="sha384-4sbA4B4Oqxkzs6apu8HaZcGrL3BySmt0tO/LQf6al3hkgq8ijZFxkTkvxxZZ/3PU"></script>
 
   <script>
-    // Guard against Leaflet tile callbacks firing after a layer was removed
-    if (L && L.TileLayer && L.TileLayer.prototype._tileReady) {
-      const originalTileReady = L.TileLayer.prototype._tileReady;
-      L.TileLayer.prototype._tileReady = function (error, tile) {
-        if (!this._map) return;
-        return originalTileReady.call(this, error, tile);
-      };
+    // Fail fast with a visible message if any CDN library failed to load, rather
+    // than throwing an opaque ReferenceError that aborts this entire script block
+    // (which would otherwise leave the splash stuck on "Initializing..." forever).
+    if (typeof L === 'undefined' || typeof Papa === 'undefined' || typeof pmtiles === 'undefined') {
+      const status = document.getElementById('loadingStatus');
+      if (status) status.textContent = 'Failed to load map libraries. Check your connection and reload.';
+      throw new Error('archive.aero: a required library (Leaflet/PapaParse/PMTiles) failed to load.');
     }
 
     const DeviceInfo = (() => {
@@ -301,7 +320,10 @@
         if (el) {
           el.textContent = msg;
           el.classList.add('visible');
-          setTimeout(() => el.classList.remove('visible'), duration);
+          // Clear any prior toast's timer so overlapping toasts each show for their
+          // full duration instead of an older timer hiding the newer message early.
+          clearTimeout(Utils._toastTimer);
+          Utils._toastTimer = setTimeout(() => el.classList.remove('visible'), duration);
         }
       },
       parseDateRangeKey: (key) => {
@@ -341,43 +363,44 @@
         }
       },
       toggleFullscreen: () => {
-        if (!document.fullscreenElement) {
-          document.documentElement.requestFullscreen().catch(err => {
-            Utils.toast(`Error entering fullscreen: ${err.message}`);
-          });
-        } else {
-          if (document.exitFullscreen) {
-            document.exitFullscreen();
+        const el = document.documentElement;
+        const request = el.requestFullscreen || el.webkitRequestFullscreen;
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        const active = document.fullscreenElement || document.webkitFullscreenElement;
+        // iOS WebKit (every browser on iPhone) has no element-level fullscreen, so
+        // requestFullscreen is undefined and calling it throws synchronously rather
+        // than rejecting — feature-detect and give feedback instead of a silent no-op.
+        if (!request) {
+          Utils.toast('Fullscreen is not supported on this device');
+          return;
+        }
+        try {
+          if (!active) {
+            const result = request.call(el);
+            if (result && typeof result.catch === 'function') {
+              result.catch(err => Utils.toast(`Error entering fullscreen: ${err.message}`));
+            }
+          } else if (exit) {
+            exit.call(document);
           }
+        } catch (err) {
+          Utils.toast(`Error entering fullscreen: ${err.message}`);
         }
       },
       debounce: (func, wait) => {
         let timeout;
-        return function executedFunction(...args) {
-          const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-          };
+        const debounced = function executedFunction(...args) {
           clearTimeout(timeout);
-          timeout = setTimeout(later, wait);
+          timeout = setTimeout(() => { timeout = null; func(...args); }, wait);
         };
-      },
-      preventDoubleTapZoom: (el) => {
-        if (!el || !DeviceInfo.isIOS) return;
-
-        let lastTouchEnd = 0;
-        el.addEventListener('touchend', (event) => {
-          const now = event.timeStamp || performance.now();
-          if (now - lastTouchEnd > 0 && now - lastTouchEnd < 350) {
-            // Preserve the second tap action while suppressing Safari page zoom.
-            event.preventDefault();
-            if (typeof event.currentTarget?.click === 'function') {
-              event.currentTarget.click();
-            }
-          }
-          lastTouchEnd = now;
-        }, { passive: false });
+        // Expose cancel() so a direct showFrame can drop a stale pending scrub
+        // repaint instead of letting it paint an old date over the newer frame.
+        debounced.cancel = () => { clearTimeout(timeout); timeout = null; };
+        return debounced;
       }
+      // preventDoubleTapZoom removed: styles.css already applies
+      // `touch-action: manipulation` to `button, .leaflet-control-zoom a`, which
+      // suppresses iOS double-tap zoom without synthesizing extra click events.
     };
 
     class CompositePMTilesLayer extends L.GridLayer {
@@ -577,7 +600,11 @@
 
       set(key, value) {
         if (this.map.has(key)) {
+          const previous = this.map.get(key);
           this.map.delete(key);
+          // Release the replaced value (e.g. close an ImageBitmap) unless the same
+          // object is being re-set, so overwrites don't leak decoded pixel memory.
+          if (this.onEvict && previous !== value) this.onEvict(key, previous);
         }
         this.map.set(key, value);
         while (this.map.size > this.limit) {
@@ -657,9 +684,12 @@
             content.style.opacity = '0';
             const onEnd = (event) => {
               if (event.propertyName !== 'transform') return;
+              content.removeEventListener('transitionend', onEnd);
+              // If the section was re-expanded before this collapse transition ended,
+              // don't clamp it to 0 height — that would hide a now-open section.
+              if (!section.classList.contains('collapsed')) return;
               content.style.maxHeight = '0px';
               content.style.paddingTop = '0px';
-              content.removeEventListener('transitionend', onEnd);
             };
             content.addEventListener('transitionend', onEnd);
           }
@@ -762,7 +792,7 @@
 
     /** MAP CONTROLLER **/
     class MapController {
-      constructor(mapId) {
+      constructor(mapId, initialView = CONFIG.initialView) {
         this.map = L.map(mapId, {
           zoomControl: false,
           // Floor the zoom-out. Below ~z6 the composite overlay (minNativeZoom 8)
@@ -777,7 +807,7 @@
           zoomDelta: 1,
           wheelPxPerZoomLevel: 120,
           wheelDebounceTime: 60
-        }).setView(CONFIG.initialView.center, CONFIG.initialView.zoom);
+        }).setView(initialView.center, initialView.zoom);
 
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
           maxZoom: 14, maxNativeZoom: 14, opacity: 1, zIndex: 1,
@@ -797,6 +827,10 @@
         });
         this.activeKeys = [];
         this.overlayOpacity = 1;
+        // Shared loading-spinner bookkeeping so overlapping showFrame calls don't
+        // hide the spinner while another load is still in flight (or flash it after).
+        this.pendingLoads = 0;
+        this.spinnerTimeout = null;
 
         // DOM refs read on the hot scrub path, cached once.
         this.els = {
@@ -838,6 +872,9 @@
         this.loadingMode = normalizedMode;
         // The only remaining knob is how long a scrub must settle before we repaint.
         this.scrubDebounceDelay = normalizedMode === 'wait' ? 150 : 25;
+        // Cancel any repaint still pending on the old debounce before replacing it,
+        // so an orphaned timer can't fire with a stale date after the mode switch.
+        this.showFrameDebounced?.cancel?.();
         this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), this.scrubDebounceDelay);
       }
 
@@ -851,6 +888,18 @@
           const pmtilesUrl = Utils.buildPMTilesUrl(key, customUrl);
           pmtilesSource = new pmtiles.PMTiles(pmtilesUrl);
           this.pmtilesInstances[key] = pmtilesSource;
+          // Surface hard archive failures (404 / CORS / corrupt header) once, so a
+          // data outage shows a message instead of a silently bare basemap. pmtiles
+          // caches the header, so this adds no extra network round-trip for getZxy.
+          pmtilesSource.getHeader().catch(() => {
+            this._failedKeys = this._failedKeys || new Set();
+            this._failedKeys.add(key);
+            const now = performance.now();
+            if (!this._lastFailToast || now - this._lastFailToast > 4000) {
+              this._lastFailToast = now;
+              Utils.toast('Some chart data failed to load — showing base map only');
+            }
+          });
         }
         this.pmtilesAccessSeq += 1;
         this.pmtilesAccess[key] = this.pmtilesAccessSeq;
@@ -888,7 +937,7 @@
         const coords = Object.values(layer._tiles)
           .filter(t => t && t.current && t.coords)
           .map(t => t.coords)
-          .slice(0, 40);
+          .slice(0, DeviceInfo.isIOS ? 12 : 40);
         if (coords.length === 0) return;
 
         for (const dateStr of dateStrs) {
@@ -913,6 +962,10 @@
       async showFrame(selectedDateStr) {
         const selectedTime = new Date(selectedDateStr).getTime();
         if (isNaN(selectedTime)) return;
+
+        // A direct (non-debounced) showFrame supersedes any pending scrub repaint;
+        // cancel it so a stale date can't repaint over this newer frame afterward.
+        this.showFrameDebounced?.cancel?.();
 
         const opacityValue = parseFloat(this.els.opacitySlider?.value || 100) / 100;
         this.overlayOpacity = opacityValue;
@@ -940,14 +993,27 @@
         this.activeKeys = activeKeys;
 
         const loader = this.els.loader;
-        const spinnerTimeout = setTimeout(() => loader?.classList.add('active'), 100);
+        // Reference-count in-flight loads so overlapping showFrame calls share one
+        // spinner: show it only if something is still loading 100ms in, and hide it
+        // only when the last concurrent load finishes (not when the first returns).
+        this.pendingLoads += 1;
+        if (!this.spinnerTimeout) {
+          this.spinnerTimeout = setTimeout(() => {
+            this.spinnerTimeout = null;
+            if (this.pendingLoads > 0) loader?.classList.add('active');
+          }, 100);
+        }
         try {
           // Tiles keep their old pixels until the new ones are painted, so this
           // await never leaves the basemap exposed even on a slow round-trip.
           await this.compositeLayer.setSources(sources);
         } finally {
-          clearTimeout(spinnerTimeout);
-          loader?.classList.remove('active');
+          this.pendingLoads = Math.max(0, this.pendingLoads - 1);
+          if (this.pendingLoads === 0) {
+            clearTimeout(this.spinnerTimeout);
+            this.spinnerTimeout = null;
+            loader?.classList.remove('active');
+          }
         }
 
         this.prunePMTilesInstances(activeKeys);
@@ -1002,7 +1068,15 @@
         }
 
         window.addEventListener('keydown', (e) => {
-          if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+          // Escape always works (closes overlays/panels) regardless of focus.
+          if (e.key === 'Escape') {
+            this.hideShortcuts();
+            this.hideAllPanels();
+            return;
+          }
+          // Don't hijack keys meant for a focused control: Space/Enter should
+          // activate the button, arrows should move a focused slider, and so on.
+          if (e.target.closest?.('button, a, input, select, textarea, [role="dialog"]')) return;
 
           if (e.key === 'ArrowRight') this.step(1);
           if (e.key === 'ArrowLeft') this.step(-1);
@@ -1020,12 +1094,7 @@
           }
           if (e.key === '?') {
             e.preventDefault();
-            document.getElementById('shortcutsOverlay').classList.add('visible');
-            this.hideAllPanels(['shortcutsOverlay']);
-          }
-          if (e.key === 'Escape') {
-            document.getElementById('shortcutsOverlay').classList.remove('visible');
-            this.hideAllPanels();
+            this.showShortcuts();
           }
         });
       }
@@ -1033,17 +1102,16 @@
       initControls() {
         // Help button
         document.getElementById('helpBtn')?.addEventListener('click', () => {
-          document.getElementById('shortcutsOverlay').classList.add('visible');
-          this.hideAllPanels(['shortcutsOverlay']);
+          this.showShortcuts();
         });
 
         document.getElementById('closeShortcuts')?.addEventListener('click', () => {
-          document.getElementById('shortcutsOverlay').classList.remove('visible');
+          this.hideShortcuts();
         });
 
         document.getElementById('shortcutsOverlay')?.addEventListener('click', (e) => {
           if (e.target.id === 'shortcutsOverlay') {
-            document.getElementById('shortcutsOverlay').classList.remove('visible');
+            this.hideShortcuts();
           }
         });
 
@@ -1159,10 +1227,6 @@
           }
         });
 
-        document.querySelectorAll('button, .leaflet-control-zoom a').forEach((el) => {
-          Utils.preventDoubleTapZoom(el);
-        });
-
         // Play button
         this.ui.playBtn?.addEventListener('click', () => {
           this.togglePlay();
@@ -1213,6 +1277,25 @@
         const toolsBtn = document.getElementById('toolsBtn');
         toolsControl?.classList.remove('open');
         toolsBtn?.setAttribute('aria-expanded', 'false');
+      }
+
+      showShortcuts() {
+        this._shortcutsOpener = document.activeElement;
+        document.getElementById('shortcutsOverlay')?.classList.add('visible');
+        this.hideAllPanels(['shortcutsOverlay']);
+        // Move focus into the dialog so keyboard/AT users land on it (and can Esc).
+        document.getElementById('closeShortcuts')?.focus();
+      }
+
+      hideShortcuts() {
+        const overlay = document.getElementById('shortcutsOverlay');
+        if (!overlay?.classList.contains('visible')) return;
+        overlay.classList.remove('visible');
+        // Restore focus to whatever opened the dialog.
+        if (this._shortcutsOpener && typeof this._shortcutsOpener.focus === 'function') {
+          this._shortcutsOpener.focus();
+        }
+        this._shortcutsOpener = null;
       }
 
       updateShareUrl() {
@@ -1267,32 +1350,28 @@
           this.updateByDate(selectedDate);
         });
 
-        // ticks with decade labels
+        // One tick per unique year (decade years get a label). Rendering one per
+        // frame (~2,000) is an invisible smear at any track width and just wastes
+        // DOM/layout; the handle + progress bar already show the exact position.
         const years = new Set();
+        const frag = document.createDocumentFragment();
         this.frames.forEach((f) => {
+          const year = f.date.split('-')[0];
+          if (years.has(year)) return;
+          years.add(year);
           const tick = document.createElement('div');
           tick.className = 'tick';
           tick.style.left = `${f.pct}%`;
-
-          // Extract year from date
-          const year = f.date.split('-')[0];
-
-          // Mark as major tick only for decade years.
-          if (!years.has(year)) {
-            years.add(year);
-            const yearNum = parseInt(year, 10);
-            if (yearNum % 10 === 0) {
-              tick.classList.add('major');
-              const label = document.createElement('div');
-              label.className = 'tick-label';
-              label.textContent = year;
-              tick.appendChild(label);
-            }
+          if (parseInt(year, 10) % 10 === 0) {
+            tick.classList.add('major');
+            const label = document.createElement('div');
+            label.className = 'tick-label';
+            label.textContent = year;
+            tick.appendChild(label);
           }
-
-          this.ui.ticks.appendChild(tick);
-          this.tickElements.push(tick);
+          frag.appendChild(tick);
         });
+        this.ui.ticks.appendChild(frag);
 
         // Jog Controls
         this.ui.prevBtn.onclick = () => this.step(-1);
@@ -1333,7 +1412,13 @@
           updateTrackRect();
           scheduleInput((e.touches?.[0]?.clientX) ?? e.clientX);
         };
-        const moveDrag = (e) => { if (isDragging) scheduleInput((e.touches?.[0]?.clientX) ?? e.clientX); };
+        const moveDrag = (e) => {
+          if (!isDragging) return;
+          // Non-passive specifically so we can stop the page from scrolling while
+          // the timeline handle is being dragged on touch devices.
+          if (e.cancelable) e.preventDefault();
+          scheduleInput((e.touches?.[0]?.clientX) ?? e.clientX);
+        };
         const endDrag = () => { isDragging = false; rafPending = false; };
 
         this.ui.track.addEventListener('mousedown', startDrag);
@@ -1342,7 +1427,17 @@
         window.addEventListener('touchmove', moveDrag, { passive: false });
         window.addEventListener('mouseup', endDrag);
         window.addEventListener('touchend', endDrag);
-        window.addEventListener('resize', () => { trackRect = null; this.trackWidthPx = null; });
+        // iOS fires touchcancel (not touchend) when the system interrupts a drag
+        // (notification banner, edge-swipe, second finger); without this, isDragging
+        // sticks and the next map pan would scrub the timeline.
+        window.addEventListener('touchcancel', endDrag);
+        window.addEventListener('resize', () => {
+          trackRect = null;
+          this.trackWidthPx = null;
+          // Reposition the handle for the new track width (it uses an absolute px
+          // offset), else it points at the wrong date until the next interaction.
+          this.update(this.currentIndex, true, this.selectedDate);
+        });
       }
 
       findClosestFrameIndexByPct(pct) {
@@ -1410,14 +1505,6 @@
         this.ui.handle.style.setProperty('--handle-position-px', `${trackWidth * (pct / 100)}px`);
         this.ui.progress.style.setProperty('--progress-scale', String(pct / 100));
 
-        if (this.activeTickIndex !== null && this.tickElements[this.activeTickIndex]) {
-          this.tickElements[this.activeTickIndex].classList.remove('active');
-        }
-        if (this.tickElements[index]) {
-          this.tickElements[index].classList.add('active');
-        }
-        this.activeTickIndex = index;
-
         const adjacent = [
           this.frames[index - 1]?.date,
           this.frames[index + 1]?.date
@@ -1429,7 +1516,9 @@
           const result = this.mapCtrl.showFrame(selectedDate);
           if (result && typeof result.then === 'function') {
             result.then(() => {
-              if (this.currentIndex === index) {
+              // Skip prefetch during playback — the next frame loads in ~2s anyway,
+              // so prefetching adjacent dates just churns requests and memory.
+              if (this.currentIndex === index && !this.isPlaying) {
                 this.mapCtrl.prefetchDates(adjacent);
               }
             }).catch(() => {});
@@ -1488,27 +1577,27 @@
         return;
       }
 
-      const mapCtrl = new MapController('map');
-
-      // Apply URL view or IP-based view BEFORE TimelineApp triggers the first
-      // showFrame, so we don't fetch tiles for a location we're about to leave.
-      if (latParam && lngParam && zoomParam) {
-        const lat = parseFloat(latParam);
-        const lng = parseFloat(lngParam);
-        const zoom = parseInt(zoomParam);
-        if (!isNaN(lat) && !isNaN(lng) && !isNaN(zoom)) {
-          mapCtrl.map.setView([lat, lng], zoom);
-        }
+      // Resolve the initial view BEFORE creating the map so we fetch basemap tiles
+      // for the user's real location once, instead of rendering Dallas and then
+      // discarding it. lat/lng are honored even when zoom is missing or invalid.
+      let initialView = CONFIG.initialView;
+      const urlLat = parseFloat(latParam);
+      const urlLng = parseFloat(lngParam);
+      const urlZoom = parseInt(zoomParam, 10);
+      if (!isNaN(urlLat) && !isNaN(urlLng)) {
+        initialView = { center: [urlLat, urlLng], zoom: Number.isFinite(urlZoom) ? urlZoom : 10 };
       } else {
         const ipGeo = await ipGeoPromise;
         if (ipGeo) {
           const lat = parseFloat(ipGeo.latitude);
           const lng = parseFloat(ipGeo.longitude);
           if (!isNaN(lat) && !isNaN(lng)) {
-            mapCtrl.map.setView([lat, lng], 10);
+            initialView = { center: [lat, lng], zoom: 10 };
           }
         }
       }
+
+      const mapCtrl = new MapController('map', initialView);
       const zoomState = { count: 0, timeout: null };
       const setZooming = (isZooming) => {
         if (isZooming) {
@@ -1550,7 +1639,17 @@
       // Set timeframe from URL if available (view was already applied before
       // TimelineApp created the first tile request).
       if (dateParam) {
-        timelineApp.updateByDate(dateParam);
+        // Clamp an out-of-range ?date= into the covered window so a stale/typo'd
+        // date opens to the nearest real frame instead of a blank overlay.
+        let d = dateParam;
+        const t = new Date(dateParam).getTime();
+        if (!isNaN(t)) {
+          const minT = CONFIG.dateBounds.min ? new Date(CONFIG.dateBounds.min).getTime() : -Infinity;
+          const maxT = CONFIG.dateBounds.max ? new Date(CONFIG.dateBounds.max).getTime() : Infinity;
+          if (t < minT) d = CONFIG.dateBounds.min;
+          else if (t > maxT) d = CONFIG.dateBounds.max;
+          timelineApp.updateByDate(d);
+        }
       }
 
       // Location Crosshair Button - Request User's Geolocation
@@ -1566,13 +1665,18 @@
             },
             (error) => {
               console.log('GPS failed, trying IP geolocation...');
-              // Fallback to IP Geolocation
-              fetch('https://get.geojs.io/v1/ip/geo.json')
-                .then(response => response.json())
+              // Fallback to IP Geolocation, capped so a stalled service doesn't
+              // leave the button looking dead with no feedback.
+              Promise.race([
+                fetch('https://get.geojs.io/v1/ip/geo.json').then(response => response.json()),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('ipgeo-timeout')), 4000))
+              ])
                 .then(data => {
                   const lat = parseFloat(data.latitude);
                   const lng = parseFloat(data.longitude);
+                  if (isNaN(lat) || isNaN(lng)) throw new Error('bad-ipgeo');
                   mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
+                  Utils.toast('Centered on your approximate location (IP)');
                 })
                 .catch(err => {
                   console.error('IP Geolocation error:', err);
@@ -1627,7 +1731,15 @@
 
     }
 
-    document.addEventListener('DOMContentLoaded', initApp);
+    document.addEventListener('DOMContentLoaded', () => {
+      // Surface a fatal init failure (e.g. dates.csv failed to load) instead of
+      // leaving the splash frozen at 10% with the error toast hidden beneath it.
+      initApp().catch((err) => {
+        console.error('Initialization failed', err);
+        const status = document.getElementById('loadingStatus');
+        if (status) status.textContent = 'Failed to load chart data. Check your connection and reload.';
+      });
+    });
   </script>
 
   <!-- Privacy-friendly analytics by Plausible -->
