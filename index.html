@@ -323,9 +323,12 @@
         return { startStr, endStr, startDate, endDate };
       },
       toIsoDate: (date) => {
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, '0');
-        const day = String(date.getDate()).padStart(2, '0');
+        // Range dates are parsed as UTC midnight (new Date('YYYY-MM-DD')), so read
+        // them back in UTC — using local getters shifts the date by a day for any
+        // user in a non-zero timezone and breaks the date bounds round-trip.
+        const year = date.getUTCFullYear();
+        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(date.getUTCDate()).padStart(2, '0');
         return `${year}-${month}-${day}`;
       },
       formatDateId: (dateStr) => {
@@ -386,6 +389,16 @@
         this.useImageBitmap = options.useImageBitmap ?? ('createImageBitmap' in window);
         this.tileDataCache = options.tileDataCache || null;
         this.tileBitmapCache = options.tileBitmapCache || null;
+
+        // iOS Safari retains canvas backing stores until a GC pass that lags far
+        // behind pan/zoom churn; zeroing a tile's dimensions on unload frees that
+        // memory immediately and is the standard WebKit canvas-disposal mitigation.
+        this.on('tileunload', (e) => {
+          if (e.tile) {
+            e.tile.width = 0;
+            e.tile.height = 0;
+          }
+        });
       }
 
       setSources(sources) {
@@ -457,11 +470,26 @@
         });
       }
 
+      _releaseObjectUrls(bitmaps) {
+        for (const bitmap of bitmaps) {
+          if (bitmap && bitmap._objectUrl) {
+            URL.revokeObjectURL(bitmap._objectUrl);
+            bitmap._objectUrl = null;
+          }
+        }
+      }
+
       createTile(coords, done) {
         const tile = document.createElement('canvas');
         tile.width = 256;
         tile.height = 256;
-        this._renderTile(tile, coords, this.sourceVersion).then(() => done(null, tile));
+        // Signal both fulfillment and rejection: if _renderTile throws, Leaflet's
+        // done() must still fire or the tile stays "loading" forever, which blocks
+        // tile pruning and leaks retained backfill tiles under memory pressure.
+        this._renderTile(tile, coords, this.sourceVersion).then(
+          () => done(null, tile),
+          (err) => done(err, tile)
+        );
         return tile;
       }
 
@@ -472,6 +500,10 @@
       // them, and a superseded render bails without touching the canvas.
       async _renderTile(canvas, coords, version) {
         const ctx = canvas.getContext('2d');
+        // Under iOS canvas-memory pressure getContext can return null; degrade to
+        // an empty tile instead of throwing (which would reject the createTile
+        // promise and wedge the tile in Leaflet's loading state).
+        if (!ctx) return;
         const placement = this._normalizeCoords(coords);
         const { z, x, y } = placement;
         const sourceSize = 256 / placement.scale;
@@ -503,7 +535,13 @@
         const bitmaps = await Promise.all(fetched.map(({ cacheKey, tileData }) =>
           tileData ? this._prepareBitmap(tileData, cacheKey).catch(() => null) : Promise.resolve(null)
         ));
-        if (!this._map || version !== this.sourceVersion) return;
+        // Superseded after decoding: release any object URLs created on the Image
+        // path (iPhone Safari) so their WebP blobs aren't pinned for the lifetime
+        // of the page. The normal paint path below revokes them after drawImage.
+        if (!this._map || version !== this.sourceVersion) {
+          this._releaseObjectUrls(bitmaps);
+          return;
+        }
 
         // Single synchronous paint: clear the old frame and stamp the new one in
         // the same frame, so there is never a visible gap.
@@ -701,7 +739,10 @@
                   if (range.endTime > maxEnd.endTime) maxEnd = range;
                 });
                 CONFIG.dateBounds.min = Utils.toIsoDate(minStart.startDate);
-                CONFIG.dateBounds.max = Utils.toIsoDate(maxEnd.endDate);
+                // Ranges are end-exclusive ([start, end)), so the last date that
+                // actually has chart coverage is the day before the newest end date.
+                // Using the raw end date would default the picker to a blank frame.
+                CONFIG.dateBounds.max = Utils.toIsoDate(new Date(maxEnd.endTime - 86400000));
               }
               resolve();
             } catch (e) {
@@ -724,6 +765,11 @@
       constructor(mapId) {
         this.map = L.map(mapId, {
           zoomControl: false,
+          // Floor the zoom-out. Below ~z6 the composite overlay (minNativeZoom 8)
+          // renders 4x more 256x256 canvas tiles per level down; by z4 that is
+          // ~1,200 canvases (~320MB of backing store), which gets the tab
+          // jetsam-killed on iOS. z6 caps it at ~100 canvases (~26MB).
+          minZoom: 6,
           fadeAnimation: false,
           zoomAnimation: true,
           attributionControl: true,
@@ -743,10 +789,10 @@
         this.pmtilesInstances = {}; // Cache for PMTiles instances
         this.pmtilesAccess = {};
         this.pmtilesAccessSeq = 0;
-        this.pmtilesCacheLimit = DeviceInfo.isMobileSafari ? 18 : 96;
-        this.tileDataCache = new LRUCache(DeviceInfo.isMobileSafari ? 350 : 1600);
+        this.pmtilesCacheLimit = DeviceInfo.isIOS ? 18 : 96;
+        this.tileDataCache = new LRUCache(DeviceInfo.isIOS ? 350 : 1600);
         // Evicted ImageBitmaps hold decoded pixel memory; free it explicitly.
-        this.tileBitmapCache = new LRUCache(DeviceInfo.isMobileSafari ? 200 : 800, (key, bitmap) => {
+        this.tileBitmapCache = new LRUCache(DeviceInfo.isIOS ? 200 : 800, (key, bitmap) => {
           if (bitmap && typeof bitmap.close === 'function') bitmap.close();
         });
         this.activeKeys = [];
@@ -769,11 +815,11 @@
           maxNativeZoom: 12,
           tileSize: 256,
           opacity: 0,
-          keepBuffer: DeviceInfo.isMobileSafari ? 1 : 2,
+          keepBuffer: DeviceInfo.isIOS ? 1 : 2,
           updateWhenIdle: true,
           updateWhenZooming: false,
           zIndex: 10,
-          useImageBitmap: !DeviceInfo.isMobileSafari,
+          useImageBitmap: !DeviceInfo.isIOS,
           tileDataCache: this.tileDataCache,
           tileBitmapCache: this.tileBitmapCache
         };

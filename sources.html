@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sources & Attribution — archive.aero</title>
+  <meta name="description"
+    content="Data sources, attribution, and licensing for archive.aero — historical FAA aeronautical charts sourced from the U.S. National Archives." />
+  <link rel="canonical" href="https://archive.aero/sources.html" />
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+  <style>
+    :root {
+      --primary: #1e90ff;
+      --primary-hover: #4da6ff;
+      --secondary: #00d4aa;
+      --bg-dark: #0a0e12;
+      --bg-glass: rgba(20, 25, 30, 0.90);
+      --text-light: #fff;
+      --text-muted: rgba(255, 255, 255, 0.6);
+      --card-radius: 16px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      background: var(--bg-dark);
+      color: var(--text-light);
+      font-family: system-ui, -apple-system, sans-serif;
+      line-height: 1.6;
+    }
+
+    a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+
+    a:hover {
+      color: var(--primary-hover);
+      text-decoration: underline;
+    }
+
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+
+    .back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.95rem;
+      margin-bottom: 24px;
+    }
+
+    header h1 {
+      font-size: 1.7rem;
+      margin: 0 0 4px;
+    }
+
+    header .tagline {
+      color: var(--text-muted);
+      margin: 0 0 32px;
+    }
+
+    section {
+      background: var(--bg-glass);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--card-radius);
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+
+    section h2 {
+      font-size: 1.15rem;
+      margin: 0 0 12px;
+      color: var(--secondary);
+    }
+
+    section p:first-of-type {
+      margin-top: 0;
+    }
+
+    section p:last-child {
+      margin-bottom: 0;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 20px;
+    }
+
+    li {
+      margin-bottom: 8px;
+    }
+
+    .muted {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .warn {
+      border-color: rgba(255, 193, 7, 0.4);
+      background: rgba(60, 50, 15, 0.6);
+    }
+
+    .warn h2 {
+      color: #ffce4d;
+    }
+
+    footer {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-top: 32px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <a class="back" href="index.html">← Back to the map</a>
+
+    <header>
+      <h1>✈️ Sources &amp; Attribution</h1>
+      <p class="tagline">Where the charts and map data on archive.aero come from.</p>
+    </header>
+
+    <section class="warn">
+      <h2>⚠️ Historical use only</h2>
+      <p>
+        Every chart shown on archive.aero is a historical scan and is <strong>not</strong> current.
+        Do not use these charts for navigation. Always consult official, in-date FAA publications
+        and aeronautical information for flight planning and operations.
+      </p>
+    </section>
+
+    <section>
+      <h2>Historical aeronautical charts</h2>
+      <p>
+        The historical Visual Flight Rules (VFR) Sectional Aeronautical Charts displayed here are
+        digitized scans held by the
+        <a href="https://catalog.archives.gov/" target="_blank" rel="noopener">U.S. National Archives and Records Administration (NARA)</a>,
+        within <strong>Record Group 237 — Records of the Federal Aviation Administration</strong>.
+        The original charts were produced by the FAA (and its predecessor agencies) and are
+        works of the U.S. federal government.
+      </p>
+      <p class="muted">
+        Chart scans are processed into Cloud-Optimized GeoTIFFs and served as PMTiles / WebP raster
+        tiles. archive.aero is an independent project and is not affiliated with, or endorsed by,
+        the FAA or NARA.
+      </p>
+    </section>
+
+    <section>
+      <h2>Base map</h2>
+      <p>The underlying reference basemap is provided by:</p>
+      <ul>
+        <li>
+          Map data &copy;
+          <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>
+          contributors, available under the Open Database License (ODbL).
+        </li>
+        <li>
+          Basemap tiles &copy;
+          <a href="https://carto.com/attributions" target="_blank" rel="noopener">CARTO</a>.
+        </li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Software &amp; libraries</h2>
+      <ul>
+        <li><a href="https://leafletjs.com/" target="_blank" rel="noopener">Leaflet</a> — interactive map rendering (BSD-2-Clause).</li>
+        <li><a href="https://github.com/protomaps/PMTiles" target="_blank" rel="noopener">PMTiles</a> — single-file tile archives (BSD-3-Clause).</li>
+        <li><a href="https://www.papaparse.com/" target="_blank" rel="noopener">PapaParse</a> — CSV parsing (MIT).</li>
+        <li><a href="https://plausible.io/" target="_blank" rel="noopener">Plausible Analytics</a> — privacy-friendly, cookie-free analytics.</li>
+      </ul>
+      <p class="muted">
+        archive.aero is open source. The site code is available on
+        <a href="https://github.com/hemenway/AeroMap" target="_blank" rel="noopener">GitHub</a>.
+      </p>
+    </section>
+
+    <footer>
+      <a href="index.html">archive.aero</a> · Historical Aviation Charts
+    </footer>
+  </div>
+</body>
+
+</html>
