@@ -1,4 +1,4 @@
-name = "archive-aero-tiles"
+name = "tiles"
 main = "src/index.js"
 compatibility_date = "2025-05-01"
 

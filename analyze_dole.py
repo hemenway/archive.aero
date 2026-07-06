@@ -101,15 +101,20 @@ def analyze_csv(csv_path: str) -> Tuple[List[str], Dict[str, List[dict]]]:
 
     for records in locations_data.values():
         records.sort(key=lambda r: (r.get("date") is None, r.get("date") or datetime.max))
-        for i, rec in enumerate(records):
+        for rec in records:
+            # Flag rows whose end date is genuinely absent. Early-master rows
+            # never carry an end date (they use fixed spans), so they are not
+            # treated as missing.
+            rec["end_date_missing"] = bool(
+                rec.get("date") and not rec.get("end_date") and not is_early_master_format
+            )
             if rec.get("date") and rec.get("end_date"):
                 continue
             if rec.get("date") and is_early_master_format:
                 rec["end_date"] = rec["date"] + timedelta(days=56)
-            elif rec.get("date") and i + 1 < len(records) and records[i + 1].get("date"):
-                rec["end_date"] = records[i + 1]["date"]
-            elif rec.get("date"):
-                rec["end_date"] = rec["date"] + timedelta(days=1)
+            # Otherwise leave end_date as None: do NOT snap the segment forward
+            # to the next edition's date. The timeline renders these as flagged
+            # start-only markers.
 
     return errors, dict(locations_data)
 

@@ -314,11 +314,12 @@ class Segment:
     location: str
     edition: str
     start_date: date
-    end_date: date
+    end_date: date | None
     tif_filename: str
     file_path: str
     line_num: int
     has_georef_data: bool
+    end_date_missing: bool = False
 
 
 def _record_has_gcp_data(record):
@@ -354,6 +355,7 @@ class TimelinePreviewApp(tk.Tk):
     ROW_HEIGHT = 24
     GROUP_HEADER_HEIGHT = 22
     MIN_SEGMENT_PX = 3
+    MISSING_END_SEGMENT_PX = 8
     TIMELINE_PAD_RIGHT = 40
     DAY_PX = 0.38  # ~2100px across ~15 years
 
@@ -446,6 +448,14 @@ class TimelinePreviewApp(tk.Tk):
         legend.pack(fill="x")
         self._legend_chip(legend, "#2f80ed", "Has saved georef points").pack(side="left")
         self._legend_chip(legend, "#f39c12", "No saved georef points").pack(side="left", padx=(10, 0))
+        self._legend_chip(
+            legend,
+            "#9aa7b0",
+            "No end date (start-only marker)",
+            outline="#e53935",
+            stipple="gray50",
+            dash=(3, 2),
+        ).pack(side="left", padx=(10, 0))
 
         main = ttk.Frame(self, padding=(10, 0, 10, 0))
         main.pack(fill="both", expand=True)
@@ -463,10 +473,16 @@ class TimelinePreviewApp(tk.Tk):
         status.pack(fill="x")
         ttk.Label(status, textvariable=self.status_var).pack(side="left", fill="x", expand=True)
 
-    def _legend_chip(self, parent, color, label):
+    def _legend_chip(self, parent, color, label, outline="#666", stipple="", dash=None):
         frame = ttk.Frame(parent)
         swatch = tk.Canvas(frame, width=14, height=14, highlightthickness=0, bd=0)
-        swatch.create_rectangle(1, 1, 13, 13, fill=color, outline="#666")
+        rect_kwargs = {"fill": color, "outline": outline}
+        if stipple:
+            rect_kwargs["stipple"] = stipple
+        if dash:
+            rect_kwargs["dash"] = dash
+            rect_kwargs["width"] = 2
+        swatch.create_rectangle(1, 1, 13, 13, **rect_kwargs)
         swatch.pack(side="left")
         ttk.Label(frame, text=label).pack(side="left", padx=(4, 0))
         return frame
@@ -884,10 +900,13 @@ class TimelinePreviewApp(tk.Tk):
                     y2 = y + self.ROW_HEIGHT - 4
 
                     fill = "#2f80ed" if seg.has_georef_data else "#f39c12"
-                    outline = "#1f2d3d" if seg.file_path and os.path.exists(seg.file_path) else "#90a4ae"
+                    stipple = "gray50" if seg.end_date_missing else ""
 
-                    item = self.canvas.create_rectangle(x1, y1, x2, y2, fill=fill, outline=outline, width=1)
+                    item = self.canvas.create_rectangle(
+                        x1, y1, x2, y2, fill=fill, width=1, stipple=stipple
+                    )
                     self.item_to_segment[item] = seg
+                    self._apply_segment_outline(item, seg, selected=False)
 
                     label_text = "-" if seg.edition == "Unknown" else str(seg.edition or "")
                     label_width = x2 - x1
@@ -913,11 +932,15 @@ class TimelinePreviewApp(tk.Tk):
 
     def _segment_x(self, seg):
         start_offset = (seg.start_date - self.min_date).days
-        duration = max(1, (seg.end_date - seg.start_date).days)
+        if seg.end_date is None:
+            duration = 0
+        else:
+            duration = max(1, (seg.end_date - seg.start_date).days)
         x1 = self.LABEL_WIDTH + int(start_offset * self.DAY_PX)
         x2 = self.LABEL_WIDTH + int((start_offset + duration) * self.DAY_PX)
-        if x2 - x1 < self.MIN_SEGMENT_PX:
-            x2 = x1 + self.MIN_SEGMENT_PX
+        min_px = self.MISSING_END_SEGMENT_PX if seg.end_date_missing else self.MIN_SEGMENT_PX
+        if x2 - x1 < min_px:
+            x2 = x1 + min_px
         return x1, x2
 
     def _segment_from_event(self, event):
@@ -938,9 +961,12 @@ class TimelinePreviewApp(tk.Tk):
         _item, seg = self._segment_from_event(event)
         if seg:
             exists = bool(seg.file_path and os.path.exists(seg.file_path))
+            if seg.end_date_missing or seg.end_date is None:
+                span = f"{seg.start_date.isoformat()} -> (no end date)"
+            else:
+                span = f"{seg.start_date.isoformat()} -> {seg.end_date.isoformat()}"
             status = (
-                f"{seg.location} | Ed {seg.edition} | "
-                f"{seg.start_date.isoformat()} -> {seg.end_date.isoformat()} | "
+                f"{seg.location} | Ed {seg.edition} | {span} | "
                 f"{'FOUND' if exists else 'MISSING'} | {seg.file_path or seg.tif_filename}"
             )
             self._set_status(status)
@@ -966,15 +992,23 @@ class TimelinePreviewApp(tk.Tk):
         self.open_segment_editor(seg)
         return "break"
 
+    def _apply_segment_outline(self, item_id, seg, selected):
+        if selected:
+            self.canvas.itemconfigure(item_id, width=2, outline="#e53935", dash="")
+        elif seg.end_date_missing:
+            self.canvas.itemconfigure(item_id, width=1, outline="#e53935", dash=(3, 2))
+        else:
+            outline = "#1f2d3d" if seg.file_path and os.path.exists(seg.file_path) else "#90a4ae"
+            self.canvas.itemconfigure(item_id, width=1, outline=outline, dash="")
+
     def _select_item(self, item_id, seg):
         if self.selected_item and self.selected_item in self.item_to_segment:
             old_seg = self.item_to_segment[self.selected_item]
-            default_outline = "#1f2d3d" if old_seg.file_path and os.path.exists(old_seg.file_path) else "#90a4ae"
-            self.canvas.itemconfigure(self.selected_item, width=1, outline=default_outline)
+            self._apply_segment_outline(self.selected_item, old_seg, selected=False)
 
         self.selected_item = item_id
         self.selected_segment = seg
-        self.canvas.itemconfigure(item_id, width=2, outline="#e53935")
+        self._apply_segment_outline(item_id, seg, selected=True)
 
     def open_selected(self):
         if not self.selected_segment:
@@ -1329,6 +1363,8 @@ class SegmentEditorWindow(tk.Toplevel):
         badge_row.pack(side="top", pady=(0, 8))
         self._badge(badge_row, "CSV Found" if self.has_local_file else "Missing", "#28a745" if self.has_local_file else "#dc3545").pack(side="left")
         self._badge(badge_row, f"{self.seg.location} | Line {self.seg.line_num}", "#444444").pack(side="left", padx=(8, 0))
+        # Packed/unpacked dynamically in _update_end_date_flag() based on the field value.
+        self.no_end_date_badge = self._badge(badge_row, "No End Date", "#e53935")
 
         self.canvas_shell = tk.Frame(parent, bg="#000000")
         self.canvas_shell.pack(fill="both", expand=True)
@@ -1546,8 +1582,18 @@ class SegmentEditorWindow(tk.Toplevel):
             "edition": self.edition_var.get().strip(),
         }
 
+    def _update_end_date_flag(self):
+        badge = getattr(self, "no_end_date_badge", None)
+        if badge is None:
+            return
+        if self.end_date_var.get().strip():
+            badge.pack_forget()
+        else:
+            badge.pack(side="left", padx=(8, 0))
+
     def _update_dirty_state(self, *_args):
         self._sync_lon0_from_bounds()
+        self._update_end_date_flag()
         is_dirty = self.has_unsaved_changes()
         self.save_button.configure(state="normal" if is_dirty else "disabled")
         if is_dirty:
@@ -1577,6 +1623,7 @@ class SegmentEditorWindow(tk.Toplevel):
 
         self.seg.start_date = validated["start_date"]
         self.seg.end_date = validated["end_date"]
+        self.seg.end_date_missing = validated["end_date"] is None and not _is_early_csv_path(self.csv_path)
         self.seg.edition = updates.get("edition") or "Unknown"
         self.row_data = normalize_editor_row(updates)
         self.original_metadata = {
@@ -2227,10 +2274,7 @@ def build_rows(locations_data, file_index):
 
     rows = []
     for location in sorted(locations_data.keys(), key=lambda name: (name.lower(), name)):
-        records = [
-            r for r in locations_data[location]
-            if r.get("date") and r.get("end_date")
-        ]
+        records = [r for r in locations_data[location] if r.get("date")]
         if not records:
             continue
         records.sort(key=lambda r: r["date"])
@@ -2238,16 +2282,18 @@ def build_rows(locations_data, file_index):
         segments = []
         for rec in records:
             file_path = resolve_tif_file(rec.get("tif_filename", ""), file_index)
+            end_dt = rec.get("end_date")
             segments.append(
                 Segment(
                     location=location,
                     edition=str(rec.get("edition", "")),
                     start_date=rec["date"].date(),
-                    end_date=rec["end_date"].date(),
+                    end_date=end_dt.date() if end_dt else None,
                     tif_filename=rec.get("tif_filename", ""),
                     file_path=file_path,
                     line_num=int(rec.get("line") or 0),
                     has_georef_data=_record_has_gcp_data(rec),
+                    end_date_missing=bool(rec.get("end_date_missing")),
                 )
             )
 

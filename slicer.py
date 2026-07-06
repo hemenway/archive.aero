@@ -7,6 +7,7 @@ Pipeline: download -> warp/cut -> mosaic VRT -> GeoTIFF (one per date).
 import os
 import sys
 import re
+import csv
 import json
 import argparse
 import zipfile
@@ -18,11 +19,10 @@ except ImportError:
 import time
 import platform
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, Iterable, List, Tuple, Optional, Union
 from collections import defaultdict
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dole_dataset import load_combined_rows
 
 try:
     from osgeo import gdal, ogr, osr
@@ -38,6 +38,267 @@ IS_APPLE_SILICON = (sys.platform == "darwin" and platform.machine().lower() in {
 
 # Warp outputs whose EPSG:3857 width reaches ~full-world are pathological (bad georef).
 WORLD_WIDTH_M = 35_000_000.0
+
+# Intermediate cutline-warp outputs are transient and only re-read by GDAL during
+# mosaicking, so compress them with DEFLATE level 1 (libdeflate - nearly free on
+# Apple Silicon) to cut temp-dir I/O. No NUM_THREADS: the warp phase already
+# parallelizes across jobs, so internal threads would oversubscribe the CPU.
+INTERMEDIATE_CREATION_OPTS = ['TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE', 'ZLEVEL=1']
+
+
+# ---------------------------------------------------------------------------
+# CSV normalization/merging helpers (inlined from dole_dataset.py so this
+# script is self-contained). No GDAL dependencies in this section.
+# ---------------------------------------------------------------------------
+
+CANONICAL_FIELDS = [
+    "download_link",
+    "tif_filename",
+    "filename",
+    "location",
+    "date",
+    "end_date",
+    "edition",
+]
+
+METADATA_FIELDS = [
+    "source_dataset",
+    "source_row_num",
+    "location_norm",
+    "date_quality",
+    "candidate_group",
+    "candidate_rank",
+    "gcp_xy_complete",
+    "row_status",
+]
+
+ABBREVIATIONS = {
+    "hawaiian_is": "hawaiian_islands",
+    "dallas_ft_worth": "dallas_ft_worth",
+    "mariana_islands_inset": "mariana_islands",
+}
+
+
+def _pick(row: Dict[str, str], keys: Iterable[str]) -> str:
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        value_str = str(value).strip()
+        if value_str:
+            return value_str
+    return ""
+
+
+def _parse_iso_date(value: str) -> Optional[datetime.date]:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return datetime.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _normalize_iso_date(value: str) -> str:
+    parsed = _parse_iso_date(value)
+    return parsed.isoformat() if parsed else ""
+
+
+def normalize_location(name: str) -> str:
+    norm = (
+        str(name or "")
+        .strip()
+        .lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+        .replace(".", "_")
+        .replace(",", "")
+    )
+    while "__" in norm:
+        norm = norm.replace("__", "_")
+    return ABBREVIATIONS.get(norm, norm)
+
+
+def _normalize_token(value: str) -> str:
+    token = re.sub(r"[^a-zA-Z0-9_]+", "_", str(value or "").strip().lower())
+    token = re.sub(r"_+", "_", token).strip("_")
+    return token
+
+
+def _is_truthy(value: str) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _has_complete_numeric_gcp_xy(row: Dict[str, str]) -> bool:
+    keys = ("tl_x", "tl_y", "tr_x", "tr_y", "br_x", "br_y", "bl_x", "bl_y")
+    for key in keys:
+        value = _pick(row, (key, key.upper()))
+        if not value:
+            return False
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def compute_early_end_dates(rows: Iterable[Dict[str, str]]) -> Dict[Tuple[str, str], str]:
+    """
+    Compute early-dataset end dates per normalized location:
+    next start date when available, else start + 56 days.
+    """
+    by_location: Dict[str, set] = {}
+    for row in rows:
+        location = _pick(row, ("location", "Location"))
+        location_norm = normalize_location(location)
+        date_iso = _normalize_iso_date(_pick(row, ("date", "Date", "start_date", "Start Date")))
+        if not (location_norm and date_iso):
+            continue
+        by_location.setdefault(location_norm, set()).add(date_iso)
+
+    output: Dict[Tuple[str, str], str] = {}
+    for location_norm, iso_dates in by_location.items():
+        ordered = sorted(datetime.date.fromisoformat(d) for d in iso_dates)
+        for idx, start in enumerate(ordered):
+            if idx + 1 < len(ordered):
+                end = ordered[idx + 1]
+            else:
+                end = start + datetime.timedelta(days=56)
+            output[(location_norm, start.isoformat())] = end.isoformat()
+    return output
+
+
+def build_candidate_group(row: Dict[str, str], source_row_num: int) -> str:
+    date_iso = (row.get("date") or "").strip()
+    location_norm = (row.get("location_norm") or normalize_location(row.get("location", ""))).strip()
+    if date_iso and location_norm:
+        return f"{date_iso}|{location_norm}"
+
+    filename = (row.get("filename") or row.get("tif_filename") or "").strip()
+    if filename:
+        token = _normalize_token(Path(filename).stem)
+    else:
+        token = f"row{int(source_row_num)}"
+    return f"undated|{token}"
+
+
+def rank_candidate(row: Dict[str, str]) -> int:
+    if _is_truthy(row.get("gcp_xy_complete", "")):
+        return 1
+    if str(row.get("source_dataset") or "").strip().lower() == "master":
+        return 2
+    return 3
+
+
+def normalize_row(
+    raw_row: Dict[str, str],
+    source_dataset: str,
+    source_row_num: int,
+    early_end_dates: Optional[Dict[Tuple[str, str], str]] = None,
+) -> Dict[str, str]:
+    row = dict(raw_row)
+    dataset = str(source_dataset or "").strip().lower() or "master"
+    status_parts: List[str] = []
+
+    download_link = _pick(row, ("download_link", "Download Link", "Download link"))
+    tif_filename = _pick(row, ("tif_filename", "filename", "TIF Filename", "Filename"))
+    filename = _pick(row, ("filename", "tif_filename", "Filename", "TIF Filename"))
+    location = _pick(row, ("location", "Location", "geo_where"))
+    edition = _pick(row, ("edition", "Edition", "Web Edition Number")) or "Unknown"
+    location_norm = normalize_location(location)
+
+    if not filename and tif_filename:
+        filename = tif_filename
+    if not tif_filename and filename:
+        tif_filename = filename
+    if not filename:
+        status_parts.append("missing_filename")
+
+    raw_date = _pick(row, ("date", "Date", "start_date", "Start Date"))
+    date_iso = _normalize_iso_date(raw_date)
+    if date_iso:
+        date_quality = "valid_iso"
+    else:
+        date_quality = "invalid_or_blank"
+        if raw_date:
+            status_parts.append(f"invalid_date:{raw_date}")
+        else:
+            status_parts.append("missing_date")
+
+    raw_end_date = _pick(row, ("end_date", "End Date"))
+    if dataset == "early":
+        if date_iso and location_norm and early_end_dates is not None:
+            end_date = early_end_dates.get((location_norm, date_iso), "")
+        else:
+            end_date = ""
+    else:
+        end_date = _normalize_iso_date(raw_end_date)
+        if not end_date and date_iso:
+            end_date = date_iso
+        if raw_end_date and not end_date:
+            status_parts.append(f"invalid_end_date:{raw_end_date}")
+
+    gcp_xy_complete = _has_complete_numeric_gcp_xy(row)
+
+    row["download_link"] = download_link
+    row["tif_filename"] = tif_filename
+    row["filename"] = filename
+    row["location"] = location
+    row["date"] = date_iso
+    row["end_date"] = end_date
+    row["edition"] = edition
+    row["source_dataset"] = dataset
+    row["source_row_num"] = str(int(source_row_num))
+    row["location_norm"] = location_norm
+    row["date_quality"] = date_quality
+    row["gcp_xy_complete"] = "1" if gcp_xy_complete else "0"
+    row["candidate_group"] = build_candidate_group(row, source_row_num)
+    row["candidate_rank"] = str(rank_candidate(row))
+    row["row_status"] = ";".join(status_parts) if status_parts else "ok"
+    return row
+
+
+def load_combined_rows(csv_path: Path) -> List[Dict[str, str]]:
+    """
+    Load and normalize rows from combined or legacy CSV formats.
+    """
+    path = Path(csv_path)
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+        reader = csv.DictReader(f)
+        raw_rows = list(reader)
+        fieldnames = set(reader.fieldnames or [])
+
+    def infer_source(row: Dict[str, str]) -> str:
+        source = str(row.get("source_dataset") or "").strip().lower()
+        if source in {"early", "master"}:
+            return source
+        if "Date" in fieldnames and "Location" in fieldnames and "end_date" not in fieldnames:
+            return "early"
+        if path.name.lower().startswith("early_"):
+            return "early"
+        return "master"
+
+    source_by_row: List[str] = [infer_source(r) for r in raw_rows]
+    early_rows = [row for row, source in zip(raw_rows, source_by_row) if source == "early"]
+    early_end_dates = compute_early_end_dates(early_rows)
+
+    normalized_rows: List[Dict[str, str]] = []
+    for idx, (row, source) in enumerate(zip(raw_rows, source_by_row), start=2):
+        normalized_rows.append(
+            normalize_row(
+                row,
+                source_dataset=source,
+                source_row_num=idx,
+                early_end_dates=early_end_dates,
+            )
+        )
+    return normalized_rows
+
+
+# ---------------------------------------------------------------------------
+# End of inlined dole_dataset.py section
+# ---------------------------------------------------------------------------
 
 
 def _get_memory_snapshot_mb(
@@ -98,30 +359,21 @@ def _configure_gdal_for_phase(phase: str, workers: int = 1, available_ram_mb: in
     if phase == 'warp':
         # Warp phase: single-threaded per worker to prevent oversubscription
         gdal.SetConfigOption('GDAL_NUM_THREADS', '1')
-        cache_per_worker = max(256, available_ram_mb // workers)
-        gdal.SetConfigOption('GDAL_CACHEMAX', str(cache_per_worker))
+        cache_per_worker = max(256, available_ram_mb // max(1, workers))
+        # SetCacheMax takes effect at runtime; the GDAL_CACHEMAX config option is
+        # only read once when the block cache is first initialized, so mid-run
+        # SetConfigOption('GDAL_CACHEMAX', ...) calls were being silently ignored.
+        gdal.SetCacheMax(cache_per_worker * 1024 * 1024)
 
     elif phase == 'geotiff':
         # GeoTIFF phase: single-process translate with full CPU
         gdal.SetConfigOption('GDAL_NUM_THREADS', 'ALL_CPUS')
-        gdal.SetConfigOption('GDAL_CACHEMAX', str(max(512, min(8192, available_ram_mb * 3 // 4))))
+        cache_mb = max(512, min(8192, available_ram_mb * 3 // 4))
+        gdal.SetCacheMax(cache_mb * 1024 * 1024)
 
 
 class ChartSlicer:
     """Process FAA charts and create COGs."""
-
-    @staticmethod
-    def _check_zstd_support() -> bool:
-        """Check if GDAL supports ZSTD compression."""
-        try:
-            driver = gdal.GetDriverByName('GTiff')
-            if driver:
-                metadata = driver.GetMetadata()
-                if metadata and 'ZSTD' in metadata.get('DMD_CREATIONOPTIONLIST', ''):
-                    return True
-        except:
-            pass
-        return False
 
     def __init__(self, source_dir: Path, output_dir: Path, csv_file: Path, shape_dir: Path,
                  preview_mode: bool = False, download_delay: float = 8.0, temp_dir: Path = None):
@@ -137,8 +389,9 @@ class ChartSlicer:
         self.last_download_time = 0  # Track last download time for throttling
         self._date_cache: Dict[str, Optional[datetime.date]] = {}
         self.date_key_map: Dict[str, Tuple[str, str]] = {}
-        # GeoTIFF output settings (final pipeline stage: mosaic VRT -> GeoTIFF)
-        self.geotiff_compress = 'ZSTD'
+        # GeoTIFF output settings (final pipeline stage: mosaic VRT -> GeoTIFF).
+        # LZW/DEFLATE only - geotiff2pmtiles' TIFF reader cannot decode ZSTD.
+        self.geotiff_compress = 'LZW'
         self.num_threads = 'ALL_CPUS'
         self.clip_projwin: Optional[Tuple[float, float, float, float]] = None
         # GeoTIFF progress/ETA tracking (populated in process_all_dates)
@@ -438,8 +691,9 @@ class ChartSlicer:
             for filename in files:
                 file_path = root_path / filename
 
-                # Cache direct TIF and ZIP files by name
-                if filename.endswith('.tif') or filename.endswith('.zip'):
+                # Cache direct TIF, ZIP and PDF files by name (PDFs so a local
+                # .pdf can be rasterized instead of re-downloading its .tif row)
+                if filename.endswith(('.tif', '.zip', '.pdf')):
                     self.files_by_name[filename] = file_path
 
                 # For TIFs inside extracted directories, also index by parent directory name
@@ -531,11 +785,17 @@ class ChartSlicer:
                 file_size_mb = target_path.stat().st_size / (1024 * 1024)
                 self.log(f"    ✓ Downloaded: {target_path.name} ({file_size_mb:.1f} MB)")
 
-                # Update file index with newly downloaded file
-                self.files_by_name[target_path.name] = target_path
-
                 # Update last download time for throttling
                 self.last_download_time = time.time()
+
+                # Some Wayback "TIF" links actually serve GeoPDFs; rasterize to a real
+                # GeoTIFF before indexing so warping sees consistent TIFF sources.
+                if target_path.suffix.lower() == '.tif' and self._is_pdf_payload(target_path):
+                    if not self._convert_pdf_payload_to_tif(target_path):
+                        return False
+
+                # Update file index with newly downloaded file
+                self.files_by_name[target_path.name] = target_path
                 return True
 
             except Exception as e:
@@ -602,6 +862,71 @@ class ChartSlicer:
                 shutil.rmtree(extract_dir)
             return False
 
+    @staticmethod
+    def _is_pdf_payload(path: Path) -> bool:
+        """True if the file's content is PDF, regardless of its extension."""
+        try:
+            with open(path, 'rb') as f:
+                return f.read(5).startswith(b'%PDF')
+        except OSError:
+            return False
+
+    def _convert_pdf_payload_to_tif(self, path: Path, out_path: Optional[Path] = None) -> bool:
+        """
+        Rasterize a PDF (either a real .pdf or a PDF payload saved under a .tif
+        name) to a GeoTIFF at 300 dpi, matching the previously converted
+        *_PDFs_*.tif sources. Writes to out_path when given (keeping the source),
+        otherwise converts in place. Georeferencing embedded in the PDF, when
+        present, carries over to the output.
+        """
+        import threading
+        dest = out_path if out_path is not None else path
+        tmp_out = dest.with_name(f"{dest.stem}_pdfconv_{threading.get_ident()}.tif")
+        try:
+            self.log(f"    Converting PDF to GeoTIFF (300 dpi): {path.name} -> {dest.name}")
+            ds = gdal.OpenEx(str(path), gdal.OF_RASTER, allowed_drivers=['PDF'],
+                             open_options=['DPI=300'])
+            if ds is None:
+                self.log(f"    ✗ GDAL could not open PDF: {path.name}")
+                return False
+            if ds.GetGeoTransform(can_return_null=True) is None and ds.GetGCPCount() == 0:
+                self.log(f"    ⚠ PDF has no georeferencing; {dest.name} will need "
+                         f"georeferencing before it can be warped")
+            gdal.Translate(str(tmp_out), ds, options=gdal.TranslateOptions(
+                format='GTiff',
+                creationOptions=['TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE', 'ZLEVEL=1'],
+            ))
+            ds = None
+            os.replace(tmp_out, dest)
+            self.log(f"    ✓ Converted PDF to GeoTIFF: {dest.name}")
+            return True
+        except Exception as e:
+            self.log(f"    ✗ PDF to TIF conversion failed for {path.name}: {e}")
+            try:
+                if tmp_out.exists():
+                    tmp_out.unlink()
+            except OSError:
+                pass
+            return False
+
+    def _materialize_tif_from_local_pdf(self, filename: str) -> Optional[Path]:
+        """
+        CSV rows for PDF-sourced charts carry a .tif filename while the file on
+        disk may be the original .pdf. Rasterize the local PDF next to itself
+        instead of re-downloading.
+        """
+        if not filename.endswith('.tif'):
+            return None
+        pdf_name = f"{Path(filename).stem}.pdf"
+        pdf_path = self.files_by_name.get(pdf_name)
+        if not pdf_path or not pdf_path.exists():
+            return None
+        tif_path = pdf_path.parent / filename
+        if self._convert_pdf_payload_to_tif(pdf_path, out_path=tif_path):
+            self.files_by_name[filename] = tif_path
+            return tif_path
+        return None
+
     def _download_missing_files(self, allowed_dates: Optional[set] = None):
         """
         Preparation phase: Download all missing files upfront before processing begins.
@@ -626,17 +951,26 @@ class ChartSlicer:
                 if not filename or not download_link:
                     continue
 
-                # Check if file exists locally
+                # Check if file exists locally. Consult the recursive source index,
+                # not just source_dir top level - prior downloads live in date subdirs.
                 if filename.endswith('.zip'):
                     # ZIP files become directories after extraction
                     dir_name = filename[:-4]
                     dir_path = self.source_dir / dir_name
-                    if not dir_path.exists():
-                        missing_files.append((filename, download_link, location, date, True))
+                    if dir_name in self.tifs_by_dir or dir_path.exists():
+                        continue
+                    # ZIP already on disk but never extracted: extract instead of re-downloading
+                    zip_path = self.files_by_name.get(filename)
+                    if zip_path and self.extract_zip(zip_path, zip_path.parent / dir_name):
+                        continue
+                    missing_files.append((filename, download_link, location, date, True))
                 else:
                     # Direct TIF files
                     file_path = self.source_dir / filename
-                    if not file_path.exists():
+                    if filename not in self.files_by_name and not file_path.exists():
+                        # A matching local .pdf can be rasterized instead of downloading
+                        if self._materialize_tif_from_local_pdf(filename):
+                            continue
                         missing_files.append((filename, download_link, location, date, False))
 
         if not missing_files:
@@ -679,11 +1013,9 @@ class ChartSlicer:
                 else:
                     self.log(f"    ✓ Downloaded: {filename}")
 
-                # Add extra pause after successful download to avoid rate limits
-                # This is in addition to the throttling in download_file()
-                if idx < len(missing_files):  # Don't pause after last file
-                    self.log(f"    Pausing {self.download_delay}s before next request...")
-                    time.sleep(self.download_delay)
+                # No extra pause here: download_file() already throttles the next
+                # request via last_download_time, so sleeping again would double the
+                # effective spacing (e.g. ~16s at the 8s default).
             else:
                 self.log(f"    ✗ Failed to download: {filename}")
                 failed_count += 1
@@ -772,6 +1104,13 @@ class ChartSlicer:
                 self.files_by_name[filename] = direct_path
                 results.append((direct_path, None))
                 return results
+
+            # A matching local .pdf can be rasterized instead of downloading
+            if not results and not self.preview_mode:
+                local_tif = self._materialize_tif_from_local_pdf(filename)
+                if local_tif:
+                    results.append((local_tif, None))
+                    return results
 
             # If not found, try to download (but not in preview mode)
             if not results and download_link and not self.preview_mode:
@@ -987,6 +1326,34 @@ class ChartSlicer:
         except Exception:
             return False
 
+    def _vrt_sources_exist(self, path: Path, depth: int = 0) -> bool:
+        """
+        True if every SourceFilename referenced by a VRT exists on disk
+        (recursing one level into nested VRT sources). A bottom-strip checksum
+        probe is not enough for VRTs: blocks outside a missing source's window
+        read fine, so the IReadBlock explosion can hide anywhere in the raster.
+        """
+        if depth > 2:
+            return True
+        try:
+            import xml.etree.ElementTree as ET
+            root = ET.parse(str(path)).getroot()
+            for el in root.iter():
+                # Plain VRT sources use SourceFilename; warped VRTs use SourceDataset.
+                if el.tag not in ('SourceFilename', 'SourceDataset'):
+                    continue
+                fn = (el.text or '').strip()
+                if not fn:
+                    continue
+                src = (path.parent / fn) if el.get('relativeToVRT') == '1' else Path(fn)
+                if not src.exists():
+                    return False
+                if src.suffix.lower() == '.vrt' and not self._vrt_sources_exist(src, depth + 1):
+                    return False
+            return True
+        except Exception:
+            return False
+
     def _is_reusable_output(self, path: Path) -> bool:
         """True only if `path` is a fully-readable, non-pathological warp output.
 
@@ -999,7 +1366,13 @@ class ChartSlicer:
         """
         ds = None
         try:
-            if not (path.exists() and path.stat().st_size > 1024):
+            if not path.exists():
+                return False
+            # Size floor applies to rasters only: a legitimate VRT can be <1KB of XML.
+            if path.suffix.lower() == '.vrt':
+                if not self._vrt_sources_exist(path):
+                    return False
+            elif path.stat().st_size <= 1024:
                 return False
             ds = gdal.Open(str(path))
             if ds is None:
@@ -1091,6 +1464,12 @@ class ChartSlicer:
             self.log(f"      ↻ Reusing existing warp output {output_tiff.name}")
             return True
 
+        # Safety net for sources downloaded by earlier runs: a .tif that is really
+        # a GeoPDF payload gets rasterized in place before warping.
+        if self._is_pdf_payload(input_tiff):
+            if not self._convert_pdf_payload_to_tif(input_tiff):
+                return False
+
         if record is not None:
             context = self._build_gcp_warp_context(record)
             if context:
@@ -1149,7 +1528,7 @@ class ChartSlicer:
 
             # Step 2: Warp with cutline. Write GTiff (default) or VRT when requested
             # Note: Not specifying xRes/yRes allows GDAL to maintain source resolution during warp
-            # Don't compress intermediates to reduce CPU load and improve parallel performance
+            # Intermediates use DEFLATE level 1 (INTERMEDIATE_CREATION_OPTS) to cut temp-dir I/O
             def _safe_unlink(path: Path) -> None:
                 try:
                     if path.exists():
@@ -1166,7 +1545,7 @@ class ChartSlicer:
                 output_format = "VRT" if (to_vrt or force_vrt_output) else "GTiff"
                 crop_to_cutline = output_bounds is None
                 if output_format == "GTiff":
-                    creation_opts = ['TILED=YES', 'BIGTIFF=YES']
+                    creation_opts = INTERMEDIATE_CREATION_OPTS
                 else:
                     creation_opts = None
                 _safe_unlink(output_path)
@@ -1194,7 +1573,7 @@ class ChartSlicer:
                 _safe_unlink(dst_tiff)
                 translate_opts = gdal.TranslateOptions(
                     format="GTiff",
-                    creationOptions=['TILED=YES', 'BIGTIFF=YES']
+                    creationOptions=INTERMEDIATE_CREATION_OPTS
                 )
                 ds_out = gdal.Translate(str(dst_tiff), str(src_vrt), options=translate_opts)
                 if not ds_out:
@@ -1411,7 +1790,7 @@ class ChartSlicer:
                     dstAlpha=True,
                     resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
                     polynomialOrder=1,
-                    creationOptions=None if to_vrt else ['TILED=YES', 'BIGTIFF=YES'],
+                    creationOptions=None if to_vrt else INTERMEDIATE_CREATION_OPTS,
                     multithread=getattr(self, 'warp_multithread', True),
                     transformerOptions=transformer_opts or None,
                     warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
@@ -1541,6 +1920,7 @@ class ChartSlicer:
             creation_opts = [
                 'TILED=YES',
                 'BIGTIFF=YES',
+                'SPARSE_OK=TRUE',  # skip writing all-empty (alpha=0) tiles; geotiff2pmtiles reads them as empty
                 'BLOCKXSIZE=1024',
                 'BLOCKYSIZE=1024',
                 f'NUM_THREADS={num_threads}'
@@ -1550,8 +1930,8 @@ class ChartSlicer:
                     f'COMPRESS={compress}',
                     'PREDICTOR=2'
                 ])
-                if compress == 'ZSTD':
-                    creation_opts.append('ZSTD_LEVEL=1')
+                if compress == 'DEFLATE':
+                    creation_opts.append('ZLEVEL=1')
 
             # Optional clip window: projWin is ULX ULY LRX LRY -> Warp outputBounds is minX minY maxX maxY
             output_bounds = None
@@ -1569,15 +1949,22 @@ class ChartSlicer:
                 creationOptions=creation_opts,
                 resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
                 multithread=True,
+                warpMemoryLimit=1024,  # MB working buffer (default ~64) -> fewer, larger chunks
+                warpOptions=['NUM_THREADS=ALL_CPUS'],  # parallelize the resampling compute (-wo)
                 outputBounds=output_bounds,
                 callback=progress_cb,
             )
 
             warp_options = gdal.WarpOptions(**warp_kwargs)
-            ds = gdal.Warp(str(output_tiff), [str(f) for f in valid_files], options=warp_options)
+            # Write to a temp name and rename on success so an interrupted/failed
+            # mosaic never leaves a partial file at the final path (the resume
+            # logic treats an existing output as complete and skips the date).
+            tmp_output = output_tiff.with_name(output_tiff.stem + '.partial.tif')
+            ds = gdal.Warp(str(tmp_output), [str(f) for f in valid_files], options=warp_options)
 
             if ds:
                 ds = None
+                os.replace(tmp_output, output_tiff)
                 file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
                 elapsed = time.time() - start_time
                 rate = file_size_mb / elapsed if elapsed > 0 else 0
@@ -1585,18 +1972,20 @@ class ChartSlicer:
                 return True, elapsed
             else:
                 self.log(f"      ✗ Failed to create mosaic GeoTIFF")
+                if tmp_output.exists():
+                    tmp_output.unlink()
                 return False, None
 
         except Exception as e:
-            error_str = str(e).lower()
-            # If ZSTD compression fails, retry with LZW
-            if compress == 'ZSTD' and ('zstd' in error_str or 'frame descriptor' in error_str or 'data corruption' in error_str):
-                self.log(f"    ZSTD error detected, retrying mosaic with LZW compression...")
-                return self.create_mosaic_geotiff(input_files, output_tiff, compress='LZW')
-
             self.log(f"    Error creating mosaic GeoTIFF: {e}")
             import traceback
             self.log(f"    {traceback.format_exc()}")
+            try:
+                tmp_output_path = output_tiff.with_name(output_tiff.stem + '.partial.tif')
+                if tmp_output_path.exists():
+                    tmp_output_path.unlink()
+            except OSError:
+                pass
             return False, None
 
     def _save_review_csv(self, report_data: List[Dict], output_path: Path) -> None:
@@ -2198,10 +2587,11 @@ class ChartSlicer:
                 self.log(f"  No valid locations found with source files")
 
             # Build mosaic inputs from exact date range matches only.
-            # Filter pathological (near-world-width) sources here: freshly warped
-            # outputs are already screened at warp time (see outputs_by_attempt),
-            # so in practice this only opens genuinely orphaned rebuilt temps whose
-            # source file could no longer be found.
+            # Validate every source with the full readability probe: restored temp
+            # VRTs from prior runs can reference source rasters that no longer exist
+            # (e.g. a renamed rawtiffs dir), which opens fine but explodes with
+            # IReadBlock errors mid-mosaic. _is_reusable_output force-reads the
+            # bottom strip so those (and near-world-width warps) are caught here.
             mosaic_sources = []
             for location in all_locations:
                 entries = vrt_library.get(location, {}).get(date)
@@ -2209,8 +2599,13 @@ class ChartSlicer:
                     continue
                 candidates = entries if isinstance(entries, list) else [entries]
                 for entry in candidates:
-                    if self._is_world_width_warp(entry):
-                        self.log(f"      Warning: Skipping pathological full-world source: {entry.name}")
+                    if not self._is_reusable_output(entry):
+                        self.log(f"      Warning: Skipping stale/unreadable mosaic source: {entry.name}")
+                        # Remove the broken temp so future runs re-warp instead of re-probing
+                        try:
+                            entry.unlink()
+                        except OSError:
+                            pass
                         continue
                     mosaic_sources.append(entry)
 
@@ -2290,8 +2685,11 @@ Examples:
         "--warp-output",
         type=str,
         choices=['tif', 'vrt'],
-        default='vrt',
-        help="Intermediate warp output format: 'tif' writes cutlines to disk, 'vrt' (default) keeps them virtual to reduce I/O"
+        default='tif',
+        help="Intermediate warp output format. 'tif' (default) materializes each cutline warp so the "
+             "parallel workers do the pixel reprojection concurrently, then the mosaic just composites. "
+             "'vrt' keeps them virtual (tiny writes) but defers all warp compute into the single mosaic "
+             "step, which is largely serial. Try both to compare on your data."
     )
 
     parser.add_argument(
@@ -2307,10 +2705,11 @@ Examples:
     parser.add_argument(
         "--compression",
         type=str,
-        choices=['AUTO', 'ZSTD', 'LZW', 'DEFLATE', 'NONE'],
+        choices=['LZW', 'DEFLATE', 'NONE'],
         default='LZW',
-        help="GeoTIFF compression (default: LZW). ZSTD is fast lossless at ZSTD_LEVEL=1. "
-             "AUTO uses ZSTD when available, else LZW."
+        help="Mosaic GeoTIFF compression (default: LZW). LZW and DEFLATE are both readable by "
+             "geotiff2pmtiles; DEFLATE adds PREDICTOR=2 + ZLEVEL=1. NONE writes uncompressed. "
+             "ZSTD is intentionally omitted - geotiff2pmtiles' TIFF reader cannot decode it."
     )
 
     parser.add_argument(
@@ -2401,10 +2800,7 @@ Examples:
 
     # GeoTIFF output settings
     slicer.num_threads = args.num_threads
-    geotiff_compress = (args.compression or 'NONE').strip().upper()
-    if geotiff_compress == 'AUTO':
-        geotiff_compress = 'ZSTD' if ChartSlicer._check_zstd_support() else 'LZW'
-    slicer.geotiff_compress = geotiff_compress
+    slicer.geotiff_compress = (args.compression or 'LZW').strip().upper()
 
     # Map resampling algorithm
     resample_map = {
