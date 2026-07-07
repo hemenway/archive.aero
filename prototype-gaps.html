@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>archive.aero — Gap Visualization Prototypes</title>
+  <style>
+    :root {
+      --primary: #1e90ff;
+      --primary-hover: #4da6ff;
+      --secondary: #00d4aa;
+      --warn: #ffb347;
+      --gap: #ff5c5c;
+      --bg-glass: rgba(20, 25, 30, 0.90);
+      --bg-dark: #0a0e12;
+      --text-light: #fff;
+      --text-muted: rgba(255, 255, 255, 0.6);
+      --timeline-h: 6px;
+      --card-radius: 16px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: var(--bg-dark);
+      font-family: system-ui, -apple-system, sans-serif;
+      color: var(--text-light);
+    }
+
+    body { padding: 24px 20px 80px; }
+
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .page-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 28px; }
+
+    .proto {
+      max-width: 980px;
+      margin: 0 auto 44px;
+    }
+
+    .proto-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin: 0 0 2px;
+      color: var(--primary-hover);
+    }
+
+    .proto-desc {
+      font-size: 12.5px;
+      color: var(--text-muted);
+      margin: 0 0 14px;
+      line-height: 1.5;
+      max-width: 760px;
+    }
+
+    /* ===== shared controls-card look, cloned from the live site ===== */
+    .controls-card {
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      padding: 16px 24px;
+      border-radius: var(--card-radius);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .jog {
+      display: flex; gap: 8px; flex-shrink: 0;
+    }
+
+    .btn-nav, .btn-play {
+      width: 40px; height: 40px; border-radius: 50%;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: white; font-size: 16px; cursor: pointer;
+      display: grid; place-items: center;
+    }
+
+    .btn-play {
+      width: 44px; height: 44px; border: none;
+      background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+    }
+
+    .track-wrapper {
+      flex: 1; min-width: 0; position: relative; height: 56px;
+      display: flex; align-items: center; cursor: pointer;
+      touch-action: none;
+    }
+
+    .track {
+      width: 100%; height: var(--timeline-h);
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 4px; position: relative;
+    }
+
+    .progress {
+      position: absolute; height: 100%;
+      background: var(--primary); border-radius: 4px;
+      width: var(--progress-pct, 0%);
+      pointer-events: none;
+    }
+
+    .handle {
+      position: absolute; left: var(--handle-pct, 0%); top: 50%;
+      width: 20px; height: 20px;
+      background: linear-gradient(135deg, #fff 0%, #e0e0e0 100%);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 0 4px rgba(30, 144, 255, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
+      z-index: 3; pointer-events: none;
+    }
+
+    .tick-label {
+      position: absolute; bottom: -8px; transform: translateX(-50%);
+      font-size: 10px; color: var(--text-muted); font-weight: 600;
+      pointer-events: none;
+    }
+
+    .info-panel {
+      display: flex; flex-direction: column; align-items: flex-end;
+      min-width: 128px; text-align: right; gap: 3px;
+    }
+
+    .info-date { font-size: 15px; font-weight: 700; }
+    .info-sub { font-size: 11px; color: var(--text-muted); }
+
+    /* ===== Variant A: heat strip ===== */
+    .heat-canvas {
+      position: absolute; left: 0; right: 0; top: 50%;
+      transform: translateY(-50%);
+      width: 100%; height: 14px; border-radius: 4px;
+      pointer-events: none;
+    }
+
+    /* ===== Variant B: hatched gap segments on the classic track ===== */
+    .gap-seg {
+      position: absolute; top: -2px; bottom: -2px;
+      background: repeating-linear-gradient(
+        -45deg,
+        rgba(255, 92, 92, 0.55) 0 3px,
+        rgba(255, 92, 92, 0.12) 3px 7px
+      );
+      border-radius: 3px;
+      pointer-events: none;
+    }
+
+    /* ===== Variant C: availability lane below the track ===== */
+    .avail-lane {
+      position: absolute; left: 0; right: 0; top: calc(50% + 10px);
+      height: 5px; border-radius: 3px; overflow: hidden;
+      background: rgba(255, 255, 255, 0.07);
+      pointer-events: none;
+    }
+    .avail-seg { position: absolute; top: 0; bottom: 0; }
+
+    /* coverage badge (shared by C & D) */
+    .cov-badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 10.5px; font-weight: 700;
+      padding: 2px 8px; border-radius: 10px;
+      letter-spacing: 0.02em;
+    }
+    .cov-badge .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .cov-full { background: rgba(0, 212, 170, 0.15); color: #5ee6c8; }
+    .cov-full .dot { background: var(--secondary); }
+    .cov-partial { background: rgba(255, 179, 71, 0.15); color: var(--warn); }
+    .cov-partial .dot { background: var(--warn); }
+    .cov-none { background: rgba(255, 92, 92, 0.15); color: var(--gap); }
+    .cov-none .dot { background: var(--gap); }
+
+    /* hover tooltip */
+    .track-tip {
+      position: absolute; bottom: 42px; transform: translateX(-50%);
+      background: rgba(10, 14, 18, 0.95);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      padding: 6px 10px; border-radius: 8px;
+      font-size: 11px; line-height: 1.45; white-space: nowrap;
+      pointer-events: none; z-index: 5; display: none;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    }
+    .track-tip .tip-cov { color: var(--text-muted); }
+
+    /* ===== Variant D: map demo with missing-area chip ===== */
+    .map-demo {
+      position: relative; height: 340px;
+      border-radius: var(--card-radius);
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      background:
+        radial-gradient(ellipse at 30% 40%, #17222c 0%, #0d1319 70%),
+        #0d1319;
+      margin-bottom: 14px;
+    }
+
+    /* fake chart area + fake empty area */
+    .fake-chart {
+      position: absolute; inset: 0 38% 0 0;
+      background:
+        repeating-linear-gradient(0deg, rgba(255,255,255,0.05) 0 1px, transparent 1px 34px),
+        repeating-linear-gradient(90deg, rgba(255,255,255,0.05) 0 1px, transparent 1px 34px),
+        linear-gradient(120deg, #7c6a4d 0%, #8a795a 30%, #5d6b4e 60%, #7c6a4d 100%);
+      opacity: 0.85;
+    }
+    .fake-empty {
+      position: absolute; inset: 0 0 0 62%;
+      background:
+        repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.045) 0 10px, transparent 10px 22px);
+    }
+    .fake-empty-label {
+      position: absolute; top: 50%; left: 81%;
+      transform: translate(-50%, -50%);
+      font-size: 11px; color: rgba(255, 255, 255, 0.35);
+      font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+      text-align: center; line-height: 1.6;
+    }
+
+    .missing-chip {
+      position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+      display: flex; align-items: center; gap: 10px;
+      background: var(--bg-glass);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 179, 71, 0.35);
+      border-radius: 12px;
+      padding: 9px 14px;
+      font-size: 12.5px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+      animation: chip-in 0.4s ease;
+      max-width: 92%;
+    }
+    @keyframes chip-in {
+      from { opacity: 0; transform: translate(-50%, 8px); }
+      to { opacity: 1; transform: translate(-50%, 0); }
+    }
+    .missing-chip .warn-ico { font-size: 15px; }
+    .missing-chip a {
+      color: var(--primary-hover); font-weight: 700; text-decoration: none;
+      white-space: nowrap;
+    }
+    .missing-chip a:hover { text-decoration: underline; }
+    .chip-close {
+      background: none; border: none; color: var(--text-muted);
+      font-size: 14px; cursor: pointer; padding: 0 0 0 2px; line-height: 1;
+    }
+
+    .note {
+      font-size: 11.5px; color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      border-radius: 10px; padding: 10px 14px; margin-top: 12px;
+      line-height: 1.55; max-width: 760px;
+    }
+    .note b { color: var(--text-light); }
+
+    .legend {
+      display: flex; gap: 16px; margin-top: 10px; font-size: 11px;
+      color: var(--text-muted); flex-wrap: wrap;
+    }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i {
+      width: 14px; height: 8px; border-radius: 2px; display: inline-block;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>✈️ Timeline gap &amp; coverage prototypes</h1>
+  <p class="page-sub">All variants are driven by real availability: <code>coverage.json</code>, precomputed from
+    <code>dates.csv</code> + the geographic bounds in each of the 3,201 PMTiles headers. Drag any timeline to scrub.
+    The big blank stretch is the real 1972–2010 gap; current dates show as full coverage even though they're a
+    single merged archive.</p>
+
+  <!-- ============ VARIANT A ============ -->
+  <div class="proto" id="protoA">
+    <p class="proto-title">A — Coverage heat strip (replaces the plain track)</p>
+    <p class="proto-desc">The track itself becomes an availability map driven by real spatial coverage (union of every
+      archive's PMTiles bounds vs the lower 48): teal = full US coverage, amber = partial (brighter = more area),
+      hatched red = nothing in the database. Sparse decades are visibly dimmer while you scrub.</p>
+    <div class="controls-card">
+      <div class="jog"><button class="btn-nav">←</button><button class="btn-play">▶</button><button class="btn-nav">→</button></div>
+      <div class="track-wrapper" data-variant="A">
+        <canvas class="heat-canvas"></canvas>
+        <div class="handle"></div>
+        <div class="track-tip"></div>
+        <div class="tick-labels"></div>
+      </div>
+      <div class="info-panel">
+        <div class="info-date">—</div>
+        <div class="info-sub">—</div>
+      </div>
+    </div>
+    <div class="legend">
+      <span><i style="background:#00d4aa"></i> full US coverage (&ge;95% of the lower 48)</span>
+      <span><i style="background:#ffb347"></i> partial (brighter = more area covered)</span>
+      <span><i style="background:repeating-linear-gradient(-45deg,rgba(255,92,92,.6) 0 3px,rgba(255,92,92,.12) 3px 6px)"></i> no data</span>
+    </div>
+  </div>
+
+  <!-- ============ VARIANT B ============ -->
+  <div class="proto" id="protoB">
+    <p class="proto-title">B — Minimal: hatched gap zones on the existing track</p>
+    <p class="proto-desc">Smallest possible change to the current UI. The track and blue progress stay exactly as they
+      are; only true zero-data stretches get a red hatch. Doesn't communicate <em>partial</em> coverage, but is the
+      least visually noisy.</p>
+    <div class="controls-card">
+      <div class="jog"><button class="btn-nav">←</button><button class="btn-play">▶</button><button class="btn-nav">→</button></div>
+      <div class="track-wrapper" data-variant="B">
+        <div class="track">
+          <div class="progress"></div>
+          <div class="gap-segs"></div>
+        </div>
+        <div class="handle"></div>
+        <div class="track-tip"></div>
+        <div class="tick-labels"></div>
+      </div>
+      <div class="info-panel">
+        <div class="info-date">—</div>
+        <div class="info-sub">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ VARIANT C ============ -->
+  <div class="proto" id="protoC">
+    <p class="proto-title">C — Availability lane + live coverage badge</p>
+    <p class="proto-desc">A thin "data availability" lane under the track (like a streaming buffer bar) plus a badge in
+      the info panel that updates while you scrub: <em>Full / Partial / No charts</em> with the real % of the US
+      covered. The badge is the piece that answers "is what I'm seeing everything there is?"</p>
+    <div class="controls-card">
+      <div class="jog"><button class="btn-nav">←</button><button class="btn-play">▶</button><button class="btn-nav">→</button></div>
+      <div class="track-wrapper" data-variant="C">
+        <div class="track">
+          <div class="progress"></div>
+        </div>
+        <div class="avail-lane"></div>
+        <div class="handle"></div>
+        <div class="track-tip"></div>
+        <div class="tick-labels"></div>
+      </div>
+      <div class="info-panel">
+        <div class="info-date">—</div>
+        <div class="cov-badge cov-full"><span class="dot"></span><span class="cov-text">—</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ VARIANT D ============ -->
+  <div class="proto" id="protoD">
+    <p class="proto-title">D — On-map "missing areas" notice with contribute link</p>
+    <p class="proto-desc">For spatial gaps: the composite layer already knows which visible tiles came back empty
+      (<code>canvas._hasChartData</code>). When &gt;25% of visible tiles are empty, a dismissible chip slides up.
+      Scrub the timeline below into a sparse year to trigger it; it stays hidden during full-coverage dates.
+      The hatched region on the right simulates empty map area.</p>
+    <div class="map-demo">
+      <div class="fake-chart"></div>
+      <div class="fake-empty"></div>
+      <div class="fake-empty-label">no chart scanned<br>for this date</div>
+      <div class="missing-chip" id="missingChip" style="display:none">
+        <span class="warn-ico">🗺️</span>
+        <span class="chip-text">Some areas have no chart for this date.</span>
+        <a href="about.html#contribute" target="_blank">Help fill the gap →</a>
+        <button class="chip-close" title="Dismiss">✕</button>
+      </div>
+    </div>
+    <div class="controls-card">
+      <div class="jog"><button class="btn-nav">←</button><button class="btn-play">▶</button><button class="btn-nav">→</button></div>
+      <div class="track-wrapper" data-variant="D">
+        <canvas class="heat-canvas"></canvas>
+        <div class="handle"></div>
+        <div class="track-tip"></div>
+        <div class="tick-labels"></div>
+      </div>
+      <div class="info-panel">
+        <div class="info-date">—</div>
+        <div class="cov-badge cov-full"><span class="dot"></span><span class="cov-text">—</span></div>
+      </div>
+    </div>
+    <div class="note">
+      <b>Real-site wiring:</b> after <code>setSources()</code> resolves, count visible tiles where
+      <code>_hasChartData === false</code>. If the empty fraction exceeds a threshold (and coverage &lt; era max),
+      show the chip once per date-change, throttled + dismissible per session. The link can go to an
+      "#contribute" section on the About page (what's missing, how to submit scans / point to LoC or NOAA copies).
+    </div>
+  </div>
+
+  <script>
+    /* ---------- load real availability ----------
+       coverage.json is precomputed from dates.csv + the lat/lon bounds in every
+       PMTiles header: for each time segment it stores the % of the lower-48
+       reference area actually covered by the archives in effect. Chart COUNT is
+       deliberately not used as the signal — one merged 2026 cycle mosaic
+       (count = 1) covers 100% of the US, while 1961's count of 2 covers ~5%. */
+    async function loadCoverage() {
+      const resp = await fetch('coverage.json');
+      if (!resp.ok) throw new Error(`coverage.json ${resp.status}`);
+      const data = await resp.json();
+      // segments: [startISO, endISO, count, pct] -> [t0, t1, count, pct]
+      const segs = data.segments.map(([a, b, c, p]) => [Date.parse(a), Date.parse(b), c, p]);
+      return { segs, min: segs[0][0], max: segs[segs.length - 1][1] };
+    }
+
+    const DAY = 86400000;
+
+    // [count, pct] at time t (segments are sorted + contiguous, end-exclusive)
+    function statAt(segs, t) {
+      let lo = 0, hi = segs.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (segs[mid][0] <= t) {
+          if (t < segs[mid][1]) return [segs[mid][2], segs[mid][3]];
+          lo = mid + 1;
+        }
+        else hi = mid - 1;
+      }
+      return [0, 0];
+    }
+
+    const fmt = (t) => new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+    const fmtY = (t) => new Date(t).getUTCFullYear();
+
+    const FULL_PCT = 95; // >=95% of the lower 48 covered reads as "full"
+
+    function coverageClass(count, pct) {
+      if (count === 0) return 'none';
+      if (pct < FULL_PCT) return 'partial';
+      return 'full';
+    }
+
+    function colorFor(cls, pct) {
+      if (cls === 'none') return null; // hatched separately
+      const ratio = pct / 100;
+      if (cls === 'partial') return `rgba(255, 179, 71, ${0.4 + 0.5 * ratio})`;
+      return `rgba(0, 212, 170, ${0.55 + 0.45 * ratio})`;
+    }
+
+    /* ---------- generic scrubber wiring for each variant ---------- */
+    function makeScrubber(wrapper, cov, onDate) {
+      const { segs, min, max } = cov;
+      const span = max - min;
+      const handle = wrapper.querySelector('.handle');
+      const tip = wrapper.querySelector('.track-tip');
+      const progress = wrapper.querySelector('.progress');
+
+      // decade labels
+      const labelBox = wrapper.querySelector('.tick-labels');
+      if (labelBox) {
+        for (let y = Math.ceil(fmtY(min) / 10) * 10; y <= fmtY(max); y += 10) {
+          const t = Date.UTC(y, 0, 1);
+          const el = document.createElement('div');
+          el.className = 'tick-label';
+          el.style.left = `${((t - min) / span) * 100}%`;
+          el.textContent = y;
+          wrapper.appendChild(el);
+        }
+      }
+
+      const api = { min, max, span, cur: 0 };
+
+      const setDate = (pct) => {
+        pct = Math.max(0, Math.min(1, pct));
+        api.cur = pct;
+        const t = min + pct * span;
+        handle.style.left = `${pct * 100}%`;
+        if (progress) progress.style.width = `${pct * 100}%`;
+        // segments are end-exclusive, so landing exactly on max would read as
+        // "no data" — clamp the lookup just inside the last segment
+        const [count, covPct] = statAt(segs, Math.min(t, max - 1));
+        onDate(t, count, covPct);
+      };
+      api.setDate = setDate;
+
+      let dragging = false;
+      const pctFromEvent = (e) => {
+        const r = wrapper.getBoundingClientRect();
+        const x = (e.touches?.[0]?.clientX ?? e.clientX) - r.left;
+        return x / r.width;
+      };
+      const grab = (e) => { dragging = true; api.onGrab?.(); setDate(pctFromEvent(e)); };
+      wrapper.addEventListener('mousedown', grab);
+      wrapper.addEventListener('touchstart', grab, { passive: true });
+      window.addEventListener('mousemove', (e) => { if (dragging) setDate(pctFromEvent(e)); });
+      window.addEventListener('touchmove', (e) => { if (dragging) setDate(pctFromEvent(e)); }, { passive: true });
+      window.addEventListener('mouseup', () => dragging = false);
+      window.addEventListener('touchend', () => dragging = false);
+
+      // hover tooltip
+      wrapper.addEventListener('mousemove', (e) => {
+        if (!tip) return;
+        const pct = Math.max(0, Math.min(1, pctFromEvent(e)));
+        const t = min + pct * span;
+        const [count, covPct] = statAt(segs, Math.min(t, max - 1));
+        const cls = coverageClass(count, covPct);
+        tip.style.display = 'block';
+        tip.style.left = `${pct * 100}%`;
+        tip.innerHTML = `<b>${fmt(t)}</b><br><span class="tip-cov">${
+          cls === 'none' ? 'No charts in archive' :
+          cls === 'full' ? `Full US coverage · ${count} archive${count === 1 ? '' : 's'}` :
+          `${Math.round(covPct)}% of the US covered · ${count} chart${count === 1 ? '' : 's'}`}</span>`;
+      });
+      wrapper.addEventListener('mouseleave', () => { if (tip) tip.style.display = 'none'; });
+
+      return api;
+    }
+
+    /* ---------- jog + play wiring (shared by all variants) ----------
+       ◀ / ▶ hop between coverage-change boundaries (segment starts), so one
+       click lands on the next place the map would actually look different.
+       ▶ (play) sweeps the whole timeline in ~30 s; scrubbing pauses it. */
+    const SWEEP_MS = 30000;
+    function wireJog(proto, s, cov) {
+      const [back, play, fwd] = proto.querySelectorAll('.btn-nav, .btn-play');
+      const starts = cov.segs.map(seg => (seg[0] - s.min) / s.span);
+      const EPS = 1e-6;
+
+      // interval + elapsed-time math (not rAF): keeps sweeping even when the
+      // tab is throttled, and stays smooth at 30 fps in the foreground
+      let timer = null, lastTick = 0;
+      const stop = () => {
+        clearInterval(timer);
+        timer = null;
+        play.textContent = '▶';
+      };
+      const tick = () => {
+        const now = performance.now();
+        const next = s.cur + (now - lastTick) / SWEEP_MS;
+        lastTick = now;
+        if (next >= 1) { s.setDate(1); stop(); return; }
+        s.setDate(next);
+      };
+      play.addEventListener('click', () => {
+        if (timer) { stop(); return; }
+        if (s.cur >= 1 - EPS) s.setDate(0); // restart from the left edge
+        play.textContent = '⏸';
+        lastTick = performance.now();
+        timer = setInterval(tick, 1000 / 30);
+      });
+      s.onGrab = stop;
+
+      back.addEventListener('click', () => {
+        stop();
+        const prev = starts.filter(p => p < s.cur - EPS);
+        s.setDate(prev.length ? prev[prev.length - 1] : 0);
+      });
+      fwd.addEventListener('click', () => {
+        stop();
+        const next = starts.find(p => p > s.cur + EPS);
+        s.setDate(next ?? 1);
+      });
+    }
+
+    /* ---------- heat strip renderer (variants A & D) ---------- */
+    function paintHeatStrip(canvas, cov) {
+      const { segs, min, max } = cov;
+      const w = canvas.clientWidth, h = canvas.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      ctx.clearRect(0, 0, w, h);
+      const span = max - min;
+
+      // base: hatched "no data" over the whole strip
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      roundRect(ctx, 0, 0, w, h, 4); ctx.fill();
+      ctx.save();
+      roundRect(ctx, 0, 0, w, h, 4); ctx.clip();
+      ctx.strokeStyle = 'rgba(255, 92, 92, 0.4)';
+      ctx.lineWidth = 1.6;
+      for (let x = -h; x < w + h; x += 6) {
+        ctx.beginPath(); ctx.moveTo(x, h + 1); ctx.lineTo(x + h + 2, -1); ctx.stroke();
+      }
+      // Covered segments painted over the hatch, one pixel column at a time.
+      // Each column aggregates every coverage segment it spans (exact sweep, no
+      // point sampling) so a days-long gap inside a 34-day pixel still hatches.
+      let si = 0;
+      for (let px = 0; px < w; px++) {
+        const t0 = min + (px / w) * span;
+        const t1 = min + ((px + 1) / w) * span;
+        while (si < segs.length && segs[si][1] <= t0) si++;
+        let anyGap = false, weighted = 0, covered = 0;
+        for (let j = si; j < segs.length && segs[j][0] < t1; j++) {
+          const [s0, e0, c, p] = segs[j];
+          const overlap = Math.min(e0, t1) - Math.max(s0, t0);
+          if (overlap <= 0) continue;
+          if (c === 0) anyGap = true;
+          weighted += p * overlap;
+          covered += overlap;
+        }
+        if (covered < (t1 - t0) * 0.999) anyGap = true; // time outside all segs
+        if (anyGap || covered === 0) continue; // leave hatch showing
+        const avgPct = weighted / covered;
+        const cls = coverageClass(1, avgPct);
+        ctx.fillStyle = colorFor(cls, avgPct);
+        ctx.fillRect(px, 0, 1, h);
+      }
+      ctx.restore();
+    }
+
+    function roundRect(ctx, x, y, w, h, r) {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.arcTo(x + w, y, x + w, y + h, r);
+      ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r);
+      ctx.arcTo(x, y, x + w, y, r);
+      ctx.closePath();
+    }
+
+    /* ---------- boot ---------- */
+    (async () => {
+      let cov;
+      try {
+        cov = await loadCoverage();
+      } catch (e) {
+        document.body.insertAdjacentHTML('afterbegin',
+          `<p style="color:var(--gap);font-weight:700">Failed to load coverage.json (${e.message}). ` +
+          `Regenerate it with the build script and serve this page from the repo root.</p>`);
+        throw e;
+      }
+
+      const setInfo = (proto, t, count, covPct) => {
+        const dateEl = proto.querySelector('.info-date');
+        const subEl = proto.querySelector('.info-sub');
+        const badge = proto.querySelector('.cov-badge');
+        if (dateEl) dateEl.textContent = fmt(t);
+        const cls = coverageClass(count, covPct);
+        if (subEl) {
+          subEl.textContent =
+            cls === 'none' ? 'No charts in archive' :
+            cls === 'full' ? 'Full US coverage' :
+            `${Math.round(covPct)}% of the US covered`;
+          subEl.style.color = cls === 'none' ? 'var(--gap)' : '';
+        }
+        if (badge) {
+          badge.className = `cov-badge cov-${cls}`;
+          badge.querySelector('.cov-text').textContent =
+            cls === 'none' ? 'No charts' :
+            cls === 'partial' ? `Partial · ${Math.round(covPct)}%` : 'Full coverage';
+        }
+        return cls;
+      };
+
+      /* Variant A */
+      {
+        const proto = document.getElementById('protoA');
+        const wrap = proto.querySelector('.track-wrapper');
+        const canvas = proto.querySelector('.heat-canvas');
+        const s = makeScrubber(wrap, cov, (t, c, p) => setInfo(proto, t, c, p));
+        paintHeatStrip(canvas, cov);
+        window.addEventListener('resize', () => paintHeatStrip(canvas, cov));
+        wireJog(proto, s, cov);
+        s.setDate(0.31); // land in the sparse 1960s
+      }
+
+      /* Variant B */
+      {
+        const proto = document.getElementById('protoB');
+        const wrap = proto.querySelector('.track-wrapper');
+        const segBox = proto.querySelector('.gap-segs');
+        const span = cov.max - cov.min;
+        for (const [s0, e0, c] of cov.segs) {
+          if (c !== 0) continue;
+          if ((e0 - s0) / span < 0.002) continue; // skip invisible slivers
+          const el = document.createElement('div');
+          el.className = 'gap-seg';
+          el.style.left = `${((s0 - cov.min) / span) * 100}%`;
+          el.style.width = `${((e0 - s0) / span) * 100}%`;
+          segBox.appendChild(el);
+        }
+        const s = makeScrubber(wrap, cov, (t, c, p) => setInfo(proto, t, c, p));
+        wireJog(proto, s, cov);
+        s.setDate(0.55); // inside the big gap so the state is visible
+      }
+
+      /* Variant C */
+      {
+        const proto = document.getElementById('protoC');
+        const wrap = proto.querySelector('.track-wrapper');
+        const lane = proto.querySelector('.avail-lane');
+        const span = cov.max - cov.min;
+        for (const [s0, e0, c, p] of cov.segs) {
+          if ((e0 - s0) / span < 0.0015) continue;
+          const el = document.createElement('div');
+          el.className = 'avail-seg';
+          el.style.left = `${((s0 - cov.min) / span) * 100}%`;
+          el.style.width = `${((e0 - s0) / span) * 100}%`;
+          const cls = coverageClass(c, p);
+          el.style.background = cls === 'none' ? 'rgba(255,92,92,0.35)' : colorFor(cls, p);
+          lane.appendChild(el);
+        }
+        const s = makeScrubber(wrap, cov, (t, c, p) => setInfo(proto, t, c, p));
+        wireJog(proto, s, cov);
+        s.setDate(0.12); // 1940s partial era
+      }
+
+      /* Variant D */
+      {
+        const proto = document.getElementById('protoD');
+        const wrap = proto.querySelector('.track-wrapper');
+        const canvas = proto.querySelector('.heat-canvas');
+        const chip = document.getElementById('missingChip');
+        const chipText = chip.querySelector('.chip-text');
+        const fakeEmpty = proto.querySelector('.fake-empty');
+        const fakeLabel = proto.querySelector('.fake-empty-label');
+        const fakeChart = proto.querySelector('.fake-chart');
+        let dismissed = false;
+        chip.querySelector('.chip-close').addEventListener('click', () => {
+          dismissed = true; chip.style.display = 'none';
+        });
+
+        const s = makeScrubber(wrap, cov, (t, count, covPct) => {
+          const cls = setInfo(proto, t, count, covPct);
+          // fake-map reaction: size the "empty" region by the real missing area %
+          const missingFrac = count === 0 ? 1 : Math.max(0, 1 - covPct / 100);
+          const pctLeft = 100 - Math.round(missingFrac * 100);
+          fakeEmpty.style.left = `${pctLeft}%`;
+          fakeChart.style.right = `${100 - pctLeft}%`;
+          fakeLabel.style.left = `${Math.min(94, pctLeft + (100 - pctLeft) / 2)}%`;
+          fakeLabel.style.display = missingFrac > 0.08 ? '' : 'none';
+
+          if (!dismissed && missingFrac > 0.25) {
+            chip.style.display = 'flex';
+            chipText.textContent = count === 0
+              ? `No charts in the archive for ${fmt(t)} yet.`
+              : `Some areas have no chart for ${fmt(t)}.`;
+          } else {
+            chip.style.display = 'none';
+          }
+        });
+        paintHeatStrip(canvas, cov);
+        window.addEventListener('resize', () => paintHeatStrip(canvas, cov));
+        wireJog(proto, s, cov);
+        s.setDate(0.31); // sparse early-1960s date → chip visible
+      }
+    })();
+  </script>
+</body>
+
+</html>

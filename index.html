@@ -61,7 +61,11 @@
           ✈️ archive.aero
         </button>
         <nav class="menu-panel" id="siteMenu" aria-label="Site menu">
-          <a href="https://github.com/hemenway/AeroMap" target="_blank" rel="noopener" class="menu-item">
+          <a href="about.html" class="menu-item">
+            <span class="menu-item-icon" aria-hidden="true">ℹ️</span>
+            <span>About &amp; How It Works</span>
+          </a>
+          <a href="https://github.com/hemenway/archive.aero" target="_blank" rel="noopener" class="menu-item">
             <span class="menu-item-icon" aria-hidden="true">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                 <path
@@ -75,7 +79,7 @@
       <span class="site-tagline">Historical Aviation Charts</span>
     </div>
     <div class="header-right">
-      <a href="https://ryanhemenway.com" target="_blank" rel="noopener" class="about-btn" title="About Me">
+      <a href="about.html" class="about-btn" title="About this project & how it works">
         <span aria-hidden="true">👨‍✈️</span> About
       </a>
       <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn"
@@ -260,10 +264,11 @@
 
       <div class="timeline-track-wrapper" id="trackWrapper">
         <div class="timeline-track">
-          <div class="timeline-progress" id="progress"></div>
+          <canvas class="heat-canvas" id="heatCanvas"></canvas>
           <div id="ticksContainer"></div>
           <div class="handle" id="handle"></div>
         </div>
+        <div class="track-tip" id="trackTip"></div>
       </div>
 
       <div class="info-panel">
@@ -1036,6 +1041,9 @@
         const min = Math.min(...dates);
         const max = Math.max(...dates);
         this.frames.forEach((f, i) => { const d = dates[i]; f.pct = max === min ? 0 : ((d - min) / (max - min)) * 100; });
+        this.minTime = min;
+        this.maxTime = max;
+        this.coverageSegs = null;
 
         this.currentIndex = 0;
         this.selectedDate = null;
@@ -1050,7 +1058,8 @@
           prevBtn: document.getElementById('prevBtn'),
           nextBtn: document.getElementById('nextBtn'),
           playBtn: document.getElementById('playBtn'),
-          progress: document.getElementById('progress'),
+          heatCanvas: document.getElementById('heatCanvas'),
+          trackTip: document.getElementById('trackTip'),
           handle: document.getElementById('handle'),
           track: document.getElementById('trackWrapper'),
           timeSelect: document.getElementById('timeSelect'),
@@ -1062,6 +1071,7 @@
 
         this.initUI();
         this.initControls();
+        this.initCoverage();
         const initialDate = this.ui.timeSelect?.value || this.frames[this.frames.length - 1]?.date;
         if (initialDate) {
           this.updateByDate(initialDate);
@@ -1350,28 +1360,26 @@
           this.updateByDate(selectedDate);
         });
 
-        // One tick per unique year (decade years get a label). Rendering one per
-        // frame (~2,000) is an invisible smear at any track width and just wastes
-        // DOM/layout; the handle + progress bar already show the exact position.
-        const years = new Set();
-        const frag = document.createDocumentFragment();
-        this.frames.forEach((f) => {
-          const year = f.date.split('-')[0];
-          if (years.has(year)) return;
-          years.add(year);
-          const tick = document.createElement('div');
-          tick.className = 'tick';
-          tick.style.left = `${f.pct}%`;
-          if (parseInt(year, 10) % 10 === 0) {
-            tick.classList.add('major');
+        // Decade labels across the full span. Derived from the year range, not
+        // the frames list — frames vanish during multi-decade gaps, which is
+        // exactly where the heat strip needs labels to show how wide a gap is.
+        const timeSpan = this.maxTime - this.minTime;
+        if (timeSpan > 0) {
+          const frag = document.createDocumentFragment();
+          const minYear = new Date(this.minTime).getUTCFullYear();
+          const maxYear = new Date(this.maxTime).getUTCFullYear();
+          for (let y = Math.ceil(minYear / 10) * 10; y <= maxYear; y += 10) {
+            const tick = document.createElement('div');
+            tick.className = 'tick';
+            tick.style.left = `${((Date.UTC(y, 0, 1) - this.minTime) / timeSpan) * 100}%`;
             const label = document.createElement('div');
             label.className = 'tick-label';
-            label.textContent = year;
+            label.textContent = y;
             tick.appendChild(label);
+            frag.appendChild(tick);
           }
-          frag.appendChild(tick);
-        });
-        this.ui.ticks.appendChild(frag);
+          this.ui.ticks.appendChild(frag);
+        }
 
         // Jog Controls
         this.ui.prevBtn.onclick = () => this.step(-1);
@@ -1440,6 +1448,156 @@
         });
       }
 
+      /* ---- coverage heat strip ----
+         coverage.json is precomputed by build_coverage.py from dates.csv + the
+         geographic bounds in every PMTiles header: for each time segment, the %
+         of the lower-48 reference bbox covered by the archives in effect.
+         Chart count is deliberately not the signal — one merged current-cycle
+         mosaic covers 100% of the US while 1961's two charts cover ~5%. */
+      async initCoverage() {
+        try {
+          const resp = await fetch('coverage.json');
+          if (!resp.ok) throw new Error(String(resp.status));
+          const data = await resp.json();
+          // segments: [startISO, endISO, count, pct], sorted, end-exclusive
+          this.coverageSegs = data.segments.map(([a, b, c, p]) => [Date.parse(a), Date.parse(b), c, p]);
+        } catch (e) {
+          // No coverage data: the plain grey track stays as-is
+          console.warn('coverage.json unavailable — heat strip disabled', e);
+          return;
+        }
+        // ResizeObserver rather than a resize listener: the canvas can be 0-wide
+        // when the fetch resolves (splash still up), and the observer also
+        // repaints it when the controls card changes size. Observe the wrapper,
+        // not the canvas — resizing the canvas bitmap inside its own observer
+        // callback could feed back into itself.
+        this.paintHeatStrip();
+        if (window.ResizeObserver) {
+          new ResizeObserver(() => this.paintHeatStrip()).observe(this.ui.track);
+        } else {
+          window.addEventListener('resize', () => this.paintHeatStrip());
+        }
+        this.initCoverageTip();
+        this.updateCoverageLabel();
+      }
+
+      // [count, pct of US covered] at time t
+      coverageAt(t) {
+        const segs = this.coverageSegs;
+        // segments are end-exclusive: clamp so the newest date doesn't read as a gap
+        t = Math.min(t, segs[segs.length - 1][1] - 1);
+        let lo = 0, hi = segs.length - 1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (segs[mid][0] <= t) {
+            if (t < segs[mid][1]) return [segs[mid][2], segs[mid][3]];
+            lo = mid + 1;
+          } else {
+            hi = mid - 1;
+          }
+        }
+        return [0, 0];
+      }
+
+      coverageText(count, pct) {
+        if (count === 0) return 'No charts in archive';
+        if (pct >= 95) return 'Full US coverage';
+        return `${Math.round(pct)}% of the US covered`;
+      }
+
+      updateCoverageLabel() {
+        if (!this.coverageSegs || !this.ui.lblRange || !this.selectedDate) return;
+        const [count, pct] = this.coverageAt(new Date(this.selectedDate).getTime());
+        this.ui.lblRange.textContent = this.coverageText(count, pct);
+        this.ui.lblRange.style.color = count === 0 ? '#ff5c5c' : '';
+      }
+
+      initCoverageTip() {
+        const tip = this.ui.trackTip;
+        const wrap = this.ui.track;
+        if (!tip || !wrap) return;
+        wrap.addEventListener('mousemove', (e) => {
+          const r = wrap.getBoundingClientRect();
+          const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+          const t = this.minTime + pct * (this.maxTime - this.minTime);
+          const [count, covPct] = this.coverageAt(t);
+          const label = new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+          tip.style.display = 'block';
+          tip.style.left = `${pct * 100}%`;
+          tip.innerHTML = `<b>${label}</b><br><span class="tip-cov">${this.coverageText(count, covPct)}</span>`;
+        });
+        wrap.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+      }
+
+      paintHeatStrip() {
+        const canvas = this.ui.heatCanvas;
+        const segs = this.coverageSegs;
+        if (!canvas || !segs) return;
+        const w = canvas.clientWidth, h = canvas.clientHeight;
+        if (!w || !h) return;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, w, h);
+        const min = this.minTime, span = this.maxTime - this.minTime;
+        if (span <= 0) return;
+
+        const rounded = () => {
+          const r = 4;
+          ctx.beginPath();
+          ctx.moveTo(r, 0);
+          ctx.arcTo(w, 0, w, h, r);
+          ctx.arcTo(w, h, 0, h, r);
+          ctx.arcTo(0, h, 0, 0, r);
+          ctx.arcTo(0, 0, w, 0, r);
+          ctx.closePath();
+        };
+
+        // base: red hatch = "no data", painted over by covered segments
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        rounded();
+        ctx.fill();
+        ctx.save();
+        rounded();
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(255, 92, 92, 0.4)';
+        ctx.lineWidth = 1.6;
+        for (let x = -h; x < w + h; x += 6) {
+          ctx.beginPath();
+          ctx.moveTo(x, h + 1);
+          ctx.lineTo(x + h + 2, -1);
+          ctx.stroke();
+        }
+        // One pixel column at a time, aggregating every segment the column
+        // spans (exact sweep, no point sampling), so a days-long gap inside a
+        // month-wide pixel still shows the hatch.
+        let si = 0;
+        for (let px = 0; px < w; px++) {
+          const t0 = min + (px / w) * span;
+          const t1 = min + ((px + 1) / w) * span;
+          while (si < segs.length && segs[si][1] <= t0) si++;
+          let anyGap = false, weighted = 0, covered = 0;
+          for (let j = si; j < segs.length && segs[j][0] < t1; j++) {
+            const [s0, e0, c, p] = segs[j];
+            const overlap = Math.min(e0, t1) - Math.max(s0, t0);
+            if (overlap <= 0) continue;
+            if (c === 0) anyGap = true;
+            weighted += p * overlap;
+            covered += overlap;
+          }
+          if (covered < (t1 - t0) * 0.999) anyGap = true; // time outside all segments
+          if (anyGap || covered === 0) continue; // leave hatch showing
+          const avgPct = weighted / covered;
+          ctx.fillStyle = avgPct >= 95
+            ? `rgba(0, 212, 170, ${0.55 + 0.45 * (avgPct / 100)})`
+            : `rgba(255, 179, 71, ${0.4 + 0.5 * (avgPct / 100)})`;
+          ctx.fillRect(px, 0, 1, h);
+        }
+        ctx.restore();
+      }
+
       findClosestFrameIndexByPct(pct) {
         const n = this.frames.length;
         if (n === 0) return 0;
@@ -1503,7 +1661,7 @@
         const pct = Number.isFinite(f.pct) ? Math.max(0, Math.min(100, f.pct)) : 0;
         const trackWidth = this.trackWidthPx ?? this.ui.track?.getBoundingClientRect().width ?? 0;
         this.ui.handle.style.setProperty('--handle-position-px', `${trackWidth * (pct / 100)}px`);
-        this.ui.progress.style.setProperty('--progress-scale', String(pct / 100));
+        this.updateCoverageLabel();
 
         const adjacent = [
           this.frames[index - 1]?.date,

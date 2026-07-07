@@ -698,39 +698,49 @@ body.zooming .leaflet-control-attribution {
   position: relative;
 }
 
-.timeline-progress {
+/* Coverage heat strip: painted from coverage.json, covers the plain track
+   once loaded (the grey track stays visible as the pre-load fallback) */
+.heat-canvas {
   position: absolute;
-  height: 100%;
-  background: var(--primary);
-  border-radius: 4px;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
   width: 100%;
-  transform-origin: left center;
-  transform: scaleX(var(--progress-scale, 0));
-  will-change: transform;
+  height: 14px;
+  border-radius: 4px;
   pointer-events: none;
 }
 
+.track-tip {
+  position: absolute;
+  bottom: 40px;
+  transform: translateX(-50%);
+  background: rgba(10, 14, 18, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  display: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.track-tip .tip-cov {
+  color: var(--text-muted);
+}
+
+/* Tick bars are invisible anchors for the decade labels — the heat strip
+   itself now shows where data exists */
 .tick {
   position: absolute;
   width: 2px;
   height: 12px;
-  background: rgba(255, 255, 255, 0.4);
   top: 50%;
   transform: translate(-50%, -50%);
   pointer-events: none;
-  transition: height 0.2s, background 0.2s;
-}
-
-.tick.active {
-  background: var(--primary);
-  height: 18px;
-  width: 3px;
-  opacity: 1;
-}
-
-.tick.major {
-  height: 16px;
-  background: rgba(255, 255, 255, 0.6);
 }
 
 .tick-label {
