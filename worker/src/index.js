@@ -38,10 +38,10 @@ function withCors(response, origin) {
   });
 }
 
-// Files are re-uploaded under the same name while tuning, so cache only briefly
-// (both edge and browser) and lean on ETag revalidation to refresh changed
-// archives within ~5 min. stale-while-revalidate keeps panning smooth.
-const CACHE_CONTROL = "public, max-age=300, stale-while-revalidate=60";
+// Charts change on a 56-day cycle, so cache aggressively at both edge and
+// browser and lean on ETag revalidation after expiry. Trade-off: a file
+// re-uploaded under the same name can be served stale for up to a day.
+const CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=3600";
 
 // Edge entries are stored as 200 surrogates because Cloudflare's Cache API will
 // not store 206 responses. Flip back to 206 on the way out when the entry

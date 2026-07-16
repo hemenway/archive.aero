@@ -320,6 +320,27 @@
         if (customUrl) return customUrl;
         return `${CONFIG.baseUrl}${key}.pmtiles`;
       },
+      // Collapses concurrent reads of the same source tile into one network
+      // fetch. Overzoomed views map many screen tiles onto one source tile, and
+      // scrub prefetches fan out per screen tile, so without in-flight dedupe an
+      // identical z/x/y can be requested 100+ times in a single burst — the LRU
+      // cache alone can't prevent that because it only holds resolved data.
+      fetchTileDeduped: (src, cache, inflight, cacheKey, z, x, y) => {
+        const cached = cache ? cache.get(cacheKey) : null;
+        if (cached) return Promise.resolve(cached);
+        let pending = inflight.get(cacheKey);
+        if (!pending) {
+          pending = src.getZxy(z, x, y)
+            .then(result => {
+              const data = result && result.data ? result.data : null;
+              if (data && cache) cache.set(cacheKey, data);
+              return data;
+            })
+            .finally(() => inflight.delete(cacheKey));
+          inflight.set(cacheKey, pending);
+        }
+        return pending;
+      },
       toast: (msg, duration = 3000) => {
         const el = document.getElementById('toast');
         if (el) {
@@ -417,6 +438,7 @@
         this.useImageBitmap = options.useImageBitmap ?? ('createImageBitmap' in window);
         this.tileDataCache = options.tileDataCache || null;
         this.tileBitmapCache = options.tileBitmapCache || null;
+        this.tileFetchInflight = options.tileFetchInflight || new Map();
 
         // iOS Safari retains canvas backing stores until a GC pass that lags far
         // behind pan/zoom churn; zeroing a tile's dimensions on unload frees that
@@ -541,17 +563,18 @@
         const sourcesSnapshot = this.sources.slice();
         const fetched = await Promise.all(sourcesSnapshot.map(async source => {
           const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
-          let tileData = cacheKey && this.tileDataCache ? this.tileDataCache.get(cacheKey) : null;
-          if (!tileData) {
-            try {
+          let tileData = null;
+          try {
+            if (cacheKey) {
+              tileData = await Utils.fetchTileDeduped(
+                source.pmtiles, this.tileDataCache, this.tileFetchInflight,
+                cacheKey, z, x, y);
+            } else {
               const result = await source.pmtiles.getZxy(z, x, y);
-              if (result && result.data) {
-                tileData = result.data;
-                if (cacheKey && this.tileDataCache) this.tileDataCache.set(cacheKey, tileData);
-              }
-            } catch (e) {
-              // Ignore missing tiles or fetch errors.
+              tileData = result && result.data ? result.data : null;
             }
+          } catch (e) {
+            // Ignore missing tiles or fetch errors.
           }
           return { cacheKey, tileData };
         }));
@@ -826,6 +849,9 @@
         this.pmtilesAccessSeq = 0;
         this.pmtilesCacheLimit = DeviceInfo.isIOS ? 18 : 96;
         this.tileDataCache = new LRUCache(DeviceInfo.isIOS ? 350 : 1600);
+        // Shared with the layer and the scrub prefetcher so all tile reads
+        // funnel through one in-flight dedupe map (see Utils.fetchTileDeduped).
+        this.tileFetchInflight = new Map();
         // Evicted ImageBitmaps hold decoded pixel memory; free it explicitly.
         this.tileBitmapCache = new LRUCache(DeviceInfo.isIOS ? 200 : 800, (key, bitmap) => {
           if (bitmap && typeof bitmap.close === 'function') bitmap.close();
@@ -860,7 +886,8 @@
           zIndex: 10,
           useImageBitmap: !DeviceInfo.isIOS,
           tileDataCache: this.tileDataCache,
-          tileBitmapCache: this.tileBitmapCache
+          tileBitmapCache: this.tileBitmapCache,
+          tileFetchInflight: this.tileFetchInflight
         };
 
         // A single self-double-buffering layer: each tile keeps the prior frame's
@@ -953,12 +980,10 @@
             for (const c of coords) {
               const placement = layer._normalizeCoords(c);
               const cacheKey = `${range.key}|${placement.z}|${placement.x}|${placement.y}`;
-              if (this.tileDataCache.get(cacheKey)) continue;
-              src.getZxy(placement.z, placement.x, placement.y).then(result => {
-                if (result && result.data) {
-                  this.tileDataCache.set(cacheKey, result.data);
-                }
-              }).catch(() => {});
+              Utils.fetchTileDeduped(
+                src, this.tileDataCache, this.tileFetchInflight,
+                cacheKey, placement.z, placement.x, placement.y
+              ).catch(() => {});
             }
           }
         }
