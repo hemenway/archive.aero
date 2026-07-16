@@ -17,3 +17,10 @@ dataset = "tile_logs"
 ALLOWED_ORIGIN = "*"
 SAMPLE_RATE = "0.05"
 METADATA_BYTES = "1024"
+
+# Workers Logs: keep sampled invocation logs (incl. console.error and uncaught
+# exceptions) queryable in the dashboard — without this, error bursts like the
+# 2026-07-15 500-storm leave no messages behind.
+[observability]
+enabled = true
+head_sampling_rate = 0.1

@@ -43,6 +43,23 @@ function withCors(response, origin) {
 // re-uploaded under the same name can be served stale for up to a day.
 const CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=3600";
 
+// 416 with the real object size lets range clients (pmtiles) recover by
+// refetching the header instead of treating the archive as broken.
+async function rangeNotSatisfiable(env, key, origin) {
+  let size = "*";
+  try {
+    const head = await env.BUCKET.head(key);
+    if (head) size = head.size;
+  } catch (_) {}
+  return withCors(
+    new Response("Requested range not satisfiable", {
+      status: 416,
+      headers: { "content-range": `bytes */${size}`, "cache-control": "no-store" },
+    }),
+    origin
+  );
+}
+
 // Edge entries are stored as 200 surrogates because Cloudflare's Cache API will
 // not store 206 responses. Flip back to 206 on the way out when the entry
 // carries a content-range (i.e. it answered a byte-range request).
@@ -71,10 +88,19 @@ export default {
     }
 
     const url = new URL(request.url);
-    const key = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+    let key;
+    try {
+      key = decodeURIComponent(url.pathname).replace(/^\/+/, "");
+    } catch (_) {
+      return withCors(new Response("Bad request", { status: 400 }), origin);
+    }
     if (!key) return new Response("Not found", { status: 404 });
 
     const range = parseRange(request.headers.get("range"));
+    // An inverted range (end < start) can never be satisfied; R2 would throw.
+    if (range && range.end !== undefined && range.end < range.offset) {
+      return rangeNotSatisfiable(env, key, origin);
+    }
     const ifNoneMatch = request.headers.get("if-none-match");
 
     const r2Range = range
@@ -116,7 +142,26 @@ export default {
       const getOptions = r2Range ? { range: r2Range } : {};
       if (ifNoneMatch) getOptions.onlyIf = { etagDoesNotMatch: ifNoneMatch };
 
-      const object = await env.BUCKET.get(key, getOptions);
+      // R2 rejections must not escape as uncaught exceptions (opaque 500s):
+      // a range past EOF is the client's problem (416, recoverable), anything
+      // else is transient storage trouble the client should retry (503).
+      let object;
+      try {
+        object = await env.BUCKET.get(key, getOptions);
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (/satisfiable|invalid range|10039/i.test(msg)) {
+          return rangeNotSatisfiable(env, key, origin);
+        }
+        console.error(`R2 get failed for ${key}: ${msg}`);
+        return withCors(
+          new Response("Upstream storage error", {
+            status: 503,
+            headers: { "retry-after": "1", "cache-control": "no-store" },
+          }),
+          origin
+        );
+      }
 
       if (!object) return new Response("Not found", { status: 404 });
 
@@ -151,7 +196,9 @@ export default {
       // Store a 200 surrogate (206 is uncacheable), then serve the same bytes
       // flipped back to 206 for range requests via fromCached().
       const surrogate = new Response(object.body, { status: 200, headers });
-      ctx.waitUntil(cache.put(cacheKey, surrogate.clone()));
+      // A failed cache fill (e.g. client disconnect mid-stream) must not
+      // surface as an invocation error; the response itself already went out.
+      ctx.waitUntil(cache.put(cacheKey, surrogate.clone()).catch(() => {}));
       response = fromCached(surrogate);
     }
 

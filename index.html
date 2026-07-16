@@ -923,9 +923,30 @@
           // Surface hard archive failures (404 / CORS / corrupt header) once, so a
           // data outage shows a message instead of a silently bare basemap. pmtiles
           // caches the header, so this adds no extra network round-trip for getZxy.
-          pmtilesSource.getHeader().catch(() => {
+          pmtilesSource.getHeader().then(() => {
+            if (this._headerRetries) delete this._headerRetries[key];
+          }).catch(() => {
+            // pmtiles' SharedPromiseCache stores the rejected header promise and
+            // never evicts it, so one transient failure would wedge this archive
+            // (blank tiles, zero network, no errors) for the page lifetime. Drop
+            // the instance so the next frame recreates it and refetches.
+            if (this.pmtilesInstances[key] === pmtilesSource) {
+              delete this.pmtilesInstances[key];
+              delete this.pmtilesAccess[key];
+            }
             this._failedKeys = this._failedKeys || new Set();
             this._failedKeys.add(key);
+            // If the failed archive is on screen, replay the current frame with
+            // backoff (bounded per key) so a blip heals without a manual reload.
+            this._headerRetries = this._headerRetries || {};
+            const attempt = (this._headerRetries[key] || 0) + 1;
+            this._headerRetries[key] = attempt;
+            if (attempt <= 3 && this.activeKeys.includes(key) && this.lastFrameDate) {
+              setTimeout(() => {
+                this.activeKeys = [];
+                this.showFrame(this.lastFrameDate);
+              }, 2000 * attempt);
+            }
             const now = performance.now();
             if (!this._lastFailToast || now - this._lastFailToast > 4000) {
               this._lastFailToast = now;
@@ -992,6 +1013,9 @@
       async showFrame(selectedDateStr) {
         const selectedTime = new Date(selectedDateStr).getTime();
         if (isNaN(selectedTime)) return;
+        // Remembered so a failed header fetch can replay this frame (see
+        // getPMTilesInstance's retry path).
+        this.lastFrameDate = selectedDateStr;
 
         // A direct (non-debounced) showFrame supersedes any pending scrub repaint;
         // cancel it so a stale date can't repaint over this newer frame afterward.
