@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """
-Compatibility helpers for timeline/CSV tools.
+Helpers for timeline/CSV tools reading the v2 dole schema (master_dole_v2.csv).
 
-This reintroduces the small subset of the old analyze_dole module used by
-timeline_preview_gui.py:
+Used by timeline_preview_gui.py:
   - analyze_csv
   - build_file_index
   - resolve_tif_file
+
+Can also be run directly to print a summary of a v2 CSV:
+  python analyze_dole.py [path/to/master_dole_v2.csv]
 """
 
 from __future__ import annotations
 
-import csv
 import os
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Tuple
+
+from dole_v2 import load_rows
+
+DEFAULT_CSV = "/Users/ryanhemenway/archive.aero/master_dole_v2.csv"
 
 
 def _parse_date(value: str) -> Optional[datetime]:
@@ -38,83 +43,53 @@ def _parse_date(value: str) -> Optional[datetime]:
 
 def analyze_csv(csv_path: str) -> Tuple[List[str], Dict[str, List[dict]]]:
     """
-    Parse master_dole-style CSV into a location->records mapping.
+    Parse a v2 dole CSV (master_dole_v2.csv schema) into a location->records
+    mapping.
 
     Records include parsed datetime values in `date` and `end_date` and preserve
-    the original CSV fields. Invalid rows are reported in `errors`; rows with an
-    invalid/missing location are skipped.
+    the other CSV fields verbatim. Per-row issues are reported in `errors`;
+    rows with a missing location are skipped. A non-v2 CSV raises ValueError
+    (via dole_v2.load_rows).
     """
 
     errors: List[str] = []
     locations_data: Dict[str, List[dict]] = defaultdict(list)
 
-    with open(csv_path, "r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        fieldnames = set(reader.fieldnames or [])
-        has_end_date_column = any(col in fieldnames for col in ("end_date", "End Date"))
-        is_early_master_format = not has_end_date_column and "Date" in fieldnames and "Location" in fieldnames
-        required_aliases = {
-            "tif_filename": ("tif_filename", "filename"),
-            "date": ("date", "Date"),
-            "location": ("location", "Location"),
-        }
-        missing = [
-            canonical
-            for canonical, aliases in required_aliases.items()
-            if not any(alias in fieldnames for alias in aliases)
-        ]
-        if missing:
-            errors.append(f"Missing expected CSV column(s): {', '.join(missing)}")
+    for line_num, row in enumerate(load_rows(csv_path), start=2):
+        rec = {k: (v.strip() if isinstance(v, str) else v) for k, v in row.items()}
+        location = (rec.get("location") or "").strip()
+        if not location:
+            errors.append(f"Line {line_num}: missing location")
+            continue
 
-        for line_num, row in enumerate(reader, start=2):
-            rec = {k: (v.strip() if isinstance(v, str) else v) for k, v in row.items()}
-            location = (rec.get("location") or rec.get("Location") or "").strip()
-            if not location:
-                errors.append(f"Line {line_num}: missing location")
-                continue
+        raw_date = rec.get("date") or ""
+        raw_end_date = rec.get("end_date") or ""
+        start_dt = _parse_date(raw_date)
+        end_dt = _parse_date(raw_end_date)
 
-            raw_date = rec.get("date") or rec.get("Date") or ""
-            raw_end_date = rec.get("end_date") or rec.get("End Date") or ""
-            start_dt = _parse_date(raw_date)
-            end_dt = _parse_date(raw_end_date)
+        if raw_date and not start_dt:
+            errors.append(f"Line {line_num}: invalid date '{raw_date}'")
+        if raw_end_date and not end_dt:
+            errors.append(f"Line {line_num}: invalid end_date '{raw_end_date}'")
+        if start_dt and end_dt and end_dt < start_dt:
+            errors.append(
+                f"Line {line_num}: end_date {end_dt.date().isoformat()} before date {start_dt.date().isoformat()}"
+            )
 
-            if raw_date and not start_dt:
-                errors.append(f"Line {line_num}: invalid date '{raw_date}'")
-            if raw_end_date and not end_dt:
-                errors.append(f"Line {line_num}: invalid end_date '{raw_end_date}'")
-            if start_dt and end_dt and end_dt < start_dt:
-                errors.append(
-                    f"Line {line_num}: end_date {end_dt.date().isoformat()} before date {start_dt.date().isoformat()}"
-                )
+        rec["date"] = start_dt
+        rec["end_date"] = end_dt
+        rec["line"] = line_num
+        rec["location"] = location
+        rec["edition"] = (rec.get("edition") or "").strip() or "Unknown"
+        rec["filename"] = (rec.get("filename") or "").strip()
+        # Rows with a start date but no end date render as flagged start-only
+        # markers; do NOT snap the segment forward to the next edition's date.
+        rec["end_date_missing"] = bool(start_dt and not end_dt)
 
-            rec["date"] = start_dt
-            rec["end_date"] = end_dt
-            rec["line"] = line_num
-            rec["location"] = location
-            if is_early_master_format:
-                rec["edition"] = (rec.get("edition") or "").strip() or "Unknown"
-            else:
-                rec["edition"] = ((rec.get("edition") or rec.get("Edition") or "").strip() or "Unknown")
-            rec["tif_filename"] = (rec.get("tif_filename") or rec.get("filename") or "").strip()
-
-            locations_data[location].append(rec)
+        locations_data[location].append(rec)
 
     for records in locations_data.values():
         records.sort(key=lambda r: (r.get("date") is None, r.get("date") or datetime.max))
-        for rec in records:
-            # Flag rows whose end date is genuinely absent. Early-master rows
-            # never carry an end date (they use fixed spans), so they are not
-            # treated as missing.
-            rec["end_date_missing"] = bool(
-                rec.get("date") and not rec.get("end_date") and not is_early_master_format
-            )
-            if rec.get("date") and rec.get("end_date"):
-                continue
-            if rec.get("date") and is_early_master_format:
-                rec["end_date"] = rec["date"] + timedelta(days=56)
-            # Otherwise leave end_date as None: do NOT snap the segment forward
-            # to the next edition's date. The timeline renders these as flagged
-            # start-only markers.
 
     return errors, dict(locations_data)
 
@@ -278,3 +253,33 @@ def resolve_tif_file(tif_filename: str, file_index: Dict[str, List[str]]) -> Opt
         return (exact_base, exact_stem, contains_stem, _ext_rank(path), len(path))
 
     return min(candidates, key=rank)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Summarize a v2 dole CSV (master_dole_v2.csv schema).")
+    parser.add_argument("csv", nargs="?", default=DEFAULT_CSV, help=f"CSV path (default: {DEFAULT_CSV})")
+    args = parser.parse_args(argv)
+
+    errors, locations_data = analyze_csv(args.csv)
+    records = [rec for recs in locations_data.values() for rec in recs]
+    missing_end = sum(1 for rec in records if rec.get("end_date_missing"))
+    dates = [rec["date"] for rec in records if rec.get("date")]
+
+    print(f"CSV: {args.csv}")
+    print(f"  rows:                  {len(records)}")
+    print(f"  locations:             {len(locations_data)}")
+    if dates:
+        print(f"  date range:            {min(dates).date()} -> {max(dates).date()}")
+    print(f"  rows missing end_date: {missing_end}")
+    print(f"  issues:                {len(errors)}")
+    for err in errors[:20]:
+        print(f"    - {err}")
+    if len(errors) > 20:
+        print(f"    ... and {len(errors) - 20} more")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

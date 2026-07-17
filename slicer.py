@@ -19,7 +19,7 @@ except ImportError:
 import time
 import platform
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
 import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -47,258 +47,12 @@ INTERMEDIATE_CREATION_OPTS = ['TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE', 'Z
 
 
 # ---------------------------------------------------------------------------
-# CSV normalization/merging helpers (inlined from dole_dataset.py so this
-# script is self-contained). No GDAL dependencies in this section.
+# Row data comes from the v2 dole schema (see dole_v2.py): per row, explicit
+# GCPs (gcp1..gcp4 px/py/lat/lon), a cutline (shapefile ref or inline WKT),
+# and LCC projection parameters (lcc_lat1/lat2/lat0/lon0).
 # ---------------------------------------------------------------------------
 
-CANONICAL_FIELDS = [
-    "download_link",
-    "tif_filename",
-    "filename",
-    "location",
-    "date",
-    "end_date",
-    "edition",
-]
-
-METADATA_FIELDS = [
-    "source_dataset",
-    "source_row_num",
-    "location_norm",
-    "date_quality",
-    "candidate_group",
-    "candidate_rank",
-    "gcp_xy_complete",
-    "row_status",
-]
-
-ABBREVIATIONS = {
-    "hawaiian_is": "hawaiian_islands",
-    "dallas_ft_worth": "dallas_ft_worth",
-    "mariana_islands_inset": "mariana_islands",
-}
-
-
-def _pick(row: Dict[str, str], keys: Iterable[str]) -> str:
-    for key in keys:
-        value = row.get(key)
-        if value is None:
-            continue
-        value_str = str(value).strip()
-        if value_str:
-            return value_str
-    return ""
-
-
-def _parse_iso_date(value: str) -> Optional[datetime.date]:
-    value = (value or "").strip()
-    if not value:
-        return None
-    try:
-        return datetime.date.fromisoformat(value)
-    except ValueError:
-        return None
-
-
-def _normalize_iso_date(value: str) -> str:
-    parsed = _parse_iso_date(value)
-    return parsed.isoformat() if parsed else ""
-
-
-def normalize_location(name: str) -> str:
-    norm = (
-        str(name or "")
-        .strip()
-        .lower()
-        .replace(" ", "_")
-        .replace("-", "_")
-        .replace(".", "_")
-        .replace(",", "")
-    )
-    while "__" in norm:
-        norm = norm.replace("__", "_")
-    return ABBREVIATIONS.get(norm, norm)
-
-
-def _normalize_token(value: str) -> str:
-    token = re.sub(r"[^a-zA-Z0-9_]+", "_", str(value or "").strip().lower())
-    token = re.sub(r"_+", "_", token).strip("_")
-    return token
-
-
-def _is_truthy(value: str) -> bool:
-    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
-
-
-def _has_complete_numeric_gcp_xy(row: Dict[str, str]) -> bool:
-    keys = ("tl_x", "tl_y", "tr_x", "tr_y", "br_x", "br_y", "bl_x", "bl_y")
-    for key in keys:
-        value = _pick(row, (key, key.upper()))
-        if not value:
-            return False
-        try:
-            float(value)
-        except (TypeError, ValueError):
-            return False
-    return True
-
-
-def compute_early_end_dates(rows: Iterable[Dict[str, str]]) -> Dict[Tuple[str, str], str]:
-    """
-    Compute early-dataset end dates per normalized location:
-    next start date when available, else start + 56 days.
-    """
-    by_location: Dict[str, set] = {}
-    for row in rows:
-        location = _pick(row, ("location", "Location"))
-        location_norm = normalize_location(location)
-        date_iso = _normalize_iso_date(_pick(row, ("date", "Date", "start_date", "Start Date")))
-        if not (location_norm and date_iso):
-            continue
-        by_location.setdefault(location_norm, set()).add(date_iso)
-
-    output: Dict[Tuple[str, str], str] = {}
-    for location_norm, iso_dates in by_location.items():
-        ordered = sorted(datetime.date.fromisoformat(d) for d in iso_dates)
-        for idx, start in enumerate(ordered):
-            if idx + 1 < len(ordered):
-                end = ordered[idx + 1]
-            else:
-                end = start + datetime.timedelta(days=56)
-            output[(location_norm, start.isoformat())] = end.isoformat()
-    return output
-
-
-def build_candidate_group(row: Dict[str, str], source_row_num: int) -> str:
-    date_iso = (row.get("date") or "").strip()
-    location_norm = (row.get("location_norm") or normalize_location(row.get("location", ""))).strip()
-    if date_iso and location_norm:
-        return f"{date_iso}|{location_norm}"
-
-    filename = (row.get("filename") or row.get("tif_filename") or "").strip()
-    if filename:
-        token = _normalize_token(Path(filename).stem)
-    else:
-        token = f"row{int(source_row_num)}"
-    return f"undated|{token}"
-
-
-def rank_candidate(row: Dict[str, str]) -> int:
-    if _is_truthy(row.get("gcp_xy_complete", "")):
-        return 1
-    if str(row.get("source_dataset") or "").strip().lower() == "master":
-        return 2
-    return 3
-
-
-def normalize_row(
-    raw_row: Dict[str, str],
-    source_dataset: str,
-    source_row_num: int,
-    early_end_dates: Optional[Dict[Tuple[str, str], str]] = None,
-) -> Dict[str, str]:
-    row = dict(raw_row)
-    dataset = str(source_dataset or "").strip().lower() or "master"
-    status_parts: List[str] = []
-
-    download_link = _pick(row, ("download_link", "Download Link", "Download link"))
-    tif_filename = _pick(row, ("tif_filename", "filename", "TIF Filename", "Filename"))
-    filename = _pick(row, ("filename", "tif_filename", "Filename", "TIF Filename"))
-    location = _pick(row, ("location", "Location", "geo_where"))
-    edition = _pick(row, ("edition", "Edition", "Web Edition Number")) or "Unknown"
-    location_norm = normalize_location(location)
-
-    if not filename and tif_filename:
-        filename = tif_filename
-    if not tif_filename and filename:
-        tif_filename = filename
-    if not filename:
-        status_parts.append("missing_filename")
-
-    raw_date = _pick(row, ("date", "Date", "start_date", "Start Date"))
-    date_iso = _normalize_iso_date(raw_date)
-    if date_iso:
-        date_quality = "valid_iso"
-    else:
-        date_quality = "invalid_or_blank"
-        if raw_date:
-            status_parts.append(f"invalid_date:{raw_date}")
-        else:
-            status_parts.append("missing_date")
-
-    raw_end_date = _pick(row, ("end_date", "End Date"))
-    if dataset == "early":
-        if date_iso and location_norm and early_end_dates is not None:
-            end_date = early_end_dates.get((location_norm, date_iso), "")
-        else:
-            end_date = ""
-    else:
-        end_date = _normalize_iso_date(raw_end_date)
-        if not end_date and date_iso:
-            end_date = date_iso
-        if raw_end_date and not end_date:
-            status_parts.append(f"invalid_end_date:{raw_end_date}")
-
-    gcp_xy_complete = _has_complete_numeric_gcp_xy(row)
-
-    row["download_link"] = download_link
-    row["tif_filename"] = tif_filename
-    row["filename"] = filename
-    row["location"] = location
-    row["date"] = date_iso
-    row["end_date"] = end_date
-    row["edition"] = edition
-    row["source_dataset"] = dataset
-    row["source_row_num"] = str(int(source_row_num))
-    row["location_norm"] = location_norm
-    row["date_quality"] = date_quality
-    row["gcp_xy_complete"] = "1" if gcp_xy_complete else "0"
-    row["candidate_group"] = build_candidate_group(row, source_row_num)
-    row["candidate_rank"] = str(rank_candidate(row))
-    row["row_status"] = ";".join(status_parts) if status_parts else "ok"
-    return row
-
-
-def load_combined_rows(csv_path: Path) -> List[Dict[str, str]]:
-    """
-    Load and normalize rows from combined or legacy CSV formats.
-    """
-    path = Path(csv_path)
-    with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
-        reader = csv.DictReader(f)
-        raw_rows = list(reader)
-        fieldnames = set(reader.fieldnames or [])
-
-    def infer_source(row: Dict[str, str]) -> str:
-        source = str(row.get("source_dataset") or "").strip().lower()
-        if source in {"early", "master"}:
-            return source
-        if "Date" in fieldnames and "Location" in fieldnames and "end_date" not in fieldnames:
-            return "early"
-        if path.name.lower().startswith("early_"):
-            return "early"
-        return "master"
-
-    source_by_row: List[str] = [infer_source(r) for r in raw_rows]
-    early_rows = [row for row, source in zip(raw_rows, source_by_row) if source == "early"]
-    early_end_dates = compute_early_end_dates(early_rows)
-
-    normalized_rows: List[Dict[str, str]] = []
-    for idx, (row, source) in enumerate(zip(raw_rows, source_by_row), start=2):
-        normalized_rows.append(
-            normalize_row(
-                row,
-                source_dataset=source,
-                source_row_num=idx,
-                early_end_dates=early_end_dates,
-            )
-        )
-    return normalized_rows
-
-
-# ---------------------------------------------------------------------------
-# End of inlined dole_dataset.py section
-# ---------------------------------------------------------------------------
+import dole_v2
 
 
 def _get_memory_snapshot_mb(
@@ -438,107 +192,29 @@ class ChartSlicer:
             name = name.replace('__', '_')
         return name.lower()
 
-    @staticmethod
-    def _row_pick(row: Dict[str, str], keys: List[str]) -> str:
-        """Return first non-empty value from a list of possible CSV keys."""
-        for key in keys:
-            value = row.get(key)
-            if value is None:
-                continue
-            value_str = str(value).strip()
-            if value_str:
-                return value_str
-        return ""
-
-    def _row_float(self, row: Dict[str, str], keys: List[str]) -> Optional[float]:
-        """Parse first available key as float."""
-        value = self._row_pick(row, keys)
-        if not value:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _build_lcc_crs(self, lat1: str, lat2: str, lat0: str, lon0: str) -> str:
-        if not (lat1 and lat2 and lat0 and lon0):
-            return ""
-        return (
-            f"+proj=lcc +lat_1={lat1} +lat_2={lat2} +lat_0={lat0} "
-            f"+lon_0={lon0} +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
-        )
+    def _row_shapefile(self, row: Dict[str, str]) -> Optional[Path]:
+        """Row's cutline shapefile (sectional or extents), for non-GCP warps."""
+        cutline = dole_v2.row_cutline(row, self.shape_dir)
+        if cutline and cutline["kind"] == "shapefile" and cutline["path"].exists():
+            return cutline["path"]
+        return None
 
     def _build_gcp_warp_context(self, row: Dict[str, str]) -> Optional[Dict[str, object]]:
         """
-        Build per-row GCP warp inputs:
-        - pixel corners (tl/tr/br/bl x,y)
-        - projected GCP coordinates in source CRS
-        - EPSG:4269 cutline polygon
+        Build per-row GCP warp inputs from the v2 columns:
+        - pixel corners gcp1..gcp4 (TL, TR, BR, BL)
+        - projected GCP coordinates in the row's LCC CRS
+        - cutline (extents/inline-WKT geometry or shapefile path)
         """
-        pixels = []
-        for x_key, y_key in (("tl_x", "tl_y"), ("tr_x", "tr_y"), ("br_x", "br_y"), ("bl_x", "bl_y")):
-            px = self._row_float(row, [x_key, x_key.upper()])
-            py = self._row_float(row, [y_key, y_key.upper()])
-            if px is None or py is None:
-                return None
-            pixels.append((px, py))
-
-        gcp_geo = []
-        has_all_gcp_geo = True
-        for lat_key, lon_key in (
-            ("gcp_tl_lat", "gcp_tl_lon"),
-            ("gcp_tr_lat", "gcp_tr_lon"),
-            ("gcp_br_lat", "gcp_br_lon"),
-            ("gcp_bl_lat", "gcp_bl_lon"),
-        ):
-            lat = self._row_float(row, [lat_key, lat_key.upper()])
-            lon = self._row_float(row, [lon_key, lon_key.upper()])
-            if lat is None or lon is None:
-                has_all_gcp_geo = False
-                break
-            gcp_geo.append((lon, lat))
-
-        west = self._row_float(row, ["Left bounds", "Left cut bounds", "left_bounds", "left_cut_bounds"])
-        east = self._row_float(row, ["Right bounds", "Right cut bounds", "right_bounds", "right_cut_bounds"])
-        north = self._row_float(row, ["Top bounds", "Top cut bounds", "top_bounds", "top_cut_bounds"])
-        south = self._row_float(row, ["Bottom bounds", "Bottom cut bounds", "bottom_bounds", "bottom_cut_bounds"])
-
-        bounds_ok = all(v is not None for v in (west, east, north, south))
-        if bounds_ok:
-            if west > 0:
-                west = -west
-            if east > 0:
-                east = -east
-            if west > east:
-                west, east = east, west
-            if south > north:
-                south, north = north, south
-
-        if not has_all_gcp_geo and not bounds_ok:
+        pixels = dole_v2.row_gcp_pixels(row)
+        gcp_geo = dole_v2.row_gcp_lonlat(row)
+        crs_str = dole_v2.row_lcc_crs(row)
+        cutline = dole_v2.row_cutline(row, self.shape_dir)
+        if not (pixels and gcp_geo and crs_str and cutline):
             return None
-
-        if not has_all_gcp_geo and bounds_ok:
-            gcp_geo = [
-                (west, north),
-                (east, north),
-                (east, south),
-                (west, south),
-            ]
-
-        # Prefer explicit CRS from CSV; otherwise synthesize LCC from projection fields.
-        crs_str = self._row_pick(row, ["crs", "CRS"])
-        if not crs_str:
-            lat1 = self._row_pick(row, ["proj_lat1", "PROJ_LAT1"]) or "33.0"
-            lat2 = self._row_pick(row, ["proj_lat2", "PROJ_LAT2"]) or "45.0"
-            lat0 = self._row_pick(row, ["proj_lat0", "PROJ_LAT0"]) or "39.0"
-            lon0 = self._row_pick(row, ["proj_lon0", "PROJ_LON0"])
-            if not lon0:
-                if bounds_ok:
-                    lon0 = str((west + east) / 2.0)
-                else:
-                    lon0 = "-96.0"
-            crs_str = self._build_lcc_crs(lat1, lat2, lat0, lon0) or \
-                "+proj=lcc +lat_1=33.0 +lat_2=45.0 +lat_0=39.0 +lon_0=-96.0 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+        if cutline["kind"] == "shapefile" and not cutline["path"].exists():
+            self.log(f"    ✗ Cutline shapefile missing: {cutline['path']}")
+            return None
 
         src_srs = osr.SpatialReference()
         dst_srs = osr.SpatialReference()
@@ -548,8 +224,8 @@ class ChartSlicer:
             if dst_srs.SetFromUserInput(crs_str) != 0:
                 return None
         except RuntimeError as e:
-            # Malformed CRS (e.g. +lon_0=NaN) raises rather than returning non-zero
-            # when GDAL exceptions are enabled. Skip GCP warp; fall back to shapefile.
+            # Malformed CRS raises rather than returning non-zero when GDAL
+            # exceptions are enabled. Skip GCP warp; fall back to shapefile.
             self.log(f"    invalid CRS, falling back to shapefile warp: {crs_str!r} ({e})")
             return None
         if hasattr(src_srs, "SetAxisMappingStrategy") and hasattr(osr, "OAMS_TRADITIONAL_GIS_ORDER"):
@@ -562,22 +238,10 @@ class ChartSlicer:
             x, y, _z = transformer.TransformPoint(float(lon), float(lat))
             projected.append((x, y))
 
-        if bounds_ok:
-            cutline_coords = [
-                [west, north],
-                [east, north],
-                [east, south],
-                [west, south],
-                [west, north],
-            ]
-        else:
-            cutline_coords = [[lon, lat] for lon, lat in gcp_geo]
-            cutline_coords.append([gcp_geo[0][0], gcp_geo[0][1]])
-
         return {
             "pixels": pixels,
             "projected": projected,
-            "cutline_coords": cutline_coords,
+            "cutline": cutline,
             "source_crs": crs_str,
         }
 
@@ -607,7 +271,7 @@ class ChartSlicer:
         return parsed if parsed else datetime.date.min
 
     def load_dole_data(self):
-        """Load CSV data (combined or legacy) into date-keyed groups."""
+        """Load v2 CSV data into date-keyed groups."""
         self.log(f"Loading CSV: {self.csv_file.name}...")
         self.dole_data = defaultdict(list)
         self.date_key_map = {}
@@ -616,8 +280,7 @@ class ChartSlicer:
         skipped_missing_filename = 0
         undated_rows = 0
 
-        normalized_rows = load_combined_rows(self.csv_file)
-        for row_idx, row in enumerate(normalized_rows, start=1):
+        for row_idx, row in enumerate(dole_v2.load_rows(self.csv_file), start=1):
             total_rows += 1
 
             filename = (row.get('filename') or '').strip()
@@ -650,15 +313,16 @@ class ChartSlicer:
                 undated_rows += 1
                 date_key = f"undated_{Path(filename).stem or f'row{row_idx}'}"
 
-            if not row.get('candidate_group'):
-                norm_loc = self.normalize_name(row.get('location', ''))
-                if start_date and norm_loc:
-                    row['candidate_group'] = f"{start_date}|{norm_loc}"
-                else:
-                    row['candidate_group'] = f"undated_{Path(filename).stem or f'row{row_idx}'}"
-
-            if not row.get('candidate_rank'):
-                row['candidate_rank'] = "3"
+            # Duplicate rows for the same date|location are warp alternatives;
+            # rows with complete pixel GCPs are tried first.
+            norm_loc = self.normalize_name(row.get('location', ''))
+            if parsed_start and norm_loc:
+                row['candidate_group'] = f"{start_date}|{norm_loc}"
+            else:
+                token = re.sub(r"[^a-zA-Z0-9_]+", "_", Path(filename).stem.strip().lower())
+                token = re.sub(r"_+", "_", token).strip("_") or f"row{row_idx + 1}"
+                row['candidate_group'] = f"undated|{token}"
+            row['candidate_rank'] = "1" if dole_v2.row_gcp_pixels(row) else "2"
 
             row['start_date'] = start_date
             row['end_date'] = end_date if start_date else ""
@@ -691,9 +355,10 @@ class ChartSlicer:
             for filename in files:
                 file_path = root_path / filename
 
-                # Cache direct TIF, ZIP and PDF files by name (PDFs so a local
-                # .pdf can be rasterized instead of re-downloading its .tif row)
-                if filename.endswith(('.tif', '.zip', '.pdf')):
+                # Cache direct TIF, ZIP, PDF and JPG files by name (PDFs so a local
+                # .pdf can be rasterized instead of re-downloading its .tif row;
+                # JPGs for the simviation/archive-2004 chart rows)
+                if filename.endswith(('.tif', '.zip', '.pdf', '.jpg')):
                     self.files_by_name[filename] = file_path
 
                 # For TIFs inside extracted directories, also index by parent directory name
@@ -724,13 +389,10 @@ class ChartSlicer:
         candidates = list(sectional_dir.glob("**/*.shp"))
 
         for shp in candidates:
-            # Normalize the shapefile name once
+            # Normalize the shapefile name once; used by _pick_shapefile_for_source
+            # to upgrade to directional (_east/_west/...) variants per source file.
             shp_norm = self.normalize_name(shp.stem)
-            # Store with normalized key
             self.shapefile_index[shp_norm] = shp
-
-            # Also check for partial matches (for locations that might be substrings)
-            # We'll do exact matches first in find_shapefile, then partial matches
 
         self.log(f"  Indexed {len(self.shapefile_index)} shapefiles")
 
@@ -1127,7 +789,7 @@ class ChartSlicer:
     def find_files(self, location: str, edition: str, timestamp: Optional[str], filename: Optional[str] = None, download_link: str = '') -> List[Union[Path, Tuple[Path, str]]]:
         """
         Find files from CSV filename.
-        Filename must be provided in master_dole.csv.
+        Filename must be provided in the v2 dole CSV.
 
         If file not found locally and download_link provided, will attempt download and extract.
 
@@ -1139,21 +801,6 @@ class ChartSlicer:
 
         resolved = self.resolve_filename(filename, download_link)
         return resolved
-
-    def find_shapefile(self, location: str) -> Optional[Path]:
-        """Find shapefile for location using index cache (O(1) lookup)."""
-        norm_loc = self.normalize_name(location)
-
-        # Check for exact match first (O(1))
-        if norm_loc in self.shapefile_index:
-            return self.shapefile_index[norm_loc]
-
-        # Check for partial matches (substring search)
-        for shp_norm, shp_path in self.shapefile_index.items():
-            if norm_loc in shp_norm:
-                return shp_path
-
-        return None
 
     def get_shapefile_srs(self, shapefile: Path) -> str:
         """Get the actual SRS of a shapefile in Proj4 format. Results are cached."""
@@ -1747,7 +1394,7 @@ class ChartSlicer:
             temp_gcp_vrt = output_tiff.parent / f"{sanitized_stem}_srcgcp.vrt"
         else:
             temp_gcp_vrt = Path(f"/vsimem/{sanitized_stem}_srcgcp.vrt")
-        cutline_json = output_tiff.parent / f"{sanitized_stem}_cutline.geojson"
+        cutline_json: Optional[Path] = None
 
         try:
             gcps = []
@@ -1767,25 +1414,36 @@ class ChartSlicer:
                 return False
             ds_vrt = None
 
-            with open(cutline_json, "w", encoding="utf-8") as f:
-                json.dump({
-                    "type": "FeatureCollection",
-                    "features": [{
-                        "type": "Feature",
-                        "properties": {},
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [context["cutline_coords"]],
-                        }
-                    }]
-                }, f)
+            # Cutline: shapefile refs (extents/ or sectional/) pass through
+            # directly; inline WKT overrides become a temp GeoJSON.
+            cutline = context["cutline"]
+            if cutline["kind"] == "shapefile":
+                cutline_ds = str(cutline["path"])
+                cutline_srs = self.get_shapefile_srs(cutline["path"])
+            else:
+                ring = dole_v2.cutline_ring(cutline)
+                cutline_json = output_tiff.parent / f"{sanitized_stem}_cutline.geojson"
+                with open(cutline_json, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "type": "FeatureCollection",
+                        "features": [{
+                            "type": "Feature",
+                            "properties": {},
+                            "geometry": {
+                                "type": "Polygon",
+                                "coordinates": [[list(pt) for pt in ring]],
+                            }
+                        }]
+                    }, f)
+                cutline_ds = str(cutline_json)
+                cutline_srs = dole_v2.CUTLINE_SRS
 
             def _run_warp(transformer_opts):
                 warp_options = gdal.WarpOptions(
                     format="VRT" if to_vrt else "GTiff",
                     dstSRS='EPSG:3857',
-                    cutlineDSName=str(cutline_json),
-                    cutlineSRS='EPSG:4269',
+                    cutlineDSName=cutline_ds,
+                    cutlineSRS=cutline_srs,
                     cropToCutline=True,
                     dstAlpha=True,
                     resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
@@ -1831,7 +1489,7 @@ class ChartSlicer:
             except Exception:
                 pass
             try:
-                if cutline_json.exists():
+                if cutline_json is not None and cutline_json.exists():
                     cutline_json.unlink()
             except Exception:
                 pass
@@ -2078,9 +1736,11 @@ class ChartSlicer:
                     edition = rec.get('edition', '')
                     timestamp = rec.get('wayback_ts')
 
-                    # Find shapefile
-                    shp_path = self.find_shapefile(location)
-                    shapefile_found = "YES" if shp_path else "NO"
+                    # Row cutline: shapefile ref or inline WKT
+                    if rec.get('cutline_wkt', '').strip():
+                        shapefile_found = "WKT"
+                    else:
+                        shapefile_found = "YES" if self._row_shapefile(rec) else "NO"
 
                     # Find source files
                     filename = rec.get('filename', '')
@@ -2250,9 +1910,16 @@ class ChartSlicer:
 
         all_locations = sorted(all_locations)
 
-        # Count how many have shapefiles
-        shapefile_count = sum(1 for loc in all_locations if self.find_shapefile(loc))
-        self.log(f"Found {len(all_locations)} locations from CSV ({shapefile_count} with shapefiles).")
+        # Count how many locations have at least one row with a cutline
+        locs_with_cutline = set()
+        for records in self.dole_data.values():
+            for rec in records:
+                if (rec.get('cutline') or '').strip() or (rec.get('cutline_wkt') or '').strip():
+                    norm_loc = self.normalize_name(rec.get('location', ''))
+                    if norm_loc:
+                        locs_with_cutline.add(norm_loc)
+        self.log(f"Found {len(all_locations)} locations from CSV "
+                 f"({len(locs_with_cutline)} with cutlines).")
 
         # Build processing date list (optionally filtered)
         sorted_dates = sorted(self.dole_data.keys(), key=self._date_key_sort_key)
@@ -2388,15 +2055,16 @@ class ChartSlicer:
                         attempt_total = len(state['records'])
                         attempt_label = f" (option {attempt_num}/{attempt_total})" if attempt_total > 1 else ""
 
-                        # Prefer per-row GCP context when available; fallback to shapefile warp.
+                        # Prefer per-row GCP context when available; fallback to
+                        # the row's cutline shapefile for pre-georeferenced sources.
                         gcp_context = self._build_gcp_warp_context(rec)
                         shp_path = None
                         if not gcp_context:
-                            shp_path = self.find_shapefile(location)
+                            shp_path = self._row_shapefile(rec)
                             if not shp_path:
                                 self.log(
                                     f"    {location} (edition {edition}){attempt_label}: "
-                                    "no valid GCP context and no shapefile fallback"
+                                    "no valid GCP context and no cutline shapefile"
                                 )
                                 state['done'] = True
                                 made_progress = True
@@ -2655,8 +2323,8 @@ Examples:
     parser.add_argument(
         "-c", "--csv",
         type=Path,
-        default=Path("/Users/ryanhemenway/archive.aero/master_dole_scanned.csv"),
-        help="Master Dole CSV file (default: /Users/ryanhemenway/archive.aero/master_dole_scanned.csv)"
+        default=Path("/Users/ryanhemenway/archive.aero/master_dole_v2.csv"),
+        help="Master Dole CSV file, v2 schema (default: /Users/ryanhemenway/archive.aero/master_dole_v2.csv)"
     )
 
     parser.add_argument(

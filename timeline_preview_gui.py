@@ -2,7 +2,7 @@
 """
 Interactive local timeline viewer for sectional chart TIFFs.
 
-- Reads master_dole-style CSV via analyze_dole.py helpers
+- Reads the v2 dole CSV (master_dole_v2.csv) via analyze_dole.py helpers
 - Resolves files from /Volumes/projects/rawtiffs recursively
 - Lets you click a timeline segment to open the matched TIFF in Quick Look
 """
@@ -23,117 +23,41 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from analyze_dole import analyze_csv, build_file_index, resolve_tif_file
+from dole_v2 import LCC_TEMPLATE, V2_FIELDS
 
 
-SCANNED_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole_scanned.csv"
-COMBINED_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole_combined.csv"
-CORRECTED_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole_corrected.csv"
-LEGACY_MASTER_CSV = "/Users/ryanhemenway/archive.aero/master_dole.csv"
-EARLY_CSV = "/Users/ryanhemenway/archive.aero/early_master_dole.csv"
-CSV_PRESETS = [CORRECTED_MASTER_CSV, SCANNED_MASTER_CSV, COMBINED_MASTER_CSV, LEGACY_MASTER_CSV, EARLY_CSV]
-# Default to the preferred master CSV, but fall back to the first preset that
-# actually exists so the GUI opens even if a specific file is missing.
-DEFAULT_CSV = next(
-    (p for p in [SCANNED_MASTER_CSV, *CSV_PRESETS] if os.path.exists(p)),
-    SCANNED_MASTER_CSV,
-)
+MASTER_CSV_V2 = "/Users/ryanhemenway/archive.aero/master_dole_v2.csv"
+CSV_PRESETS = [MASTER_CSV_V2]
+DEFAULT_CSV = MASTER_CSV_V2
 DEFAULT_TIF_DIR = "/Volumes/projects/rawtiffs"
-EARLY_TIF_DIR = "/Volumes/projects/rawtiffs"
 STATE_SUFFIX_RE = re.compile(r",\s*[A-Z]{2}$")
 RESAMPLE_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 Image.MAX_IMAGE_PIXELS = None
 MAX_PREVIEW_WIDTH = 4096
-CSV_FIELD_ALIASES = {
-    "filename": ["filename", "tif_filename"],
-    "date": ["date", "Date"],
-    "edition": ["edition", "Edition"],
-    "end_date": ["end_date", "End Date"],
-    "left_bounds": ["Left bounds", "Left cut bounds", "left_bounds"],
-    "right_bounds": ["Right bounds", "Right cut bounds", "right_bounds"],
-    "top_bounds": ["Top bounds", "Top cut bounds", "top_bounds"],
-    "bottom_bounds": ["Bottom bounds", "Bottom cut bounds", "bottom_bounds"],
-    "proj_lat1": ["proj_lat1"],
-    "proj_lat2": ["proj_lat2"],
-    "proj_lat0": ["proj_lat0"],
-    "proj_lon0": ["proj_lon0"],
-    "crs": ["crs"],
-    "tl_x": ["tl_x"],
-    "tl_y": ["tl_y"],
-    "tr_x": ["tr_x"],
-    "tr_y": ["tr_y"],
-    "br_x": ["br_x"],
-    "br_y": ["br_y"],
-    "bl_x": ["bl_x"],
-    "bl_y": ["bl_y"],
-    "gcp_tl_lat": ["gcp_tl_lat"],
-    "gcp_tl_lon": ["gcp_tl_lon"],
-    "gcp_tr_lat": ["gcp_tr_lat"],
-    "gcp_tr_lon": ["gcp_tr_lon"],
-    "gcp_br_lat": ["gcp_br_lat"],
-    "gcp_br_lon": ["gcp_br_lon"],
-    "gcp_bl_lat": ["gcp_bl_lat"],
-    "gcp_bl_lon": ["gcp_bl_lon"],
-}
+# GCP corner order in the v2 schema: gcp1=TL, gcp2=TR, gcp3=BR, gcp4=BL.
+CORNER_KEYS = ("tl", "tr", "br", "bl")
+CORNER_TO_GCP = {"tl": 1, "tr": 2, "br": 3, "bl": 4}
 CSV_EDITOR_FIELDS = [
     "filename",
     "date",
-    "edition",
     "end_date",
-    "left_bounds",
-    "right_bounds",
-    "top_bounds",
-    "bottom_bounds",
-    "proj_lat1",
-    "proj_lat2",
-    "proj_lat0",
-    "proj_lon0",
-    "crs",
-    "tl_x",
-    "tl_y",
-    "tr_x",
-    "tr_y",
-    "br_x",
-    "br_y",
-    "bl_x",
-    "bl_y",
-    "gcp_tl_lat",
-    "gcp_tl_lon",
-    "gcp_tr_lat",
-    "gcp_tr_lon",
-    "gcp_br_lat",
-    "gcp_br_lon",
-    "gcp_bl_lat",
-    "gcp_bl_lon",
+    "edition",
+    "gcp1_px", "gcp1_py", "gcp1_lat", "gcp1_lon",
+    "gcp2_px", "gcp2_py", "gcp2_lat", "gcp2_lon",
+    "gcp3_px", "gcp3_py", "gcp3_lat", "gcp3_lon",
+    "gcp4_px", "gcp4_py", "gcp4_lat", "gcp4_lon",
+    "lcc_lat1", "lcc_lat2", "lcc_lat0", "lcc_lon0",
 ]
-CORNER_KEYS = ("tl", "tr", "br", "bl")
 
 
 def _location_has_state_suffix(name):
     return bool(STATE_SUFFIX_RE.search((name or "").strip()))
 
 
-def _is_early_csv_path(csv_path):
-    return os.path.basename((csv_path or "").strip()).lower() == os.path.basename(EARLY_CSV).lower()
-
-
-def _default_tif_dir_for_csv(csv_path, primary_tif_dir=DEFAULT_TIF_DIR):
-    if _is_early_csv_path(csv_path):
-        return EARLY_TIF_DIR
-    return primary_tif_dir
-
-
 def _clean_value(value):
     if value is None:
         return ""
     return str(value).strip()
-
-
-def _first_value(row, keys):
-    for key in keys:
-        value = _clean_value(row.get(key))
-        if value:
-            return value
-    return ""
 
 
 def _to_float(value):
@@ -172,87 +96,53 @@ def build_lcc_crs(lat1, lat2, lat0, lon0):
     lon0 = _clean_value(lon0)
     if not (lat1 and lat2 and lat0 and lon0):
         return ""
-    return (
-        f"+proj=lcc +lat_1={lat1} +lat_2={lat2} +lat_0={lat0} "
-        f"+lon_0={lon0} +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
-    )
+    return LCC_TEMPLATE.format(lat1=lat1, lat2=lat2, lat0=lat0, lon0=lon0)
 
 
-def parse_lcc_params_from_crs(crs_str):
-    crs_text = _clean_value(crs_str)
-    if not crs_text:
-        return {}
-
-    def _match(pattern):
-        match = re.search(pattern, crs_text)
-        return match.group(1) if match else ""
-
+def derive_bounds_from_gcps(row):
+    """
+    Rectangle derived from the 4 GCP lat/lon corners: W=min lon, E=max lon,
+    S=min lat, N=max lat. Returns None when any corner is incomplete.
+    """
+    lats = []
+    lons = []
+    for idx in range(1, 5):
+        lat = _to_float(row.get(f"gcp{idx}_lat"))
+        lon = _to_float(row.get(f"gcp{idx}_lon"))
+        if lat is None or lon is None:
+            return None
+        lats.append(lat)
+        lons.append(lon)
     return {
-        "proj_lat1": _match(r"\+lat_1=([-\d.]+)"),
-        "proj_lat2": _match(r"\+lat_2=([-\d.]+)"),
-        "proj_lat0": _match(r"\+lat_0=([-\d.]+)"),
-        "proj_lon0": _match(r"\+lon_0=([-\d.]+)"),
+        "top": max(lats),
+        "bottom": min(lats),
+        "left": min(lons),
+        "right": max(lons),
     }
 
 
-def infer_lon0_from_bounds(row):
-    left = _to_float(row.get("left_bounds"))
-    right = _to_float(row.get("right_bounds"))
-    if left is None or right is None:
-        return ""
-    if left > 0:
-        left = -left
-    if right > 0:
-        right = -right
-    return str((left + right) / 2.0)
-
-
 def normalize_editor_row(row):
-    normalized = {key: "" for key in CSV_EDITOR_FIELDS}
-    for canonical, aliases in CSV_FIELD_ALIASES.items():
-        normalized[canonical] = _first_value(row, aliases)
-
+    normalized = {key: _clean_value(row.get(key)) for key in CSV_EDITOR_FIELDS}
     normalized["date"] = _normalize_date_value(normalized["date"])
     normalized["end_date"] = _normalize_date_value(normalized["end_date"])
-    normalized["left_bounds"] = _normalize_longitude(normalized["left_bounds"])
-    normalized["right_bounds"] = _normalize_longitude(normalized["right_bounds"])
-
-    parsed = parse_lcc_params_from_crs(normalized["crs"])
-    for key, value in parsed.items():
-        if value and not normalized.get(key):
-            normalized[key] = value
-
-    if not normalized["proj_lon0"]:
-        normalized["proj_lon0"] = infer_lon0_from_bounds(normalized)
-
-    if not normalized["crs"]:
-        normalized["crs"] = build_lcc_crs(
-            normalized["proj_lat1"],
-            normalized["proj_lat2"],
-            normalized["proj_lat0"],
-            normalized["proj_lon0"],
-        )
-
-    if not normalized["filename"]:
-        normalized["filename"] = _first_value(row, ["tif_filename", "filename"])
-
+    for idx in range(1, 5):
+        normalized[f"gcp{idx}_lon"] = _normalize_longitude(normalized[f"gcp{idx}_lon"])
     return normalized
 
 
-def _canonical_field_to_csv_name(canonical):
-    aliases = CSV_FIELD_ALIASES.get(canonical, [])
-    return aliases[0] if aliases else canonical
+def _validate_v2_header(csv_path, fieldnames):
+    missing = [k for k in V2_FIELDS if k not in (fieldnames or [])]
+    if missing:
+        raise ValueError(f"{csv_path}: not a v2 dole CSV, missing {missing}")
 
 
 def load_csv_row_by_line(csv_path, line_num):
     if not line_num or line_num < 2:
         raise ValueError(f"Invalid CSV line number: {line_num}")
 
-    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+    with open(csv_path, "r", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        if not fieldnames:
-            raise RuntimeError(f"CSV has no header: {csv_path}")
+        _validate_v2_header(csv_path, reader.fieldnames)
         for row_line_num, row in enumerate(reader, start=2):
             if row_line_num == line_num:
                 return normalize_editor_row(row)
@@ -264,20 +154,11 @@ def update_csv_row_by_line(csv_path, line_num, updates):
     if not line_num or line_num < 2:
         raise ValueError(f"Invalid CSV line number: {line_num}")
 
-    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+    with open(csv_path, "r", newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         fieldnames = list(reader.fieldnames or [])
-        if not fieldnames:
-            raise RuntimeError(f"CSV has no header: {csv_path}")
+        _validate_v2_header(csv_path, fieldnames)
         rows = list(reader)
-
-    field_map = {}
-    for canonical, aliases in CSV_FIELD_ALIASES.items():
-        existing_name = next((name for name in aliases if name in fieldnames), None)
-        if existing_name is None:
-            existing_name = _canonical_field_to_csv_name(canonical)
-            fieldnames.append(existing_name)
-        field_map[canonical] = existing_name
 
     target_index = line_num - 2
     if target_index < 0 or target_index >= len(rows):
@@ -286,23 +167,16 @@ def update_csv_row_by_line(csv_path, line_num, updates):
     row = rows[target_index]
     normalized = normalize_editor_row(row)
     for key, value in updates.items():
-        normalized[key] = _clean_value(value)
+        if key in normalized:
+            normalized[key] = _clean_value(value)
 
     normalized["date"] = _normalize_date_value(normalized.get("date"))
     normalized["end_date"] = _normalize_date_value(normalized.get("end_date"))
-    normalized["left_bounds"] = _normalize_longitude(normalized.get("left_bounds"))
-    normalized["right_bounds"] = _normalize_longitude(normalized.get("right_bounds"))
-    if not normalized.get("proj_lon0"):
-        normalized["proj_lon0"] = infer_lon0_from_bounds(normalized)
-    normalized["crs"] = build_lcc_crs(
-        normalized.get("proj_lat1"),
-        normalized.get("proj_lat2"),
-        normalized.get("proj_lat0"),
-        normalized.get("proj_lon0"),
-    ) or _clean_value(normalized.get("crs"))
 
-    for canonical, csv_name in field_map.items():
-        row[csv_name] = normalized.get(canonical, "")
+    # Only the editor-managed columns are rewritten; the rest of the row
+    # (location, download_link, note, cutline, cutline_wkt, ...) is preserved.
+    for key in CSV_EDITOR_FIELDS:
+        row[key] = normalized.get(key, "")
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -323,29 +197,11 @@ class Segment:
 
 
 def _record_has_gcp_data(record):
-    pixel_corner_fields = [
-        "tl_x",
-        "tl_y",
-        "tr_x",
-        "tr_y",
-        "br_x",
-        "br_y",
-        "bl_x",
-        "bl_y",
-    ]
+    pixel_corner_fields = [f"gcp{idx}_{axis}" for idx in range(1, 5) for axis in ("px", "py")]
     if all(_clean_value(record.get(field)) for field in pixel_corner_fields):
         return True
 
-    geo_corner_fields = [
-        "gcp_tl_lat",
-        "gcp_tl_lon",
-        "gcp_tr_lat",
-        "gcp_tr_lon",
-        "gcp_br_lat",
-        "gcp_br_lon",
-        "gcp_bl_lat",
-        "gcp_bl_lon",
-    ]
+    geo_corner_fields = [f"gcp{idx}_{axis}" for idx in range(1, 5) for axis in ("lat", "lon")]
     return any(_clean_value(record.get(field)) for field in geo_corner_fields)
 
 
@@ -373,7 +229,7 @@ class TimelinePreviewApp(tk.Tk):
         self.csv_path = csv_path
         self.tif_dir = tif_dir
         self.file_index = file_index
-        self.primary_tif_dir = tif_dir if not _is_early_csv_path(csv_path) else DEFAULT_TIF_DIR
+        self.primary_tif_dir = tif_dir
         self.file_index_cache = {tif_dir: file_index}
         self.dataset_cache = {
             csv_path: {
@@ -600,8 +456,8 @@ class TimelinePreviewApp(tk.Tk):
     def _refresh_meta(self):
         self.meta_var.set(f"CSV: {self.csv_path}    TIFF dir: {self.tif_dir}")
 
-    def _preferred_tif_dir_for_csv(self, csv_path):
-        return _default_tif_dir_for_csv(csv_path, primary_tif_dir=self.primary_tif_dir)
+    def _preferred_tif_dir_for_csv(self, _csv_path):
+        return self.primary_tif_dir
 
     def _ready_status(self):
         return "Ready. Left-click opens in Quick Look. Right-click opens the segment editor."
@@ -856,7 +712,6 @@ class TimelinePreviewApp(tk.Tk):
 
         y_cursor = self.HEADER_HEIGHT
         draw_idx = 0
-        is_early_csv = _is_early_csv_path(self.csv_path)
 
         for section_name, section_rows in sections:
             header_top = y_cursor
@@ -910,13 +765,8 @@ class TimelinePreviewApp(tk.Tk):
 
                     label_text = "-" if seg.edition == "Unknown" else str(seg.edition or "")
                     label_width = x2 - x1
-                    min_label_px = 16 if is_early_csv else 24
-                    label_font = ("Helvetica", 7, "bold") if is_early_csv else ("Helvetica", 8, "bold")
-
-                    # Early-master segments are much shorter (fixed 56-day spans), so use a
-                    # smaller font and lower threshold to show known edition numbers on-block.
-                    if is_early_csv and label_text == "-":
-                        label_text = ""
+                    min_label_px = 24
+                    label_font = ("Helvetica", 8, "bold")
 
                     if label_width >= min_label_px and label_text:
                         self.canvas.create_text(
@@ -1219,7 +1069,6 @@ class SegmentEditorWindow(tk.Toplevel):
         self.original_points_count = 0
         self.original_locked_points = []
         self.has_saved_locked_points = self._row_has_locked_points()
-        self._syncing_lon0 = False
         self.last_render_size = None
         self.last_render_resample = None
         self.loupe_image = None
@@ -1228,22 +1077,29 @@ class SegmentEditorWindow(tk.Toplevel):
         self.date_var = tk.StringVar(value=self.original_metadata["date"])
         self.end_date_var = tk.StringVar(value=self.original_metadata["end_date"])
         self.edition_var = tk.StringVar(value=self.original_metadata["edition"])
+        # Bounds are no longer CSV columns in the v2 schema; derive the W/E/S/N
+        # rectangle from the 4 GCP lat/lon corners. UI-only (used for the
+        # overlay preview), never written back to the CSV.
+        derived_bounds = derive_bounds_from_gcps(self.row_data) or {}
         self.bounds_vars = {
-            "top": tk.StringVar(value=self.row_data.get("top_bounds", "")),
-            "bottom": tk.StringVar(value=self.row_data.get("bottom_bounds", "")),
-            "left": tk.StringVar(value=self.row_data.get("left_bounds", "")),
-            "right": tk.StringVar(value=self.row_data.get("right_bounds", "")),
+            side: tk.StringVar(
+                value="" if derived_bounds.get(side) is None else str(derived_bounds[side])
+            )
+            for side in ("top", "bottom", "left", "right")
         }
+        default_lon0 = self.row_data.get("lcc_lon0", "")
+        if not default_lon0 and derived_bounds:
+            default_lon0 = str((derived_bounds["left"] + derived_bounds["right"]) / 2.0)
         self.proj_vars = {
-            "lat1": tk.StringVar(value=self.row_data.get("proj_lat1", "") or "45.0"),
-            "lat2": tk.StringVar(value=self.row_data.get("proj_lat2", "") or "33.0"),
-            "lat0": tk.StringVar(value=self.row_data.get("proj_lat0", "") or "39.0"),
-            "lon0": tk.StringVar(value=self.row_data.get("proj_lon0", "")),
+            "lat1": tk.StringVar(value=self.row_data.get("lcc_lat1", "") or "45.0"),
+            "lat2": tk.StringVar(value=self.row_data.get("lcc_lat2", "") or "33.0"),
+            "lat0": tk.StringVar(value=self.row_data.get("lcc_lat0", "") or "39.0"),
+            "lon0": tk.StringVar(value=default_lon0),
         }
         self.gcp_vars = {
             corner: {
-                "lat": tk.StringVar(value=self.row_data.get(f"gcp_{corner}_lat", "")),
-                "lon": tk.StringVar(value=self.row_data.get(f"gcp_{corner}_lon", "")),
+                "lat": tk.StringVar(value=self.row_data.get(f"gcp{CORNER_TO_GCP[corner]}_lat", "")),
+                "lon": tk.StringVar(value=self.row_data.get(f"gcp{CORNER_TO_GCP[corner]}_lon", "")),
             }
             for corner in CORNER_KEYS
         }
@@ -1257,7 +1113,6 @@ class SegmentEditorWindow(tk.Toplevel):
 
         self._build_ui()
         self._bind_events()
-        self._sync_lon0_from_bounds()
         self._update_dirty_state()
         self._begin_async_image_load()
 
@@ -1314,7 +1169,7 @@ class SegmentEditorWindow(tk.Toplevel):
 
         bounds_panel = self._panel(parent)
         bounds_panel.pack(fill="x", pady=(0, 10))
-        self._panel_title(bounds_panel, "Map Extents (From CSV)")
+        self._panel_title(bounds_panel, "Map Extents (From GCPs)")
         self._sidebar_field(bounds_panel, "Top Latitude", self.bounds_vars["top"]).pack(fill="x", pady=(0, 6))
         row = tk.Frame(bounds_panel, bg="#2a2a2a")
         row.pack(fill="x", pady=(0, 6))
@@ -1339,7 +1194,7 @@ class SegmentEditorWindow(tk.Toplevel):
         self._sidebar_field(row, "Lat 1", self.proj_vars["lat1"]).pack(side="left", fill="x", expand=True)
         self._sidebar_field(row, "Lat 2", self.proj_vars["lat2"]).pack(side="left", fill="x", expand=True, padx=(6, 0))
         self._sidebar_field(lcc_panel, "Lat Origin", self.proj_vars["lat0"]).pack(fill="x", pady=(0, 6))
-        self._sidebar_field(lcc_panel, "Lon Origin", self.proj_vars["lon0"], readonly=True).pack(fill="x")
+        self._sidebar_field(lcc_panel, "Lon Origin", self.proj_vars["lon0"]).pack(fill="x")
         self._button(parent, "Check Overlay", self.check_overlay, bg="#6c757d").pack(fill="x")
 
     def _build_viewer(self, parent):
@@ -1592,7 +1447,6 @@ class SegmentEditorWindow(tk.Toplevel):
             badge.pack(side="left", padx=(8, 0))
 
     def _update_dirty_state(self, *_args):
-        self._sync_lon0_from_bounds()
         self._update_end_date_flag()
         is_dirty = self.has_unsaved_changes()
         self.save_button.configure(state="normal" if is_dirty else "disabled")
@@ -1623,7 +1477,7 @@ class SegmentEditorWindow(tk.Toplevel):
 
         self.seg.start_date = validated["start_date"]
         self.seg.end_date = validated["end_date"]
-        self.seg.end_date_missing = validated["end_date"] is None and not _is_early_csv_path(self.csv_path)
+        self.seg.end_date_missing = validated["end_date"] is None
         self.seg.edition = updates.get("edition") or "Unknown"
         self.row_data = normalize_editor_row(updates)
         self.original_metadata = {
@@ -1656,9 +1510,10 @@ class SegmentEditorWindow(tk.Toplevel):
 
     def _row_has_locked_points(self):
         for corner in CORNER_KEYS:
-            if _to_float(self.row_data.get(f"{corner}_x")) is None:
+            idx = CORNER_TO_GCP[corner]
+            if _to_float(self.row_data.get(f"gcp{idx}_px")) is None:
                 return False
-            if _to_float(self.row_data.get(f"{corner}_y")) is None:
+            if _to_float(self.row_data.get(f"gcp{idx}_py")) is None:
                 return False
         return True
 
@@ -1907,36 +1762,28 @@ class SegmentEditorWindow(tk.Toplevel):
             "date": self.date_var.get().strip(),
             "end_date": self.end_date_var.get().strip(),
             "edition": self.edition_var.get().strip(),
-            "top_bounds": self.bounds_vars["top"].get().strip(),
-            "bottom_bounds": self.bounds_vars["bottom"].get().strip(),
-            "left_bounds": self.bounds_vars["left"].get().strip(),
-            "right_bounds": self.bounds_vars["right"].get().strip(),
-            "proj_lat1": self.proj_vars["lat1"].get().strip(),
-            "proj_lat2": self.proj_vars["lat2"].get().strip(),
-            "proj_lat0": self.proj_vars["lat0"].get().strip(),
-            "proj_lon0": self.proj_vars["lon0"].get().strip(),
+            "lcc_lat1": self.proj_vars["lat1"].get().strip(),
+            "lcc_lat2": self.proj_vars["lat2"].get().strip(),
+            "lcc_lat0": self.proj_vars["lat0"].get().strip(),
+            "lcc_lon0": self.proj_vars["lon0"].get().strip(),
         }
         for corner in CORNER_KEYS:
-            updates[f"gcp_{corner}_lat"] = self.gcp_vars[corner]["lat"].get().strip()
-            updates[f"gcp_{corner}_lon"] = self.gcp_vars[corner]["lon"].get().strip()
-
-        updates["crs"] = build_lcc_crs(
-            updates["proj_lat1"],
-            updates["proj_lat2"],
-            updates["proj_lat0"],
-            updates["proj_lon0"],
-        )
+            idx = CORNER_TO_GCP[corner]
+            updates[f"gcp{idx}_lat"] = self.gcp_vars[corner]["lat"].get().strip()
+            updates[f"gcp{idx}_lon"] = self.gcp_vars[corner]["lon"].get().strip()
 
         if include_points:
             if len(self.locked_points) == 4:
                 original_points = [self._preview_point_to_original(point) for point in self.locked_points]
                 for corner, point in zip(CORNER_KEYS, original_points):
-                    updates[f"{corner}_x"] = self._format_num(point["x"])
-                    updates[f"{corner}_y"] = self._format_num(point["y"])
+                    idx = CORNER_TO_GCP[corner]
+                    updates[f"gcp{idx}_px"] = self._format_num(point["x"])
+                    updates[f"gcp{idx}_py"] = self._format_num(point["y"])
             else:
                 for corner in CORNER_KEYS:
-                    updates[f"{corner}_x"] = ""
-                    updates[f"{corner}_y"] = ""
+                    idx = CORNER_TO_GCP[corner]
+                    updates[f"gcp{idx}_px"] = ""
+                    updates[f"gcp{idx}_py"] = ""
         return updates
 
     def _original_updates(self, include_points):
@@ -1944,16 +1791,17 @@ class SegmentEditorWindow(tk.Toplevel):
         if include_points:
             return updates
         filtered = dict(updates)
-        for corner in CORNER_KEYS:
-            filtered.pop(f"{corner}_x", None)
-            filtered.pop(f"{corner}_y", None)
+        for idx in range(1, 5):
+            filtered.pop(f"gcp{idx}_px", None)
+            filtered.pop(f"gcp{idx}_py", None)
         return filtered
 
     def _load_locked_points(self):
         points = []
         for corner in CORNER_KEYS:
-            x = _to_float(self.row_data.get(f"{corner}_x"))
-            y = _to_float(self.row_data.get(f"{corner}_y"))
+            idx = CORNER_TO_GCP[corner]
+            x = _to_float(self.row_data.get(f"gcp{idx}_px"))
+            y = _to_float(self.row_data.get(f"gcp{idx}_py"))
             if x is None or y is None:
                 return []
             points.append(
@@ -1985,21 +1833,6 @@ class SegmentEditorWindow(tk.Toplevel):
         if right > 0:
             right = -right
         return {"top": top, "bottom": bottom, "left": left, "right": right}
-
-    def _sync_lon0_from_bounds(self):
-        if self._syncing_lon0:
-            return
-        bounds = self._current_bounds()
-        lon0 = ""
-        if bounds:
-            lon0 = str((bounds["left"] + bounds["right"]) / 2.0)
-        if self.proj_vars["lon0"].get() == lon0:
-            return
-        self._syncing_lon0 = True
-        try:
-            self.proj_vars["lon0"].set(lon0)
-        finally:
-            self._syncing_lon0 = False
 
     def _current_gcp_geo(self):
         points = []
@@ -2281,7 +2114,7 @@ def build_rows(locations_data, file_index):
 
         segments = []
         for rec in records:
-            file_path = resolve_tif_file(rec.get("tif_filename", ""), file_index)
+            file_path = resolve_tif_file(rec.get("filename", ""), file_index)
             end_dt = rec.get("end_date")
             segments.append(
                 Segment(
@@ -2289,7 +2122,7 @@ def build_rows(locations_data, file_index):
                     edition=str(rec.get("edition", "")),
                     start_date=rec["date"].date(),
                     end_date=end_dt.date() if end_dt else None,
-                    tif_filename=rec.get("tif_filename", ""),
+                    tif_filename=rec.get("filename", ""),
                     file_path=file_path,
                     line_num=int(rec.get("line") or 0),
                     has_georef_data=_record_has_gcp_data(rec),
@@ -2319,7 +2152,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    tif_dir = _default_tif_dir_for_csv(args.csv, primary_tif_dir=args.tif_dir)
+    tif_dir = args.tif_dir
 
     if not os.path.exists(args.csv):
         print(f"CSV not found: {args.csv}", file=sys.stderr)
