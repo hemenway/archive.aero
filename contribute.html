@@ -1,0 +1,990 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Missing Charts &amp; How You Can Help — archive.aero</title>
+  <meta name="description"
+    content="archive.aero holds thousands of historical FAA Sectional charts — but hundreds of editions are still missing. See exactly what we don't have, and how you can help fill the gaps." />
+  <link rel="canonical" href="https://archive.aero/contribute.html" />
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+  <style>
+    :root {
+      --primary: #1e90ff;
+      --primary-hover: #4da6ff;
+      --secondary: #00d4aa;
+      --have: #00d4aa;
+      --have-old: #35b5c9;
+      --warn: #ffb347;
+      --gap: #ff5c5c;
+      --bg-glass: rgba(20, 25, 30, 0.90);
+      --bg-dark: #0a0e12;
+      --bg-card: #10161c;
+      --text-light: #fff;
+      --text-muted: rgba(255, 255, 255, 0.6);
+      --text-faint: rgba(255, 255, 255, 0.35);
+      --hairline: rgba(255, 255, 255, 0.09);
+      --card-radius: 16px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: var(--bg-dark);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--text-light);
+      line-height: 1.6;
+    }
+
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { color: var(--primary-hover); text-decoration: underline; }
+
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 20px 64px;
+    }
+
+    .back {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.95rem;
+      margin-bottom: 24px;
+    }
+
+    header h1 { font-size: 1.7rem; margin: 0 0 4px; }
+    header .tagline { color: var(--text-muted); margin: 0 0 24px; max-width: 760px; }
+
+    section {
+      background: var(--bg-glass);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--card-radius);
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+
+    section h2 { font-size: 1.15rem; margin: 0 0 12px; color: var(--secondary); }
+    section > p { max-width: 760px; }
+    section p:first-of-type { margin-top: 0; }
+    .muted { color: var(--text-muted); font-size: 0.9rem; }
+
+    /* ============ stats row ============ */
+    .stats { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 20px; }
+    .stat {
+      flex: 1 1 140px;
+      background: var(--bg-glass);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 12px 16px;
+      text-align: center;
+    }
+    .stat .num { display: block; font-size: 1.4rem; font-weight: 700; color: var(--primary-hover); }
+    .stat.bad .num { color: var(--gap); }
+    .stat .label { font-size: 0.8rem; color: var(--text-muted); }
+
+    /* ============ how to help ============ */
+    .ways { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 16px 0 20px; }
+    .way {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .way strong { color: var(--primary-hover); display: block; margin-bottom: 4px; }
+    .way p { margin: 0; font-size: 0.9rem; color: var(--text-muted); }
+
+    .cta-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    .cta {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 10px 18px; border-radius: 22px;
+      font-size: 14px; font-weight: 700; text-decoration: none;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .cta:hover { transform: translateY(-2px); text-decoration: none; }
+    .cta.email {
+      background: rgba(30, 144, 255, 0.9); color: #fff;
+      box-shadow: 0 2px 8px rgba(30, 144, 255, 0.3);
+    }
+    .cta.email:hover { background: rgba(30, 144, 255, 1); box-shadow: 0 4px 12px rgba(30, 144, 255, 0.5); color: #fff; }
+    .cta.donate {
+      background: linear-gradient(135deg, #ff813f 0%, #ffdd00 100%); color: #000;
+      box-shadow: 0 2px 8px rgba(255, 129, 63, 0.3);
+    }
+    .cta.donate:hover { box-shadow: 0 4px 12px rgba(255, 129, 63, 0.5); color: #000; }
+
+    /* ============ legend ============ */
+    .legend { display: flex; gap: 18px; margin: 8px 0 14px; font-size: 11.5px; color: var(--text-muted); flex-wrap: wrap; align-items: center; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i { width: 16px; height: 9px; border-radius: 2.5px; display: inline-block; }
+    .sw-have { background: var(--have); }
+    .sw-have-old { background: var(--have-old); }
+    .sw-gap { background: repeating-linear-gradient(-45deg, rgba(255,92,92,.75) 0 3px, rgba(255,92,92,.15) 3px 6px); }
+    .sw-hole { background: repeating-linear-gradient(-45deg, rgba(255,255,255,.28) 0 2px, transparent 2px 6px); }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--hairline);
+      border-radius: var(--card-radius);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55);
+      overflow: hidden;
+    }
+
+    /* ============ shared tooltip ============ */
+    #tip {
+      position: fixed; z-index: 50; display: none;
+      background: rgba(8, 12, 16, 0.97);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 10px;
+      padding: 8px 11px;
+      font-size: 11.5px; line-height: 1.5;
+      max-width: 320px;
+      pointer-events: none;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+    }
+    #tip b { font-size: 12px; }
+    #tip .muted { color: var(--text-muted); }
+    #tip .miss { color: var(--gap); font-weight: 600; }
+    #tip .link { color: var(--primary-hover); }
+
+    /* ============ most wanted ============ */
+    .tldr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    .tldr-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--hairline);
+      border-radius: 12px;
+      padding: 14px 16px 12px;
+      line-height: 1.5;
+      position: relative; overflow: hidden;
+    }
+    .tldr-card::before {
+      content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+      background: var(--warn);
+    }
+    .tldr-card.rank1::before { background: var(--gap); }
+    .tldr-years { font-size: 19px; font-weight: 800; letter-spacing: 0.01em; }
+    .tldr-mag { font-size: 12px; font-weight: 700; color: var(--warn); margin: 1px 0 4px; }
+    .tldr-card.rank1 .tldr-mag { color: var(--gap); }
+    .tldr-desc { font-size: 11.5px; color: var(--text-muted); }
+    .copy-btn {
+      float: right; background: rgba(255,255,255,0.07); color: var(--text-light);
+      border: 1px solid var(--hairline); border-radius: 8px;
+      padding: 5px 11px; font-size: 12px; cursor: pointer;
+    }
+    .copy-btn:hover { background: rgba(255,255,255,0.13); }
+
+    /* ============ atlas ============ */
+    .atlas-wrap { position: relative; }
+    #atlasSvg { display: block; width: 100%; height: auto; background:
+      radial-gradient(ellipse at 42% 40%, #101922 0%, #0a0e12 75%); }
+    .ext { stroke-width: 0.35; cursor: pointer; transition: fill 0.15s; }
+    .ext.have { fill: rgba(0, 212, 170, 0.30); stroke: rgba(0, 212, 170, 0.9); }
+    .ext.have.old { fill: rgba(53, 181, 201, 0.30); stroke: rgba(53, 181, 201, 0.95); }
+    .ext.gap { fill: url(#hatchRed); stroke: rgba(255, 92, 92, 0.85); }
+    .ext.off { fill: transparent; stroke: rgba(255, 255, 255, 0.13); cursor: default; }
+    .ext.hole { fill: rgba(255, 179, 71, 0.05); stroke: rgba(255, 179, 71, 0.55); stroke-dasharray: 3 3; cursor: help; }
+    .ext.hidden { fill: none; stroke: none; pointer-events: none; }
+    .ext:hover { stroke-width: 1; }
+    .ext.off:hover { stroke-width: 0.35; }
+
+    .atlas-hud {
+      position: absolute; top: 12px; left: 14px;
+      background: var(--bg-glass); backdrop-filter: blur(10px);
+      border: 1px solid var(--hairline); border-radius: 12px;
+      padding: 10px 14px; font-size: 12px; line-height: 1.55;
+      max-width: 300px; pointer-events: none;
+    }
+    .atlas-hud .hud-date { font-size: 17px; font-weight: 800; }
+    .atlas-hud .hud-stats { color: var(--text-muted); font-size: 11.5px; }
+    .atlas-hud .hud-stats b.h { color: var(--have); }
+    .atlas-hud .hud-stats b.g { color: var(--gap); }
+
+    .atlas-controls {
+      display: flex; align-items: center; gap: 16px;
+      padding: 14px 18px;
+      border-top: 1px solid var(--hairline);
+    }
+    .btn-nav, .btn-play {
+      width: 38px; height: 38px; border-radius: 50%;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid var(--hairline);
+      color: white; font-size: 15px; cursor: pointer;
+      display: grid; place-items: center; flex: 0 0 auto;
+    }
+    .btn-play { border: none; background: linear-gradient(135deg, var(--primary) 0%, var(--have) 100%); }
+    .scrub { position: relative; flex: 1; height: 40px; cursor: pointer; touch-action: none; }
+    .scrub-track { position: absolute; top: 17px; left: 0; right: 0; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.16); }
+    .scrub-handle {
+      position: absolute; top: 20px; width: 18px; height: 18px; border-radius: 50%;
+      background: #fff; transform: translate(-50%, -50%);
+      box-shadow: 0 0 0 4px rgba(30, 144, 255, 0.45);
+      pointer-events: none;
+    }
+    .scrub .tick { position: absolute; top: 28px; font-size: 9px; color: var(--text-faint); transform: translateX(-50%); font-weight: 600; }
+
+    /* ============ inventory shelf ============ */
+    .shelf-controls {
+      display: flex; gap: 14px; align-items: center;
+      padding: 12px 16px; border-bottom: 1px solid var(--hairline);
+      font-size: 12px; color: var(--text-muted); flex-wrap: wrap;
+    }
+    .shelf-controls select, .shelf-controls input[type=search] {
+      background: rgba(255,255,255,0.07); color: var(--text-light);
+      border: 1px solid var(--hairline); border-radius: 8px;
+      padding: 5px 9px; font-size: 12px; outline: none;
+    }
+    .shelf-controls button {
+      background: rgba(255,255,255,0.07); color: var(--text-light);
+      border: 1px solid var(--hairline); border-radius: 8px;
+      padding: 5px 11px; font-size: 12px; cursor: pointer;
+    }
+    .shelf-controls button:hover { background: rgba(255,255,255,0.13); }
+
+    .shelf-scroll { overflow-x: auto; }
+    .shelf-inner { position: relative; min-width: fit-content; }
+
+    .axis-row {
+      position: sticky; top: 0; z-index: 6;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--hairline);
+      height: 26px;
+    }
+    .axis-tick {
+      position: absolute; top: 0; bottom: 0;
+      border-left: 1px solid rgba(255,255,255,0.10);
+      font-size: 9.5px; color: var(--text-faint);
+      padding: 6px 0 0 4px; font-weight: 600;
+    }
+
+    .grp-header {
+      display: flex; align-items: center;
+      cursor: pointer; user-select: none;
+      border-top: 1px solid var(--hairline);
+      background: rgba(255,255,255,0.025);
+    }
+    .grp-header:hover { background: rgba(255,255,255,0.055); }
+    .lane-label {
+      flex: 0 0 240px; width: 240px;
+      padding: 0 10px 0 14px;
+      font-size: 12px; display: flex; align-items: center; gap: 8px;
+      position: sticky; left: 0; z-index: 4;
+      background: inherit; height: 100%;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .grp-header .lane-label { font-weight: 700; background: #131a21; }
+    .grp-header { height: 34px; }
+    .chev { display: inline-block; transition: transform 0.15s; color: var(--text-faint); font-size: 10px; }
+    .grp.open .chev { transform: rotate(90deg); }
+    .grp-count { font-weight: 400; font-size: 10.5px; color: var(--text-muted); margin-left: auto; padding-left: 8px; }
+    .grp-count .m { color: var(--gap); font-weight: 700; }
+    .grp-count .ok { color: var(--have); font-weight: 700; }
+
+    .lane { display: flex; align-items: center; height: 26px; }
+    .lane .lane-label { background: var(--bg-card); color: var(--text-muted); font-size: 11.5px; padding-left: 30px; }
+    .lane.modern .lane-label { color: rgba(255,255,255,0.85); }
+    .lane-track { position: relative; height: 100%; flex: 0 0 auto; }
+    .grp-track { position: relative; height: 100%; flex: 0 0 auto; }
+
+    .seg {
+      position: absolute; top: 8px; height: 10px;
+      border-radius: 3px;
+      background: var(--have);
+      min-width: 2px;
+      cursor: pointer;
+    }
+    .seg.old { background: var(--have-old); }
+    .seg:hover { top: 6px; height: 14px; box-shadow: 0 0 0 1.5px #fff; z-index: 3; }
+    .seg.union { cursor: default; top: 11px; height: 12px; }
+    .seg.union:hover { box-shadow: none; top: 11px; height: 12px; }
+
+    .gapseg {
+      position: absolute; top: 8px; height: 10px; border-radius: 3px;
+      background: repeating-linear-gradient(-45deg, rgba(255,92,92,.7) 0 3px, rgba(255,92,92,.14) 3px 6px);
+      cursor: help; min-width: 2px;
+    }
+    .gapseg.union { top: 11px; height: 12px; }
+    .holeseg {
+      position: absolute; top: 12px; height: 10px; border-radius: 3px;
+      background: repeating-linear-gradient(-45deg, rgba(255,255,255,.22) 0 2px, transparent 2px 6px);
+      cursor: help;
+    }
+    .grp-body { display: none; }
+    .grp.open .grp-body { display: block; }
+    .decade-grid {
+      position: absolute; top: 0; bottom: 0; border-left: 1px solid rgba(255,255,255,0.045);
+      pointer-events: none;
+    }
+
+    footer {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-top: 32px;
+    }
+
+    @media (max-width: 640px) {
+      .wrap { padding: 20px 12px 48px; }
+      section { padding: 16px; }
+      .legend { gap: 12px; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <a class="back" href="index.html">← Back to the map</a>
+
+    <header>
+      <h1>🧩 Help Fill the Gaps</h1>
+      <p class="tagline">
+        archive.aero holds thousands of historical chart editions — but we know of hundreds more that
+        were published and haven't been found yet. This page is the honest inventory: what the archive
+        has, what's missing, and how you can help.
+      </p>
+    </header>
+
+    <div class="stats">
+      <div class="stat"><span class="num" id="statCharts">7,457</span><span class="label">editions in the archive</span></div>
+      <div class="stat bad"><span class="num" id="statMissing">~2,000</span><span class="label">known missing editions</span></div>
+      <div class="stat"><span class="num" id="statAreas">58</span><span class="label">chart areas tracked</span></div>
+      <div class="stat"><span class="num">1928 →</span><span class="label">years covered</span></div>
+    </div>
+
+    <section id="help">
+      <h2>How you can help</h2>
+      <p>
+        Old sectionals turn up in hangars, flight bags, estate sales, and library basements all the
+        time — most people don't realize anyone wants them. If any of the charts below are hiding in
+        your attic, they can fill a hole in the historical record for an entire region.
+      </p>
+      <div class="ways">
+        <div class="way">
+          <strong>📜 Have old charts?</strong>
+          <p>Any pre-2000 sectional is worth a look, especially from the eras listed below. Even a
+            phone photo of the legend panel is enough to identify the edition — email one over and
+            we'll figure out the best way to get it scanned.</p>
+        </div>
+        <div class="way">
+          <strong>🔎 Know a collection?</strong>
+          <p>A museum, university library, flying club, or private collector with a drawer of old
+            charts — or an online scan we've missed. A pointer to where charts live is just as
+            valuable as the charts themselves.</p>
+        </div>
+        <div class="way">
+          <strong>☕ Chip in</strong>
+          <p>The site is free and stays that way. Donations go toward hosting and toward scanning
+            and shipping costs when charts are found.</p>
+        </div>
+      </div>
+      <div class="cta-row">
+        <a class="cta email" href="mailto:ryanhemenway@me.com?subject=Charts%20for%20archive.aero">✉️ ryanhemenway@me.com</a>
+        <a class="cta donate" href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener">☕ Support the project</a>
+      </div>
+    </section>
+
+    <section>
+      <button class="copy-btn" id="copyWanted">Copy the detailed list</button>
+      <h2>Most wanted</h2>
+      <p class="muted" style="margin-top:0">The short version of what the archive needs, biggest holes
+        first. If you have charts from any of these eras — or know a collection that does —
+        <a href="#help">get in touch</a>.</p>
+      <div class="tldr-grid" id="tldrGrid"></div>
+    </section>
+
+    <section>
+      <h2>When and where the gaps are</h2>
+      <p class="muted" style="margin-top:0">
+        Scrub the timeline and the country re-tiles itself — 87 small charts in 1945, 37 big ones
+        today. Filled regions are in the archive (click any to open its source scan), red hatch means
+        a known missing edition at that date, and a faint dashed outline means the chart existed but
+        nothing is archived.
+      </p>
+      <div class="legend">
+        <span><i class="sw-have"></i> in archive — modern series (click for source)</span>
+        <span><i class="sw-have-old"></i> in archive — early series (1930s–60s)</span>
+        <span><i class="sw-gap"></i> known missing editions</span>
+        <span><i class="sw-hole"></i> nothing covering this area yet</span>
+      </div>
+      <div class="card atlas-wrap">
+        <svg id="atlasSvg" viewBox="0 0 1000 600" preserveAspectRatio="xMidYMid meet" role="img"
+          aria-label="Map of the United States showing chart coverage at the selected date">
+          <defs>
+            <pattern id="hatchRed" width="5" height="5" patternTransform="rotate(-45)" patternUnits="userSpaceOnUse">
+              <rect width="5" height="5" fill="rgba(255,92,92,0.10)"/>
+              <rect width="2.2" height="5" fill="rgba(255,92,92,0.55)"/>
+            </pattern>
+          </defs>
+          <g id="atlasG"></g>
+        </svg>
+        <div class="atlas-hud">
+          <div class="hud-date" id="hudDate">—</div>
+          <div class="hud-stats" id="hudStats">—</div>
+        </div>
+        <div class="atlas-controls">
+          <button class="btn-nav" id="atStepB" aria-label="Back one year">←</button>
+          <button class="btn-play" id="atPlay" aria-label="Play timeline">▶</button>
+          <button class="btn-nav" id="atStepF" aria-label="Forward one year">→</button>
+          <div class="scrub" id="atScrub">
+            <div class="scrub-track"></div>
+            <div class="scrub-handle" id="atHandle"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>The full inventory, chart by chart</h2>
+      <p class="muted" style="margin-top:0">
+        One row per modern sectional, with every chart that ever covered that area grouped under it —
+        old Albany, Boston, and New York charts live under today's <b>New York</b> sectional, matched
+        spatially from the chart extents. The collapsed row shows the combined coverage; expand it to
+        see each historical chart as its own lane. Teal segments are archived scans (click one to open
+        the source), red hatch marks known missing editions, and faint hatch means no chart of that
+        area is in the archive at all. Sort by “most missing” to turn it into a to-do list.
+      </p>
+      <div class="legend">
+        <span><i class="sw-have"></i> in archive — modern series (click for source)</span>
+        <span><i class="sw-have-old"></i> in archive — early series (1930s–60s)</span>
+        <span><i class="sw-gap"></i> known missing editions</span>
+        <span><i class="sw-hole"></i> nothing covering this area yet</span>
+      </div>
+      <div class="card">
+        <div class="shelf-controls">
+          <input type="search" id="shelfSearch" placeholder="Filter charts…" aria-label="Filter charts" />
+          <select id="shelfSort" aria-label="Sort order">
+            <option value="name">Sort: A → Z</option>
+            <option value="missing">Sort: most missing first</option>
+            <option value="charts">Sort: most charts first</option>
+          </select>
+          <button id="expandAll">Expand all</button>
+          <button id="collapseAll">Collapse all</button>
+          <span id="shelfStats" style="margin-left:auto"></span>
+        </div>
+        <div class="shelf-scroll">
+          <div class="shelf-inner" id="shelf"></div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:12px" id="genNote">
+        “Known missing” counts editions we can prove existed — from edition numbers on neighboring
+        charts and published FAA edition schedules. The real number is likely higher.
+      </p>
+    </section>
+
+    <footer>
+      <a href="index.html">archive.aero</a> · <a href="about.html">About &amp; How It Works</a> ·
+      <a href="sources.html">Sources &amp; Attribution</a> · Historical Aviation Charts
+    </footer>
+  </div>
+
+  <div id="tip"></div>
+
+  <script>
+    const T0 = Date.UTC(1928, 0, 1), T1 = Date.UTC(2027, 0, 1);
+    const YR = 365.25 * 86400000;
+    const PX_PER_YEAR = 11.5;
+    const LABEL_W = 240;
+    const TRACK_W = Math.round((T1 - T0) / YR * PX_PER_YEAR);
+    const P = t => (t - T0) / (T1 - T0);           // 0..1
+    const X = t => P(t) * TRACK_W;                  // px in shelf tracks
+    const fmt = t => new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+    const parse = s => Date.parse(s + 'T00:00:00Z');
+    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+    // old-era rows carry LOC catalog numbers in the edition column — only
+    // present plausible edition numbers as "edition N"
+    const edLabel = ed => (ed && /^\d+$/.test(ed) && +ed < 150) ? `edition ${ed}`
+      : (ed && !/^\d+$/.test(ed) && ed !== 'Unknown') ? esc(ed) : 'archived scan';
+
+    /* ---------- tooltip ---------- */
+    const tip = document.getElementById('tip');
+    function showTip(html, ev) {
+      tip.innerHTML = html;
+      tip.style.display = 'block';
+      moveTip(ev);
+    }
+    function moveTip(ev) {
+      const pad = 14;
+      let x = ev.clientX + pad, y = ev.clientY + pad;
+      const r = tip.getBoundingClientRect();
+      if (x + r.width > innerWidth - 8) x = ev.clientX - r.width - pad;
+      if (y + r.height > innerHeight - 8) y = ev.clientY - r.height - pad;
+      tip.style.left = x + 'px'; tip.style.top = y + 'px';
+    }
+    function hideTip() { tip.style.display = 'none'; }
+
+    /* ---------- data prep ---------- */
+    function prep(data) {
+      const locs = data.locations;
+      for (const [name, L] of Object.entries(locs)) {
+        L.name = name;
+        L.segs = L.charts.map((c, i) => {
+          const t0 = parse(c.d);
+          let t1 = c.e ? parse(c.e) : (L.charts[i + 1] ? parse(L.charts[i + 1].d) : t0 + 182 * 86400000);
+          if (t1 <= t0) t1 = t0 + 30 * 86400000;
+          return { t0, t1, ed: c.ed, url: c.url, f: c.f, d: c.d };
+        });
+        L.gapSegs = L.gaps.map(g => ({ t0: parse(g.from), t1: parse(g.to), days: g.days, est: g.est }));
+        L.first = L.segs[0].t0;
+        L.last = L.segs[L.segs.length - 1].t1;
+        L.missCount = Math.max(L.missing_eds.length,
+          L.gaps.reduce((a, g) => a + (g.est || 1), 0));
+      }
+      // group objects
+      const groups = data.groups.map(g => {
+        const members = [
+          ...g.old.map(n => locs[n]).sort((a, b) => a.first - b.first),
+          ...g.modern.map(n => locs[n]).sort((a, b) => a.first - b.first),
+        ].filter(Boolean);
+        const union = mergeIntervals(members.flatMap(m => m.segs.map(s => [s.t0, s.t1])));
+        const gaps = subtract(mergeIntervals(members.flatMap(m => m.gapSegs.map(s => [s.t0, s.t1]))), union);
+        const first = Math.min(...members.map(m => m.first));
+        const last = Math.max(...members.map(m => m.last));
+        // uncovered stretches inside the group's lifetime, minus known gaps
+        const holes = subtract(subtract([[first, last]], union), gaps)
+          .filter(([a, b]) => b - a > YR * 0.75);
+        const nCharts = members.reduce((a, m) => a + m.segs.length, 0);
+        const nMiss = members.reduce((a, m) => a + m.missCount, 0);
+        return { ...g, members, union, gaps, holes, first, last, nCharts, nMiss };
+      });
+      return { locs, groups };
+    }
+
+    function mergeIntervals(iv) {
+      iv = iv.slice().sort((a, b) => a[0] - b[0]);
+      const out = [];
+      for (const [a, b] of iv) {
+        if (out.length && a <= out[out.length - 1][1]) {
+          out[out.length - 1][1] = Math.max(out[out.length - 1][1], b);
+        } else out.push([a, b]);
+      }
+      return out;
+    }
+    // A minus B, both sorted merged interval lists
+    function subtract(A, B) {
+      const out = [];
+      for (let [a, b] of A) {
+        let cur = a;
+        for (const [c, d] of B) {
+          if (d <= cur || c >= b) continue;
+          if (c > cur) out.push([cur, c]);
+          cur = Math.max(cur, d);
+        }
+        if (cur < b) out.push([cur, b]);
+      }
+      return out;
+    }
+
+    /* ================= header stats ================= */
+    function fillStats(model) {
+      let totC = 0, totM = 0;
+      for (const g of model.groups) { totC += g.nCharts; totM += g.nMiss; }
+      document.getElementById('statCharts').textContent = totC.toLocaleString();
+      document.getElementById('statMissing').textContent = '~' + totM.toLocaleString();
+      document.getElementById('statAreas').textContent = model.groups.length;
+    }
+
+    /* ================= inventory shelf ================= */
+    function buildShelf(model) {
+      const shelf = document.getElementById('shelf');
+      shelf.innerHTML = '';
+
+      // sticky year axis
+      const axis = document.createElement('div');
+      axis.className = 'axis-row';
+      axis.style.width = (LABEL_W + TRACK_W) + 'px';
+      for (let y = 1930; y <= 2026; y += 10) {
+        const el = document.createElement('div');
+        el.className = 'axis-tick';
+        el.style.left = (LABEL_W + X(Date.UTC(y, 0, 1))) + 'px';
+        el.textContent = y;
+        axis.appendChild(el);
+      }
+      shelf.appendChild(axis);
+
+      const sort = document.getElementById('shelfSort').value;
+      const q = document.getElementById('shelfSearch').value.trim().toLowerCase();
+      let groups = model.groups.slice();
+      if (sort === 'missing') groups.sort((a, b) => b.nMiss - a.nMiss || a.name.localeCompare(b.name));
+      else if (sort === 'charts') groups.sort((a, b) => b.nCharts - a.nCharts);
+      else groups.sort((a, b) => a.name.localeCompare(b.name));
+      if (q) groups = groups.filter(g =>
+        g.name.toLowerCase().includes(q) || g.members.some(m => m.name.toLowerCase().includes(q)));
+
+      let totC = 0, totM = 0;
+      for (const g of groups) { totC += g.nCharts; totM += g.nMiss; }
+      document.getElementById('shelfStats').innerHTML =
+        `${groups.length} charts · <b style="color:var(--have)">${totC.toLocaleString()} in archive</b> · <b style="color:var(--gap)">~${totM.toLocaleString()} known missing</b>`;
+
+      const decades = [];
+      for (let y = 1930; y <= 2026; y += 10) decades.push(X(Date.UTC(y, 0, 1)));
+
+      for (const g of groups) {
+        const grp = document.createElement('div');
+        grp.className = 'grp';
+
+        const head = document.createElement('div');
+        head.className = 'grp-header';
+        head.style.width = (LABEL_W + TRACK_W) + 'px';
+        const lbl = document.createElement('div');
+        lbl.className = 'lane-label';
+        lbl.innerHTML = `<span class="chev">▶</span> ${esc(g.name)}
+          <span class="grp-count"><span class="ok">${g.nCharts}</span>${g.nMiss ? ` · <span class="m">~${g.nMiss} missing</span>` : ''}</span>`;
+        head.appendChild(lbl);
+
+        const tr = document.createElement('div');
+        tr.className = 'grp-track';
+        tr.style.width = TRACK_W + 'px';
+        for (const d of decades) {
+          const dg = document.createElement('div');
+          dg.className = 'decade-grid'; dg.style.left = d + 'px';
+          tr.appendChild(dg);
+        }
+        for (const [a, b] of g.union) {
+          const s = document.createElement('div');
+          s.className = 'seg union';
+          s.style.left = X(a) + 'px'; s.style.width = Math.max(2, X(b) - X(a)) + 'px';
+          tr.appendChild(s);
+        }
+        for (const [a, b] of g.gaps) {
+          const s = document.createElement('div');
+          s.className = 'gapseg union';
+          s.style.left = X(a) + 'px'; s.style.width = Math.max(2, X(b) - X(a)) + 'px';
+          s.addEventListener('mousemove', ev => showTip(
+            `<b>${esc(g.name)}</b><br><span class="miss">Known missing editions</span><br><span class="muted">${fmt(a)} – ${fmt(b)}</span>`, ev));
+          s.addEventListener('mouseleave', hideTip);
+          tr.appendChild(s);
+        }
+        for (const [a, b] of g.holes) {
+          const s = document.createElement('div');
+          s.className = 'holeseg';
+          s.style.left = X(a) + 'px'; s.style.width = Math.max(2, X(b) - X(a)) + 'px';
+          s.addEventListener('mousemove', ev => showTip(
+            `<b>${esc(g.name)}</b><br>No chart of this area in the archive<br><span class="muted">${fmt(a)} – ${fmt(b)}</span>`, ev));
+          s.addEventListener('mouseleave', hideTip);
+          tr.appendChild(s);
+        }
+        head.appendChild(tr);
+        head.addEventListener('click', () => grp.classList.toggle('open'));
+        grp.appendChild(head);
+
+        const body = document.createElement('div');
+        body.className = 'grp-body';
+        for (const m of g.members) body.appendChild(laneFor(m, decades));
+        grp.appendChild(body);
+        shelf.appendChild(grp);
+      }
+    }
+
+    function laneFor(L, decades) {
+      const lane = document.createElement('div');
+      lane.className = 'lane ' + L.era;
+      lane.style.width = (LABEL_W + TRACK_W) + 'px';
+      const lbl = document.createElement('div');
+      lbl.className = 'lane-label';
+      lbl.textContent = (L.era === 'old' ? '· ' : '◆ ') + L.name;
+      lbl.title = L.name;
+      lane.appendChild(lbl);
+      const tr = document.createElement('div');
+      tr.className = 'lane-track';
+      tr.style.width = TRACK_W + 'px';
+      for (const d of decades) {
+        const dg = document.createElement('div');
+        dg.className = 'decade-grid'; dg.style.left = d + 'px';
+        tr.appendChild(dg);
+      }
+      for (const s of L.segs) {
+        const el = document.createElement('a');
+        el.className = 'seg' + (L.era === 'old' ? ' old' : '');
+        el.href = s.url; el.target = '_blank'; el.rel = 'noopener';
+        el.style.left = X(s.t0) + 'px';
+        el.style.width = Math.max(2.5, X(s.t1) - X(s.t0) - 1) + 'px';
+        el.addEventListener('mousemove', ev => showTip(
+          `<b>${esc(L.name)}</b> — ${edLabel(s.ed)}<br><span class="muted">${fmt(s.t0)}${s.f.includes('L') ? ' · latest in collection' : ''}</span><br><span class="link">click to open source scan ↗</span>`, ev));
+        el.addEventListener('mouseleave', hideTip);
+        tr.appendChild(el);
+      }
+      for (const gp of L.gapSegs) {
+        const el = document.createElement('div');
+        el.className = 'gapseg';
+        el.style.left = X(gp.t0) + 'px';
+        el.style.width = Math.max(2.5, X(gp.t1) - X(gp.t0) - 1) + 'px';
+        el.addEventListener('mousemove', ev => showTip(
+          `<b>${esc(L.name)}</b><br><span class="miss">~${gp.est || '?'} edition${gp.est === 1 ? '' : 's'} missing</span><br><span class="muted">${fmt(gp.t0)} – ${fmt(gp.t1)} (${gp.days} days)</span>`, ev));
+        el.addEventListener('mouseleave', hideTip);
+        tr.appendChild(el);
+      }
+      lane.appendChild(tr);
+      return lane;
+    }
+
+    /* ================= atlas ================= */
+    // composite "atlas" projection: CONUS dominant, AK/HI/Pacific insets.
+    // Each panel is an equirect patch with x compressed by cos(mid lat).
+    const PANELS = [
+      { name: 'Marianas', lon: [140, 150], lat: [10, 23], rect: [545, 448, 92, 142] },
+      { name: 'Am. Samoa', lon: [-174, -167], lat: [-17, -11], rect: [452, 448, 80, 100] },
+      { name: 'Hawaiʻi', lon: [-163, -151], lat: [16, 25], rect: [250, 435, 190, 152] },
+      { name: 'Alaska · NW Canada', lon: [-196, -126.5], lat: [47, 74], rect: [6, 128, 282, 300] },
+      { name: '', lon: [-128, -57], lat: [22, 52], rect: [300, 8, 694, 424] },  // CONUS
+    ];
+    for (const p of PANELS) {
+      const mid = (p.lat[0] + p.lat[1]) / 2 * Math.PI / 180;
+      p.cos = Math.cos(Math.abs(mid));
+      const dw = (p.lon[1] - p.lon[0]) * p.cos, dh = p.lat[1] - p.lat[0];
+      p.s = Math.min(p.rect[2] / dw, p.rect[3] / dh);
+      p.ox = p.rect[0] + (p.rect[2] - dw * p.s) / 2;
+      p.oy = p.rect[1] + (p.rect[3] - dh * p.s) / 2;
+    }
+    function panelFor(lon, lat) {
+      for (const p of PANELS)
+        if (lon >= p.lon[0] && lon <= p.lon[1] && lat >= p.lat[0] && lat <= p.lat[1]) return p;
+      return PANELS[PANELS.length - 1];
+    }
+    // E-hemisphere longitudes: Marianas (lon ≤ 150) stay raw in their own
+    // panel; far Aleutians (lon > 150) unwrap across the antimeridian
+    const unwrap = lon => (lon > 150 ? lon - 360 : lon);
+    function proj([lon, lat], panel) {
+      lon = unwrap(lon);
+      const p = panel || panelFor(lon, lat);
+      const x = p.ox + (lon - p.lon[0]) * p.cos * p.s;
+      const y = p.oy + (p.lat[1] - lat) * p.s;
+      return [x.toFixed(1), y.toFixed(1)];
+    }
+    function ringPanel(ring) {
+      return panelFor(unwrap(ring[0][0]), ring[0][1]);
+    }
+
+    function buildAtlas(model, rings) {
+      const g = document.getElementById('atlasG');
+      // inset frames + labels
+      for (const p of PANELS.slice(0, 4)) {
+        const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        const [x, y, w, h] = p.rect;
+        r.setAttribute('x', x - 4); r.setAttribute('y', y - 4);
+        r.setAttribute('width', w + 8); r.setAttribute('height', h + 8);
+        r.setAttribute('rx', 6);
+        r.setAttribute('fill', 'none');
+        r.setAttribute('stroke', 'rgba(255,255,255,0.10)');
+        g.appendChild(r);
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        t.setAttribute('x', x + 2); t.setAttribute('y', y + h - 4);
+        t.setAttribute('fill', 'rgba(255,255,255,0.30)');
+        t.setAttribute('font-size', '10');
+        t.setAttribute('font-weight', '600');
+        t.textContent = p.name;
+        g.appendChild(t);
+      }
+      const hudDate = document.getElementById('hudDate');
+      const hudStats = document.getElementById('hudStats');
+      const polys = [];   // {el, L}
+      for (const L of Object.values(model.locs)) {
+        if (!L.ref || !rings[L.ref]) continue;
+        const d = rings[L.ref].map(ring => {
+          const panel = ringPanel(ring);
+          return 'M' + ring.map(p => proj(p, panel).join(',')).join('L') + 'Z';
+        }).join(' ');
+        const el = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        el.setAttribute('d', d);
+        el.setAttribute('class', 'ext off' + (L.era === 'old' ? ' old' : ''));
+        el.addEventListener('mousemove', ev => {
+          const st = stateAt(L, cur);
+          let body = st.kind === 'have'
+            ? `${edLabel(st.seg.ed)} · ${fmt(st.seg.t0)}<br><span class="link">click to open source scan ↗</span>`
+            : st.kind === 'gap'
+              ? `<span class="miss">missing edition${st.gap.est > 1 ? 's (~' + st.gap.est + ')' : ''}</span> · ${fmt(st.gap.t0)} – ${fmt(st.gap.t1)}`
+              : st.kind === 'hole'
+                ? `<span style="color:var(--warn)">chart existed — nothing archived for this date</span>`
+                : `<span class="muted">nothing archived for this date</span>`;
+          showTip(`<b>${esc(L.name)}</b><br>${body}`, ev);
+        });
+        el.addEventListener('mouseleave', hideTip);
+        el.addEventListener('click', () => {
+          const st = stateAt(L, cur);
+          if (st.kind === 'have') window.open(st.seg.url, '_blank', 'noopener');
+        });
+        g.appendChild(el);
+        polys.push({ el, L });
+      }
+
+      const PAD = 3 * YR;   // ghost-outline grace around a chart's lifetime
+      function stateAt(L, t) {
+        for (const s of L.segs) if (t >= s.t0 && t < s.t1) return { kind: 'have', seg: s };
+        for (const gp of L.gapSegs) if (t >= gp.t0 && t < gp.t1) return { kind: 'gap', gap: gp };
+        if (t >= L.first && t < L.last) return { kind: 'hole' };
+        if (t >= L.first - PAD && t < L.last + PAD) return { kind: 'off' };
+        return { kind: 'hidden' };
+      }
+
+      let cur = Date.UTC(1946, 5, 1);
+      function render() {
+        let have = 0, gap = 0, hole = 0;
+        for (const { el, L } of polys) {
+          const st = stateAt(L, cur);
+          el.setAttribute('class', 'ext ' + st.kind + (L.era === 'old' ? ' old' : ''));
+          if (st.kind === 'have') have++;
+          if (st.kind === 'gap') gap++;
+          if (st.kind === 'hole') hole++;
+        }
+        hudDate.textContent = fmt(cur);
+        hudStats.innerHTML = `<b class="h">${have}</b> charts in archive` +
+          (gap ? ` · <b class="g">${gap}</b> known missing` : '') +
+          (hole ? ` · <b style="color:var(--warn)">${hole}</b> unarchived` : '') +
+          `<br><span style="color:var(--text-faint)">click a region to open its scan</span>`;
+        handle.style.left = (P(cur) * 100) + '%';
+      }
+
+      // scrubber
+      const scrub = document.getElementById('atScrub');
+      const handle = document.getElementById('atHandle');
+      for (let y = 1930; y <= 2026; y += 10) {
+        const el = document.createElement('div');
+        el.className = 'tick';
+        el.style.left = (P(Date.UTC(y, 0, 1)) * 100) + '%';
+        el.textContent = y;
+        scrub.appendChild(el);
+      }
+      let dragging = false;
+      const setFromEvent = e => {
+        const r = scrub.getBoundingClientRect();
+        const p = Math.max(0, Math.min(1, ((e.touches?.[0]?.clientX ?? e.clientX) - r.left) / r.width));
+        cur = T0 + p * (T1 - T0);
+        stopPlay(); render();
+      };
+      scrub.addEventListener('mousedown', e => { dragging = true; setFromEvent(e); });
+      scrub.addEventListener('touchstart', e => { dragging = true; setFromEvent(e); }, { passive: true });
+      addEventListener('mousemove', e => dragging && setFromEvent(e));
+      addEventListener('touchmove', e => dragging && setFromEvent(e), { passive: true });
+      addEventListener('mouseup', () => dragging = false);
+      addEventListener('touchend', () => dragging = false);
+
+      // play + step
+      let timer = null;
+      const playBtn = document.getElementById('atPlay');
+      function stopPlay() { clearInterval(timer); timer = null; playBtn.textContent = '▶'; }
+      playBtn.addEventListener('click', () => {
+        if (timer) { stopPlay(); return; }
+        playBtn.textContent = '⏸';
+        if (cur > T1 - YR) cur = T0;
+        timer = setInterval(() => {
+          cur += YR / 6;                       // 2 months per tick
+          if (cur >= T1) { stopPlay(); cur = T1 - 1; }
+          render();
+        }, 50);
+      });
+      document.getElementById('atStepB').addEventListener('click', () => { stopPlay(); cur -= YR; render(); });
+      document.getElementById('atStepF').addEventListener('click', () => { stopPlay(); cur += YR; render(); });
+
+      render();
+    }
+
+    /* ================= most wanted ================= */
+    function buildTLDR(model) {
+      // Per calendar year: how many chart AREAS (groups) have nothing in the
+      // archive even though a chart covering that area existed. Group-level
+      // union is used, so the old→modern extent change can't distort it.
+      const Y0 = 1928, Y1 = 2026;
+      const perYear = [];
+      for (let y = Y0; y <= Y1; y++) {
+        const probes = [Date.UTC(y, 3, 1), Date.UTC(y, 9, 1)];
+        let active = 0, missing = 0;
+        for (const g of model.groups) {
+          if (g.last < Date.UTC(y, 0, 1) || g.first > Date.UTC(y + 1, 0, 1)) continue;
+          active++;
+          const covered = t => g.union.some(([a, b]) => t >= a && t < b);
+          if (!probes.some(covered)) missing++;
+        }
+        perYear.push({ y, active, missing });
+      }
+
+      // cluster contiguous bad years into eras
+      const eras = [];
+      let cur = null;
+      for (const p of perYear) {
+        const isBad = p.missing >= Math.max(3, 0.25 * p.active);
+        if (isBad) {
+          if (!cur) cur = { y0: p.y, y1: p.y, areaYears: 0, peak: 0, peakActive: 0 };
+          cur.y1 = p.y;
+          cur.areaYears += p.missing;
+          if (p.missing > cur.peak) { cur.peak = p.missing; cur.peakActive = p.active; }
+        } else if (cur) { eras.push(cur); cur = null; }
+      }
+      if (cur) eras.push(cur);
+
+      // magnitude: sectionals ran on roughly a 6-month cycle in both series
+      for (const e of eras) e.est = Math.max(10, Math.round(e.areaYears * 2 / 10) * 10);
+      eras.sort((a, b) => b.est - a.est);
+      const top = eras.slice(0, 5).filter(e => e.est >= 20);
+
+      const eraDesc = e => {
+        if (e.y0 >= 2004)
+          return 'Recent editions that were published but never captured before the FAA pages went offline.';
+        if (e.y1 <= 1971 && e.y1 - e.y0 <= 8)
+          return 'A hole in the middle of the old chart series — most charts of this period are missing a few editions in a row.';
+        if (e.y0 <= 1931)
+          return 'The very first sectionals. Few copies were printed and fewer survive.';
+        if (e.y0 >= 1965 || e.y1 >= 1990)
+          return 'The big one: between the end of the old chart series and dependable modern coverage, almost nothing is archived — for anywhere in the country.';
+        return 'Editions missing across many chart areas.';
+      };
+
+      document.getElementById('tldrGrid').innerHTML = top.map((e, i) => `
+        <div class="tldr-card${i === 0 ? ' rank1' : ''}">
+          <div class="tldr-years">${e.y0 === e.y1 ? e.y0 : `${e.y0} – ${e.y1}`}</div>
+          <div class="tldr-mag">~${e.est.toLocaleString()} editions · up to ${e.peak} of ${e.peakActive} chart areas</div>
+          <div class="tldr-desc">${eraDesc(e)}</div>
+        </div>`).join('');
+    }
+
+    // the copy button hands contributors the full per-chart detail
+    function wireCopyWanted(model) {
+      const items = Object.values(model.locs)
+        .filter(L => L.missCount > 0)
+        .sort((a, b) => b.missCount - a.missCount);
+      document.getElementById('copyWanted').addEventListener('click', async ev => {
+        const text = items.map(L =>
+          `${L.name} (${L.era} series): ` + (L.missing_eds.length
+            ? `missing editions ${L.missing_eds.join(', ')}`
+            : `~${L.missCount} missing editions`) +
+          (L.gaps.length ? ` — gaps: ${L.gaps.map(g => `${g.from}..${g.to}`).join(', ')}` : '')
+        ).join('\n');
+        await navigator.clipboard.writeText(text);
+        ev.target.textContent = 'Copied ✓';
+        setTimeout(() => ev.target.textContent = 'Copy the detailed list', 1500);
+      });
+    }
+
+    /* ---------- boot ---------- */
+    (async () => {
+      let data;
+      try {
+        const resp = await fetch('timeline_data.json');
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        data = await resp.json();
+      } catch (e) {
+        document.querySelector('.wrap').insertAdjacentHTML('afterbegin',
+          `<p style="color:var(--gap);font-weight:700">The chart inventory failed to load — please refresh, or <a href="mailto:ryanhemenway@me.com">let me know</a> if it keeps happening.</p>`);
+        return;
+      }
+      const model = prep(data);
+      fillStats(model);
+      buildTLDR(model);
+      buildAtlas(model, data.rings);
+      buildShelf(model);
+      document.getElementById('shelfSort').addEventListener('change', () => buildShelf(model));
+      document.getElementById('shelfSearch').addEventListener('input', () => buildShelf(model));
+      document.getElementById('expandAll').addEventListener('click', () =>
+        document.querySelectorAll('#shelf .grp').forEach(g => g.classList.add('open')));
+      document.getElementById('collapseAll').addEventListener('click', () =>
+        document.querySelectorAll('#shelf .grp').forEach(g => g.classList.remove('open')));
+      wireCopyWanted(model);
+      if (data.generated) {
+        document.getElementById('genNote').insertAdjacentHTML('beforeend',
+          ` Inventory last updated ${data.generated}.`);
+      }
+    })();
+  </script>
+</body>
+
+</html>
