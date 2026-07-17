@@ -1,103 +1,39 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
 
 # Virtual environments
+.venv/
 venv/
-ENV/
 env/
 
-# IDE
+# IDE / OS
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
 Thumbs.db
 
 # Secrets / local env
 .env
 .env.*
-*.env
 *.secrets
-secrets.json
 credentials.json
-google_api_key.txt
-gemini_api_key.txt
 
-# Project specific
-aligned/
-debug_sort.py
-1georef_toolv9.py
-output.csv
-master_dole.csv
-rawlinks/NARAlist.csv
-.gitignore
-.gitignore
-rawlinks/wayback_links.txt
-rawlinks/wayback_links2.txt
-htmldates.png
-master_dole.csv.backup
-batch_log_20260125_163702.txt
-master_dole/master_dole_Pivot.csv
-master_dole_add.csv
-1georef_toolv10.py
-early_master_dole.csv
-NARAlist.csv
-log.txt
-.gitignore
-.gitignore
-quantize_dates.py
-test_results.csv
-.gitignore
-master_dole_quantized_20260210_192507.csv
-timeline_gaps_quantized.html
-timeline_gaps.html
-.gitignore
-quantization_report.csv
-master_dole_quantized_20260213_224650.csv
-archive.aero-recording.json
-Trace-20260213T232549.json.gz
-archive.aero-recording_desktop.json
-airports_start_stop_latlon.csv
-early_master_dole.csv.bak
-early_master_dole.csv.bak
-foreflight-map.har
-archive.aero.har
-master_dole_combined.csv
-edition_check_results_gpt51.jsonl
-edition_check_results_redo_bad.jsonl
-edition_check_results_rerun_remaining.jsonl
-edition_check_results.jsonl
-master_dole_combined copy.csv
-master_dole_combined.csv.bak
-master_dole_scanned.csv
-master_dole_scanned.csv.bak
+# Separate projects / local tooling
 /geotiff2pmtiles
 /.claude
-master_dole_corrected.csv
-wasp_catalog.csv
+
+# Regenerable caches
 bounds_cache.json
-build_coverage.py
-unlogged_in_rawtiffs.csv
+
+# Proprietary catalog — never publish
+master_dole_v2.csv
+
+# Catalog-derived / undecided (delete a line to start tracking it)
+1georef_toolv10.py
+timeline_data.json
+worklists/data/

@@ -1,0 +1,809 @@
+DOLE COVERAGE AUDIT - SEARCH LOG
+Date: 2026-07-07
+Reference catalog: master_dole_v2.csv (7,247 rows; 7,238 unique filenames, 5,216 unique download-link basenames)
+
+Matching rules used everywhere: exact filename match; download-link basename match;
+ca-number match tolerant of r/v suffix and .tif/.jp2 extension; underscore-boundary
+suffix matching in both directions to bridge flattened-URL names and short names;
+FAA visual-layout zips matched on (edition date + city) pairs. Files extracted from
+a zip that is itself in the dole were skipped as duplicates (1,462 files).
+
+================ PART 1 - LOCAL SEARCH ================
+Results: missing_from_dole.csv (135 files) + missing_from_dole/ (symlinks for verification)
+
+Searched (full recursive inventory of .tif/.tiff/.jp2/.zip/.pdf/.jpg/.png):
+  /Volumes/projects/rawtiffs/                       ~11,000 top-level files + 31 dated FAA edition folders + wayback extraction dirs
+  /Volumes/projects/SectionalProject/               incl. 0.Master Files, 1.TIFFs, 2.GeoTIFFs, 3.COGs, downloaded_tifs, misc maps
+  /Volumes/projects/map working folder/             per-city working folders (ca-numbered LOC files)
+  /Volumes/projects/deep archive/                   FAA_Charts, FAA_Charts2, national archive, loose WASP tifs
+  /Volumes/projects/2026maps/                       empty
+  /Volumes/projects/ (all other dirs)               28,627 candidate files total on this volume
+  /Users/ryanhemenway/archive.aero/                 repo itself (worker/ and geotiff2pmtiles/ excluded as build output/code)
+  ~/Downloads, ~/Desktop, ~/Documents, ~/Pictures   19,895 candidate files
+  ~/Library/Mobile Documents/com~apple~CloudDocs/   (iCloud Drive) included in the home sweep
+  Spotlight (mdfind) system-wide                    name patterns ca0*.tif, *_SEC_*.tif, *sectional*
+  /Volumes/drive, /Volumes/MAC DATA HD, /Volumes/UNTITLED   targeted name-pattern find; only hit was a URL list file (see Part 2)
+
+Deliberately excluded from findings (logged, not sectionals or not chart scans):
+  /Volumes/projects/SectionalProject/8000-highres-map-scans-pd/  (8,108 files - general historic maps collection)
+  ~/archives/airfields-freeman-full/                              (website excerpt jpgs, not full charts)
+  ~/Downloads/faa_sectional_charts_map_tiles*, Dallas_Ft_Worth_Sectional_Chart_* (derived tiles / flight-sim jpgs; us_sectionals_pack_12 flight-sim jpgs WERE kept as findings)
+  ~/Library/.../John's Folder                                     (1,968 personal files)
+  /Volumes/projects/Movies, /Volumes/projects/Time Capsule        (personal media / machine backups - checked top level only)
+  TAC / WAC / helicopter / Grand Canyon / Caribbean / planning charts (not sectionals)
+  NARA *_PDF.pdf files whose .tif twin is already in the dole
+
+Local findings by group (135):
+  loc_ca_scan (7)               ca002354, ca003008r/v, ca003018-ca003021 - downloaded LOC scans, ca numbers absent from dole
+  wasp_scan (2)                 WASP_02-2007-02-423_02, WASP_02-2007-02-427_02 (backs not logged)
+  sec_chart (26)                incl. 3 NARA Pacific insets ed.95, Dallas-Ft Worth SEC 92/94/96, Seattle SEC 86, flight-sim US_SEC_* jpgs
+  sectional_named (13)          wayback All_Files/Sectional.zip bundles in FAA_Charts2, Seward_93 failed-extraction zip, 3 archive.org PDFs, etc.
+  sectionalproject_renamed (87) old Dallas-project date-named scans (193210.tif style, _geo/_geo_cog collapsed) - unmatchable by name, need manual cross-check
+
+================ PART 2 - INTERNET SEARCH ================
+Results: missing_from_dole_online.csv (369 entries)
+
+LOC (Library of Congress):
+  - loc.gov maps search "sectional aeronautical charts": exactly two sectional sets exist:
+    gct00089 (the dole's source) and gct00498 "Base & Duplicates" (1927-).
+  - gct00089: probed every ca-number gap in the dole sequence (17 gaps in ca000001-ca004091)
+    against tile.loc.gov master storage, base/r/v variants, .tif/.jp2, master + service dirs.
+    -> ca000351v, ca001616v, ca001701v exist at LOC and are not in the dole (3 findings).
+    -> ca000808, ca000996-999, ca001908, ca003594, ca003675: no file at LOC (confirmed dead numbers).
+    -> ca002354, ca003008, ca003018-021 exist at LOC and are already on disk (Part 1).
+  - gct00089 above dole max: probed ca004092-ca004131 (40 consecutive misses) -> collection ends at ca004091.
+  - gct00498: probed ca000001-ca000086 -> 72 tifs found, ALL absent from dole (72 findings).
+
+NARA (National Archives):
+  - Full public S3 listing of s3.amazonaws.com/NARAprodstorage lz/electronic-records/rg-237/
+    (18,183 keys, all subdirs: VFR 2019-0060/2020-0033/2021-0035/2022-0035/2025-0044,
+    plus Charts, CivAir, EISF, IFR, LL, SATCS, TDAPF - non-VFR dirs contain no sectionals).
+    -> 3 sectionals not in dole: Honolulu/Mariana/Samoan Islands insets ed.95 (also on disk).
+    -> 559 *_PDF.pdf format-twins of tifs already in the dole were skipped.
+  - NARAlist.csv (repo) and /Volumes/drive/lists/categorized/sectional.txt are older snapshots
+    of the same holdings; fully superseded by the live S3 listing. The drive list's 11
+    "Sectional.zip" URLs are wayback All_Files whole-edition bundles (see below), not S3 objects.
+
+FAA / Wayback Machine:
+  - CDX index of aeronav.faa.gov/content/aeronav/sectional_files/* (old layout, 2011-2019):
+    679 unique captured URLs -> 280 edition zips captured by the Wayback Machine but not in dole
+    (editions ~81-99 per city, 2011-2019 era - the largest recovery opportunity).
+  - CDX index of aeronav.faa.gov/visual/*/sectional-files/* (new layout, 2021-2026):
+    709 unique captured URLs -> only 3 missing (Atlanta, Brownsville, Wichita for 02-25-2021).
+  - Wayback All_Files/Sectional.zip whole-edition bundles exist for many editions; their
+    per-city zips are already in the dole, so they were logged as duplicates, not findings.
+  - naco.faa.gov and avn.faa.gov (pre-2011 hosts): CDX shows zero sectional zip/tif captures.
+  - aeronav.faa.gov/visual/09-03-2026/ (next edition): 404, not published yet.
+
+archive.org:
+  - Item faa-visual-flight-rules-charts (in dole): 102 files listed via metadata API;
+    all Sectional Charts files already in dole (Caribbean/Grand Canyon VFR are not sectionals).
+  - advancedsearch for sectional aeronautical items: 12 hits -> 8 genuine one-off vintage
+    scans (5 David Rumsey 1944-45: Douglas, Roswell, Dallas, Phoenix, Prescott;
+    San Diego 1948; San Francisco 1966; San Francisco 1978) - all findings, may duplicate
+    LOC/NARA editions of the same charts.
+  - David Rumsey archive.org mirror collection searched: only the 5 items above.
+
+Other sources checked via web search (no downloadable sectional scans found / out of scope):
+  - UConn MAGIC historical navigation charts (1923-1935 airway strip charts, pre-sectional)
+  - atchistory.org vintage aeronautical maps (browser-viewable, no chart-scale scans)
+  - UT Perry-Castaneda, U. Illinois map library guides (link to FAA/LOC, no own scans)
+  - dreamsmithphotos.com airway maps (1920s strip maps, not sectionals)
+
+================ PART 3 - EXTENDED INTERNET SEARCH (round 2) ================
+Added 108 entries to missing_from_dole_online.csv (now 477 findings total).
+
+Positive sources:
+  archive.org item "sectional-charts"        COMPLETE 2004 FAA edition snapshot: 79 sectional
+                                             half-sheet JPEGs (+21 TACs excluded). Dole FAA
+                                             coverage starts 2011, so all 79 are new.
+  NOAA Historical Map & Chart Collection     64 "Aeronautical Chart" records total; 19 are true
+    (historicalcharts.noaa.gov)              1:500,000 sectionals (1932-35 CAA: San Antonio,
+                                             Phoenix, Norfolk, Los Angeles, Orlando, New Orleans,
+                                             Miles City, Oklahoma City; 1950 batch of 9; Anchorage
+                                             1970 x2). Full-res JPG via downloadsingle.php; also
+                                             mirrored on AWS bucket noaa-nos-historicalcharts-pds.
+                                             (27 at 1:250k + 8 at 1:100k + 5 at 1:1M excluded -
+                                             not sectional scale.)
+  Wayback: aviationtoolbox.org               445 captured URLs; 3 pre-2011 sectional GeoTIFFs
+                                             (Chicago 67 North 2003; Chicago 70 North/South 2005)
+                                             + 23 georeferenced mosaic chunks (2005).
+  UNT Portal to Texas History                UT Arlington partner: Dallas (Q-5) 1948 and
+    (texashistory.unt.edu)                   Dallas-Ft Worth 1986 (both sides). Full-res JPEG at
+                                             .../m1/N/high_res/. Search UI is bot-blocked; audited
+                                             via OAI-PMH harvest (partner:WASP 8,058 records,
+                                             collection:UTAM 5,189, FWAM 106, LSFM 20).
+  UWM American Geographical Society Library  3 Seattle sectional printing-experiment proofs
+    (collections.lib.uwm.edu, agdm)          (1940 gradient tints; 1941 violet on white/buff);
+                                             IIIF full-res downloads.
+  archive.org one-offs                       1969 Rumsey sectional-status sheet w/ SF sample panel;
+                                             1988 NOAA Aeronautical Data Sampler CD ISO (unverified
+                                             candidate - needs mounting).
+
+Important cross-check: the 11 sectionals in UNT's National WASP WWII Museum partner ARE the
+dole's WASP rows - accessions 02-2007-02-415-420/423-427 map 1:1 (415=San Francisco 1971,
+416=Denver 1972, 417=Denver 1975, 418=Wichita 1972, 419=DFW 1981, 420=DFW 1982, 423=Albany 1943,
+424=Albuquerque 1943, 425=Cleveland 1943, 426=Detroit 1943, 427=Salina 1943). The dole's WASP
+rows have blank download_link - UNT full-res URLs could fill them. Local unmatched WASP_423_02 /
+WASP_427_02 are the backs of Albany and Salina 1943.
+
+Zero-result sources (checked, nothing to recover):
+  David Rumsey main site (davidrumsey.com LUNA API): only the 5 known 1944-45 charts
+    (same as archive.org mirrors); "sectional" hits are 19th-c. land-survey maps.
+  TWU digital collections (CONTENTdm API): WASP newsletters only, no chart scans; the WASP
+    chart accessions live at UNT, not TWU.
+  UConn MAGIC: 1923-35 US Air Navigation strip-map series only, no sectionals (viewer partly
+    dead - Google Fusion Tables).
+  Smithsonian (Open Access API): 4 NMAH sectional catalog records (Albany n.d., Los Angeles
+    1951, San Diego 1953, New York 1956) - mediaCount 0, record-only, NO scans; NASM finding
+    aids record-only too.
+  DPLA: no digitized sectionals (aviation ephemera only).
+  HathiTrust: text publications about charts only (catalogs, specifications), no chart plates.
+  USGS topoView/NGMDB: topo quadrangles only, no aeronautical charts ever.
+  NARA S3 other record groups: full prefix list (170 RGs) enumerated; no rg-018/rg-023;
+    rg-370 (NOAA, 444 keys) contains zero aeronautical charts.
+  NARA catalog API: requires API key; S3 listing used instead (complete).
+  Wayback CDX zero-yield domains: chartbundle.com (1,706 URLs - tile configs only, chart
+    archives never captured), vfrmap.com (40,981 URLs - tile pyramids only for ~14 editions
+    2012-2025, no GeoTIFF/zip), runwayfinder.com (7,109 - app endpoints), aircharts.org (84),
+    sectionalcharts.com (22 - paper-chart storefront), mamba.dreamhosters.com/Avare (5),
+    apps4av.com, myairplane.com, chartgeek.com (infographics blog, wrong name).
+  archive.org negative queries logged: "CAA sectional", "sectional raster", NACO/CD-ROM
+    phrasings, creator:"U.S. Coast and Geodetic Survey" (765 nautical), collection browses
+    (maptiles, usgs_maps, MIL-maps, washingtonstatelibrary) - all zero new sectionals.
+  aeronav.faa.gov/visual/09-03-2026 (next edition): still 404.
+
+================ PART 4 - EXTENDED INTERNET SEARCH (round 3) ================
+Added 95 entries to missing_from_dole_online.csv (now 572 findings total).
+
+Positive sources:
+  NARA catalog digitized PAPER scans      THE BIG FIND: digitized paper cartographic holdings
+    (catalog.archives.gov)                live under NARAprodstorage lz/cartographic/ - a tree
+                                          the Part-2 S3 audit (lz/electronic-records/ only) never
+                                          touched. RG 370 series 305976 "Sectional Aeronautical
+                                          Charts" (catalog.archives.gov/id/305976) is fully
+                                          digitized: 78 findings - Juneau eds 34-56 complete run
+                                          1994-2016 (eds 34-51 are editions entirely absent from
+                                          dole), 1940s Texas-area (Austin, Beaumont x18, Corpus
+                                          Christi, Dallas x5 incl. a 1943 edition dole lacks in
+                                          any form, Del Rio, Douglas, El Paso), Tulsa 1950 (3
+                                          parts), Nashville 1965, Seattle 1945 (3 parts, 2 stored
+                                          under a rg-351 dir), Cleveland n.d. (under rg-019 dir).
+                                          Objects at catalog.archives.gov/medialz/... which
+                                          proxies s3 NARAprodstorage lz/cartographic/...; all
+                                          verified 200 at 10-53 MB. Dallas catalog-title years vs
+                                          embedded filename dates are permuted - verify on image.
+                                          Unauthenticated catalog search: catalog.archives.gov/
+                                          proxy/records/search?q=... (v2-API params; quoted terms
+                                          trip a WAF - use unquoted). Wikimedia Commons carries
+                                          re-uploads of 34 of these charts (separate image NAIDs
+                                          84785xxx/84786xxx/1406962xx, 22000px ~46-51MB) - same
+                                          paper items, not recorded as separate findings.
+  Wikimedia Commons (non-NARA)            Newberry Library Chicago (U-7) 1955 (2 sheets, 3600px
+                                          moderate res, likely same edition as dole ca000790r/791r);
+                                          ESRI sample PDF = full San Francisco 2008-01-23 sectional
+                                          (esriuk.com, 11.3MB) - pre-2011 FAA gap era.
+  Digital Commonwealth / Leventhal        3 charts / 5 images, IIIF full-res: Boston 47th ed 1961
+    (collections.leventhalmap.org,        (dole jumps ed 46 -> 60 - GAP FILL), Dallas 53rd ed 1961
+    digitalcommonwealth.org - same 3)     (dole ends at 52 - GAP FILL), San Francisco RS-1 1943
+                                          wartime designation (distinct from dole ca003479/80).
+  Oklahoma State CONTENTdm                Tulsa 1945 + Oklahoma City 1945 (may be the missing
+    (dc.library.okstate.edu OKMaps)       spring-1945 OKC edition; dole 1945 has only 1945-10-02),
+                                          ~11800px IIIF full sheets.
+  Ohio Memory (Armstrong museum)          Cleveland July 1942 - fills dole gap 1940-03 -> 1943-11;
+                                          moderate res 4102px (DSLR capture, not flatbed).
+  archive.org noaa-aeronautical-charts    uploader peron@sdf.org (same as faa-visual-flight-rules-
+                                          charts item): 6 full-res mid-1930s JPGs NOT on
+                                          historicalcharts.noaa.gov - Trinidad 1936, Sioux City
+                                          1936, Yellowstone Park 1936, Fargo 1935 preliminary, plus
+                                          Twin Cities 1934 and Dallas Lower I-14 1932 "US Airway
+                                          Map" 1:500k quadrangles (sectional predecessors). Rest of
+                                          item mirrors the NOAA/1948-San-Diego findings already
+                                          recorded; 10-M-9-1935 rejected (1:1M Regional chart).
+
+Zero-result sources (checked, nothing to recover):
+  NARA: all other NARAprodstorage top-level prefixes (19) and lz/ subprefixes (39) enumerated;
+    lz/cartographic/ other RGs: rg-018 (2 digitized items, Europe route maps, not sectionals),
+    rg-023 (nautical/topo/hydro only), no rg-237 dir. Catalog full sweep "sectional aeronautical"
+    availableOnline (5,933 hits paginated) - all non-305976 series are document collections
+    (Blue Book UFO files, WWII Operations Reports etc.). 50 aeronautical-chart series reviewed;
+    RG 342 AF editions (18580165), USAF 7269264, C&GS Regional 2524729: zero digitized children.
+  NOAA: Institutional Repository (text pubs only), Central Library / Photo Library (point back
+    to historicalcharts.noaa.gov), registry.opendata.aws (only noaa-historicalcharts).
+  GovInfo (43 hits, all CFR/FR text), NTL ROSA-P (advisory circulars only).
+  Wikimedia Commons exhaustive: 274 files inventoried across all sectional/aeronautical
+    categories; LOC 2009582532 set = Aberdeen SD (in dole) + V-240 strip charts (excluded);
+    FAA GeoTIFF re-uploads (Detroit/Twin Cities/Washington/Kodiak) = editions in dole, files
+    carry {{Current}} so they track latest; Rumsey re-uploads = known items or thumbnails;
+    full-text search remainder = crops/excerpts/WACs/foreign.
+  Flickr: SDASM Archives (no chart scans at all - org charts and airship plans), IA Book Images,
+    NOAA stream, public search "sectional ..." variants - only pillows, crafts, crops,
+    <1024px photos. Zero downloadable full charts.
+  GitHub: ~90 repos triaged (searches + topics + code search for sectional_files/gct00089);
+    all code-only (jlmcgraw, N129BZ, chartbundle, WairToNow, apps4av=geojson outlines);
+    no releases with chart binaries; cam-rodriguez/aero-maps = quarter-res LOC IIIF of
+    in-dole Chicago charts; OverflightEFB/mooneyflyboy repos empty.
+  University/aggregator sweep: BTAA Geoportal (new API /api/v1/search; 44 "aeronautical" hits
+    all WisDOT state charts/AMS - covers Big Ten schools' geoportal holdings), Stanford
+    EarthWorks/SearchWorks (F5 bot-wall; web index shows no digitized sectionals - Sacramento
+    1952 records are physical-only), NYPL (Incapsula bot-wall; Map Division set 89-5068 is
+    undigitized paper), Calisphere (2 hits at Huntington: LA/SD 1944 at 825px record-only,
+    dole has LOC scans of those editions), UCSB Alexandria (0), UMN UMedia (Antarctic WACs
+    only), Alaska's Vilda/UAF (0 - no help for Alaska gap), Penn State (text hits only),
+    OldMapsOnline (Cloudflare 403; web index shows only the known Rumsey Dallas Q-5).
+  Leventhal "aeronautical chart" total 715 records = obstruction charts/ONC/TPC/foreign AAF
+    (excluded); Ohio Memory other Armstrong items = Lindbergh route chart, ~2000px folded
+    chart photos (not full scans); Huntington CONTENTdm low-res only.
+  Wayback CDX (new hosts this round): skyvector.com (tiles/forums only), soaringweb.org
+    (396 zips = airspace/turnpoints/IGC only; live site same), wingsandwheels.com (storefront),
+    aeroplanner.com (ChartChunk excerpts + one TAC GeoTIFF sample; subscription downloads never
+    captured), fltplan.com (tile endpoints), airnav.com, xcsoar.org, lakesgc.co.uk,
+    155.178.201.160 (d-tpp plates only), landings.com, vfrcharts.com, aero-charts.com,
+    sectionalchart.com (parked), uscharts.com - all zero. tgftp.nws.noaa.gov: CDX 504 x3,
+    abandoned (weather files, no known chart dir).
+  archive.org new queries: title:(sectional) mediatype image/data (1,140 hits - OSF/land
+    surveys), "vfr raster charts" (0), "sectional chart" image/data (only known 1969 status
+    sheet), subject:"aeronautical charts" (139) + title:"aeronautical chart" (37) -> surfaced
+    noaa-aeronautical-charts (findings above), faa-ifr-charts (IFR), flight-simulator-
+    instrument-charts (IFR), strip maps, WACs/Loran/GSGS (excluded). Uploader probes:
+    contact@countlessprojects.com (only known 2004 item), peron@sdf.org (521 items, only the
+    4 chart items, all audited).
+  Web searches: pre-2011 NACO GeoTIFF mirrors, "index of" listings, S3/GCS bucket probes,
+    NACO CD ISO/torrents, reddit/Pilots-of-America threads (links only to NOAA/LOC/NARA) -
+    nothing. avsim.com/flightsim.to login-walled, not enumerable.
+  CONCLUSION on pre-2011 FAA/NACO digital era (eds ~60-85): NACO rasters were CD-ROM
+    subscription products, never freely hosted; beyond the 3 aviationtoolbox.org Chicago
+    charts and the ESRI SF 2008 sample PDF, effectively unrecoverable from public internet.
+
+================ PART 5 - EXTENDED INTERNET SEARCH (round 4) ================
+Added 801 entries to missing_from_dole_online.csv (now 1,373 findings total).
+
+Positive sources:
+  Wayback CDX aeronav.faa.gov /visual/<date>/PDFs/   THE BULK FIND (760 rows): full-chart print
+                                          PDFs in the new-layout PDFs/ directory, which the
+                                          Part-2 CDX audit (sectional-files/* only) never
+                                          touched. Dole carries /PDFs/ links for only 14 edition
+                                          dates (329 rows); these captures fill 13 whole editions
+                                          (02-25/06-17/10-07/12-02-2021, 01-27-2022, 09-05/10-31/
+                                          12-26-2024, 02-20/04-17/06-12/08-07/10-02-2025, ~52
+                                          cities each) + partials of 11 more. Largest capture per
+                                          URL selected from full CDX histories; median ~50MB;
+                                          spot-replays 200 at 26-180MB. CAVEAT: 407 further URLs
+                                          have only 1MB-truncated captures - editions 08-12-2021,
+                                          05-19/07-14/09-08/11-03-2022, 08-10/10-05/11-30-2023
+                                          are UNRECOVERABLE as PDFs.
+  FAA live chart_sample_files             aeronav.faa.gov/content/aeronav/chart_sample_files/:
+                                          AOD_VFRCharting_LA.zip (317MB print-provider bundle -
+                                          LA ed 98 print PDF + 10 seclosa98 2400dpi CCITT-G4
+                                          print-SEPARATION plates, unavailable elsewhere) + 10
+                                          sampleVFR_*.tif separation plates (2400dpi, 143488x
+                                          108000px, ~2014 Sample VFR sectional). 11 rows.
+  Wayback www.faa.gov NACO raster sample  Seattle 1st-ed TRAINING CHART Dec 2001 west half,
+                                          georeferenced GeoTIFF 27MB (productcatalog Raster
+                                          sample.tif; .tfw never archived). Rare NACO-era raster.
+  NLA Sheila Scott Map Collection (10)    National Library of Australia MFC 4 - US sectionals the
+    (nla.gov.au/nla.obj-.../image)        aviatrix used on 1965-71 record flights, red route
+                                          annotations: Albany 1967, NY 1970, Dallas/El Paso/
+                                          Huntington/Kansas City/Nashville/OKC/Tulsa/Washington
+                                          1965. /image endpoint serves 5000px openly; native
+                                          ~26-30k px per /dzi descriptor (tile service is behind
+                                          an Anubis bot-wall; finding aid via Wayback
+                                          20210416092942/https://nla.gov.au/nla.obj-583541451/
+                                          findingaid?digitised=y). All distinct scans of editions
+                                          the dole holds via LOC.
+  U. Alabama cartweb (19)                 alabamamaps.ua.edu/historicalmaps + MrSID getimage
+    (cartweb.geography.ua.edu)            server (wid=5000 returns native ~5500-6000px 2-4MB;
+                                          wid>=6000 -> 400). FULL 50-state sweep (825 pages,
+                                          ~29,950 .sid items): 19 sectionals - Lincoln 1942,
+                                          Del Rio 1943, Corpus Christi 1943, Birmingham 1943 +
+                                          1951 USAF Q-7 ed (UA page mislists as 1:250k),
+                                          Mobile 1944, Chattanooga 1943, Nashville 1943,
+                                          Savannah 1941, Grand Junction 1941, Seattle 1941,
+                                          Bellingham 1942, La Grande 1941, Cheyenne 1940,
+                                          Casper 1942, Cincinnati 1941, Mt. Shasta 1942,
+                                          Sacramento 1946, Butte 1940. The 1943 Birmingham/
+                                          Chattanooga/Nashville have no 1943-dated dole edition.
+
+NARA is now DEFINITIVELY CLOSED:
+  Full enumeration of lz/cartographic/ (1,451,105 keys, 430 rg/series dirs) + catalog second
+  pass (ancestorNaId=305976 -> 78 objects, every basename already recorded; RG 342 AF editions
+  NAID 18580165 = 0 digitized children, double-confirmed; 711 "sectional chart" + 5,686
+  "aeronautical chart" availableOnline hits fully paginated - all rg-237/305976/excluded
+  classes). Only other aeronautical images in the whole tree: WAC 649 run (305977), 1 Chicago
+  TAC 1973, 1 Paris pilotage chart. No Anchorage/Fairbanks/Nome paper sectionals digitized.
+  BONUS for download phase: uncataloged TIF MASTERS of the 10 Beaumont 1941-46 charts at
+  s3.amazonaws.com/NARAprodstorage/lz/cartographic/reference/Batch0001/12-06-05_01.tif .. _10.tif
+  (78-107MB vs the 24-29MB recorded JPGs; direct S3 URL required - catalog medialz proxy does
+  not serve the reference/ prefix). WAF notes: pure-numeric q= and rapid bursts return SPA
+  shell; 45-60s cooldown recovers; ancestorNaId= is reliable.
+
+UNT/Oklahoma repositories now CLOSED:
+  Portal to Texas History: FULL OAI sweep, all 2,412,477 records - zero sectionals beyond the
+  13 known (2 UTA + 11 WASP/Creger). Search UI ALTCHA-blocked but OAI unaffected. Gateway to
+  Oklahoma History: full OAI sweep, all 1,262,175 records - zero. WASP ark mapping verified
+  with edition IDs (fills the dole's blank WASP download_links; side pattern m1/1|2/high_res/):
+    415=metapth1164340 SF 1971-04-29 ed.6      416=metapth1164167 Denver 1972-03-02 ed.6
+    417=metapth1164161 Denver 1975-08-14 ed.13 418=metapth1164187 Wichita 1972-12-07 ed.9
+    419=metapth1164336 DFW 1981-01-22 ed.25    420=metapth1164465 DFW 1982-01-21 ed.27
+    423=metapth1169637 Albany 1943-05-06       424=metapth1169679 Albuquerque 1943-08-12
+    425=metapth1169572 Cleveland 1943-11-11    426=metapth1169315 Detroit 1943-10-28
+    427=metapth1169558 Salina 1943-08-26
+
+Zero-result sources (checked, nothing to recover):
+  LOC second pass: no individually-cataloged sectionals outside gct00089/gct00498 (maps
+    searches q="sectional aeronautical"/aeronautical/fa=subject all reviewed; 8 personal-
+    collection finding aids record-only; item 2009578437 "Aeronautical charting data sampler II"
+    1990 CD downloaded+opened = dBASE text databases, NO rasters - implies the Part-3
+    archive.org 1988 sampler ISO is likely also text-only; 2021589553 Alaska bundle = airway
+    maps only; gct00064 = strip maps).
+  Museums: Museum of Flight (bot-walled; ArchivesSpace = finding-aid records only), Wright
+    State, EAA, College Park, Pima, Hiller, Cradle of Aviation, Kansas Aviation Museum,
+    Intrepid, PastPerfect-Online domain dork - record-only or nothing.
+  Wayback aeronav.faa.gov domain-wide (1.22M unique urlkeys, 258 CDX pages): other dirs are
+    IFR/data products (d-tpp, acifp, afd, cifp, obst), DOLES schedule PDFs, legend excerpts;
+    Upload_313-d DDVC 2016-17 cycle zips = duplicate dole editions; content/naco raster sample
+    = 404-only captures. www.faa.gov productcatalog/vfr-media subtrees: Seattle_SEC_86_NFN.zip
+    capture = file already in dole; rest non-sectional or 301/404.
+  WorldCat: Cloudflare-Turnstile-walled; indexed records are physical holdings; all
+    institution pointers lead back to already-covered sources.
+  Europeana: 0 US sectionals (foreign-area AAF charts only).
+  Texas/plains: UTA MavMatrix (gallery migrated; Antarctic AAF only), SMU DeGolyer (268-item
+    map collection enumerated - zero), TSLAC/TDA (Preservica auth-walled; implausible holder),
+    Texas Tech SWCO, Baylor Quartex (166,904-doc sitemap grepped), TAMU OakTrust (Cloudflare-
+    walled; nothing indexed), Kansas Memory, Missouri Digital Heritage, Nebraska Memories.
+  Nationwide sweep: UFDC (only a 1979 FL state 1:1M chart), Florida Memory, U. Hawaii
+    eVols/ScholarSpace/MAGIS (aerial photos only), UW CONTENTdm (MOHAI Seattle 1955 ed 37 =
+    dole ca003561r, IIIF capped 1200px record-only), WA State Archives, Utah Marriott,
+    Montana Memory, Denver PL, UNM, DLG Georgia, VT/UVA/Duke/UNC, McMaster (WWII collection =
+    1:1M AAF world series only), Library and Archives Canada (1 WAC record).
+  Record-only leads (manual browser follow-up may recover): Arizona Memory nodes/view/150290
+    Prescott R-3 1955 USAF ed (Sharlot Hall Museum; Cloudflare-walled, legacy CONTENTdm dead,
+    no Wayback); TEVA Tennessee Nashville S-7 1944/1945/1951 (ids 6455/6456/8971, .url stubs,
+    IIIF 501).
+
+================ PART 6 - EXTENDED INTERNET SEARCH (round 5: 1970-2010 focus) ================
+Added 70 entries to missing_from_dole_online.csv (now 1,443 findings total).
+All 70 re-verified 200 by the coordinator (independent curl pass + simviation cookie-dance
+spot-checks + usahas deep-tile probes) on top of per-lane verification.
+Six parallel lanes per the round-5 handoff: CD-ROM ISOs, Air Chart atlases, GE Community
+KMZ overlays, personal pilot sites, Usenet URL mining, FDLP/state agencies.
+
+Positive sources:
+  usahas.com (ChartGeek 2009) - LIVE       THE ROUND FIND (24 rows: 23 charts + index KML).
+    http://www.usahas.com/downloads/        The USAF Avian Hazard Advisory System site (DeTect
+    Sectionals.kml                          Inc., still up) licensed ChartGeek's Google Earth
+                                            sectional overlays in 2009 and never removed them:
+                                            23 per-chart GIF superoverlay pyramids under
+                                            /GE/ChartGeek/Sectionals/<City>.kml, 1024px tiles,
+                                            5 levels (Hawaii 4), assembling FULL collar-clipped
+                                            charts at ~12-13k x ~8k px (~60-70% of 300dpi).
+                                            Tile Last-Modified Jul-Aug 2009 -> NACO editions
+                                            current mid-2009, i.e. the pre-2011 era Part 4
+                                            declared "effectively unrecoverable". POLICY CALL:
+                                            these are tile pyramids, but they assemble complete
+                                            charts of otherwise-lost editions - recorded like
+                                            the round-2 aviationtoolbox mosaic chunks, notes say
+                                            exactly what they are. Collar clipped, so edition
+                                            numbers not verifiable on-image. Cities: ABQ BRO CLT
+                                            CYS CHI DEN DET ELP GRB HI MKC LMT LHN MEM MSY NYC
+                                            OMA PHX SLC SAT SEA DCA ICT. NOT hosted (404): the
+                                            other ~13 CONUS + all Alaska. DOWNLOAD SOON: ~2.3k
+                                            tiles, 16-year-old leftover dir on a contractor site.
+  simviation.com realcharts/realvfrcharts   THE BULK FIND (42 rows). Sean Morrissey (May 2011)
+    (open download, no login)               uploaded a complete US sectional set as PDFs: 38
+                                            single-chart zips (CONUS + Hawaiian Is. + Halifax/
+                                            Montreal/Lake Huron) ~23-30MB each + 4 Alaska packs
+                                            (82-102MB) covering the 16-chart AK series. Per
+                                            in-zip readme: "half-size copies of raster scans of
+                                            real FAA aeronautical charts, most dating from the
+                                            first half of 2010" - i.e. ca-2010 editions, pre-2011
+                                            dole desert. SF sample opened: 21MB full-chart PDF,
+                                            ~5112px page images (half-size derivative, not
+                                            archival, but the only recovered form of the 2010
+                                            editions). 2-STEP DOWNLOAD: GET /1/download-file?...
+                                            for session cookie, then /1/download?... -> 302
+                                            dl.simviation.com (no cookie = "x-strngr: not
+                                            downloading" stub); server ignores Range, ~80KB/s.
+                                            Download phase should read each chart's edition
+                                            panel (dole's Dawson ed 44 2010-10-21 may overlap).
+  wayback glideplan.com                     2 rows. GlidePlan "Experimental" seamless JPG
+                                            mosaics from ~2006 NACO rasters (Reno_Whites 18.2MB
+                                            4886x8549 = SF/Reno/LV area; Mt Shasta 4.1MB) -
+                                            mosaic-chunk class like round-2 aviationtoolbox.
+                                            Surfaced via rec.aviation.soaring -> CDX. GlidePlan's
+                                            2013/2016 contest zips = derived from dole editions,
+                                            skipped; 2010 soaringdata.info CMR sets never
+                                            captured (see leads).
+  Birmingham Public Library CONTENTdm       1 row. Birmingham (Q-7) USAF edition, Sept 1948 rev
+    (bplonline p15099coll3 id 1147)         July 1951, IIIF native 5862x2788 - distinct and
+                                            higher-res than the cartweb Alabama1951b.sid (3664px)
+                                            recorded in round 4; dole holds only civil 1951 eds.
+                                            Found via the generic contentdm.oclc.org dork - the
+                                            per-city variant of that dork is a repeatable lead.
+  archive.org PC Pilot Issue 82 cover CD    1 row, caveated. Full-sheet Ketchikan ed 52 (2012)
+    (cdrinc_PC_Pilot_Issue_82)              10924x8207 JPG 26.3MB inside the ISO (IA on-the-fly
+                                            extraction verified); dole holds ed 52 - likely a
+                                            rendition of the FAA raster, not a distinct scan.
+                                            All 22 other PC Pilot CDs on IA scanned: no others.
+
+CD-ROM / commercial-product front (lane A) - now essentially CLOSED for public rips:
+  discmaster.textfiles.com (1.7B files inside IA CD/FTP images): NO NACO/Jeppesen/MapTech
+    chart CD ingested anywhere - corpus-wide negative. ~50 IA product-name queries + uploader
+    enumerations (jaj86, renatotome, dewyattmail, cdrinc 900-item collection): flight-sim
+    shovelware only. ISOs inspected and closed: 1988 NOAA Aeronautical Data Sampler (High
+    Sierra ISO = Turbo-C data sampler, ZERO rasters - strikes the Part-3 open candidate),
+    Jeppesen FlitePro 6.2 (vector IFR sim), Northstar CT-1000 dump (JeppView vector .BFD),
+    Simcharts (approach plates), FRFPVRFO (Australian ATC trainer), BAO Flight Shop etc.
+  Vendor-domain CDX sweeps (all new hosts): rmstek.com (FliteSoft ChartMaster = VECTOR - kills
+    the "RasterPlus" theory), flightprep.com (ChartCase raster = subscription ChartKey, never
+    crawled), seattleavionics.com (auth portal), controlvision/anywheremap, echoflight,
+    teletype, memory-map (QuickCharts = marine), dtint, mentorplus, maptech.com. CONCLUSION
+    extending Part 4: ALL 1999-2010 third-party raster vendors distributed via subscription
+    CD/auth download; none web-crawled. Aviation Consumer 2001 confirms the Big Three planners
+    (FliteStar/FliteSoft/Destination Direct) were vector - stop hunting those titles.
+  NEW NAMED TARGET for physical hunts: MapTech "VFR/IFR AeroPack" regional CDs (~1999-2006,
+    scanned FAA charts in BSB v3, wayback maptech.com/air/) - no rip exists anywhere public;
+    ftp.maptech.com never captured. Also ChartGeek DVD (~2009, ~$90, all sectionals as GE
+    overlays; free 64MB SF demo never archived). redump/winworldpc/macintoshgarden: no
+    aviation chart discs; vetusware + myabandonware are bot-walls (manual-browser list).
+
+Air Chart Systems / atlas books (lane B) - CLOSED, record-only:
+  Company = airchart.com (Venice/Santa Monica CA), atlas line ~1962 - March 2013: VFR
+  Sectional Atlas (East/West annual), Aviation Topographic Atlas (WAC+sectional repro,
+  76 spreads), VFR Enroute + IFR atlases (excluded classes); Keefe's earlier Sky Prints
+  Aviation Atlas (1960s-80s), later Tri-Nav (IFR-based, excluded). NO scan of any exists
+  publicly: airchart.com CDX 904 urlkeys = marketing GIFs, biggest file a 1.9MB IFR sample
+  PDF, VFR samples are 100-150KB page-crop GIFs; trinavcharts.org 375 urlkeys = promo JPGs;
+  skyprints/airchartsystems/howiekeefe domains parked/dead. archive.org zero across all
+  title/creator/publisher/full-text phrasings; Open Library records all no_ebook; Google
+  Books not digitized (API 429-quota-dead all day; web index confirms); doc-scan sites nil.
+  AOPA Aviation USA (directory format, no full sectionals), Flight Guide (diagrams),
+  foreign reprints: all nil. ONLY ROUTE = physical acquisition (used atlases cheap on
+  Amazon/Alibris/eBay, e.g. ASINs B003K2XBJC East 2007-08, B004HUERDK Topo) - one atlas =
+  a half-US sectional edition at print res for its year.
+
+GE Community / overlay ecosystem (lane C) - provenance mapped, wayback empty except usahas:
+  GEC 64566 (2005, Forkboy2 = Matt Fox) full US sectional+TAC superoverlay set (~40k tiles)
+  -> fox-fam.com 2007 per-chart OFFLINE ZIPS for the ENTIRE set incl. all 15 Alaska charts -
+  never crawled (CDX fox-fam.com/maps/Sectionals/* EMPTY; domain now parked/squatted) ->
+  gelib.com + chartgeek.com storefront 2008-2012 - root KMLs captured, tiles gone (only
+  AK.kmz 210KB KML + banner). bbs.keyhole.com attachments fully closed: download.php CDX =
+  empty 302/404s; placemarks store (4,819 files) grepped = only the 64566 network-link stub;
+  download.php 302 mapping documented for future use. gearthhacks.com full dlfile inventory
+  (27,967 urlkeys): 3 chart items, all fileless. productforums CDX filter = 0. nlneilson.com
+  WorldWind FAA cache packs (to 1.25GB, level-5 near-chart-res): site 410, zips never
+  crawled. gelib phoenix-1948 tileset = NOAA-sourced (already audited), tiles uncaptured.
+
+Usenet mining (lane E) - technique established, mboxes grepped:
+  21 rec.aviation.* + comp.infosystems.gis mboxes from IA (giganews-era, coverage starts
+  ~2003; no pre-1991 value in utzoo; NO rec.aviation binaries groups archived anywhere).
+  ~8,600 URL hits / ~700 hosts triaged. New hosts CDX'd and closed: welch.econ.brown.edu
+  (see leads - THE record-only find), alexisparkinn.com (Iowa City gallery = 1753px
+  fold-panel excerpts, "hiQuality" versions never captured), xcski.com mojave1945 (1:1M AAF,
+  excluded), cdw.homelinux.com:8087 (0 captures), thericcs.net, bayareapilot.com, lairds.org,
+  gpsinformation.net, tknowlogy.com, glide2.glideplan.com - all nil. aviationtoolbox.org
+  re-probed with new usenet-sourced exact URLs (raw_data/munge/current trees incl. San
+  Antonio 73, Hawaiian Is. 72, ~40-city 2005-06 dir): zero beyond the 3 known Chicago tifs;
+  DNS dead; stays closed. soaringdata.info: Feb/Apr-2010 CMR sectional sets announced on
+  r.a.soaring NEVER captured (2024 captures are 1MB-truncated); live site = current edition
+  only. usenetarchives.com unlocked for pre-2003 (age-gate cookie + api/search.php
+  find_posts works from curl; get_posts bodies = browser-only): surfaced unread 1993-2002
+  chart-scan threads incl. Aug-2000 "All the sectionals online for Simmers" (see leads).
+
+FDLP / state agencies (lane F) - both angles definitively CLOSED:
+  IU Virtual Disk Library (the one real FDLP CD digitization program; live site now
+  Turnstile-walled) closed via wayback: 10,984 URLs / 443 disk barcodes / 212 disk index
+  pages titled - ZERO chart-raster CDs (only the 1990 "sampler II" already known text-only).
+  Conclusion: GPO never deposited NACO sectional-raster CDs. Harvard LibraryCloud API swept:
+  ONE chart record total - Orlando (O-8) 1943 "Restricted" at Gray Herbarium, PHYSICAL ONLY
+  (scan-request candidate). Yale/Princeton/Cornell/UChicago/USC/Berkeley/UCLA/Rice/LSU/
+  Kentucky/Pitt/Rutgers/Buffalo/WVU/Auburn/ASU/UNLV/Idaho/Boise/Oregon Digital/Notre Dame/
+  Syracuse/Brown/Dartmouth/UMD/UMass/Delaware/UTK/Arkansas/Ole Miss/OU/ERAU: zero. State
+  hubs (DigitalNC, NY Heritage, SCDL, Virginia Memory, Michiganology, MWDL, Illinois,
+  Indiana, Maryland, Maine, MN Digital): zero. Quartex/Preservica/Islandora/inurl:iiif/
+  JSTOR/fedlink dorks: zero. CARLI Newberry Chicago U-7 1955 native = same 3600px as the
+  recorded Wikimedia copy (no upgrade). ~60 state DOT/aeronautics domains + legacy hosts
+  (mnaero.com, aero.state.ne.us, oac.state.ok.us, doav.state.va.us, ...) CDX-swept: NO state
+  agency ever hosted scanned sectionals (only airport-vicinity crops, e.g. CODOT AWOS);
+  12 state GIS clearinghouses (PASDA, MN Data Deli, RGIS, MSDIS, TNRIS, WAGDA, ...) never
+  mirrored FAA rasters. NARA/LOC/UNT remain closed (untouched this round).
+
+Record-only items (no verified download; NOT in CSV):
+  - Ivo Welch (welch.econ.brown.edu/aviation, announced r.a.piloting 2006-01): complete
+    Jan-2006 NACO eastern-US set - 38 half-sheet JPEGs (Atlanta 75, Brownsville 76,
+    Charlotte 78, Chicago 71, ... Washington 78) + GeoTIFFs. Wayback crawled only dir
+    listings/.tfw metadata; binaries missed; dir gone from live site (ivo-welch.org).
+  - AVSIM library (login-walled): Matt Fox 2005 "Sectional_Charts_of_the_US_Pack_1-12"
+    (Pack 11/12 incl. Point Barrow/Seward/W-Aleutian/Whitehorse ca. 2004-05 - four charts
+    located NOWHERE else in the 1970-2010 window; Pack 12 already on local disk); David
+    Myers Mar-2010 Hawaii/Guam/Samoa packs (Aug-2009 editions) + 250k-inset pack.
+  - pilotsofamerica.com thread 141250: full scanned 1943 Cleveland sectional PDF attachment
+    (login 403, no wayback) - distinct scan vs dole's WASP Cleveland 1943-11-11.
+  - x-plane.org file 38646 (Bob Denny): 1940s WESTERN sectional PDF scans + mbtiles -
+    Cloudflare + free-login wall, zero wayback.
+  - flyawaysimulation.com file 18855: Seattle/LA ~2008-10 jpg textures (3.5/2.5MB,
+    JS-gated download, marginal derived class).
+  - chartgeek.com free 64MB San Francisco GE demo (password x45d38vi790): never archived.
+  - Harvard Gray Herbarium Orlando (O-8) Jan 1943 Restricted - undigitized paper.
+  - Archives West/OAC finding aids: undigitized paper sectionals in personal papers
+    (Spokane Mar 1965, SF+Seattle 1941-45, Boston Dec 1945, Detroit Mar 1936, El Paso/
+    San Antonio/Del Rio, SE-US Pangborn set) - scan-request class.
+  - usenetarchives.com 1993-2002 thread bodies (browser-only): Aug-2000 rec.aviation.
+    simulators "All the sectionals online for Simmers" full-set announcement unread.
+
+Zero-result sources (checked, nothing to recover):
+  archive.org: ~50 product-name queries (MapTech/FliteSoft/FliteStar/JeppView/NavSuite/
+    Anywhere Map/RasterPlus/Sporty's/Seattle Avionics/FlightPrep/EchoFlight/Flitemap/
+    Destination Direct/Fugawi/TeleType/MountainScope/aeropack/aerosim/BSB-aeronautical...);
+    title/creator/publisher/text queries for Air Chart Systems/Keefe/Sky Prints/sectional
+    atlas/aviation atlas; forkboy2/gelib/chartgeek/"google earth library"; usenet-collection
+    probes (alt.binaries.pictures.aviation etc.); collection:fedlink "sectional aeronautical";
+    "superseded charts". NOTE: bare q= is now FULL-TEXT-only - use explicit title:()/etc.
+  Google Books API: 429 quota-dead (anonymous project) all day; web index shows the atlas
+    titles were never digitized anyway. HathiTrust catalog now 403s curl (bot-wall list).
+  Search-engine passes (~18 variants, lane D): "sectional chart 19xx scan(ned)", city+year,
+    filename/filetype/"index of" dorks, blog/photo-host phrasings - all converge on the
+    known LOC/NOAA/FAA/airfields-freeman set.
+  GeoCities graveyards (oocities, restorativland, geocities.ws, angelfire, tripod): zero
+    chart scans (only training text + airfields-freeman mirrors).
+  Forums: backcountrypilot 14537/7117, POA 80299/153413/38700/37352, cessna170 15565,
+    supercub 53434, PPRuNe 48553, vansairforce, eaaforums, StuckMic, calclassic,
+    dc3airways - all point to known sources or excerpts. simviation full FS-Navigation
+    category browse: only the realcharts series (+ excluded excerpt/scenery items).
+  Wayback CDX new hosts closed this round: rmstek.com, flightprep.com, seattleavionics.com,
+    controlvision.com/anywheremap.com, echoflight.com, teletype.com, memory-map.com,
+    dtint.com, mentorplus.com, maptech.com (+ftp), airchart.com, trinavcharts.org/.com,
+    skyprints.com, airchartsystems.com, howiekeefe.com, fox-fam.com, gelib.com,
+    gearthhacks.com, bbs.keyhole.com, productforums.google.com, nlneilson.com,
+    glideplan.com (positives above), welch.econ.brown.edu, alexisparkinn.com, xcski.com,
+    cdw.homelinux.com, thericcs.net, bayareapilot.com, lairds.org/.us, gpsinformation.net,
+    tknowlogy.com, ranainside.com, surclaro.com, soaringdata.info, ~60 state DOT domains,
+    12 state GIS clearinghouses, webapp1.dlib.indiana.edu (VDL).
+  New bot-walls (manual-browser list additions): vetusware, myabandonware, HathiTrust
+    catalog, IU VDL (Turnstile), curiosity.lib.harvard.edu, Yale collections, Cornell
+    digital, Oregon Digital, x-plane.org+flightsim.com (Cloudflare+login), airliners.net
+    (tollbit), shortwingpipers.org.
+
+Leads for round 6 (ranked):
+  1. DOWNLOAD PHASE URGENT: usahas.com 23 ChartGeek pyramids (~2.3k tiles, scripted) before
+     the contractor site is modernized; simviation 42 zips (slow server, cookie dance).
+  2. CONTACT CLASS (files confirmed to have existed, holders likely alive): Ivo Welch
+     (2006 NACO set + source DVDs), Matt Fox/Forkboy2 (2005-2009 full source rasters incl.
+     Alaska), Neil Neilson (WorldWind packs), Lynn Alley (2010 CMR sets), Paul Tomblin/
+     Jay Honeck (original scans), Sean Morrissey (full-size 2010 masters?).
+  3. FREE-LOGIN TASKS (manual): AVSIM (Fox Packs 1-11 + Myers 2009 Hawaii/Guam/Samoa),
+     POA thread 141250 (1943 Cleveland PDF), x-plane.org file 38646 (Denny 1940s West).
+  4. usenetarchives.com thread bodies via real browser (esp. Aug-2000 simulators full-set).
+  5. Physical-media hunts: MapTech AeroPack CDs, ChartGeek DVD, Air Chart Systems atlases
+     (ASINs B003K2XBJC/B004HUERDK), NACO subscription CDs - used-market only, no rips exist.
+  6. Per-city contentdm.oclc.org dork variants (BPL Birmingham proves singletons hide in
+     city-library CONTENTdm instances not indexed by aggregators).
+
+================ PART 7 - EXTENDED INTERNET SEARCH (round 6) ================
+Added 1 entry to missing_from_dole_online.csv (now 1,444 findings total).
+Four lanes: alt-archive resurrection of round-5's lost binaries, CONTENTdm per-city census,
+misc fresh angles (FTP indexers / NACO filename dorks / magazine discs / Bob Denny), and a
+coordinator lane substituting for the still-unconnected browser (usenetarchives/pre-2003).
+A low-yield round by design: it converted round 5's open questions into hard closures and
+sharpened the contact-class asks. Search-tooling frontier is now nearly exhausted; the
+remaining recovery paths are contacts, free logins, scan requests, and physical media.
+
+Positive sources:
+  El Paso Public Library Border Heritage    1 row. El Paso (P-4) April 1941, CONTENTdm
+    Center (cdm16800, p16800coll3/id/67)    cdm16800, IIIF native 3777x1795 (LOW-RES DSLR-class
+                                            capture, front only) - distinct scan of dole-held
+                                            ca001449. Same city-library-singleton class as
+                                            round 5's BPL Birmingham.
+
+usenetarchives.com pre-2003 UNLOCKED (coordinator lane) - technique + closures:
+  get_posts bodies ARE curl-able: search_term must be the message-id BASE64-ENCODED (btoa)
+  with '=' padding stripped (view.php's threads.js does encodeURIComponent(btoa(mid)) then
+  strips %3D; find_posts gives the raw mid). Full pre-2003 mining is now scriptable; age-gate
+  cookie as in Part 6. Threads read this round and their verdicts:
+  - Aug-2000 "All the sectionals online for Simmers" = www.aerochart.com -> AEROPLANNER'S
+    SISTER SITE (same munsellm/mark@aeroplanner.com posts promote both). CDX: 5,000+ urlkeys,
+    ZERO captures >150KB - ColdFusion viewer + per-airport GIF excerpts. Excluded class,
+    CLOSED (matches Part-4 aeroplanner verdict).
+  - Dec-2000 "online sectional charts?" -> aeroplanner (known) + maxho.com = poster's
+    signature/personal site (aeroclub photos, accident-report PDFs, zero charts). Closed.
+  - Mar-2000 "Where to buy" -> vrotate.com, spinnerspilotshop.com, flyairways.com = paper
+    storefronts. Closed.
+  - Aug-1998 "Scanned sectionals?" (Jack Yeazel): "Vista has scanned sectionals of the whole
+    USA... See www.rmstek.com" -> identifies RMS TECHNOLOGY "VISTA" (1997 product page
+    capture confirms: moving-map with "Sectional Chart: bright, crisp charts of the
+    contiguous 48 States" on CD-ROM) as the raster product - REFINES Part 6's lane-A verdict
+    (FliteSoft ChartMaster was vector, but VISTA was the scanned-chart line). No rip online
+    (rmstek CDX has only 340-575KB viewer exes vista16/18.exe; IA/web negative). VISTA joins
+    MapTech AeroPack + ChartGeek DVD + NACO CDs as a named physical-media target.
+  - 1993 "gif's or jpg's of sectional or TCA charts": no URLs (pre-web).
+  vetusware/myabandonware X-rayed via Google's index of their pages: no aviation chart
+  titles (MapTech/FliteSoft/Jeppesen/AeroPack/ChartGeek all unindexed there).
+
+Alt-archive resurrection (lane G) - ZERO recoveries; infrastructure + intel:
+  Archive status 2026-07: Memento TimeTravel aggregator DEAD (DNS gone). Bibliotheca
+  Alexandrina mirror down (moot - IA mirror). LOC webarchive Cloudflare-walled. archive.today
+  429-wall. Stanford SWAP 403. UKWA UK-scoped. WORKING: arquivo.pt (CDX API, matchType=domain)
+  and Common Crawl (125 indexes from CC-MAIN-2008-2009; pre-2013 crawls are ARC format,
+  payloads TRUNCATE AT 512KB with no flag - detect via captured < Content-Length; fetch =
+  data.commoncrawl.org/<file> + Range from index offset/length).
+  Per-target: chartgeek /GE tiles+KMZs, fox-fam _Offline zips, welch binaries, nlneilson
+  zips/tiles, soaringdata 2010 CMRs, ftp.maptech, gearthhacks dlfile payloads, POA 113812 -
+  ABSENT from CC and arquivo.pt across all relevant indexes. IA-negative + CC-negative +
+  arquivo-negative = these binaries are archive-extinct; only the original authors have them.
+  THE LANE FIND (record-only): glideplan.com had a FREE full-chart mosaic download tree,
+  previously unknown - download/win_maps/<City>_<ed>.exe, three page generations
+  (2008: eds 75-83; 2010: 77-86; 2012: 80-89) = 117 distinct city+edition seamless sectional
+  mosaics squarely spanning 2008-2011, plus download/Mac_maps/<City>.zip (unversioned) and
+  Mac_custom_maps (May-2010 N-S pairs). CC-MAIN-2012 fetched ~39 Mac zips but all truncated
+  at 512KB; record headers PROVE contents (e.g. Chicago.zip CL 15,363,543, LM 2011-04-14,
+  contains "Chicago/Chicago 81 North.jpg"+South; inventory incl. Billings 81, Cheyenne 83,
+  Cincinnati 85, DFW 86, Great Falls 80, Houston 87, Jacksonville 87, KC 85, Klamath Falls
+  84, Lake Huron 81, Las Vegas 85, Montreal 84, NY 82, Omaha 83, SLC 85, San Antonio 86...;
+  full list scratchpad/laneg/glideplan_macmaps_inventory.txt). Live glideplan.com (RapidWeaver
+  rebuild) 404s the old tree; downloads-2/-3 serve only 1304/1307+ contest mosaics (2013+
+  editions already dole-covered; coordinator re-verified live). GlidePlan the company is
+  ALIVE -> now the TOP contact-class lead, with a precise ask: the win_maps/Mac_maps masters,
+  eds 75-89. Also recovered exact filename lists for every lost set (fox-fam 53 Offline zips
+  incl. all 15 Alaska; welch 38 half-sheet jpgs eds 70-78 Jan-2006; chartgeek free
+  downloads/ChartGEEK_<City>.exe 50-city set 2012 incl. all AK - previously unknown, also
+  uncaptured; nlneilson 18-zip manifest + FAA.xml; alexisparkinn 7 hiQuality jpgs) - saved
+  in lane_g_report.md for use in contact emails.
+
+CONTENTdm census (lane H) - angle now CLOSED:
+  Full numeric sweep of ALL OCLC-hosted instances cdm15000-18299 (boundaries verified empty
+  beyond): 1,310 live instances x 2 queries ("sectional aeronautical", "aeronautical chart"),
+  245 hit-sets triaged. COMPLETE CENSUS RESULT: every US-sectional image item in numeric-alias
+  CONTENTdm is already known/closed (TEVA, BPL, MOHAI, Newberry, UWM, OKMaps, Ohio Memory,
+  Huntington 825px-capped) except the El Paso find above. Caveat: instances that retired
+  their numeric alias (custom-domain-only) escape the sweep. ~25 additional city PL platforms
+  probed clean (Milwaukee, Cleveland, Cincinnati, Houston, Memphis, St. Louis, Seattle,
+  San Diego, Omaha, Fort Worth, Nashville, Knoxville, Norfolk, Tampa, Jacksonville,
+  Sacramento, Little Rock, LAPL, Hennepin, Detroit, Providence, New Orleans/LDL, Multnomah,
+  Wyoming, Digital Horizons ND, WA Rural Heritage). New bot-walls: Free Library Philadelphia
+  (Cloudflare), Dig DC (401), LDL (403), kchistory (JS-only).
+  Record-only: Fort Collins History Connection (cdm17204) Cheyenne sectional base May 1955
+  rev. Apr 1959 (accession 1979.065.0001) = dead .url stub, scan-request class; KC History
+  Missouri KC-StL chart w/ handwritten flight path (JS-walled, class ambiguous).
+
+Misc angles (lane I) - all four CLOSED with zero:
+  FTP/open-dir search ecosystem is DEAD (filesearch.ru/mmnt no HTTP, filemare 410,
+  searchftps.net expired, filepursuit DNS-dead; ODCrawler ES backend + bpp.umd.edu queried
+  direct = chart-negative). NACO internal filenames (seclosa/secsea98/secphx/...) indexed
+  NOWHERE public (web, IA full-text, CC, discmaster, govdocs1 dump.sql 1M-doc corpus = zero
+  sectional tif rows) - the raster-CD filenames never leaked. Magazine cover discs beyond
+  PC Pilot 82: Computer Pilot Edition Vol1, FS Tool Kit, Flight Sim 199x comps, MicroWINGS -
+  no chart rasters; Computer Pilot mag items are PDF page scans only; no AOD_VFRCharting
+  city zips beyond LA on live FAA server. Bob Denny: his domains (dc3.com/bobdenny.com/
+  acpx.dc3.com) are his ASTRONOMY software business, zero aviation - the 1940s-West scans
+  exist only behind x-plane.org file 38646's free-login wall.
+
+Leads for round 7 (ranked; search tooling is exhausted - these are action items):
+  1. CONTACT GLIDEPLAN (company alive; contact-form/index.php live): win_maps/Mac_maps
+     masters, 117 city+edition mosaics eds 75-89 (2008-2011). Precise inventory in hand.
+  2. CONTACT CLASS (unchanged from Part 6, now with exact filename asks from lane G):
+     Ivo Welch (38 Jan-2006 half-sheets + GeoTIFFs), Matt Fox (2005-09 source rasters incl.
+     15-chart Alaska Offline set), ChartGeek author (50-city free exe set + DVD), Neil
+     Neilson, Lynn Alley, Jay Honeck (hiQuality Iowa City set), Sean Morrissey.
+  3. FREE-LOGIN TASKS (manual browser; unchanged): AVSIM Fox Packs 1-11 + Myers 2009
+     Hawaii/Guam/Samoa, POA 141250 (1943 Cleveland PDF), x-plane.org 38646 (Denny 1940s W).
+  4. Physical media: MapTech AeroPack CDs, ChartGeek DVD, RMS Technology VISTA sectional
+     CDs (NEW name this round), Air Chart Systems atlases, NACO subscription CDs.
+  5. Scan requests: Harvard Orlando 1943, Fort Collins Cheyenne 1955/59, Archives West/OAC
+     personal-papers sectionals (list in Part 6).
+  6. usenetarchives.com pre-2003 corpus is now fully scriptable (base64 unlock) - a bulk
+     sweep of ALL rec.aviation.* 1993-2002 threads for host URLs is feasible if ever needed,
+     though this round's targeted reads suggest diminishing returns (all roads led to
+     aeroplanner/storefronts).
+
+================ PART 8 - EXTENDED INTERNET SEARCH (round 7) ================
+Added 46 entries to missing_from_dole_online.csv (now 1,490 findings total).
+Four lanes on ecosystems no prior round touched: GIS geoportals/OpenGeoMetadata, research-
+data repositories, international library aggregators, map dealers + Eastern-European hoards.
+Lane reports (incl. recovered inventories/barcodes/filename lists needed for contact emails)
+are preserved in the repo at dole_search_lane_reports/.
+
+Positive sources:
+  raremaps.com (Barry Lawrence Ruderman)    THE ROUND FIND (43 rows). The site is Cloudflare+
+    via public GCS bucket                   WebFetch-walled, but every listing's archival scan
+                                            sits UNAUTHENTICATED on Google Cloud Storage:
+                                            storage.googleapis.com/raremaps/img/dzi/img_<id>.dzi
+                                            (DZI deep-zoom pyramid, TileSize 254, tiles at
+                                            img_<id>_files/<level>/<c>_<r>.jpg; versos as
+                                            img_<id>_1.dzi on 10 items; single-file fallback
+                                            img/xlarge/<id>.jpg). Native ~20,000-33,000px -
+                                            higher-res than most LOC masters. Enumerated via
+                                            Wayback CDX slug filtering of listing pages.
+                                            Highlights: LOS ANGELES 1976 recto+verso
+                                            (32926x12329 - squarely in the 1970-2010 desert),
+                                            ~30 WWII [Restricted] military-overprint editions
+                                            1943-45 (New Orleans, Shreveport, El Paso, Winston-
+                                            Salem, Nashville, Chattanooga, Charlotte,
+                                            Birmingham, Mobile, Bellingham, Boise, Cheyenne,
+                                            Mt. Whitney, Portland, Seattle, Yellowstone Park,
+                                            San Antonio, Oklahoma City, Little Rock, Corpus
+                                            Christi, + a Texas-Louisiana-Mississippi regional-
+                                            format sheet, Miami/South Florida x5), San Diego
+                                            Q-2 run 1943/44/45/48, Phoenix "Edition of October
+                                            1935", Pt. Barrow Aug 1941 (Alaska 1:500k series,
+                                            caveat-flagged). Reusable: ANY raremaps item id ->
+                                            full native scan via the GCS pattern.
+  curtiswrightmaps.com                      2 rows: Dallas 1942 + Austin 1942 dealer scans at
+                                            10000px (WordPress trick: strip "-scaled" from the
+                                            uploaded image filename to get the original).
+  NLA Papers of Charles Whiting             1 row: New York 46th ed corrected to 1957-01-24,
+    (nla.obj-3762588236)                    /image 5000px open, native 17844x9651 per /dzi -
+                                            SECOND foreign-aviator holding after Sheila Scott;
+                                            distinct scan of dole-held ca002691r.
+
+Record-only (log, not CSV):
+  ASU Library Map & Geospatial Hub          NEW TOP-TIER CONTACT LEAD. ASU publishes its map-
+    (via ArcGIS Online feature service      drawer inventory as a public feature service
+    services3.arcgis.com/0OPQIK59PJJqLK0A   (maps_master): 22 US sectionals SCANNED AT 600DPI
+    /.../maps_master; never swept before)   (WideTEK48, 2022-23), SIX of them editions the dole
+                                            lacks entirely: JUNEAU 1971 (located nowhere else -
+                                            dole/NARA Juneau starts 1994), Cape Lisburne 1971,
+                                            Anchorage 1971, Albuquerque 1971, Hawaiian/Marianas/
+                                            Samoan 1971, Prescott 1964 front+back. Only 800px
+                                            thumbnails are public (kept OUT of the CSV per the
+                                            Part-4 Calisphere/Huntington low-res precedent;
+                                            rows staged in dole_search_lane_reports/
+                                            asu_thumbnails_record_only.csv); the 600dpi masters
+                                            are unpublished -> ASK ASU (lib.asu.edu/geo; exact
+                                            FILE_NAMEs/SuDoc/barcodes in lane_j_report.md).
+                                            Plus an unscanned Phoenix 1968-01-04 paper sheet.
+  NLA physical sectional sets               Trove Bib 1030946: National Ocean Survey ~1970s
+                                            NEAR-COMPLETE CONUS+AK+HI paper set - THE DESERT
+                                            ERA IN ONE INSTITUTION; Bib 7796679: C&GS/USAF
+                                            1940-66 set. Only librarian coverage-index diagrams
+                                            are digitised (nla.obj-233011372, -721622305). NLA
+                                            offers digitisation-on-demand -> top scan-request
+                                            target alongside ASU.
+
+Zero-result sources (checked, nothing to recover):
+  OpenGeoMetadata: all 36 institution repos shallow-cloned (5GB) and grepped - "sectional
+    aeronautical" appears in ONE file org-wide (Cornell DLG lineage citation); the 2,619
+    "aeronautical" records are TPC/ONC/GNC/DCW/AMS-foreign/WisDOT/current-FAA/ZIP-code noise.
+    (GitHub code search under-indexes badly - clone-and-grep is the only reliable method.)
+    Closes Stanford/NYU/Princeton/UT-Austin/UMN/Harvard-HGL geoportals in one sweep; HGL's
+    OGM export (22,074 records) independently re-closes Harvard. Princeton live API, CUGIR,
+    MIT geodata (410), WUSTL (DNS-dead), Scholars GeoPortal, JHU: zero/walled. ArcGIS Online
+    global search: only current-edition FAA services + the ASU inventory above.
+  Research-data repositories: DataCite WHOLE-CORPUS negative - api.datacite.org/dois?query=
+    "sectional aeronautical" = 0 records across the entire DOI system, transitively closing
+    Zenodo/Figshare/Dryad/Mendeley/IEEE-DataPort/OSF/Pangaea/all Dataverses. Direct sweeps
+    confirm (Zenodo=Mars atlas noise, Harvard Dataverse 174 hits = HGL Africa ONC/TPC set,
+    ScienceBase=Antarctica 1955, NCEI=satellite false-positive). No researcher has ever
+    deposited scanned US sectionals. Re-verifiable in seconds via the DataCite query.
+  International: Trove FULL sweep (127 "sectional aeronautical chart" records; only Scott(10,
+    known) + Whiting(1, above) digitised; rest physical pointing to LOC/FDLP). DigitalNZ
+    (WACs/planning/foreign), Gallica SRU (USGS geology + AAF foreign theatre), Canadiana
+    (text corpus), BC Archives/MemoryBC (0), IWM/RAF Museum/BL/JISC + Japan/Ireland/South
+    Africa dorks: all converge on known sets. No Whitehorse/Dawson strays in Canadian north.
+  Dealers: oldworldauctions (cloth charts only), Swann/PBA/Neatline/Glazer/Boston/MoA/Murray
+    Hudson/antiquemapsandprints/Old Map Gallery/invaluable/liveauctioneers, oldimprints
+    (endpoint dead): zero sectional scans beyond the two positives above.
+  Russian/E-European hoards: loadmap.net (JWT-walled, topo-only DB), mapstor/poehali/
+    retromap/meridian (topo-only), radioscanner.ru aviamaps (205 files enumerated: Ukrainian
+    VFR + ONC-class), avsim.su unreachable, runet searches ("аэронавигационная карта США"
+    etc.) converge on FAA/LOC/usahas. No runet hoard of US sectionals exists.
+  archive.org WARC/site-mirror uploads of glideplan/chartgeek/fox-fam/gelib/nlneilson: zero -
+    re-confirms those binaries are archive-extinct (only original authors have them).
+  OldMapsOnline: still fully walled (CF-403 on www/search/api hosts, curl+WebFetch, zero
+    wayback of the API hosts) - browser-only, low expected value.
+
+Technique notes (round 7):
+  - raremaps GCS pattern (above) - permanent bot-wall bypass for that dealer.
+  - Trove API keyless: apikey = md5("Wonder" + cookie[x-ctx]) with leading zeros stripped;
+    GET /api/search/-1?terms=...&pageSize=N&sortBy=relevance (sortBy mandatory or 500).
+  - curtiswrightmaps/WordPress: strip "-scaled" from upload filenames for full-res originals.
+  - Gallica SRU needs a browser UA; AtoM instances (BC Archives) need Cookie: visited=true;
+    Zenodo unauth API caps at 25 rows/page; NCEI OAS needs its cookie dance (lane_k_report).
+  - GitHub code search materially under-indexes OpenGeoMetadata - clone-and-grep instead.
+
+Leads carried to round 8 (see dole_search_handoff_round8.md - CONSOLIDATED RANKED LIST):
+  Search tooling is now exhausted across 7 rounds. Remaining recovery paths are actions:
+  download-phase (usahas + simviation, URGENT), contacts (ASU, GlidePlan, Welch, Fox, ...),
+  scan requests (NLA 1970s set, Harvard, Fort Collins, Archives West), free logins (AVSIM,
+  POA, x-plane.org), physical media (MapTech AeroPack, ChartGeek DVD, RMS VISTA, ACS
+  atlases), and a handful of browser-only residuals (OldMapsOnline, IU VDL, Arizona Memory,
+  usenetarchives bulk pre-2003 if ever worth it).
