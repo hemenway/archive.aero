@@ -31,7 +31,7 @@ flowchart LR
     E --> F["Static frontend<br/>Leaflet + PMTiles<br/>timeline UI · tile caching"]
 ```
 
-### 1. Chart processing pipeline — [`slicer.py`](slicer.py) (Python + GDAL)
+### 1. Chart processing pipeline — [`slicer.py`](scripts/slicer.py) (Python + GDAL)
 
 Takes raw chart scans (from the U.S. National Archives for historical editions, FAA digital products for current ones), georeferences them, crops the paper collars, warps everything to Web Mercator, and mosaics the individual sheets into one nationwide GeoTIFF per edition date. Handles scans that are actually PDFs, mixed projections, and decades of inconsistent FAA cartographic conventions.
 
