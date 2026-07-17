@@ -311,7 +311,11 @@
     /** CONFIGURATION **/
     const CONFIG = {
       baseUrl: 'https://data.archive.aero/sectionals/pmtiles/',
-      csvUrl: 'dates.csv', // Dynamic Source
+      csvUrl: 'dates.csv', // Fallback source when the metadata bundle is unavailable
+      // Single-file metadata bundle: era index + every archive's PMTiles
+      // header/directories, so scrubbing needs no per-archive metadata fetches.
+      // Rewritten by scripts/build_metadata_bundle.py --update-html; null = CSV only.
+      bundleUrl: null,
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       ranges: [], // Full list of PMTiles ranges
       frames: [], // Unique timeline dates (start dates)
@@ -432,6 +436,182 @@
       // `touch-action: manipulation` to `button, .leaflet-control-zoom a`, which
       // suppresses iOS double-tap zoom without synthesizing extra click events.
     };
+
+    /** METADATA BUNDLE **/
+    // One static file holds the era index plus each archive's PMTiles metadata
+    // prefix (header + directories), packed in decade groups. Scrubbing then
+    // costs one shared, edge-cached range read per decade instead of 2-3
+    // serialized round-trips per archive — a phone recording showed 91% of
+    // scrub traffic was those tiny metadata reads. Layout is defined in
+    // scripts/build_metadata_bundle.py, which also rewrites CONFIG.bundleUrl.
+    const MetaBundle = {
+      ready: false,
+      url: null,
+      baseUrl: null,
+      blobsStart: 0,
+      eras: new Map(),   // key -> {off, len, group} (offsets relative to blobsStart)
+      groups: [],        // decade groups: {name, off, len, i0, i1, state, bytes, lastUse}
+      // Resident groups are whole ArrayBuffers (0.2-4MB each); cap how many
+      // stay in memory so a full-history scrub can't pin ~16MB on iOS.
+      residentLimit: DeviceInfo.isIOS ? 4 : 12,
+      _useSeq: 0,
+
+      async load(url) {
+        // Preamble + gzipped index almost always fit in the first 256KB; one
+        // speculative read avoids a serial preamble-then-index round-trip.
+        const first = await this._fetchRange(url, 0, 262144);
+        const magic = 'AAMBv1\n\0';
+        for (let i = 0; i < magic.length; i++) {
+          if (first[i] !== magic.charCodeAt(i)) throw new Error('bundle: bad magic');
+        }
+        const indexGzLen = new DataView(first.buffer, first.byteOffset).getUint32(8, true);
+        this.blobsStart = 16 + indexGzLen;
+        let gz = first.subarray(16, Math.min(16 + indexGzLen, first.byteLength));
+        if (gz.byteLength < indexGzLen) {
+          const rest = await this._fetchRange(url, first.byteLength, this.blobsStart - first.byteLength);
+          const merged = new Uint8Array(indexGzLen);
+          merged.set(gz, 0);
+          merged.set(rest, gz.byteLength);
+          gz = merged;
+        }
+        const index = JSON.parse(await this._gunzipText(gz));
+        if (index.version !== 1) throw new Error(`bundle: unsupported version ${index.version}`);
+        this.url = url;
+        this.baseUrl = index.baseUrl;
+        this.groups = index.groups.map(g => ({ ...g, state: 'idle', bytes: null, lastUse: 0, failedAt: 0 }));
+        let gi = 0;
+        index.eras.forEach((era, i) => {
+          while (i >= this.groups[gi].i1) gi++;
+          this.eras.set(era.k, { off: era.off, len: era.len, group: this.groups[gi] });
+        });
+        this.ready = true;
+        return index;
+      },
+
+      async _fetchRange(url, offset, length) {
+        const resp = await fetch(url, {
+          headers: { range: `bytes=${offset}-${offset + length - 1}` }
+        });
+        if (resp.status !== 206 && resp.status !== 200) throw new Error(`bundle: HTTP ${resp.status}`);
+        let bytes = new Uint8Array(await resp.arrayBuffer());
+        // A server that ignores Range answers 200 with the whole file; slice
+        // locally so callers still get exactly the span they asked for.
+        if (resp.status === 200 && bytes.byteLength > length) {
+          bytes = bytes.subarray(offset, offset + length);
+        }
+        return bytes;
+      },
+
+      async _gunzipText(bytes) {
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+        return new Response(stream).text();
+      },
+
+      // Synchronous read for BundleSource: an ArrayBuffer when the span is
+      // resident, else null (caller falls through to the network). A miss on a
+      // not-yet-loaded group starts that group's fetch, so the next archive
+      // touched in the same decade is served locally.
+      getBytesFor(key, offset, length) {
+        if (!this.ready) return null;
+        const era = this.eras.get(key);
+        if (!era) return null;
+        // Reads past the metadata prefix are leaf-directory/tile reads (huge
+        // modern archives); those always belong to the network. The exception
+        // is pmtiles' fixed 16KB header probe at offset 0, which may overrun a
+        // small archive's prefix — serve it truncated, exactly like a server
+        // answering a range that crosses EOF.
+        const servable = offset === 0 || offset + length <= era.len;
+        if (!servable) return null;
+        const g = era.group;
+        if (g.state !== 'ready') {
+          this._loadGroup(g);
+          return null;
+        }
+        g.lastUse = ++this._useSeq;
+        const start = era.off - g.off + offset;
+        const end = Math.min(era.off - g.off + era.len, start + length);
+        return g.bytes.slice(start, end).buffer;
+      },
+
+      _loadGroup(g) {
+        if (g.state !== 'idle') return;
+        if (g.failedAt && Date.now() - g.failedAt < 15000) return;
+        g.state = 'loading';
+        this._fetchRange(this.url, this.blobsStart + g.off, g.len)
+          .then(bytes => {
+            if (bytes.byteLength !== g.len) throw new Error('bundle: short group read');
+            g.bytes = bytes;
+            g.state = 'ready';
+            g.failedAt = 0;
+            g.lastUse = ++this._useSeq;
+            this._evictOverBudget();
+          })
+          .catch(() => {
+            // Transient (offline, edge hiccup): scrub keeps working via the
+            // network path, and a later touch retries after the backoff.
+            g.state = 'idle';
+            g.bytes = null;
+            g.failedAt = Date.now();
+          });
+      },
+
+      _evictOverBudget() {
+        const resident = this.groups.filter(g => g.state === 'ready');
+        if (resident.length <= this.residentLimit) return;
+        resident.sort((a, b) => a.lastUse - b.lastUse);
+        for (const g of resident.slice(0, resident.length - this.residentLimit)) {
+          g.state = 'idle';
+          g.bytes = null;
+        }
+      },
+
+      // Warm the decade group around the scrubbed date plus its neighbours in
+      // the group list (calendar gaps collapse), so the next flick of the
+      // slider finds its metadata already resident.
+      touchDate(dateStr) {
+        if (!this.ready || !dateStr) return;
+        const decade = `${dateStr.slice(0, 3)}0s`;
+        const idx = this.groups.findIndex(g => g.name === decade);
+        if (idx === -1) return;
+        for (const g of [this.groups[idx], this.groups[idx + 1], this.groups[idx - 1]]) {
+          if (g) this._loadGroup(g);
+        }
+      },
+
+      // A 416/etag mismatch proved the bundled copy is stale for this archive:
+      // serve it from the network from now on.
+      dropEra(key) {
+        this.eras.delete(key);
+      }
+    };
+
+    // pmtiles Source that answers metadata reads from MetaBundle and everything
+    // else via the library's own FetchSource, keeping its 416/etag semantics.
+    class BundleSource {
+      constructor(url, key) {
+        this.url = url;
+        this.key = key;
+        this.net = new pmtiles.FetchSource(url);
+      }
+
+      getKey() {
+        return this.url;
+      }
+
+      async getBytes(offset, length, signal, etag) {
+        const local = MetaBundle.getBytesFor(this.key, offset, length);
+        if (local) return { data: local };
+        try {
+          return await this.net.getBytes(offset, length, signal, etag);
+        } catch (e) {
+          // A 416 (surfaced by FetchSource as EtagMismatch) means the archive
+          // changed after the bundle was built — its bundled offsets are lies
+          // now. Drop it so the retry pmtiles performs reads fresh bytes.
+          if (e instanceof pmtiles.EtagMismatch) MetaBundle.dropEra(this.key);
+          throw e;
+        }
+      }
+    }
 
     class CompositePMTilesLayer extends L.GridLayer {
       constructor(options = {}) {
@@ -755,7 +935,70 @@
     }
 
     /** DATA LOADER **/
+    // Shared by the bundle and CSV paths: rows are {key, url|null}.
+    function applyLoadedRanges(rows) {
+      const ranges = [];
+      rows.forEach(row => {
+        const key = (row.key || '').trim();
+        if (!key || key === '?') return;
+        // Start-only entries (no `_to_` end date) are data errors to be
+        // corrected upstream; skip them entirely so they're never shown.
+        if (!key.includes('_to_')) return;
+        const parsed = Utils.parseDateRangeKey(key);
+        if (!parsed) return;
+        ranges.push({
+          key,
+          start: parsed.startStr,
+          end: parsed.endStr,
+          startDate: parsed.startDate,
+          endDate: parsed.endDate,
+          startTime: parsed.startDate.getTime(),
+          endTime: parsed.endDate.getTime(),
+          url: row.url || null
+        });
+      });
+      CONFIG.ranges = ranges.sort((a, b) => {
+        return a.startTime - b.startTime || a.endTime - b.endTime;
+      });
+
+      const uniqueStartDates = Array.from(new Set(CONFIG.ranges.map(r => r.start)));
+      CONFIG.frames = uniqueStartDates.sort().map(date => ({
+        id: Utils.formatDateId(date),
+        date
+      }));
+
+      if (CONFIG.ranges.length > 0) {
+        let minStart = CONFIG.ranges[0];
+        let maxEnd = CONFIG.ranges[0];
+        CONFIG.ranges.forEach(range => {
+          if (range.startTime < minStart.startTime) minStart = range;
+          if (range.endTime > maxEnd.endTime) maxEnd = range;
+        });
+        CONFIG.dateBounds.min = Utils.toIsoDate(minStart.startDate);
+        // Ranges are end-exclusive ([start, end)), so the last date that
+        // actually has chart coverage is the day before the newest end date.
+        // Using the raw end date would default the picker to a blank frame.
+        CONFIG.dateBounds.max = Utils.toIsoDate(new Date(maxEnd.endTime - 86400000));
+      }
+    }
+
     async function loadData() {
+      // Prefer the metadata bundle: one artifact carries the era list AND the
+      // per-archive PMTiles headers/directories that make scrubbing cheap.
+      // Any failure (old browser without DecompressionStream, missing bundle,
+      // corrupt read) falls back to the legacy dates.csv path, where metadata
+      // reads simply go to the network as before.
+      if (CONFIG.bundleUrl && typeof DecompressionStream !== 'undefined') {
+        try {
+          const index = await MetaBundle.load(CONFIG.bundleUrl);
+          // The bundle is authoritative for where the archives live.
+          CONFIG.baseUrl = index.baseUrl;
+          applyLoadedRanges(index.eras.map(era => ({ key: era.k, url: null })));
+          return;
+        } catch (e) {
+          console.warn('Metadata bundle unavailable, using dates.csv', e);
+        }
+      }
       return new Promise((resolve, reject) => {
         Papa.parse(CONFIG.csvUrl, {
           download: true,
@@ -763,49 +1006,10 @@
           skipEmptyLines: true,
           complete: (results) => {
             try {
-              const ranges = [];
-              results.data.forEach(row => {
-                const key = (row.date_iso || '').trim();
-                if (!key || key === '?') return;
-                // Start-only entries (no `_to_` end date) are data errors to be
-                // corrected upstream; skip them entirely so they're never shown.
-                if (!key.includes('_to_')) return;
-                const parsed = Utils.parseDateRangeKey(key);
-                if (!parsed) return;
-                ranges.push({
-                  key,
-                  start: parsed.startStr,
-                  end: parsed.endStr,
-                  startDate: parsed.startDate,
-                  endDate: parsed.endDate,
-                  startTime: parsed.startDate.getTime(),
-                  endTime: parsed.endDate.getTime(),
-                  url: row.url || null
-                });
-              });
-              CONFIG.ranges = ranges.sort((a, b) => {
-                return a.startTime - b.startTime || a.endTime - b.endTime;
-              });
-
-              const uniqueStartDates = Array.from(new Set(CONFIG.ranges.map(r => r.start)));
-              CONFIG.frames = uniqueStartDates.sort().map(date => ({
-                id: Utils.formatDateId(date),
-                date
-              }));
-
-              if (CONFIG.ranges.length > 0) {
-                let minStart = CONFIG.ranges[0];
-                let maxEnd = CONFIG.ranges[0];
-                CONFIG.ranges.forEach(range => {
-                  if (range.startTime < minStart.startTime) minStart = range;
-                  if (range.endTime > maxEnd.endTime) maxEnd = range;
-                });
-                CONFIG.dateBounds.min = Utils.toIsoDate(minStart.startDate);
-                // Ranges are end-exclusive ([start, end)), so the last date that
-                // actually has chart coverage is the day before the newest end date.
-                // Using the raw end date would default the picker to a blank frame.
-                CONFIG.dateBounds.max = Utils.toIsoDate(new Date(maxEnd.endTime - 86400000));
-              }
+              applyLoadedRanges(results.data.map(row => ({
+                key: row.date_iso,
+                url: row.url
+              })));
               resolve();
             } catch (e) {
               console.error("Data processing error", e);
@@ -922,7 +1126,13 @@
         let pmtilesSource = this.pmtilesInstances[key];
         if (!pmtilesSource) {
           const pmtilesUrl = Utils.buildPMTilesUrl(key, customUrl);
-          pmtilesSource = new pmtiles.PMTiles(pmtilesUrl);
+          // Serve header/directory reads from the local metadata bundle when
+          // it covers this archive; tiles (and anything the bundle can't
+          // answer) still go over the network through the same source.
+          const source = (MetaBundle.ready && !customUrl && MetaBundle.eras.has(key))
+            ? new BundleSource(pmtilesUrl, key)
+            : pmtilesUrl;
+          pmtilesSource = new pmtiles.PMTiles(source);
           this.pmtilesInstances[key] = pmtilesSource;
           // Surface hard archive failures (404 / CORS / corrupt header) once, so a
           // data outage shows a message instead of a silently bare basemap. pmtiles
@@ -1020,6 +1230,8 @@
         // Remembered so a failed header fetch can replay this frame (see
         // getPMTilesInstance's retry path).
         this.lastFrameDate = selectedDateStr;
+        // Warm the surrounding decades' metadata while the user is here.
+        MetaBundle.touchDate(selectedDateStr);
 
         // A direct (non-debounced) showFrame supersedes any pending scrub repaint;
         // cancel it so a stale date can't repaint over this newer frame afterward.
