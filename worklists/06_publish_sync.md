@@ -1,5 +1,16 @@
 # Worklist 06 — Published site out of sync with the 2026-07-14 slicer run
 
+**✅ EXECUTED 2026-07-21.** The full run was converted (geotiff2pmtiles, webp q80, auto
+zooms to native max) and uploaded to `r2:charts/sectionals`, replacing same-key objects.
+`dates.csv` now has 3,658 rows: 3,656 new-run keys + 2 retained old archives for the
+damaged ranges (`2026-03-19_to_2026-05-14`, `2025-11-27_to_2026-01-22` — see worklist 01;
+`2026-01-22_to_2026-03-19` stays unpublished, Wichita-only). 7 empty sparse mosaics
+(2,253-byte 1941/1946–1950 ranges) were also skipped. 23 16-bit mosaics (1947–1961)
+needed `-rescale linear -rescale-range 0,65535 -alpha-band 4`. The 209 stale-key objects
+remain in R2 unreferenced (optional cleanup). coverage.json/bounds_cache rebuilt, 0
+unreachable; first metadata bundle published (`bundleUrl` in index.html). Local mirror:
+`/Volumes/drive/pmtiles`.
+
 *Generated 2026-07-16 by diffing mosaic names in `/Volumes/projects/2026-07-14 slicer run/`
 (3,666 tifs) against `dates.csv` (3,390 published pmtiles). Row-level detail:
 [`data/publish_sync.csv`](data/publish_sync.csv).*
