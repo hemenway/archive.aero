@@ -810,6 +810,19 @@ body.zooming .leaflet-control-attribution {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+/* Invisible sizer: the label text changes while scrubbing ("9% of the US
+   covered" vs "Full US coverage"), and since the timeline flexes to fill the
+   card, a varying label width would resize the track. Reserve the widest
+   possible string so the label's width stays constant. */
+.label-sub::after {
+  content: "00% of the US covered";
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
 }
 
 /* Loader */
