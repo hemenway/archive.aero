@@ -3,6 +3,10 @@
 *Generated 2026-07-16 from `/Volumes/projects/2026-07-14 slicer run/slicer_run.log`
 (161,719 lines; `L…` = log line numbers) + `processing_review_20260714_232303.csv`.*
 
+> **Tracked live:** sections A–E are mirrored as the checkbox to-do list in the
+> georef tool's Timeline sidebar (`scripts/1georef_toolv10.py`, items A1–E2, with
+> live dole-row matching). Done-state persists in `worklists/data/georef_todo.json`.
+
 ## Run summary
 
 | Metric | Value |
@@ -21,48 +25,65 @@ C is the long georeferencing tail (overlaps [04_georef_backlog.md](04_georef_bac
 
 ## A. GeoPDF SRS failures — the two crippled newest mosaics ⚠ TOP PRIORITY
 
-Error: `Cannot compute bounding box of cutline. Cannot find source SRS` — the pip-wheel
-GDAL reads no georeferencing from FAA GeoPDF-converted TIFs (known issue).
-Fix: re-warp with an SRS-capable GDAL build (e.g. conda/homebrew GDAL with PDF driver) or
-add GCPs to the rows.
+Error: `Cannot compute bounding box of cutline. Cannot find source SRS`.
+**Root cause corrected 2026-07-22:** the FAA `/PDFs/` sectionals (and the `_P` print
+bundles, and the archive.org mirror) carry **no georeferencing at all** — they are Adobe
+Photoshop image-conversion PDFs. No GDAL build reads georef from them; "use homebrew/conda
+GDAL" was a dead end.
 
-| Mosaic | Damage | Failed files |
+**Fix applied 2026-07-22:** corner GCPs + LCC params inferred from georeferenced sibling
+editions (05-14/07-09-2026 FAA `sectional-files` GeoTIFFs, same 300-dpi/1:500k grid) via
+NCC image correlation + RANSAC similarity fit (`scripts/georef_infer_from_sibling.py`),
+written into the dole rows so a from-scratch rebuild needs nothing but the rows.
+
+| Mosaic | Damage | Status |
 |---|---|---|
-| **2026-01-22_to_2026-03-19** | **Only 1 of 43 locations survived (Wichita)** | 42 wayback `…01-22-2026_PDFs_<name>.tif` files (L160865–L160946) |
-| **2026-03-19_to_2026-05-14** | 21 of ~52 locations (20 restored intermediates + fresh Chicago) | 27 `archive.org_…Sectional_Charts_<name>.tif` + 5 wayback files (L161031–L161115) |
-| 2025-11-27_to_2026-01-22 | 51 of 53 — missing Hawaiian Islands (L160723) + Denver | Denver's row is **broken data, not SRS**: its download_link is literally `https://web.archive.org/web/Service/Unavailable</h1>` and the saved file is a wayback error page. **Fix the dole row** (L160720). |
+| **2026-01-22_to_2026-03-19** | Only Wichita survived | ✔ rows carry inferred GCPs |
+| **2026-03-19_to_2026-05-14** | 21 of ~52 locations | ✔ inferred GCPs; 20 more locations covered by existing wayback `03-19-2026 sectional-files` zip rows (native georef, captured 2026-03-29) |
+| 2025-11-27_to_2026-01-22 | missing Hawaiian Islands + Denver | ✔ Denver row re-pointed at the real 20251225041526 capture (was a saved `Service/Unavailable` error page), PDF downloaded + converted; both rows carry inferred GCPs |
 
 (2026-05-14 and 2026-07-09 ranges completed cleanly with 57 sources each.)
 
 ## B. Pipeline bugs (code/data mechanics, not georeferencing)
 
-- [ ] **`resolve_filename` misses PDFs inside zip dirs** ([slicer.py:726](../scripts/slicer.py#L726)
-  globs only `**/*.tif`) → **38 `realcharts_sec*.zip` rows dropped** ("No source files
-  found") even though the extracted dirs exist (double-nested, e.g.
-  `realcharts_secJacksonville/realcharts_secJacksonville/realcharts_secJacksonville.pdf`).
-  Every 2010–2011 range those rows anchor was skipped (~21 ranges). Fix the resolver to
-  also glob `*.pdf` and rasterize (the 300-dpi conversion path already exists).
-- [ ] **13 `realvfrcharts_sec*.pdf` files are actually ZIP archives** — the prep downloader
-  saved `simviation.com/1/download?file=realvfrcharts_alaska_pt*.zip` raw bytes under the
-  dole `.pdf` filenames (`file` says `Zip archive data`). GDAL can't open them; all their
-  Alaska 2009–2011 ranges skipped. **Unzip each in place** (real PDFs are inside) or
-  re-point the rows. Files: Anchorage, CapeLisburne, Dawson, DutchHarbor, Fairbanks,
-  Juneau, Ketchikan, Kodiak, McGrath, Nome, PointBarrow, Seward, WesternAleutianIslands
-  (L142046–L142794).
-- [ ] **Wayback `_P.zip` print-PDF bundles contain no .tif** → same resolver gap:
-  `Hawaiian_Islands_90_P.zip` recovered via a duplicate row, but
-  `Hawaiian_Islands_93_P.zip` (2015-10-15→2016-04-28) had no fallback — that mosaic shipped
-  with the HI insets but **without the main Hawaiian Islands chart** (L147367).
-- [ ] **Seward_93.zip is a truncated 1.2 MB capture** — extraction fails, re-download dies
-  at the same byte (`IncompleteRead`, L70–76, L145520–29). Re-pull the largest CDX capture
-  (also on Worklists 02/03).
-- [ ] Silent-exhaustion gap: when a row runs out of duplicate options the log says nothing —
-  consider adding an explicit "all options exhausted" line to slicer.py.
+- [x] **`resolve_filename` misses PDFs inside zip dirs** — FIXED 2026-07-22: the resolver
+  now indexes/extracts local zips it finds, rasterizes sheet-size PDFs found in extracted
+  zip dirs at 300 dpi, and skips print-size pages. ⚠ BUT the `realcharts_sec*.zip`
+  payloads turned out to be **half-size multi-page A4 print PDFs** (simviation realcharts,
+  no georef, 5 pages each) — not machine-warpable; those ~21 ranges moved to section C
+  (manual assembly + georeferencing).
+- [x] **13 `realvfrcharts_sec*.pdf` files are actually ZIP archives** — FIXED 2026-07-22:
+  extracted in place (real PDFs inside) and slicer now auto-detects zip payloads saved
+  under a row's .pdf/.tif name and swaps in the member matching the filename
+  (`_extract_row_file_from_zip_payload`, also hooked into download_file). ⚠ Same caveat:
+  the PDFs are half-size multi-page print sets → georef work moved to section C.
+- [x] **Wayback `_P.zip` print-PDF bundles contain no .tif** — resolver now materializes
+  sheet-size PDFs from zip dirs. Hawaiian Islands 93: the native wayback
+  `Hawaiian_Islands_93.zip` row (added by the coverage audit) carries fully georeferenced
+  tifs for that range; the `_P` row is a documented last-resort fallback (its print PDFs
+  have no georef).
+- [x] **Seward_93.zip is a truncated 1.2 MB capture** — CONFIRMED UNRECOVERABLE 2026-07-22:
+  it is the *only* CDX capture of that URL, truncated in the archive itself; no NARA copy
+  (`Seward_SEC_93.tif` 404s). Row note documents it; range needs an alternative scan.
+- [x] Silent-exhaustion gap — FIXED 2026-07-22: slicer now logs
+  `✗ <location>: all N option(s) exhausted - location will be missing from <date>`.
+- [x] *(new)* **0-byte mosaics logged as COMPLETE** — FIXED 2026-07-22: `create_mosaic_geotiff`
+  fails loudly and deletes the output when the mosaic writes no pixels (<256 KB), and the
+  row-GCP warp path pre-checks that the cutline bbox intersects the GCP footprint
+  (`_gcp_cutline_mismatch`) so wrong-cutline/wrong-latlon rows fail with a pointed message
+  instead of shipping empty rasters.
+- [x] *(new)* **16-bit LOC scans** (Trinidad CO ca003733r–52, Portland OR ca003005r–21,
+  23 files) — converted to 8-bit in place 2026-07-22, and slicer now rescales UInt16 tifs
+  on download (`_ensure_8bit_tif`), so rebuilds stay Byte end-to-end.
 
 ## C. Sources needing georeferencing (GCPs) — 129 files, ~68 skipped ranges
 
 All fail with the no-source-SRS error; they're plain scans/JPGs with cutlines but no GCPs.
-This is the actionable core of [04_georef_backlog.md](04_georef_backlog.md):
+This is the actionable core of [04_georef_backlog.md](04_georef_backlog.md).
+*(2026-07-22: also inherits the simviation realcharts/realvfrcharts print-PDF sets from
+§B — half-size multi-page A4 pages that need manual assembly before georeferencing.
+Where a georeferenced sibling edition of the same layout exists, try
+`scripts/georef_infer_from_sibling.py` before hand-placing GCPs.)*
 
 | Group | Files | Ranges lost | Notes |
 |---|---|---|---|
@@ -76,28 +97,32 @@ This is the actionable core of [04_georef_backlog.md](04_georef_backlog.md):
 
 ## D. Corrupt / unusable sources — need replacement scans
 
-- [ ] **ca001479r.tif** (Fargo ND ed 27, 1952-11-19) — truncated TIFF, `TIFFReadEncodedStrip`
-  read error mid-file; dole note already says "Tiff file corrupt". Range skipped; this is
-  the run's one real data-loss VRT eviction (L80093–98). Re-download from LOC.
-- [ ] **Denver 2025-11-27 row** — garbage `Service_Unavailable` download_link (see §A).
-- [ ] **Seward_93.zip** (see §B).
+- [x] **ca001479r.tif** (Fargo ND ed 27, 1952-11-19) — FIXED 2026-07-22. The LOC *master*
+  tif is truncated **server-side** (every pull dies at the same byte); rebuilt the local
+  file from the complete LOC *service* JP2 derivative (same 12444×6981 grid, row GCPs
+  stay valid) and re-pointed the row's download_link at the jp2.
+- [x] **Denver 2025-11-27 row** — FIXED (see §A).
+- [ ] **Seward_93.zip** — unrecoverable online (see §B); needs an alternative scan.
 
 ## E. Silent single-chart holes in otherwise-completed mosaics
 
 Mosaics built fine but are missing one chart — invisible unless you look:
 
-| Missing chart | Mosaic range | Cause |
+| Missing chart | Mosaic range | Status 2026-07-22 |
 |---|---|---|
-| Chicago 1939 (ca000815) | 1939-02-01→1940-02-01 | no SRS |
-| Los Angeles SEC 101 | 2017-06-22→2017-12-07 | NARA tif "Too large output raster size" (bad NARA georef), no duplicate row (L149657) |
-| Washington SEC 101 | 2017-02-02→2017-07-20 | same (L149177) |
-| Hawaiian Islands 93 (main) | 2015-10-15→2016-04-28 | `_P.zip` resolver gap (§B) |
-| Seward 93 | 2013-11-14→2014-05-29 | truncated zip (§B) |
-| Hawaiian Islands + Denver | 2025-11-27→2026-01-22 | §A |
+| Chicago 1939 (ca000815) | 1939-02-01→1940-02-01 | still needs GCPs (§C) |
+| Los Angeles SEC 101 | 2017-06-22→2017-12-07 | ✔ inferred GCPs override the garbage NARA georef (fit was pixel-exact — the NARA file is a digital raster, not a scan) |
+| Washington SEC 101 | 2017-02-02→2017-07-20 | ✔ same |
+| Hawaiian Islands 93 (main) | 2015-10-15→2016-04-28 | ✔ native wayback `Hawaiian_Islands_93.zip` row (georeferenced tifs) |
+| Seward 93 | 2013-11-14→2014-05-29 | ✗ unrecoverable online (§B) |
+| Hawaiian Islands + Denver | 2025-11-27→2026-01-22 | ✔ §A (Hawaiian needed a rotation-aware fit — the print strip is rotated 34° vs. geography) |
 
-Denver SEC 94 and San Francisco SEC 97 hit the same NARA too-large error but recovered via
-wayback duplicate zips — the pattern to replicate for LA/Washington 101: add wayback
-`<City>_101.zip` duplicate rows.
+No wayback `Los_Angeles_101.zip` / `Washington_101.zip` captures exist (checked CDX
+2026-07-22: LA stops at 99, Washington skips from 100 to 104), so the Denver-94-style
+duplicate-row rescue was impossible — hence the GCP override. The NARA "Too large output
+raster" cause is now understood: the embedded georef maps the whole raster to a
+sub-arcsecond extent; row GCPs replace it because gdal.Translate with GCPs drops the
+source geotransform.
 
 ## F. Benign noise (do NOT chase)
 

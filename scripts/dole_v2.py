@@ -12,6 +12,11 @@ Schema (one row per map):
                                overrides `cutline` when present
     projection: lcc_lat1, lcc_lat2, lcc_lat0, lcc_lon0
                 blank for already-georeferenced maps
+    rotation:   degrees CLOCKWISE (0/90/180/270) the raw scan must be turned
+                to read upright. OPTIONAL column (old CSVs load without it).
+                gcp*_px/_py are stored in this rotated display frame; pipeline
+                consumers map them back to the raw frame with px_display_to_raw
+                before warping, so the raster itself is never resampled.
 
 This module is GDAL-light: only cutline geometry reading needs osgeo.ogr,
 imported lazily so metadata-only consumers can run without GDAL.
@@ -30,7 +35,12 @@ V2_FIELDS = [
     "gcp4_px", "gcp4_py", "gcp4_lat", "gcp4_lon",
     "cutline", "cutline_wkt",
     "lcc_lat1", "lcc_lat2", "lcc_lat0", "lcc_lon0",
+    "rotation",
 ]
+
+# Columns that may be absent from a CSV on disk (added after the v2 freeze).
+# Writers always emit the full V2_FIELDS header; readers treat these as "".
+V2_OPTIONAL_FIELDS = {"rotation"}
 
 LCC_TEMPLATE = (
     "+proj=lcc +lat_1={lat1} +lat_2={lat2} +lat_0={lat0} "
@@ -51,10 +61,17 @@ def _fnum(value) -> Optional[float]:
         return None
 
 
+def missing_required_fields(fieldnames) -> List[str]:
+    """Required v2 columns absent from a CSV header (optionals excluded)."""
+    present = set(fieldnames or [])
+    return [k for k in V2_FIELDS
+            if k not in present and k not in V2_OPTIONAL_FIELDS]
+
+
 def load_rows(csv_path) -> List[Dict[str, str]]:
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
-        missing = [k for k in V2_FIELDS if k not in (reader.fieldnames or [])]
+        missing = missing_required_fields(reader.fieldnames)
         if missing:
             raise ValueError(f"{csv_path}: not a v2 dole CSV, missing {missing}")
         return list(reader)
@@ -144,6 +161,58 @@ def cutline_ring(cutline, shape_dir=None) -> Optional[List[Tuple[float, float]]]
         raise ValueError(f"cutline is not a polygon: {geom.GetGeometryName()}")
     ring = geom.GetGeometryRef(0)
     return [(ring.GetX(i), ring.GetY(i)) for i in range(ring.GetPointCount())]
+
+
+# --- ROTATION -----------------------------------------------------------
+# A scanned chart may be stored sideways/upside-down. `rotation` records the
+# clockwise turn (90/180/270) that makes it upright. All pixel-space GCPs are
+# authored against the rotated ("display") image; these helpers convert
+# between that frame and the raw file's frame. Coordinates are continuous
+# GDAL pixel/line values with the origin at the image's top-left corner.
+
+def row_rotation(row) -> int:
+    """Row's display rotation in degrees clockwise: 0, 90, 180 or 270."""
+    value = str(row.get("rotation") or "").strip()
+    if not value:
+        return 0
+    try:
+        rot = int(float(value)) % 360
+    except ValueError:
+        return 0
+    return rot if rot in (90, 180, 270) else 0
+
+
+def rotated_dims(raw_w: float, raw_h: float, rotation: int) -> Tuple[float, float]:
+    """(width, height) of the raw image after rotating `rotation` degrees CW."""
+    if rotation in (90, 270):
+        return raw_h, raw_w
+    return raw_w, raw_h
+
+
+def px_raw_to_display(x: float, y: float, rotation: int,
+                      raw_w: float, raw_h: float) -> Tuple[float, float]:
+    """Map a raw-frame pixel into the frame rotated `rotation` degrees CW."""
+    if rotation == 90:
+        return raw_h - y, x
+    if rotation == 180:
+        return raw_w - x, raw_h - y
+    if rotation == 270:
+        return y, raw_w - x
+    return x, y
+
+
+def px_display_to_raw(dx: float, dy: float, rotation: int,
+                      raw_w: float, raw_h: float) -> Tuple[float, float]:
+    """Inverse of px_raw_to_display: display-frame pixel -> raw-frame pixel.
+
+    raw_w/raw_h are always the RAW file's dimensions (pre-rotation)."""
+    if rotation == 90:
+        return dy, raw_h - dx
+    if rotation == 180:
+        return raw_w - dx, raw_h - dy
+    if rotation == 270:
+        return raw_w - dy, dx
+    return dx, dy
 
 
 def is_gcp_ready(row) -> bool:

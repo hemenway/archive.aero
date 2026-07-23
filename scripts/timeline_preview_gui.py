@@ -23,7 +23,8 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from analyze_dole import analyze_csv, build_file_index, resolve_tif_file
-from dole_v2 import LCC_TEMPLATE, V2_FIELDS
+from dole_v2 import LCC_TEMPLATE
+from dole_v2 import missing_required_fields as dole_v2_missing_required_fields
 
 
 MASTER_CSV_V2 = "/Users/ryanhemenway/archive.aero/master_dole_v2.csv"
@@ -131,7 +132,7 @@ def normalize_editor_row(row):
 
 
 def _validate_v2_header(csv_path, fieldnames):
-    missing = [k for k in V2_FIELDS if k not in (fieldnames or [])]
+    missing = dole_v2_missing_required_fields(fieldnames)
     if missing:
         raise ValueError(f"{csv_path}: not a v2 dole CSV, missing {missing}")
 

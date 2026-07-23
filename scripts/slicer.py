@@ -4,6 +4,7 @@ FAA Chart Newslicer - CLI tool for processing sectional charts
 Pipeline: download -> warp/cut -> mosaic VRT -> GeoTIFF (one per date).
 """
 
+import math
 import os
 import sys
 import re
@@ -245,6 +246,98 @@ class ChartSlicer:
             "source_crs": crs_str,
         }
 
+    def _gcp_cutline_split_bounds_3857(self, cutline_ds: str, cutline_srs: str):
+        """
+        For a GCP-warp cutline that straddles the antimeridian, return two
+        EPSG:3857 output windows (east-of-dateline, west-of-dateline), else
+        None. Mirrors _antimeridian_split_bounds_3857 but is driven by the
+        cutline geometry (the GCP VRT has no geotransform to derive from).
+        """
+        try:
+            from osgeo import ogr
+            ds = ogr.Open(str(cutline_ds))
+            if ds is None:
+                return None
+            layer = ds.GetLayer(0)
+            feature = layer.GetNextFeature()
+            if feature is None:
+                return None
+            geom = feature.GetGeometryRef()
+            src = osr.SpatialReference()
+            if src.SetFromUserInput(cutline_srs if cutline_srs else "EPSG:4269") != 0:
+                return None
+            wgs = osr.SpatialReference()
+            wgs.ImportFromEPSG(4326)
+            for sr in (src, wgs):
+                if hasattr(sr, "SetAxisMappingStrategy"):
+                    sr.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            tr = osr.CoordinateTransformation(src, wgs)
+            ring = geom.GetGeometryRef(0)
+            pts = [tr.TransformPoint(ring.GetX(i), ring.GetY(i))[:2]
+                   for i in range(ring.GetPointCount())]
+            lons = [p[0] for p in pts]
+            lats = [p[1] for p in pts]
+            if max(lons) - min(lons) <= 180.0:
+                return None  # no straddle - normal single warp
+
+            world = 20037508.342789244
+            def merc_x(lon):
+                return lon / 180.0 * world
+            def merc_y(lat):
+                lat = max(min(lat, 85.0511), -85.0511)
+                return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * world / math.pi
+            y0, y1 = merc_y(min(lats)), merc_y(max(lats))
+            east_lons = [l for l in lons if l < 0]   # just east of the dateline
+            west_lons = [l for l in lons if l >= 0]  # just west of the dateline
+            bounds = []
+            if west_lons:
+                bounds.append((merc_x(min(west_lons)), y0, world, y1))
+            if east_lons:
+                bounds.append((-world, y0, merc_x(max(east_lons)), y1))
+            return bounds if len(bounds) == 2 else None
+        except Exception:
+            return None
+
+    def _gcp_cutline_mismatch(self, context: Dict[str, object]) -> Optional[str]:
+        """
+        Reason string when a row's cutline cannot overlap its GCP footprint
+        (bounding boxes disjoint in the row's LCC space), else None. Guard
+        only - any error while checking returns None so a warp is never
+        blocked by the check itself.
+        """
+        try:
+            cutline = context["cutline"]
+            ring = dole_v2.cutline_ring(cutline)
+            if not ring:
+                return None
+            if cutline["kind"] == "shapefile":
+                cutline_srs = self.get_shapefile_srs(cutline["path"])
+            else:
+                cutline_srs = dole_v2.CUTLINE_SRS
+            src = osr.SpatialReference()
+            dst = osr.SpatialReference()
+            if src.SetFromUserInput(cutline_srs) != 0:
+                return None
+            if dst.SetFromUserInput(str(context["source_crs"])) != 0:
+                return None
+            if hasattr(src, "SetAxisMappingStrategy") and hasattr(osr, "OAMS_TRADITIONAL_GIS_ORDER"):
+                src.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+                dst.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+            transformer = osr.CoordinateTransformation(src, dst)
+            cut = [transformer.TransformPoint(float(x), float(y))[:2] for x, y in ring]
+            gxs = [p[0] for p in context["projected"]]
+            gys = [p[1] for p in context["projected"]]
+            cxs = [p[0] for p in cut]
+            cys = [p[1] for p in cut]
+            if (min(cxs) > max(gxs) or max(cxs) < min(gxs)
+                    or min(cys) > max(gys) or max(cys) < min(gys)):
+                return ("cutline does not intersect the GCP footprint "
+                        f"(cutline x {min(cxs):.0f}..{max(cxs):.0f} y {min(cys):.0f}..{max(cys):.0f} vs "
+                        f"GCPs x {min(gxs):.0f}..{max(gxs):.0f} y {min(gys):.0f}..{max(gys):.0f})")
+        except Exception:
+            return None
+        return None
+
     def _date_from_str(self, date_str: str) -> Optional[datetime.date]:
         """Parse YYYY-MM-DD date strings with caching."""
         if date_str in self._date_cache:
@@ -450,11 +543,22 @@ class ChartSlicer:
                 # Update last download time for throttling
                 self.last_download_time = time.time()
 
+                # Some links deliver a ZIP saved under the row's .pdf/.tif name
+                # (simviation realvfrcharts_alaska_pt*.zip); swap in the real member.
+                if target_path.suffix.lower() != '.zip' and self._is_zip_payload(target_path):
+                    if not self._extract_row_file_from_zip_payload(target_path):
+                        return False
+
                 # Some Wayback "TIF" links actually serve GeoPDFs; rasterize to a real
                 # GeoTIFF before indexing so warping sees consistent TIFF sources.
                 if target_path.suffix.lower() == '.tif' and self._is_pdf_payload(target_path):
                     if not self._convert_pdf_payload_to_tif(target_path):
                         return False
+
+                # 16-bit LOC scans get rescaled to 8-bit on arrival so future
+                # mosaics stay Byte like the rest of the archive.
+                if target_path.suffix.lower() == '.tif' and not self._ensure_8bit_tif(target_path):
+                    return False
 
                 # Update file index with newly downloaded file
                 self.files_by_name[target_path.name] = target_path
@@ -533,6 +637,96 @@ class ChartSlicer:
         except OSError:
             return False
 
+    @staticmethod
+    def _is_zip_payload(path: Path) -> bool:
+        """True if the file's content is a ZIP archive, regardless of extension."""
+        try:
+            with open(path, 'rb') as f:
+                return f.read(4) == b'PK\x03\x04'
+        except OSError:
+            return False
+
+    def _extract_row_file_from_zip_payload(self, path: Path) -> bool:
+        """
+        A download link can deliver a ZIP that gets saved under the row's
+        .pdf/.tif filename (simviation realvfrcharts_alaska_pt*.zip rows, or a
+        *_P.zip print bundle behind a renamed row). Extract the archive and
+        replace `path` with the member whose stem matches it, converting
+        PDF -> 300 dpi GeoTIFF when the row wants a .tif.
+        """
+        payload_dir = path.parent / f"{path.stem}_zip_payload"
+        try:
+            self.log(f"    {path.name} is a ZIP payload; extracting to find its real file...")
+            with zipfile.ZipFile(path) as zf:
+                if not payload_dir.exists():
+                    zf.extractall(payload_dir)
+        except Exception as e:
+            self.log(f"    ✗ ZIP payload extraction failed for {path.name}: {e}")
+            return False
+
+        want_stem = path.stem.lower()
+        member = None
+        for cand in sorted(payload_dir.glob('**/*')):
+            if cand.is_file() and cand.stem.lower() == want_stem:
+                member = cand
+                break
+        if member is None:
+            self.log(f"    ✗ No member named '{path.stem}.*' inside ZIP payload {path.name}")
+            return False
+
+        ok = False
+        if member.suffix.lower() == path.suffix.lower():
+            shutil.move(str(member), str(path))
+            ok = True
+        elif member.suffix.lower() == '.pdf' and path.suffix.lower() == '.tif':
+            ok = self._convert_pdf_payload_to_tif(member, out_path=path)
+        else:
+            self.log(f"    ✗ Don't know how to turn member {member.name} into {path.name}")
+        if ok:
+            self.log(f"    ✓ Replaced ZIP payload {path.name} with member {member.name}")
+            self.files_by_name[path.name] = path
+            shutil.rmtree(payload_dir, ignore_errors=True)
+        return ok
+
+    def _ensure_8bit_tif(self, path: Path) -> bool:
+        """
+        Rescale 16-bit scans (LOC ca-series Trinidad CO / Portland OR batches)
+        to 8-bit in place - gdal_translate -ot Byte -scale 0 65535 0 255 - so
+        every mosaic stays Byte like the rest of the archive. Non-16-bit files
+        pass through untouched. Returns False only on a failed conversion.
+        """
+        tmp = path.with_name(f"{path.stem}_8bit_tmp.tif")
+        try:
+            ds = gdal.Open(str(path))
+            if ds is None:
+                return True
+            if ds.GetRasterBand(1).DataType != gdal.GDT_UInt16:
+                ds = None
+                return True
+            self.log(f"    16-bit source detected: rescaling {path.name} to 8-bit (0..65535 -> 0..255)")
+            out = gdal.Translate(str(tmp), ds, options=gdal.TranslateOptions(
+                outputType=gdal.GDT_Byte,
+                scaleParams=[[0, 65535, 0, 255]],
+                creationOptions=['TILED=YES', 'BIGTIFF=YES', 'COMPRESS=LZW'],
+            ))
+            ds = None
+            if out is None:
+                self.log(f"    ✗ 8-bit rescale failed for {path.name}")
+                return False
+            out = None
+            os.replace(tmp, path)
+            self.log(f"    ✓ Rescaled {path.name} to 8-bit")
+            return True
+        except Exception as e:
+            self.log(f"    ✗ 8-bit rescale failed for {path.name}: {e}")
+            return False
+        finally:
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
+
     def _convert_pdf_payload_to_tif(self, path: Path, out_path: Optional[Path] = None) -> bool:
         """
         Rasterize a PDF (either a real .pdf or a PDF payload saved under a .tif
@@ -570,6 +764,51 @@ class ChartSlicer:
             except OSError:
                 pass
             return False
+
+    @staticmethod
+    def _pdf_is_chart_sheet(pdf: Path) -> bool:
+        """
+        True when a PDF page is a full chart sheet (>= ~14 inches on a side at
+        300 dpi). Weeds out letter/A4 print sets (simviation realcharts pages,
+        readme PDFs) that would rasterize into useless page tiles.
+        """
+        try:
+            ds = gdal.OpenEx(str(pdf), gdal.OF_RASTER, allowed_drivers=['PDF'],
+                             open_options=['DPI=300'])
+            if ds is None:
+                return False
+            big = max(ds.RasterXSize, ds.RasterYSize) >= 4200
+            ds = None
+            return big
+        except Exception:
+            return False
+
+    def _materialize_tifs_from_pdf_dir(self, extract_dir: Path) -> List[Path]:
+        """
+        Extracted zips that contain PDFs instead of TIFs (realcharts_sec*.zip,
+        wayback *_P.zip print bundles, possibly double-nested): rasterize each
+        PDF to a sibling .tif at the standing 300 dpi convention and return the
+        tifs. In preview mode the PDFs are returned as-is (counted, not
+        converted).
+        """
+        pdfs = sorted(p for p in extract_dir.glob('**/*.pdf') if p.is_file())
+        tifs = []
+        for pdf in pdfs:
+            if not self._pdf_is_chart_sheet(pdf):
+                self.log(f"    Skipping print-size PDF (not a chart sheet): {pdf.name}")
+                continue
+            if self.preview_mode:
+                tifs.append(pdf)
+                continue
+            tif_path = pdf.with_suffix('.tif')
+            if not tif_path.exists():
+                if not self._convert_pdf_payload_to_tif(pdf, out_path=tif_path):
+                    continue
+            self.files_by_name[tif_path.name] = tif_path
+            tifs.append(tif_path)
+        if pdfs and not self.preview_mode:
+            self.log(f"    {extract_dir.name}: materialized {len(tifs)}/{len(pdfs)} PDFs as GeoTIFFs")
+        return tifs
 
     def _materialize_tif_from_local_pdf(self, filename: str) -> Optional[Path]:
         """
@@ -712,51 +951,83 @@ class ChartSlicer:
         if filename.endswith('.zip'):
             # Remove .zip extension to get directory name
             dir_name = filename[:-4]  # Remove '.zip'
+            extract_dir = self.source_dir / dir_name
 
-            # Check index FIRST (O(1) lookup)
-            if dir_name in self.tifs_by_dir:
-                # Found in index - return cached list
-                for tif_file in self.tifs_by_dir[dir_name]:
-                    results.append((tif_file, None))
-                return results
+            # Index the extracted directory if it exists but wasn't indexed
+            if dir_name not in self.tifs_by_dir:
+                direct_path = extract_dir
+                if not direct_path.exists():
+                    # The extracted dir may live in a subdir next to its zip
+                    indexed_zip = self.files_by_name.get(filename)
+                    if indexed_zip is not None:
+                        candidate = indexed_zip.parent / dir_name
+                        if candidate.exists() and candidate.is_dir():
+                            direct_path = candidate
+                            extract_dir = candidate
+                if direct_path.exists() and direct_path.is_dir():
+                    self.tifs_by_dir[dir_name] = [
+                        t for t in direct_path.glob('**/*.tif') if t.is_file()
+                    ]
 
-            # Not in index - check if directory exists but wasn't indexed
-            direct_path = self.source_dir / dir_name
-            if direct_path.exists() and direct_path.is_dir():
-                tif_files = list(direct_path.glob('**/*.tif'))
-                # Update index for future lookups
-                self.tifs_by_dir[dir_name] = tif_files
-                for tif_file in tif_files:
-                    if tif_file.is_file():
-                        results.append((tif_file, None))
-                if results:
-                    return results
+            # A local zip that was never extracted (e.g. downloaded by the prep
+            # phase, or a *_P.zip print bundle) can be extracted without a
+            # re-download.
+            if dir_name not in self.tifs_by_dir and not self.preview_mode:
+                zip_path = self.files_by_name.get(filename, self.source_dir / filename)
+                if zip_path.exists():
+                    extract_dir = zip_path.parent / dir_name
+                    if not self.extract_zip(zip_path, extract_dir):
+                        self.log(f"    Failed to extract: {filename}")
 
-            # If not found, try to download (but not in preview mode)
-            if not results and download_link and not self.preview_mode:
+            # Still nothing local: download + extract (but not in preview mode)
+            if dir_name not in self.tifs_by_dir and download_link and not self.preview_mode:
                 self.log(f"    File not found locally: {filename}")
                 zip_path = self.source_dir / filename
                 extract_dir = self.source_dir / dir_name
-
-                # Download the ZIP file
                 if self.download_file(download_link, zip_path):
-                    # Extract it (this will update the index)
-                    if self.extract_zip(zip_path, extract_dir):
-                        # Get the updated index entry
-                        if dir_name in self.tifs_by_dir:
-                            for tif_file in self.tifs_by_dir[dir_name]:
-                                results.append((tif_file, None))
-                        return results
-                    else:
+                    if not self.extract_zip(zip_path, extract_dir):
                         self.log(f"    Failed to extract: {filename}")
                 else:
                     self.log(f"    Failed to download: {download_link}")
+
+            tif_files = self.tifs_by_dir.get(dir_name) or []
+            if not tif_files and extract_dir.exists():
+                # Zip dirs holding only PDFs (realcharts_sec*.zip, wayback
+                # *_P.zip print bundles): rasterize each PDF to a sibling .tif
+                # (300 dpi convention) and mosaic from those.
+                tif_files = self._materialize_tifs_from_pdf_dir(extract_dir)
+                if tif_files:
+                    self.tifs_by_dir[dir_name] = tif_files
+
+            for tif_file in tif_files:
+                results.append((tif_file, None))
+            return results
 
         else:
             # Case 2: Direct .tif file
             # Check index FIRST (O(1) lookup)
             if filename in self.files_by_name:
-                results.append((self.files_by_name[filename], None))
+                found = self.files_by_name[filename]
+                # A downloader can save ZIP bytes under a row's .pdf/.tif name
+                # (simviation realvfrcharts_alaska_pt*.zip). Materialize the
+                # real member before handing the path to GDAL.
+                if (not self.preview_mode and found.suffix.lower() != '.zip'
+                        and self._is_zip_payload(found)):
+                    if not self._extract_row_file_from_zip_payload(found):
+                        return []
+                # Rows that point straight at a PDF: warp from a 300 dpi
+                # GeoTIFF conversion beside it, keeping resolution consistent
+                # with the *_PDFs_* sources (GDAL would otherwise rasterize the
+                # PDF at its internal default DPI mid-warp). Print-size PDFs
+                # (multi-page half-size realcharts sets) are left alone.
+                if (not self.preview_mode and found.suffix.lower() == '.pdf'
+                        and self._is_pdf_payload(found)
+                        and self._pdf_is_chart_sheet(found)):
+                    tif_path = found.with_suffix('.tif')
+                    if tif_path.exists() or self._convert_pdf_payload_to_tif(found, out_path=tif_path):
+                        self.files_by_name[tif_path.name] = tif_path
+                        found = tif_path
+                results.append((found, None))
                 return results
 
             # Not in index - check if file exists but wasn't indexed
@@ -1385,6 +1656,30 @@ class ChartSlicer:
             self.log(f"      ✗ Missing/invalid GCP metadata for {input_tiff.name}")
             return False
 
+        # Rows scanned sideways store a display rotation; their GCP pixels are
+        # authored in the rotated frame. Map them back to the raw file's frame
+        # (the order-1 GCP fit absorbs the rotation, so no raster resampling).
+        rotation = dole_v2.row_rotation(row)
+        if rotation:
+            src_ds = gdal.Open(str(input_tiff))
+            if src_ds is None:
+                self.log(f"      ✗ Cannot open {input_tiff.name} to apply rotation {rotation}")
+                return False
+            raw_w, raw_h = src_ds.RasterXSize, src_ds.RasterYSize
+            src_ds = None
+            context["pixels"] = [
+                dole_v2.px_display_to_raw(px, py, rotation, raw_w, raw_h)
+                for px, py in context["pixels"]
+            ]
+            self.log(f"    Rotation {rotation}° CW: GCP pixels remapped to raw frame")
+
+        # A wrong cutline ref or wrong GCP lat/lons otherwise "succeed" into an
+        # all-alpha raster and ship an empty mosaic (Tulsa/Milwaukee, 2026-07 run).
+        mismatch = self._gcp_cutline_mismatch(context)
+        if mismatch:
+            self.log(f"      ✗ {mismatch} for {input_tiff.name} - fix the dole row (cutline ref or GCP lat/lon)")
+            return False
+
         warp_out = getattr(self, 'warp_output', 'tif').lower()
         to_vrt = warp_out == 'vrt'
         self.log(f"    Warping {input_tiff.name} from row GCPs to {'VRT' if to_vrt else 'TIFF'}...")
@@ -1438,7 +1733,56 @@ class ChartSlicer:
                 cutline_ds = str(cutline_json)
                 cutline_srs = dole_v2.CUTLINE_SRS
 
+            # Antimeridian handling: a cutline straddling +/-180 balloons a
+            # single 3857 warp to world width (Western Aleutian Islands). Warp
+            # each side into its own clamped window and composite.
+            split_bounds = self._gcp_cutline_split_bounds_3857(cutline_ds, cutline_srs)
+
             def _run_warp(transformer_opts):
+                if split_bounds:
+                    parts = []
+                    for side_idx, bounds in enumerate(split_bounds):
+                        part = output_tiff.parent / f"{sanitized_stem}_am{side_idx}.tif"
+                        opts = gdal.WarpOptions(
+                            format="GTiff",
+                            dstSRS='EPSG:3857',
+                            cutlineDSName=cutline_ds,
+                            cutlineSRS=cutline_srs,
+                            outputBounds=bounds,
+                            dstAlpha=True,
+                            resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
+                            polynomialOrder=1,
+                            creationOptions=INTERMEDIATE_CREATION_OPTS,
+                            multithread=getattr(self, 'warp_multithread', True),
+                            transformerOptions=transformer_opts or None,
+                            warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
+                        )
+                        part_ds = gdal.Warp(str(part), str(temp_gcp_vrt), options=opts)
+                        if part_ds:
+                            part_ds = None
+                            parts.append(part)
+                    if not parts:
+                        return None
+                    # Same convention as the shapefile path: merging opposite
+                    # world edges makes a full-world canvas, so keep the side
+                    # with the most pixels and drop the sliver.
+                    def _area(p):
+                        d = gdal.Open(str(p))
+                        a = d.RasterXSize * d.RasterYSize
+                        return a
+                    best = max(parts, key=_area)
+                    self.log(f"      ↺ Antimeridian split: keeping larger side "
+                             f"({best.name}, {len(parts)} side(s) warped)")
+                    for p in parts:
+                        if p != best:
+                            try:
+                                p.unlink()
+                            except OSError:
+                                pass
+                    if output_tiff.exists():
+                        output_tiff.unlink()
+                    best.replace(output_tiff)
+                    return gdal.Open(str(output_tiff))
                 warp_options = gdal.WarpOptions(
                     format="VRT" if to_vrt else "GTiff",
                     dstSRS='EPSG:3857',
@@ -1622,6 +1966,16 @@ class ChartSlicer:
 
             if ds:
                 ds = None
+                # An "empty" mosaic (every source warp clipped to nothing) still
+                # writes a valid sparse GeoTIFF of a few KB and would otherwise
+                # get logged as COMPLETE. Fail loudly and leave no output so the
+                # date is retried after the source rows are fixed.
+                empty_floor_bytes = 256 * 1024
+                if tmp_output.stat().st_size < empty_floor_bytes:
+                    self.log(f"      ✗ Mosaic wrote no pixels ({tmp_output.stat().st_size} bytes) - "
+                             f"all sources clipped empty; check cutlines/GCPs of the rows feeding {output_tiff.name}")
+                    tmp_output.unlink()
+                    return False, None
                 os.replace(tmp_output, output_tiff)
                 file_size_mb = output_tiff.stat().st_size / (1024 * 1024) if output_tiff.exists() else 0
                 elapsed = time.time() - start_time
@@ -2081,6 +2435,12 @@ class ChartSlicer:
                             made_progress = True
                             if state['next_index'] < len(state['records']):
                                 self.log(f"    {location} (edition {edition}): trying next duplicate option")
+                            else:
+                                self.log(
+                                    f"    ✗ {location} (edition {edition}): all "
+                                    f"{len(state['records'])} option(s) exhausted - "
+                                    f"location will be missing from {date}"
+                                )
                             continue
 
                         self.log(f"    {location} (edition {edition}){attempt_label}: {filename if filename else 'pattern match'}")
@@ -2212,6 +2572,12 @@ class ChartSlicer:
                             if state['next_index'] < len(state['records']):
                                 self.log(
                                     f"    {state['location']} (edition {state['edition']}): warp failed; trying next duplicate option"
+                                )
+                            else:
+                                self.log(
+                                    f"    ✗ {state['location']} (edition {state['edition']}): all "
+                                    f"{len(state['records'])} option(s) exhausted - "
+                                    f"location will be missing from {date}"
                                 )
 
                 # Register warped outputs directly for mosaic (no per-location VRT combining)
