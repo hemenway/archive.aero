@@ -96,6 +96,45 @@ export default {
     }
     if (!key) return new Response("Not found", { status: 404 });
 
+    // HEAD: answer from object metadata alone. Routing HEAD through the GET
+    // path streams the whole object into the edge cache via waitUntil.
+    if (request.method === "HEAD") {
+      let head;
+      try {
+        head = await env.BUCKET.head(key);
+      } catch (err) {
+        console.error(
+          `R2 head failed for ${key}: ${String((err && err.message) || err)}`
+        );
+        return withCors(
+          new Response(null, {
+            status: 503,
+            headers: { "retry-after": "1", "cache-control": "no-store" },
+          }),
+          origin
+        );
+      }
+      if (!head) return new Response("Not found", { status: 404 });
+      const inm = request.headers.get("if-none-match");
+      if (inm && inm === head.httpEtag) {
+        return withCors(
+          new Response(null, {
+            status: 304,
+            headers: { etag: head.httpEtag, "cache-control": CACHE_CONTROL },
+          }),
+          origin
+        );
+      }
+      const headers = new Headers();
+      head.writeHttpMetadata(headers);
+      headers.set("etag", head.httpEtag);
+      headers.set("accept-ranges", "bytes");
+      headers.set("cache-control", CACHE_CONTROL);
+      headers.set("content-length", String(head.size));
+      headers.set("x-cache", "HEAD");
+      return withCors(new Response(null, { status: 200, headers }), origin);
+    }
+
     const range = parseRange(request.headers.get("range"));
     // An inverted range (end < start) can never be satisfied; R2 would throw.
     if (range && range.end !== undefined && range.end < range.offset) {
@@ -183,12 +222,14 @@ export default {
       headers.set("cache-control", CACHE_CONTROL);
 
       if (range) {
+        // Clamp to the object size: R2 truncates a bounded range that overruns
+        // EOF, and the headers must match the bytes actually delivered.
         const total = object.size;
         const rangeStart = range.offset;
-        const rangeLen = r2Range.length ?? total - rangeStart;
-        const rangeEnd = rangeStart + rangeLen - 1;
+        const rangeEnd =
+          Math.min(rangeStart + (r2Range.length ?? total - rangeStart), total) - 1;
         headers.set("content-range", `bytes ${rangeStart}-${rangeEnd}/${total}`);
-        headers.set("content-length", String(rangeLen));
+        headers.set("content-length", String(rangeEnd - rangeStart + 1));
       } else {
         headers.set("content-length", String(object.size));
       }

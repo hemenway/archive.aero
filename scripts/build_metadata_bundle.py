@@ -94,6 +94,11 @@ class LocalSource:
         with open(self.dir / f"{key}.pmtiles", "rb") as f:
             return f.read(length)
 
+    def read_prefix(self, key):
+        """Returns (first min(HEADER_READ, size) bytes, total file size)."""
+        size = self.size(key)
+        return self.read(key, min(HEADER_READ, size)), size
+
 
 class RemoteSource:
     """Range-reads era files from the CDN."""
@@ -120,6 +125,26 @@ class RemoteSource:
         if len(data) < length:
             raise IOError(f"{key}: short read {len(data)} < {length}")
         return data
+
+    def read_prefix(self, key):
+        """One range GET replaces HEAD+GET: total size comes from Content-Range.
+
+        Returns (first min(HEADER_READ, size) bytes, total file size)."""
+        req = urllib.request.Request(
+            self._url(key),
+            headers={"Range": f"bytes=0-{HEADER_READ - 1}",
+                     "User-Agent": "aamb-builder"})
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = r.read()
+            content_range = r.headers.get("Content-Range")
+        if content_range:  # "bytes 0-16383/123456789"
+            total = int(content_range.rsplit("/", 1)[1])
+        else:  # plain 200: server ignored the range, body is the whole file
+            total = len(data)
+        if len(data) < min(HEADER_READ, total):
+            raise IOError(
+                f"{key}: short read {len(data)} < {min(HEADER_READ, total)}")
+        return data, total
 
 
 # ---------------------------------------------------------------- extraction
@@ -166,8 +191,7 @@ def extract_one(source, key, warnings):
     if not dates:
         warnings.append(f"{key}: filename is not <start>_to_<end>, skipped")
         return None
-    size = source.size(key)
-    head = source.read(key, min(HEADER_READ, size))
+    head, size = source.read_prefix(key)
     try:
         header = deserialize_header(head[:127])
     except Exception as e:
