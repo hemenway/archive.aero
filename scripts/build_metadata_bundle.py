@@ -19,9 +19,14 @@ Index JSON (offsets are RELATIVE to blobs_start = 16 + G):
       "version": 1,
       "generated": "...Z",
       "baseUrl": "https://data.archive.aero/sectionals/",
-      "eras":   [{"k": key, "size": fileSize, "off": rel, "len": blobLen}, ...],
+      "eras":   [{"k": key, "size": fileSize, "off": rel, "len": blobLen,
+                  "b": [w, s, e, n]?}, ...],
       "groups": [{"name": "1950s", "off": rel, "len": n, "i0": a, "i1": b}, ...]
     }
+
+An era's optional "b" is its WGS84 bounds from the PMTiles header, rounded
+outward to 2 decimals. The client culls archives per screen tile with it;
+when absent (wrapped/implausible header bounds) the archive is never culled.
 
 An era's blob is byte-for-byte the first `len` bytes of its .pmtiles file.
 If `len` covers only header+root+metadata (big modern archives), leaf
@@ -46,6 +51,7 @@ import gzip
 import hashlib
 import io
 import json
+import math
 import os
 import random
 import re
@@ -185,8 +191,26 @@ def metadata_prefix_len(header, file_size, key, warnings):
     return trimmed
 
 
+def header_bounds(header, key, warnings):
+    """WGS84 [w, s, e, n] rounded outward to 2 decimals, or None to never cull.
+
+    None covers antimeridian-wrapping archives (Aleutians: min_lon > max_lon)
+    and implausible/zero-area header bounds — the client renders those
+    archives for every tile rather than risk hiding a chart."""
+    w = header["min_lon_e7"] / 1e7
+    s = header["min_lat_e7"] / 1e7
+    e = header["max_lon_e7"] / 1e7
+    n = header["max_lat_e7"] / 1e7
+    if not (-180 <= w < e <= 180 and -86 <= s < n <= 86):
+        warnings.append(
+            f"{key}: header bounds unusable ({w},{s},{e},{n}), never culled")
+        return None
+    return [math.floor(w * 100) / 100, math.floor(s * 100) / 100,
+            math.ceil(e * 100) / 100, math.ceil(n * 100) / 100]
+
+
 def extract_one(source, key, warnings):
-    """Returns (key, start, end, file_size, blob bytes) or None to skip."""
+    """Returns (key, start, end, file_size, bounds, blob bytes) or None to skip."""
     dates = parse_key_dates(key)
     if not dates:
         warnings.append(f"{key}: filename is not <start>_to_<end>, skipped")
@@ -200,26 +224,30 @@ def extract_one(source, key, warnings):
     prefix = metadata_prefix_len(header, size, key, warnings)
     if prefix is None:
         return None
+    bounds = header_bounds(header, key, warnings)
     blob = head[:prefix] if prefix <= len(head) else source.read(key, prefix)
-    return key, dates[0], dates[1], size, blob
+    return key, dates[0], dates[1], size, bounds, blob
 
 
 # ---------------------------------------------------------------- assembly
 
 def build_bundle(records, base_url):
-    """records: list of (key, start, end, size, blob). Returns (bytes, stats)."""
+    """records: list of (key, start, end, size, bounds, blob). Returns (bytes, stats)."""
     # Chronological within decade groups; groups chronological.
     records.sort(key=lambda r: (r[1][:3] + "0", r[1], r[2], r[0]))
 
     eras, groups, blobs = [], [], []
     rel = 0
     for rec in records:
-        key, start, _end, size, blob = rec
+        key, start, _end, size, bounds, blob = rec
         decade = start[:3] + "0s"
         if not groups or groups[-1]["name"] != decade:
             groups.append({"name": decade, "off": rel, "len": 0,
                            "i0": len(eras), "i1": len(eras)})
-        eras.append({"k": key, "size": size, "off": rel, "len": len(blob)})
+        era = {"k": key, "size": size, "off": rel, "len": len(blob)}
+        if bounds:
+            era["b"] = bounds
+        eras.append(era)
         groups[-1]["len"] += len(blob)
         groups[-1]["i1"] = len(eras)
         blobs.append(blob)
@@ -257,7 +285,7 @@ def emit_dates_csv(records, base_url, path):
     rows = sorted(records, key=lambda r: (r[1], r[2]), reverse=True)
     with open(path, "w") as f:
         f.write("date_iso,url\n")
-        for key, _s, _e, _size, _blob in rows:
+        for key, _s, _e, _size, _bounds, _blob in rows:
             f.write(f"{key},{base_url}{key}.pmtiles\n")
 
 
@@ -300,6 +328,8 @@ def verify_bundle(path, source, sample=25):
         header = deserialize_header(bytes(blob[:127]))
         assert header["tile_data_offset"] >= era["len"], f"{era['k']}: prefix overruns tile data"
         assert era["size"] == source.size(era["k"]), f"{era['k']}: size changed"
+        assert era.get("b") == header_bounds(header, era["k"], []), \
+            f"{era['k']}: bundled bounds differ from header"
     log(f"verify: OK ({len(picks)} eras byte-compared against source)")
 
 

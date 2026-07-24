@@ -315,7 +315,7 @@
       // Single-file metadata bundle: era index + every archive's PMTiles
       // header/directories, so scrubbing needs no per-archive metadata fetches.
       // Rewritten by scripts/build_metadata_bundle.py --update-html; null = CSV only.
-      bundleUrl: 'https://data.archive.aero/sectionals/metadata-e11fbb5a.bundle',
+      bundleUrl: 'https://data.archive.aero/sectionals/metadata-d12df478.bundle',
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       ranges: [], // Full list of PMTiles ranges
       frames: [], // Unique timeline dates (start dates)
@@ -333,12 +333,14 @@
       // scrub prefetches fan out per screen tile, so without in-flight dedupe an
       // identical z/x/y can be requested 100+ times in a single burst — the LRU
       // cache alone can't prevent that because it only holds resolved data.
-      fetchTileDeduped: (src, cache, inflight, cacheKey, z, x, y) => {
+      // getSrc is a thunk so a cache hit (or joining an in-flight fetch) never
+      // instantiates the archive — instances exist only for tiles actually read.
+      fetchTileDeduped: (getSrc, cache, inflight, cacheKey, z, x, y) => {
         const cached = cache ? cache.get(cacheKey) : null;
         if (cached) return Promise.resolve(cached);
         let pending = inflight.get(cacheKey);
         if (!pending) {
-          pending = src.getZxy(z, x, y)
+          pending = getSrc().getZxy(z, x, y)
             .then(result => {
               const data = result && result.data ? result.data : null;
               if (data && cache) cache.set(cacheKey, data);
@@ -431,7 +433,16 @@
         // repaint instead of letting it paint an old date over the newer frame.
         debounced.cancel = () => { clearTimeout(timeout); timeout = null; };
         return debounced;
-      }
+      },
+      // WGS84 [w, s, e, n] of a slippy tile, used to cull archives whose header
+      // bounds (bundle index "b") can't overlap the tile before any PMTiles
+      // work happens. Archives without bounds are never culled.
+      tileLonLatBounds: (z, x, y) => {
+        const n = Math.pow(2, z);
+        const lat = ty => Math.atan(Math.sinh(Math.PI * (1 - 2 * ty / n))) * 180 / Math.PI;
+        return [x / n * 360 - 180, lat(y + 1), (x + 1) / n * 360 - 180, lat(y)];
+      },
+      boundsIntersect: (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]
       // preventDoubleTapZoom removed: styles.css already applies
       // `touch-action: manipulation` to `button, .leaflet-control-zoom a`, which
       // suppresses iOS double-tap zoom without synthesizing extra click events.
@@ -744,17 +755,24 @@
         const sourceX = placement.offsetX * sourceSize;
         const sourceY = placement.offsetY * sourceSize;
 
-        const sourcesSnapshot = this.sources.slice();
+        // Spatial cull: most archives cover one chart's region, so the median
+        // z10 tile overlaps ~1 of the ~80 active archives. Dropping the rest
+        // here skips their directory lookups, leaf fetches, and instance
+        // creation entirely. filter() returns a fresh array, so this keeps the
+        // snapshot semantics (and layer ordering) of the old .slice().
+        const tileBounds = Utils.tileLonLatBounds(z, x, y);
+        const sourcesSnapshot = this.sources.filter(source =>
+          !source.bounds || Utils.boundsIntersect(source.bounds, tileBounds));
         const fetched = await Promise.all(sourcesSnapshot.map(async source => {
           const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
           let tileData = null;
           try {
             if (cacheKey) {
               tileData = await Utils.fetchTileDeduped(
-                source.pmtiles, this.tileDataCache, this.tileFetchInflight,
+                source.getPMTiles, this.tileDataCache, this.tileFetchInflight,
                 cacheKey, z, x, y);
             } else {
-              const result = await source.pmtiles.getZxy(z, x, y);
+              const result = await source.getPMTiles().getZxy(z, x, y);
               tileData = result && result.data ? result.data : null;
             }
           } catch (e) {
@@ -954,7 +972,10 @@
           endDate: parsed.endDate,
           startTime: parsed.startDate.getTime(),
           endTime: parsed.endDate.getTime(),
-          url: row.url || null
+          url: row.url || null,
+          // [w, s, e, n] from the bundle index; null (CSV fallback, old bundle,
+          // antimeridian-wrapping header) means the archive is never culled.
+          bounds: row.bounds || null
         });
       });
       CONFIG.ranges = ranges.sort((a, b) => {
@@ -993,7 +1014,7 @@
           const index = await MetaBundle.load(CONFIG.bundleUrl);
           // The bundle is authoritative for where the archives live.
           CONFIG.baseUrl = index.baseUrl;
-          applyLoadedRanges(index.eras.map(era => ({ key: era.k, url: null })));
+          applyLoadedRanges(index.eras.map(era => ({ key: era.k, url: null, bounds: era.b || null })));
           return;
         } catch (e) {
           console.warn('Metadata bundle unavailable, using dates.csv', e);
@@ -1207,19 +1228,25 @@
           .slice(0, DeviceInfo.isIOS ? 12 : 40);
         if (coords.length === 0) return;
 
+        // Same per-tile bounds cull as _renderTile, and the same laziness: an
+        // adjacent-date archive that overlaps none of the visible tiles costs
+        // no instance and no requests.
+        const placements = coords.map(c => layer._normalizeCoords(c));
+        const tileBounds = placements.map(p => Utils.tileLonLatBounds(p.z, p.x, p.y));
+
         for (const dateStr of dateStrs) {
           if (!dateStr) continue;
           const ranges = this._rangesForDate(dateStr);
           for (const range of ranges) {
-            const src = this.getPMTilesInstance(range.key, range.url);
-            for (const c of coords) {
-              const placement = layer._normalizeCoords(c);
+            const getSrc = () => this.getPMTilesInstance(range.key, range.url);
+            placements.forEach((placement, i) => {
+              if (range.bounds && !Utils.boundsIntersect(range.bounds, tileBounds[i])) return;
               const cacheKey = `${range.key}|${placement.z}|${placement.x}|${placement.y}`;
               Utils.fetchTileDeduped(
-                src, this.tileDataCache, this.tileFetchInflight,
+                getSrc, this.tileDataCache, this.tileFetchInflight,
                 cacheKey, placement.z, placement.x, placement.y
               ).catch(() => {});
-            }
+            });
           }
         }
       }
@@ -1256,9 +1283,14 @@
           && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
         if (sameKeys) return; // Only the opacity changed; already applied above.
 
+        // Lazy sources: instances are created inside _renderTile only for
+        // archives that survive the per-tile bounds cull, so a frame with ~80
+        // active archives no longer builds ~80 PMTiles instances (which blew
+        // the 18-instance iOS cache on every scrub step).
         const sources = rangesInEffect.map(range => ({
           key: range.key,
-          pmtiles: this.getPMTilesInstance(range.key, range.url)
+          bounds: range.bounds,
+          getPMTiles: () => this.getPMTilesInstance(range.key, range.url)
         }));
         this.activeKeys = activeKeys;
 
