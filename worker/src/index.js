@@ -43,6 +43,28 @@ function withCors(response, origin) {
 // re-uploaded under the same name can be served stale for up to a day.
 const CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=3600";
 
+// Client validators are compared here in the Worker, never pushed down to R2:
+// BUCKET.get() with onlyIf + range throws when the precondition fails (the
+// normal file-unchanged case), which turned every browser revalidation that
+// missed the edge cache into a 503. Accepts the header's list/weak forms.
+function etagMatches(ifNoneMatch, httpEtag) {
+  if (!ifNoneMatch || !httpEtag) return false;
+  return ifNoneMatch.split(",").some((tag) => {
+    tag = tag.trim();
+    if (tag === "*") return true;
+    if (tag.startsWith("W/")) tag = tag.slice(2);
+    return tag === httpEtag;
+  });
+}
+
+// Bounded ranges up to this size are buffered and shared across concurrent
+// requests in the isolate: tile herds fan 80+ identical reads out in the same
+// millisecond, far faster than the first response can populate the edge
+// cache, so without this every one of them pays its own R2 read. Larger or
+// unbounded reads (whole multi-GB archives) stream straight through.
+const COALESCE_MAX_BYTES = 1 << 20;
+const inflightRanges = new Map();
+
 // 416 with the real object size lets range clients (pmtiles) recover by
 // refetching the header instead of treating the archive as broken.
 async function rangeNotSatisfiable(env, key, origin) {
@@ -116,7 +138,7 @@ export default {
       }
       if (!head) return new Response("Not found", { status: 404 });
       const inm = request.headers.get("if-none-match");
-      if (inm && inm === head.httpEtag) {
+      if (etagMatches(inm, head.httpEtag)) {
         return withCors(
           new Response(null, {
             status: 304,
@@ -165,7 +187,7 @@ export default {
       const cachedEtag = cached.headers.get("etag");
       // Revalidating client + unchanged file -> 304 straight from the edge,
       // no R2 read at all.
-      if (ifNoneMatch && cachedEtag && ifNoneMatch === cachedEtag) {
+      if (etagMatches(ifNoneMatch, cachedEtag)) {
         return withCors(
           new Response(null, {
             status: 304,
@@ -175,18 +197,105 @@ export default {
         );
       }
       response = fromCached(cached);
-    } else {
-      // Miss: read from R2. Forward the client's validator so an unchanged file
-      // costs a bodyless conditional read instead of a full range transfer.
-      const getOptions = r2Range ? { range: r2Range } : {};
-      if (ifNoneMatch) getOptions.onlyIf = { etagDoesNotMatch: ifNoneMatch };
+    } else if (
+      r2Range &&
+      r2Range.length !== undefined &&
+      r2Range.length <= COALESCE_MAX_BYTES
+    ) {
+      // Miss on a bounded, buffer-sized range: share one R2 read among every
+      // concurrent request for the same range. The leader buffers the body
+      // (tile reads are KBs, capped at COALESCE_MAX_BYTES) so joiners can each
+      // build their own response from the same bytes.
+      const inflightKey = cacheKey.url;
+      let flight = inflightRanges.get(inflightKey);
+      const isLeader = !flight;
+      if (!flight) {
+        flight = (async () => {
+          const object = await env.BUCKET.get(key, { range: r2Range });
+          if (!object) return null;
+          const headers = new Headers();
+          object.writeHttpMetadata(headers);
+          headers.set("etag", object.httpEtag);
+          headers.set("accept-ranges", "bytes");
+          headers.set("cache-control", CACHE_CONTROL);
+          // Clamp to the object size: R2 truncates a bounded range that
+          // overruns EOF, and the headers must match the bytes delivered.
+          const total = object.size;
+          const rangeStart = range.offset;
+          const rangeEnd = Math.min(rangeStart + r2Range.length, total) - 1;
+          headers.set("content-range", `bytes ${rangeStart}-${rangeEnd}/${total}`);
+          headers.set("content-length", String(rangeEnd - rangeStart + 1));
+          const buffer = await object.arrayBuffer();
+          return { buffer, headers, httpEtag: object.httpEtag };
+        })();
+        inflightRanges.set(inflightKey, flight);
+        // Evict on settlement, success or failure — a rejected flight must
+        // never be joinable later, or one transient error would fan out.
+        flight.then(
+          () => inflightRanges.delete(inflightKey),
+          () => inflightRanges.delete(inflightKey)
+        );
+      }
 
+      let result;
+      try {
+        result = await flight;
+      } catch (err) {
+        const msg = String((err && err.message) || err);
+        if (/satisfiable|invalid range|10039/i.test(msg)) {
+          return rangeNotSatisfiable(env, key, origin);
+        }
+        console.error(`R2 get failed for ${key}: ${msg}`);
+        return withCors(
+          new Response("Upstream storage error", {
+            status: 503,
+            headers: { "retry-after": "1", "cache-control": "no-store" },
+          }),
+          origin
+        );
+      }
+
+      if (!result) return new Response("Not found", { status: 404 });
+
+      // Only the leader fills the edge cache; N joiners doing N puts of the
+      // same entry is wasted work.
+      if (isLeader) {
+        ctx.waitUntil(
+          cache
+            .put(
+              cacheKey,
+              new Response(result.buffer, { status: 200, headers: result.headers })
+            )
+            .catch(() => {})
+        );
+      }
+
+      // Client's cached copy is still current -> bodyless 304.
+      if (etagMatches(ifNoneMatch, result.httpEtag)) {
+        return withCors(
+          new Response(null, {
+            status: 304,
+            headers: { etag: result.httpEtag, "cache-control": CACHE_CONTROL },
+          }),
+          origin
+        );
+      }
+
+      response = new Response(result.buffer, {
+        status: 206,
+        headers: result.headers,
+      });
+      if (!isLeader) cacheStatus = "COALESCE";
+    } else {
+      // Miss on a whole-file, open-ended, or oversized read: stream straight
+      // from R2 without buffering.
+      //
       // R2 rejections must not escape as uncaught exceptions (opaque 500s):
       // a range past EOF is the client's problem (416, recoverable), anything
       // else is transient storage trouble the client should retry (503).
       let object;
       try {
-        object = await env.BUCKET.get(key, getOptions);
+        object = await env.BUCKET.get(key, r2Range ? { range: r2Range } : {});
       } catch (err) {
         const msg = String((err && err.message) || err);
         if (/satisfiable|invalid range|10039/i.test(msg)) {
@@ -204,8 +313,10 @@ export default {
 
       if (!object) return new Response("Not found", { status: 404 });
 
-      // onlyIf precondition failed -> the client's cached copy is still current.
-      if (ifNoneMatch && !object.body) {
+      // Client's cached copy is still current -> bodyless 304. The unread R2
+      // body is dropped; deliberately no cache fill here (streaming a multi-GB
+      // surrogate into the edge cache on a revalidation would be pathological).
+      if (etagMatches(ifNoneMatch, object.httpEtag)) {
         return withCors(
           new Response(null, {
             status: 304,
