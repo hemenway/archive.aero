@@ -598,11 +598,26 @@
 
     // pmtiles Source that answers metadata reads from MetaBundle and everything
     // else via the library's own FetchSource, keeping its 416/etag semantics.
+    //
+    // Network reads are deduplicated per byte range, not per tile: PMTiles
+    // content-dedupes identical tiles, so every empty/water tile in a viewport
+    // points at the same few-hundred-byte blob. The per-coordinate dedupe in
+    // fetchTileDeduped can't see that (different z/x/y, same range), which let
+    // one 222-byte range be fetched 165 times in a single session. An in-flight
+    // map collapses the concurrent herd; a small LRU covers repaints that
+    // re-read the same ranges seconds later.
     class BundleSource {
+      // Dupes are dominated by tiny shared-blob reads; anything bigger than
+      // this is streamed through uncached so the LRU stays a few hundred KB
+      // in practice (worst case entries*64KB, bounded per instance).
+      static RANGE_CACHE_MAX_BYTES = 65536;
+
       constructor(url, key) {
         this.url = url;
         this.key = key;
         this.net = new pmtiles.FetchSource(url);
+        this.rangeInflight = new Map();
+        this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
       }
 
       getKey() {
@@ -612,13 +627,43 @@
       async getBytes(offset, length, signal, etag) {
         const local = MetaBundle.getBytesFor(this.key, offset, length);
         if (local) return { data: local };
+        // An abortable read can't share a promise: one caller's abort would
+        // reject every joined caller. No caller passes a signal today, so the
+        // dedupe path is the one actually taken.
+        if (signal) return this._netBytes(offset, length, signal, etag);
+        const rangeKey = `${offset}|${length}`;
+        const cached = this.rangeCache.get(rangeKey);
+        if (cached) return cached;
+        let pending = this.rangeInflight.get(rangeKey);
+        if (!pending) {
+          pending = this._netBytes(offset, length, undefined, etag)
+            .then(resp => {
+              // Only resolved responses enter the cache — caching a failure
+              // here would fan one transient error out to every tile sharing
+              // the blob (the rejection-poisoning trap, one layer down).
+              if (resp && resp.data && resp.data.byteLength <= BundleSource.RANGE_CACHE_MAX_BYTES) {
+                this.rangeCache.set(rangeKey, resp);
+              }
+              return resp;
+            })
+            .finally(() => this.rangeInflight.delete(rangeKey));
+          this.rangeInflight.set(rangeKey, pending);
+        }
+        return pending;
+      }
+
+      async _netBytes(offset, length, signal, etag) {
         try {
           return await this.net.getBytes(offset, length, signal, etag);
         } catch (e) {
           // A 416 (surfaced by FetchSource as EtagMismatch) means the archive
           // changed after the bundle was built — its bundled offsets are lies
-          // now. Drop it so the retry pmtiles performs reads fresh bytes.
-          if (e instanceof pmtiles.EtagMismatch) MetaBundle.dropEra(this.key);
+          // now, and so is every range this instance has cached. Drop both so
+          // the retry pmtiles performs reads fresh bytes.
+          if (e instanceof pmtiles.EtagMismatch) {
+            MetaBundle.dropEra(this.key);
+            this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
+          }
           throw e;
         }
       }
@@ -1147,12 +1192,11 @@
         let pmtilesSource = this.pmtilesInstances[key];
         if (!pmtilesSource) {
           const pmtilesUrl = Utils.buildPMTilesUrl(key, customUrl);
-          // Serve header/directory reads from the local metadata bundle when
-          // it covers this archive; tiles (and anything the bundle can't
-          // answer) still go over the network through the same source.
-          const source = (MetaBundle.ready && !customUrl && MetaBundle.eras.has(key))
-            ? new BundleSource(pmtilesUrl, key)
-            : pmtilesUrl;
+          // Every instance goes through BundleSource for its range-level
+          // dedupe. Bundle-served metadata reads additionally need the era key
+          // — nulled for custom URLs so bundle bytes for the stock archive can
+          // never answer reads against a different file.
+          const source = new BundleSource(pmtilesUrl, customUrl ? null : key);
           pmtilesSource = new pmtiles.PMTiles(source);
           this.pmtilesInstances[key] = pmtilesSource;
           // Surface hard archive failures (404 / CORS / corrupt header) once, so a
