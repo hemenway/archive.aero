@@ -17,6 +17,12 @@ Schema (one row per map):
                 gcp*_px/_py are stored in this rotated display frame; pipeline
                 consumers map them back to the raw frame with px_display_to_raw
                 before warping, so the raster itself is never resampled.
+    src_crs:    CRS of a pre-georeferenced source whose file carries a
+                geotransform but no (or wrong) CRS — e.g. jpg + world file,
+                where GDAL reads the .JGW but never the .prj sidecar
+                ("EPSG:4269", or any gdal-parseable SRS string). OPTIONAL
+                column. rawtiffs holds sources exactly as downloaded; CRS
+                knowledge belongs here, not in injected .aux.xml sidecars.
 
 This module is GDAL-light: only cutline geometry reading needs osgeo.ogr,
 imported lazily so metadata-only consumers can run without GDAL.
@@ -35,12 +41,12 @@ V2_FIELDS = [
     "gcp4_px", "gcp4_py", "gcp4_lat", "gcp4_lon",
     "cutline", "cutline_wkt",
     "lcc_lat1", "lcc_lat2", "lcc_lat0", "lcc_lon0",
-    "rotation",
+    "rotation", "src_crs",
 ]
 
 # Columns that may be absent from a CSV on disk (added after the v2 freeze).
 # Writers always emit the full V2_FIELDS header; readers treat these as "".
-V2_OPTIONAL_FIELDS = {"rotation"}
+V2_OPTIONAL_FIELDS = {"rotation", "src_crs"}
 
 LCC_TEMPLATE = (
     "+proj=lcc +lat_1={lat1} +lat_2={lat2} +lat_0={lat0} "
@@ -169,6 +175,12 @@ def cutline_ring(cutline, shape_dir=None) -> Optional[List[Tuple[float, float]]]
 # authored against the rotated ("display") image; these helpers convert
 # between that frame and the raw file's frame. Coordinates are continuous
 # GDAL pixel/line values with the origin at the image's top-left corner.
+
+def row_src_crs(row) -> str:
+    """Declared CRS of a pre-georeferenced source file, or '' (trust the
+    file's own embedded CRS)."""
+    return str(row.get("src_crs") or "").strip()
+
 
 def row_rotation(row) -> int:
     """Row's display rotation in degrees clockwise: 0, 90, 180 or 270."""

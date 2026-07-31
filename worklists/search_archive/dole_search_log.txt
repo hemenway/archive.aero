@@ -807,3 +807,125 @@ Leads carried to round 8 (see dole_search_handoff_round8.md - CONSOLIDATED RANKE
   POA, x-plane.org), physical media (MapTech AeroPack, ChartGeek DVD, RMS VISTA, ACS
   atlases), and a handful of browser-only residuals (OldMapsOnline, IU VDL, Arizona Memory,
   usenetarchives bulk pre-2003 if ever worth it).
+
+================================================================================
+PART 9 — 2026-07-23 (round 9: periodic re-checks + remaining thin frontiers)
+================================================================================
+8 parallel lanes, coordinator merge/re-verify pass per rounds 5–7 pattern.
+Net: +27 findings rows (1,490 → 1,517), all curl-re-verified by coordinator
+(spot sample of 8 URLs: all 200). Full per-lane detail below.
+
+LANE A — FAA live re-check: ZERO new.
+  07-09-2026 edition live since 2026-06-18 but ALREADY fully held (dole ×53 rows
+  + rawtiffs set — harvested between index writing and now). 09-03-2026,
+  10-29-2026, 12-24-2026, 02-18-2027 dirs all 404. chart_sample_files is now
+  DEAD (301 → www.faa.gov 404) — the AOD LA zip + 10 sample tifs no longer
+  served. faacharts.faa.gov unreachable (connection failure) — DEAD. FAA
+  advance-copy program confirmed discontinued 2015-09-17; next editions appear
+  ~3 weeks before effective date → next RECHECK window ~2026-08-13.
+  Record-only: ATO training PDFs (Atlanta SEC 98, Chicago SEC 94, St Louis
+  SEC 95 — editions dole already holds); 07-09-2026 All_Files/Sectional.zip
+  (3.29 GB, same rasters as the 53 held zips).
+
+LANE B — raremaps/dealers re-sweep: +4.
+  TECHNIQUE UPGRADE: raremaps.com XML sitemap is NOT CF-walled (browser UA) —
+  ~110k URLs enumerated; supersedes the wayback-CDX slug method and explains
+  round 8's misses (2 sectionals had slugs without the word "sectional").
+  Added: img_99620 Washington 1945 (21287×13914, no verso); img_96226 Douglas
+  Restricted 1944 (30078×14402 + verso); img_121271 LA R-2 ca.1943-45 NEW
+  STOCK, sitemap lastmod 2026-02-25 (28694×14468 + verso); img_78546 Fairbanks
+  ca.1941-42 Alaska-lineage (same caveat as 78543). Wayback CDX raremaps
+  from=20260601: zero new sectional captures. curtiswrightmaps: no new
+  sectionals (a 2026-06 Columbia River 1945 item is WAC-lineage, excluded).
+  oldimprints.com domain parked — DEAD. geographicus record-only: LA 1957,
+  LA 1958, Dallas 1957 (public images capped 1000px), Hawaiian Islands 1945
+  USAAF (no open large image).
+
+LANE C — archive.org new uploads: +23, BIGGEST HIT OF THE ROUND.
+  New ingest channel: IA's GPO depository microfiche digitization project
+  (collections microfiche/us-gpo/USGovernmentDocuments; uploader
+  associate-kurt-hamilton@northernlightsdigitallibrary.org; 8,573 items and
+  growing, weekly batches). 23 full-res sectional scans posted 2026-06-01→11,
+  almost all DESERT-ERA 1981–1991: Seattle, Seward, Great Falls, Kansas City,
+  Charlotte, Dallas-Ft Worth, Los Angeles, Cincinnati, Fairbanks, New Orleans,
+  Washington (×2), Chicago, Billings, Detroit, El Paso (×2), Wichita, Houston,
+  Kodiak 1981, Cheyenne 1991, Cold Bay 1991 (AK! Fox-Pack-11 class), and
+  Jacksonville 1951. Artifact class: Readex microfilm, chart filmed in tiled
+  panels, 400dpi B&W ~10.7k×6.5k px/panel, legible at native res (visually
+  checked). Some items UNTITLED (title=identifier) — found via OCR grep of
+  first 4KB; SuDoc class C 55.416/10 reels. Also in batch (out of scope,
+  noted): ~13 TACs 1989, ~40 obstruction charts. RECHECK MONTHLY — more
+  sectional reels likely; re-run collection:microfiche AND title:(chart) with
+  addeddate window + untitled-item OCR grep.
+
+LANE D — Commons + Rumsey: ZERO new.
+  Commons: only new uploads are IA→Commons bot mirrors of the 5 known Rumsey
+  items (no new content). No category additions since 2025-06-20.
+  METADATA CORRECTION: Rumsey list-no 9911.000 is now mis-cataloged in LUNA
+  as "Phoenix (Q-3)" — the scan is genuinely ROSWELL (Q-4) Jun-24-1944
+  (margin verified via full-res IIIF crop). 9910.000 is the true Phoenix.
+  Search Rumsey by media ID, not title. Rumsey holds exactly 5 sectionals
+  (9907–9911); IIIF full-res pattern verified for all.
+
+LANE E — ArcGIS/Hub generalization (ASU method): EXHAUSTED, zero.
+  ~24 university ArcGIS orgs, 13 library-owner accounts, 5 hub-site catalogs,
+  5 groups, ~30 global query variants swept. Many libraries publish ArcGIS
+  inventories — every one indexes foreign topo/Sanborn/aerials. ASU remains
+  the ONLY university map library with a US sectional inventory. Penn State
+  Hamer Center is the closest structural analog (Sanborn/OSS/topo/aerials
+  only) — possible contact target, no scan evidence. CalOES tpkx Phoenix/LV/
+  Klamath Falls Dec-2021 etc. all deduped (dole/findings already hold).
+
+LANE F — custom-domain CONTENTdm dorks: ZERO downloadable.
+  Record-only: Detroit Historical Society holds Green Bay/Milwaukee/Chicago
+  1959 sectionals (exact-edition dupes of dole — low priority); U. Victoria
+  COPPUL AtoM: 3 anonymous 1944? sectionals, physical only; Indiana State
+  Library physical-only records. Unverifiable from this network (DNS/TCP-RST
+  on *.contentdm.oclc.org + fetch proxies dead): Wayne State vmc collection
+  hit (probably a captioned photo), cdm21069 Peace Palace Hague (out of
+  census range, probably bound-in volume). ENV NOTE: CONTENTdm verification
+  needs a lane on a different network or a browser.
+
+LANE G — usenet bulk pre-2003 + fresh forums: ZERO findings, frontier CLOSED.
+  usenetarchives bulk sweep executed at scale (~3,700 API calls, 12 groups ×
+  9 terms): 2,684 pre-2003 candidate posts, all bodies fetched, 342 keyword-
+  positive, 184 non-closed hosts triaged — ALL converge on known/closed
+  sources (RMS Vista, MapTech, Jeppesen storefronts, NACO IFR plates).
+  Verdict: EXH — confirms round-8 diminishing-returns prediction; CLOSE the
+  usenetarchives frontier. New leads (record-only, all login/CF-walled):
+  backcountrypilot.org old-sectional-charts thread 14537; shortwingpipers.org
+  thread "old sectional charts now online" t-13955 (best of the walled
+  leads); supercub.org paper-charts.53434; mega.nz/folder/j5ciTQxY (no key
+  fragment — dead). dcpilots.org closed (scan project never happened).
+  alt.binaries.pictures.aviation proven to carry chart scans (1945 WAC —
+  out of scope; a binaries-provider sweep is a theoretical new angle).
+  NEW TECHNIQUE: XenForo sitemaps are public (pilotsofamerica: 128,793
+  thread URLs with lastmod — full-forum title+date sweep without login).
+
+LANE H — usahas.com recovery: CLOSED, nothing recoverable.
+  The ~16 missing CONUS + Halifax/Montreal + entire 16-chart AK series:
+  KMLs AND tiles deleted wholesale (30/30 level-sweep 404; deep-tile probes
+  404; both CamelCase and spaced naming probed — tile prefix follows KML
+  <Document><name>, incl. literal spaces). The 23 downloaded pyramids remain
+  live and are the complete recoverable set. Bonus: second live index copy at
+  /GE/ChartGeek/Sectionals.kml; /downloads/ has open IIS listing (no other
+  chart content). Those editions' only route remains CONTACT (ChartGeek
+  author / DeTect).
+
+VERDICT CHANGES for worklist 03:
+  - FAA live: chart_sample_files DEAD; faacharts.faa.gov DEAD; next RECHECK
+    ~2026-08-13 (09-03-2026 posting).
+  - raremaps: re-sweep via LIVE SITEMAP (not CDX) — RECHECK monthly.
+  - archive.org: GPO microfiche channel — RECHECK monthly (active ingest).
+  - University ArcGIS frontier: EXH (ASU unique).
+  - usenetarchives bulk: EXH — closed.
+  - usahas: EXH — closed (tiles gone; 23 pyramids are all that exists).
+  - oldimprints: DEAD.
+
+OPEN carried forward (unchanged from round 8): CONTACT emails (ASU,
+GlidePlan, Welch, Fox, ChartGeek/DeTect, Neilson, Alley, Honeck, Tomblin,
+Morrissey), scan requests (NLA 1030946 + 7796679, Harvard, Fort Collins,
+Archives West/OAC, ASU Phoenix 1968), free logins (AVSIM, POA 141250,
+x-plane 38646; + new: backcountrypilot 14537, shortwingpipers t-13955),
+physical media, download queue (worklist 07 — now +27 rows incl. the 23
+microfiche zips, 285–846 MB each).

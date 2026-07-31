@@ -4,6 +4,17 @@
 [`data/georef_backlog.csv`](data/georef_backlog.csv) (226 rows) and
 [`data/no_cutline.csv`](data/no_cutline.csv) (8 rows).*
 
+> **2026-07-25 — HUNT26 staged, then reverted to the 6 ready zips.** The 264
+> "new" download-queue candidates were fully identified, dated, and staged for
+> import (reviewed plan: [`data/hunt26_plan.csv`](data/hunt26_plan.csv);
+> importer: `scripts/import_hunt26.py`), but only the **6 tfw-georeferenced
+> wayback FAA zips** were kept in the dole
+> (`/Volumes/projects/rawtiffs/hunt_2026-07/wayback_old_layout/`). The other
+> 258 files went back to `/Volumes/projects/rawtiffcandidates/` and their 229
+> would-be rows were backed out — re-run the importer when ready to start the
+> hand-GCP effort (sidebar item text preserved in
+> `data/hunt26_worklist_items.py`).
+
 ## Why this matters
 
 `slicer.py` warps each row one of two ways: **(a)** the row's 4 GCPs (`gcp1_*`…`gcp4_*`), or

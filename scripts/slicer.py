@@ -407,10 +407,16 @@ class ChartSlicer:
                 date_key = f"undated_{Path(filename).stem or f'row{row_idx}'}"
 
             # Duplicate rows for the same date|location are warp alternatives;
-            # rows with complete pixel GCPs are tried first.
+            # rows with complete pixel GCPs are tried first. Half-sheet rows
+            # (…North/…South, …EAST/…WEST scans) are components of one chart,
+            # not alternates: a trailing cardinal token in the filename stem
+            # splits the group so both halves warp and mosaic together.
             norm_loc = self.normalize_name(row.get('location', ''))
+            half = re.search(r'[\s_-](north|south|east|west)$',
+                             Path(filename).stem, re.I)
+            half_suffix = f"|{half.group(1).lower()}" if half else ""
             if parsed_start and norm_loc:
-                row['candidate_group'] = f"{start_date}|{norm_loc}"
+                row['candidate_group'] = f"{start_date}|{norm_loc}{half_suffix}"
             else:
                 token = re.sub(r"[^a-zA-Z0-9_]+", "_", Path(filename).stem.strip().lower())
                 token = re.sub(r"_+", "_", token).strip("_") or f"row{row_idx + 1}"
@@ -1120,11 +1126,12 @@ class ChartSlicer:
                     return variant
         return default_shp
 
-    def _antimeridian_split_bounds_3857(self, input_tiff: Path) -> Optional[List[Tuple[float, float, float, float]]]:
+    def _antimeridian_split_bounds_3857(self, input_tiff: Path, src_crs: str = '') -> Optional[List[Tuple[float, float, float, float]]]:
         """
         Return split output bounds (EPSG:3857) for sources that cross the antimeridian.
         When a source spans +180/-180 in geographic space, a single warp can balloon to nearly
         world width. Splitting into east/west output windows keeps extents narrow.
+        src_crs: row-declared CRS for sources whose file carries none.
         """
         try:
             ds = gdal.Open(str(input_tiff))
@@ -1133,7 +1140,7 @@ class ChartSlicer:
 
             gt = ds.GetGeoTransform(can_return_null=True)
             projection = ds.GetProjection()
-            if gt is None or not projection:
+            if gt is None or (not projection and not src_crs):
                 ds = None
                 return None
 
@@ -1142,7 +1149,10 @@ class ChartSlicer:
             ds = None
 
             src_srs = osr.SpatialReference()
-            if src_srs.ImportFromWkt(projection) != 0:
+            if projection:
+                if src_srs.ImportFromWkt(projection) != 0:
+                    return None
+            elif src_srs.SetFromUserInput(src_crs) != 0:
                 return None
             geo_srs = osr.SpatialReference()
             if geo_srs.ImportFromEPSG(4326) != 0:
@@ -1403,6 +1413,11 @@ class ChartSlicer:
             self.log(f"      ✗ No shapefile available for {input_tiff.name}")
             return False
 
+        # Row-declared source CRS (jpg + world file sources: GDAL reads the
+        # .JGW but not the .prj, and a warp without srcSRS silently passes
+        # degrees through as target-CRS meters). '' -> trust the file.
+        src_crs = dole_v2.row_src_crs(record) if record else ''
+
         try:
             warp_out = getattr(self, 'warp_output', 'tif').lower()
             to_vrt = warp_out == 'vrt'
@@ -1440,7 +1455,7 @@ class ChartSlicer:
 
             # Get the actual SRS of the shapefile (don't hardcode EPSG:4326)
             shapefile_srs = self.get_shapefile_srs(shapefile)
-            split_bounds = self._antimeridian_split_bounds_3857(input_tiff)
+            split_bounds = self._antimeridian_split_bounds_3857(input_tiff, src_crs)
             if split_bounds:
                 self.log(f"      ↺ Antimeridian source detected; splitting warp into {len(split_bounds)} windows")
 
@@ -1469,6 +1484,7 @@ class ChartSlicer:
                 _safe_unlink(output_path)
                 warp_options = gdal.WarpOptions(
                     format=output_format,
+                    srcSRS=src_crs or None,
                     dstSRS='EPSG:3857',
                     cutlineDSName=str(shapefile),
                     cutlineSRS=shapefile_srs,

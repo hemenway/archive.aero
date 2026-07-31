@@ -38,3 +38,7 @@ master_dole_v2.csv
 timeline_data.json
 worklists/data/
 metadata-*.bundle
+
+# Staged for future historical-data feature — 40MB of raw 1988 NOAA DAT files;
+# decide what (if anything) to track before committing (README.md is worth tracking)
+historical-data/

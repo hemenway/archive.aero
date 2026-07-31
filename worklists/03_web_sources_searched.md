@@ -4,9 +4,23 @@
 `dole_search_handoff_round8.md`, and all 13 lane reports. Those remain the authoritative
 record — this is the quick-reference index. Rounds 1–7 ran 2026-07-07 → 07-08.*
 
-**Findings CSV:** `search_archive/missing_from_dole_online.csv` — 1,490 rows
-(`source,name,url,date_or_edition,note`). Era: 87×1930s, 118×1940s, 19×1950s, 20×1960s,
+**Findings CSV:** `search_archive/missing_from_dole_online.csv` — 1,517 rows
+(`source,name,url,date_or_edition,note`; +27 from round 9, 2026-07-23). Era: 87×1930s, 118×1940s, 19×1950s, 20×1960s,
 **176×1970–2010 (the desert)**, 1,060×2011+, 10 undated.
+
+> **Round-9 addendum (2026-07-23 — full detail: search log Part 9).** +27 findings:
+> 23 desert-era sectionals (1981–1991, incl. Cold Bay 1991 + Jacksonville 1951) from
+> archive.org's NEW GPO-depository microfiche ingest (Readex microfilm, 400dpi panels;
+> active channel — **recheck monthly**), 4 raremaps (Washington 1945, Douglas Restricted
+> 1944 +verso, LA R-2 NEW STOCK +verso, Fairbanks ca.1941-42). Verdict changes: FAA
+> `chart_sample_files` DEAD, faacharts.faa.gov DEAD (next FAA recheck ~2026-08-13);
+> raremaps re-sweep via **live sitemap** (not CDX — sitemap is not CF-walled);
+> university-ArcGIS frontier EXH (ASU remains unique); usenetarchives bulk sweep EXH
+> (closed, diminishing returns confirmed); usahas EXH (missing tiles deleted wholesale —
+> the 23 downloaded pyramids are all that exists); oldimprints DEAD. New walled leads:
+> backcountrypilot thread 14537, shortwingpipers t-13955. New technique: XenForo sitemaps
+> public (full POA forum sweep without login). Rumsey 9911.000 is mislabeled in LUNA —
+> the scan is Roswell (Q-4), not Phoenix; search Rumsey by media ID.
 
 **Verdict key:** EXH = exhausted (do not re-search) · EXH+ = exhausted, findings recovered ·
 LOGIN = free login needed (manual) · CONTACT = files exist, only the owner has them ·
