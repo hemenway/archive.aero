@@ -9,7 +9,10 @@
     content="Data sources, attribution, and licensing for archive.aero — historical FAA aeronautical charts sourced from the U.S. National Archives." />
   <link rel="canonical" href="https://archive.aero/sources.html" />
   <link rel="icon"
-    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>✈️</text></svg>" />
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%231e90ff'><path d='M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&display=swap">
   <style>
     :root {
       --primary: #1e90ff;
@@ -60,6 +63,7 @@
     }
 
     header h1 {
+      font-family: "Barlow", system-ui, sans-serif;
       font-size: 1.7rem;
       margin: 0 0 4px;
     }
@@ -70,14 +74,15 @@
     }
 
     section {
-      background: var(--bg-glass);
+      background: #10161c;
       border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: var(--card-radius);
+      border-radius: 12px;
       padding: 20px 24px;
       margin-bottom: 20px;
     }
 
     section h2 {
+      font-family: "Barlow", system-ui, sans-serif;
       font-size: 1.15rem;
       margin: 0 0 12px;
       color: var(--secondary);
@@ -128,12 +133,12 @@
     <a class="back" href="index.html">← Back to the map</a>
 
     <header>
-      <h1>✈️ Sources &amp; Attribution</h1>
+      <h1>Sources &amp; Attribution</h1>
       <p class="tagline">Where the charts and map data on archive.aero come from.</p>
     </header>
 
     <section class="warn">
-      <h2>⚠️ Historical use only</h2>
+      <h2>Historical use only</h2>
       <p>
         Every chart shown on archive.aero is a historical scan and is <strong>not</strong> current.
         Do not use these charts for navigation. Always consult official, in-date FAA publications

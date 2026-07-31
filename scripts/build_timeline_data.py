@@ -16,6 +16,7 @@ Usage:  ~/venv/bin/python build_timeline_data.py   (needs GDAL for geometry)
 """
 
 import collections
+import datetime
 import json
 import re
 from pathlib import Path
@@ -220,7 +221,7 @@ def main():
     rings = {ref: geom_rings(g) for ref, g in geoms.items()}
 
     payload = {
-        "generated": "2026-07-15",
+        "generated": datetime.date.today().isoformat(),
         "note": "built by build_timeline_data.py from master_dole_v2.csv",
         "locations": locations,
         "groups": out_groups,

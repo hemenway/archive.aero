@@ -9,6 +9,7 @@
   --timeline-h: 6px;
   --card-radius: 16px;
   --transition-smooth: cubic-bezier(0.4, 0.0, 0.2, 1);
+  --font-display: "Barlow", system-ui, -apple-system, sans-serif;
 }
 
 html,
@@ -89,14 +90,21 @@ body {
 }
 
 .loading-logo {
-  font-size: 48px;
   animation: loadingPulse 2s ease-in-out infinite;
 }
 
+.loading-logo svg {
+  width: 48px;
+  height: 48px;
+  display: block;
+  color: var(--primary);
+}
+
 .loading-title {
+  font-family: var(--font-display);
   font-size: 28px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
+  font-weight: 700;
+  letter-spacing: -0.25px;
   color: var(--text-light);
 }
 
@@ -110,7 +118,7 @@ body {
 
 .loading-progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, var(--primary), var(--secondary));
+  background: var(--primary);
   border-radius: 2px;
   width: 0%;
   transition: width 0.3s var(--transition-smooth);
@@ -169,14 +177,22 @@ body {
 }
 
 .site-logo {
+  font-family: var(--font-display);
   font-size: 24px;
-  font-weight: 800;
-  letter-spacing: -0.5px;
+  font-weight: 700;
+  letter-spacing: -0.25px;
   color: var(--text-light);
   text-decoration: none;
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.site-logo svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+  color: var(--primary);
 }
 
 .menu-toggle:hover {
@@ -287,24 +303,23 @@ body {
 }
 
 .about-btn {
-  background: rgba(30, 144, 255, 0.9);
-  color: #fff;
-  padding: 8px 14px;
-  border-radius: 20px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: var(--text-light);
+  padding: 7px 13px;
+  border-radius: 8px;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   text-decoration: none;
   display: flex;
   align-items: center;
   gap: 6px;
-  transition: background-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
-  box-shadow: 0 2px 8px rgba(30, 144, 255, 0.3);
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth);
 }
 
 .about-btn:hover {
-  background: rgba(30, 144, 255, 1);
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(30, 144, 255, 0.5);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.45);
 }
 
 .about-btn:focus-visible {
@@ -313,23 +328,23 @@ body {
 }
 
 .donate-btn {
-  background: linear-gradient(135deg, #ff813f 0%, #ffdd00 100%);
-  color: #000;
+  background: #ff813f;
+  color: #10161c;
   padding: 8px 14px;
-  border-radius: 20px;
+  border-radius: 8px;
   font-size: 13px;
   font-weight: 700;
   text-decoration: none;
   display: flex;
   align-items: center;
   gap: 6px;
-  transition: box-shadow 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
-  box-shadow: 0 2px 8px rgba(255, 129, 63, 0.3);
+  transition: background-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 .donate-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(255, 129, 63, 0.5);
+  background: #ff9257;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
 .donate-btn:focus-visible {
@@ -471,6 +486,12 @@ body.zooming .leaflet-control-attribution {
   display: grid;
   place-items: center;
   transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
+}
+
+.tools-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
 }
 
 .tools-btn:hover {
@@ -658,20 +679,21 @@ body.zooming .leaflet-control-attribution {
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+  background: var(--primary);
   border: none;
   color: white;
   font-size: 16px;
   cursor: pointer;
   display: grid;
   place-items: center;
-  transition: box-shadow 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
-  box-shadow: 0 4px 12px rgba(30, 144, 255, 0.3);
+  transition: background-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .btn-play:hover {
   transform: scale(1.1);
-  box-shadow: 0 6px 20px rgba(30, 144, 255, 0.5);
+  background: var(--primary-hover);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }
 
 .btn-play:active {
@@ -763,7 +785,7 @@ body.zooming .leaflet-control-attribution {
   left: 0;
   width: 22px;
   height: 22px;
-  background: linear-gradient(135deg, #fff 0%, #e0e0e0 100%);
+  background: #fff;
   border-radius: 50%;
   top: 50%;
   transform: translate3d(var(--handle-position-px), -50%, 0) translateX(-50%) scale(var(--handle-scale));
@@ -1170,7 +1192,6 @@ body.zooming .leaflet-control-attribution {
   .donate-btn {
     font-size: 11px;
     padding: 6px 9px;
-    border-radius: 16px;
   }
 
   /* Hide fullscreen and help buttons on mobile (in tools panel) */
@@ -1323,7 +1344,7 @@ body.zooming .leaflet-control-attribution {
   background: rgba(255, 69, 58, 0.9);
   border: 1px solid rgba(255, 255, 255, 0.2);
   padding: 12px 24px;
-  border-radius: 50px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1334,9 +1355,21 @@ body.zooming .leaflet-control-attribution {
 }
 
 .warning-icon {
-  font-size: 18px;
   margin: 0;
   display: inline-block;
+  color: #fff;
+}
+
+.warning-icon svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.tool-button-icon svg {
+  width: 15px;
+  height: 15px;
+  display: block;
 }
 
 .warning-title {
@@ -1543,13 +1576,6 @@ body.zooming .leaflet-control-attribution {
   margin-left: 8px;
 }
 
-.tool-hint {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-top: 6px;
-  opacity: 0.8;
-}
-
 /* Chart Info Panel */
 .chart-info-panel {
   position: absolute;
@@ -1611,11 +1637,6 @@ body.zooming .leaflet-control-attribution {
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-}
-
-.chart-badge.historical {
-  background: rgba(255, 165, 0, 0.2);
-  color: #ffa500;
 }
 
 .chart-badge.sectional {
@@ -1684,8 +1705,9 @@ body.zooming .leaflet-control-attribution {
     min-width: 0;
   }
 
-  .loading-logo {
-    font-size: 36px;
+  .loading-logo svg {
+    width: 36px;
+    height: 36px;
   }
 
   .loading-title {
