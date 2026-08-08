@@ -962,8 +962,10 @@
     /* ---------- boot ---------- */
     (async () => {
       // The inventory lives on the data domain (it is deliberately not part of
-      // the site repo); a local copy takes precedence while developing.
-      const SOURCES = ['timeline_data.json', 'https://data.archive.aero/sectionals/timeline_data.json'];
+      // the site repo); a local copy takes precedence while developing. Only
+      // probe for it on localhost so production visitors don't pay a 404.
+      const SOURCES = ['https://data.archive.aero/sectionals/timeline_data.json'];
+      if (['localhost', '127.0.0.1', ''].includes(location.hostname)) SOURCES.unshift('timeline_data.json');
       let data = null;
       for (const src of SOURCES) {
         try {
