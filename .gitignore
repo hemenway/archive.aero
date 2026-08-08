@@ -42,3 +42,6 @@ metadata-*.bundle
 # Staged for future historical-data feature — 40MB of raw 1988 NOAA DAT files;
 # decide what (if anything) to track before committing (README.md is worth tracking)
 historical-data/
+
+# Local browser-session recording (1.4 GB) — never commit
+archive.aero-recording.json

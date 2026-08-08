@@ -2,7 +2,7 @@
 
 **Nearly a century of U.S. aeronautical charts, scrubbable like a time machine.**
 
-[archive.aero](https://archive.aero) is a free, open-source web viewer for historical FAA VFR Sectional charts — **3,391 chart editions spanning 1930 to today**, georeferenced, mosaicked, tiled, and served from edge storage. Drag the timeline and watch airspace, airports, and cartography evolve across nine decades.
+[archive.aero](https://archive.aero) is a free, open-source web viewer for historical FAA VFR Sectional charts — **7,464 chart editions across 3,698 edition dates, spanning 1930 to today**, georeferenced, mosaicked, tiled, and served from edge storage. Drag the timeline and watch airspace, airports, and cartography evolve across nine decades.
 
 > ⚠️ Every chart on the site is a historical scan. **Never use it for navigation.**
 
