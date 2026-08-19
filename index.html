@@ -308,6 +308,7 @@
     <h4>Charts at this point<button class="pin-close" id="pinClose" type="button" aria-label="Clear pin">&times;</button></h4>
     <div class="pin-coords" id="pinCoords"></div>
     <div class="pin-list" id="pinList"></div>
+    <a href="sources.html" class="pin-sources-link">Sources &amp; Attribution</a>
   </div>
 
   <!-- Banner shown while a single chart is displayed alone -->
@@ -1304,7 +1305,6 @@
               // contribute.html's guard for a null one.
               t1: isNaN(t1) ? t0 + 182 * 86400000 : t1,
               ed: c.ed,
-              url: c.url || '',
               f: c.f || '',
               eraKey,
               // Per-chart full-sheet PMTiles URI key(s) ("chart/<slug>/<date>",
@@ -2488,17 +2488,11 @@
           }
           row.appendChild(dates);
 
+          // No per-chart source links here: exposing the chart -> source-scan
+          // mapping row by row invites scraping the catalog wholesale. The
+          // card's footer links to sources.html instead.
           const actions = document.createElement('div');
           actions.className = 'pin-chart-actions';
-          if (chart.url) {
-            const link = document.createElement('a');
-            link.className = 'pin-link';
-            link.href = chart.url;
-            link.target = '_blank';
-            link.rel = 'noopener';
-            link.textContent = 'Source scan ↗';
-            actions.appendChild(link);
-          }
           if (chart.pm || chart.published) {
             const btn = document.createElement('button');
             btn.className = 'pin-view-alone';

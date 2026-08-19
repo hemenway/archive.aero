@@ -1736,16 +1736,18 @@ body.zooming .leaflet-control-attribution {
   margin-top: 6px;
 }
 
-.pin-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  font-size: 12px;
-  color: var(--secondary);
+.pin-sources-link {
+  display: block;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  color: var(--text-muted);
   text-decoration: none;
 }
 
-.pin-link:hover {
+.pin-sources-link:hover {
+  color: var(--text-light);
   text-decoration: underline;
 }
 
@@ -1911,7 +1913,7 @@ body.zooming .leaflet-control-attribution {
 .btn-play:focus-visible,
 .tool-button:focus-visible,
 .pin-close:focus-visible,
-.pin-link:focus-visible,
+.pin-sources-link:focus-visible,
 .pin-view-alone:focus-visible,
 .solo-exit:focus-visible,
 .time-select:focus-visible {
