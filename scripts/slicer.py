@@ -19,6 +19,8 @@ except ImportError:
     requests = None
 import time
 import platform
+import subprocess
+import threading
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Union
 from collections import defaultdict
@@ -168,6 +170,18 @@ class ChartSlicer:
         self.files_by_name: Dict[str, Path] = {}  # Direct TIFs and ZIPs
         self.tifs_by_dir: Dict[str, List[Path]] = {}  # Extracted folder -> TIF list
         self.shapefile_index: Dict[str, Path] = {}  # Normalized location -> shapefile path
+
+        # Per-chart full-sheet PMTiles emission (worklist: durable chart URIs,
+        # R2 key sectionals/chart/<slug>/<date>[-half]). Off unless
+        # chart_pmtiles_dir is set (--chart-pmtiles).
+        self.chart_pmtiles_dir: Optional[Path] = None
+        self.chart_temp_dir: Optional[Path] = None
+        self.chart_manifest_path: Optional[Path] = None
+        self.keep_chart_temp = False
+        self.charts_only = False
+        self.geotiff2pmtiles_bin = Path(__file__).resolve().parent.parent / "geotiff2pmtiles" / "geotiff2pmtiles"
+        self._chart_manifest_lock = threading.Lock()
+        self._chart_manifest_index: Optional[Dict[str, str]] = None  # key -> source filename
 
     def log(self, msg: str):
         """Print log message with timestamp."""
@@ -1379,11 +1393,17 @@ class ChartSlicer:
             'attempt_id': job.get('attempt_id')
         }
 
-    def warp_and_cut(self, input_tiff: Path, shapefile: Optional[Path], output_tiff: Path, record: Optional[Dict] = None) -> bool:
+    def warp_and_cut(self, input_tiff: Path, shapefile: Optional[Path], output_tiff: Path, record: Optional[Dict] = None,
+                     full_sheet: bool = False) -> bool:
         """Warp and cut TIFF using shapefile as cutline.
 
         If self.warp_output is set to "vrt", write a VRT instead of a TIFF
         to avoid the intermediate write/read of warped GeoTIFFs.
+
+        full_sheet=True warps WITHOUT any cutline (collar/legend kept) and
+        always writes a real GTiff — the per-chart PMTiles path. The cutline
+        context is still resolved (GCP sanity checks, antimeridian windows);
+        it just isn't applied as a mask.
         """
         # Resume: reuse a fully-readable existing output instead of re-warping
         # (see _is_reusable_output). output_tiff already carries the correct
@@ -1401,15 +1421,18 @@ class ChartSlicer:
         if record is not None:
             context = self._build_gcp_warp_context(record)
             if context:
-                if self.warp_and_cut_from_row_gcps(input_tiff, record, output_tiff):
+                if self.warp_and_cut_from_row_gcps(input_tiff, record, output_tiff, full_sheet=full_sheet):
                     return True
-                if shapefile:
-                    self.log(f"      ⚠ GCP warp failed for {input_tiff.name}; falling back to shapefile warp")
-            elif not shapefile:
+                if shapefile or full_sheet:
+                    self.log(f"      ⚠ GCP warp failed for {input_tiff.name}; falling back to "
+                             f"{'plain' if full_sheet else 'shapefile'} warp")
+            elif not shapefile and not full_sheet:
                 self.log(f"      ✗ Missing/invalid GCP metadata and no shapefile fallback for {input_tiff.name}")
                 return False
 
-        if not shapefile:
+        # full_sheet needs no cutline: sources with embedded georef warp as-is,
+        # and georef-less scans fail naturally inside gdal.Warp below.
+        if not shapefile and not full_sheet:
             self.log(f"      ✗ No shapefile available for {input_tiff.name}")
             return False
 
@@ -1420,8 +1443,11 @@ class ChartSlicer:
 
         try:
             warp_out = getattr(self, 'warp_output', 'tif').lower()
-            to_vrt = warp_out == 'vrt'
-            self.log(f"    Warping {input_tiff.name} to {'VRT' if to_vrt else 'TIFF'}...")
+            # Full-sheet outputs feed geotiff2pmtiles (pure-Go TIFF reader,
+            # skips VRTs) so they are always real GTiffs.
+            to_vrt = warp_out == 'vrt' and not full_sheet
+            self.log(f"    Warping {input_tiff.name} to {'VRT' if to_vrt else 'TIFF'}"
+                     f"{' (full sheet)' if full_sheet else ''}...")
 
             # Step 1: Build an RGBA VRT source only for paletted inputs.
             # For non-paletted rasters, warp directly from source TIFF to skip an extra translate pass.
@@ -1454,7 +1480,8 @@ class ChartSlicer:
                 warp_source = temp_vrt_name
 
             # Get the actual SRS of the shapefile (don't hardcode EPSG:4326)
-            shapefile_srs = self.get_shapefile_srs(shapefile)
+            shapefile_srs = self.get_shapefile_srs(shapefile) if shapefile else None
+            use_cutline = shapefile is not None and not full_sheet
             split_bounds = self._antimeridian_split_bounds_3857(input_tiff, src_crs)
             if split_bounds:
                 self.log(f"      ↺ Antimeridian source detected; splitting warp into {len(split_bounds)} windows")
@@ -1486,15 +1513,15 @@ class ChartSlicer:
                     format=output_format,
                     srcSRS=src_crs or None,
                     dstSRS='EPSG:3857',
-                    cutlineDSName=str(shapefile),
-                    cutlineSRS=shapefile_srs,
-                    cropToCutline=crop_to_cutline,
+                    cutlineDSName=str(shapefile) if use_cutline else None,
+                    cutlineSRS=shapefile_srs if use_cutline else None,
+                    cropToCutline=crop_to_cutline if use_cutline else False,
                     dstAlpha=True,
                     resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
                     creationOptions=creation_opts,
                     multithread=getattr(self, 'warp_multithread', True),
                     transformerOptions=transformer_opts or None,
-                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE'],
+                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE'] if use_cutline else None,
                     outputBounds=output_bounds
                 )
                 ds_out = gdal.Warp(str(output_path), warp_source, options=warp_options)
@@ -1665,8 +1692,16 @@ class ChartSlicer:
             self.log(f"      ✗ Error warping {input_tiff.name}: {e}")
             return False
 
-    def warp_and_cut_from_row_gcps(self, input_tiff: Path, row: Dict, output_tiff: Path) -> bool:
-        """Warp and clip using row GCP metadata and inferred bounds."""
+    def warp_and_cut_from_row_gcps(self, input_tiff: Path, row: Dict, output_tiff: Path,
+                                   full_sheet: bool = False) -> bool:
+        """Warp and clip using row GCP metadata and inferred bounds.
+
+        full_sheet=True skips the cutline mask (collar kept) and always writes
+        a real GTiff. The cutline is still resolved for the GCP sanity check
+        and the antimeridian-window computation; antimeridian charts keep the
+        cutline mask even in full-sheet mode (a windowed full sheet would crop
+        the collar anyway, and the split windows derive from the cutline).
+        """
         context = self._build_gcp_warp_context(row)
         if not context:
             self.log(f"      ✗ Missing/invalid GCP metadata for {input_tiff.name}")
@@ -1697,14 +1732,20 @@ class ChartSlicer:
             return False
 
         warp_out = getattr(self, 'warp_output', 'tif').lower()
-        to_vrt = warp_out == 'vrt'
-        self.log(f"    Warping {input_tiff.name} from row GCPs to {'VRT' if to_vrt else 'TIFF'}...")
+        to_vrt = warp_out == 'vrt' and not full_sheet
+        self.log(f"    Warping {input_tiff.name} from row GCPs to {'VRT' if to_vrt else 'TIFF'}"
+                 f"{' (full sheet)' if full_sheet else ''}...")
 
         sanitized_stem = self.sanitize_filename(input_tiff.stem)
+        # Temp names keyed to the OUTPUT stem: 10 catalog filenames are
+        # duplicated across locations, and the chart-pmtiles pass warps in a
+        # thread pool — a shared /vsimem path keyed only to the source stem
+        # would race.
+        temp_stem = self.sanitize_filename(output_tiff.stem)
         if to_vrt:
-            temp_gcp_vrt = output_tiff.parent / f"{sanitized_stem}_srcgcp.vrt"
+            temp_gcp_vrt = output_tiff.parent / f"{temp_stem}_srcgcp.vrt"
         else:
-            temp_gcp_vrt = Path(f"/vsimem/{sanitized_stem}_srcgcp.vrt")
+            temp_gcp_vrt = Path(f"/vsimem/{temp_stem}_srcgcp.vrt")
         cutline_json: Optional[Path] = None
 
         try:
@@ -1733,7 +1774,7 @@ class ChartSlicer:
                 cutline_srs = self.get_shapefile_srs(cutline["path"])
             else:
                 ring = dole_v2.cutline_ring(cutline)
-                cutline_json = output_tiff.parent / f"{sanitized_stem}_cutline.geojson"
+                cutline_json = output_tiff.parent / f"{temp_stem}_cutline.geojson"
                 with open(cutline_json, "w", encoding="utf-8") as f:
                     json.dump({
                         "type": "FeatureCollection",
@@ -1753,6 +1794,8 @@ class ChartSlicer:
             # single 3857 warp to world width (Western Aleutian Islands). Warp
             # each side into its own clamped window and composite.
             split_bounds = self._gcp_cutline_split_bounds_3857(cutline_ds, cutline_srs)
+            if split_bounds and full_sheet:
+                self.log("      ↺ Antimeridian chart: full-sheet not supported, emitting cutline-trimmed")
 
             def _run_warp(transformer_opts):
                 if split_bounds:
@@ -1802,16 +1845,16 @@ class ChartSlicer:
                 warp_options = gdal.WarpOptions(
                     format="VRT" if to_vrt else "GTiff",
                     dstSRS='EPSG:3857',
-                    cutlineDSName=cutline_ds,
-                    cutlineSRS=cutline_srs,
-                    cropToCutline=True,
+                    cutlineDSName=None if full_sheet else cutline_ds,
+                    cutlineSRS=None if full_sheet else cutline_srs,
+                    cropToCutline=not full_sheet,
                     dstAlpha=True,
                     resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
                     polynomialOrder=1,
                     creationOptions=None if to_vrt else INTERMEDIATE_CREATION_OPTS,
                     multithread=getattr(self, 'warp_multithread', True),
                     transformerOptions=transformer_opts or None,
-                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE']
+                    warpOptions=None if full_sheet else ['CUTLINE_ALL_TOUCHED=TRUE']
                 )
                 return gdal.Warp(str(output_tiff), str(temp_gcp_vrt), options=warp_options)
 
@@ -1853,6 +1896,235 @@ class ChartSlicer:
                     cutline_json.unlink()
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    # Per-chart full-sheet PMTiles (durable chart URIs)
+    #
+    # One artifact per winning chart, R2 key sectionals/chart/<slug>/<date>
+    # ([-north|-south|-east|-west] for half sheets), extension-less per
+    # https://www.w3.org/Provider/Style/URI — local mirror files keep the
+    # .pmtiles extension; scripts/publish_chart_pmtiles.py strips it on upload.
+    # Runs per date BEFORE the mosaic resume-skip so already-mosaicked dates
+    # still backfill chart artifacts. Every success is appended to a JSONL
+    # manifest that publish + build_timeline_data.py consume.
+    # ------------------------------------------------------------------
+
+    CHART_HALF_RE = re.compile(r'[\s_-](north|south|east|west)$', re.I)
+    CHART_SLUG_RE = re.compile(r'^[a-z0-9_]+$')
+
+    def _chart_identity(self, rec: Dict, file_stem: Optional[str] = None) -> Optional[Tuple[str, str, str]]:
+        """(slug, uri_name, half) for a row, or None if not URI-safe/derivable.
+
+        The half token comes from the actual source file stem when given
+        (halves are separate files), else from the CSV filename.
+        """
+        location = (rec.get('location') or '').strip()
+        slug = self.normalize_name(location)
+        if not slug or not self.CHART_SLUG_RE.fullmatch(slug):
+            self.log(f"      ✗ chart URI: slug {slug!r} for {location!r} is not URI-safe - skipping")
+            return None
+        d = (rec.get('start_date') or rec.get('date') or '').strip()
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', d):
+            self.log(f"      ✗ chart URI: no usable effective date for {location!r} - skipping")
+            return None
+        stem = file_stem if file_stem is not None else Path(rec.get('filename') or '').stem
+        m = self.CHART_HALF_RE.search(stem or '')
+        half = m.group(1).lower() if m else ''
+        return slug, f"{d}-{half}" if half else d, half
+
+    def _chart_manifest_load(self) -> Dict[str, str]:
+        """key -> source filename, from the append-only JSONL (last line wins)."""
+        if self._chart_manifest_index is None:
+            index: Dict[str, str] = {}
+            path = self.chart_manifest_path
+            if path and path.exists():
+                with open(path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            index[entry['key']] = entry.get('filename', '')
+                        except Exception:
+                            continue
+            self._chart_manifest_index = index
+        return self._chart_manifest_index
+
+    def _chart_manifest_add(self, entry: Dict) -> None:
+        with self._chart_manifest_lock:
+            index = self._chart_manifest_load()
+            index[entry['key']] = entry.get('filename', '')
+            self.chart_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.chart_manifest_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+
+    def _is_valid_chart_pmtiles(self, path: Path) -> bool:
+        """Size floor + PMTiles v3 header sanity (the geotiff2pmtiles output is
+        written via a .part rename, but validate anyway so a corrupt artifact
+        is redone rather than trusted on resume)."""
+        try:
+            if not path.exists() or path.stat().st_size < 4096:
+                return False
+            from pmtiles.tile import deserialize_header
+            with open(path, 'rb') as f:
+                header = deserialize_header(f.read(127))
+            file_size = path.stat().st_size
+            return (header['tile_data_offset'] + header['tile_data_length'] <= file_size
+                    and header.get('addressed_tiles_count', 0) > 0)
+        except ImportError:
+            # No pmtiles module (non-venv python): size floor only.
+            return path.exists() and path.stat().st_size >= 4096
+        except Exception:
+            return False
+
+    def _chart_to_pmtiles(self, warped_tif: Path, out_pmtiles: Path) -> bool:
+        """geotiff2pmtiles with the published-era recipe; atomic via .part rename."""
+        binary = self.geotiff2pmtiles_bin
+        if not binary.exists():
+            self.log(f"      ✗ geotiff2pmtiles binary not found at {binary}")
+            return False
+        args = [str(binary), '-format', 'webp', '-quality', '80', '-min-zoom', '8',
+                '-concurrency', '2']
+        try:
+            ds = gdal.Open(str(warped_tif))
+            band_type = ds.GetRasterBand(1).DataType if ds else gdal.GDT_Byte
+            band_count = ds.RasterCount if ds else 4
+            ds = None
+        except Exception:
+            band_type, band_count = gdal.GDT_Byte, 4
+        if band_type != gdal.GDT_Byte:
+            # 16-bit sources (1947-61 class): same flags the era mosaics needed.
+            args += ['-rescale', 'linear', '-rescale-range', '0,65535',
+                     '-alpha-band', str(band_count)]
+        part = out_pmtiles.with_name(out_pmtiles.stem + '.part.pmtiles')
+        out_pmtiles.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if part.exists():
+                part.unlink()
+            proc = subprocess.run(args + [str(warped_tif), str(part)],
+                                  capture_output=True, text=True, timeout=3600)
+            if proc.returncode != 0:
+                tail = (proc.stderr or proc.stdout or '').strip().splitlines()[-3:]
+                self.log(f"      ✗ geotiff2pmtiles failed for {warped_tif.name}: {' | '.join(tail)}")
+                return False
+            os.replace(part, out_pmtiles)
+            if not self._is_valid_chart_pmtiles(out_pmtiles):
+                self.log(f"      ✗ chart pmtiles failed validation: {out_pmtiles.name}")
+                out_pmtiles.unlink(missing_ok=True)
+                return False
+            return True
+        except Exception as e:
+            self.log(f"      ✗ chart pmtiles conversion error for {warped_tif.name}: {e}")
+            return False
+        finally:
+            try:
+                if part.exists():
+                    part.unlink()
+            except OSError:
+                pass
+
+    def _chart_group_worker(self, date_key: str, state: Dict) -> None:
+        """Emit the chart artifact(s) for one candidate group: try records in
+        rank order until one warps (same winner semantics as the mosaic pass)."""
+        chart_temp = self.chart_temp_dir / date_key
+        for rec in state['records']:
+            location = (rec.get('location') or '').strip()
+            edition = (rec.get('edition') or '').strip()
+            gcp_context = self._build_gcp_warp_context(rec)
+            shp_path = None if gcp_context else self._row_shapefile(rec)
+            found_files = self.find_files(location, edition, rec.get('wayback_ts'),
+                                          rec.get('filename', ''), rec.get('download_link', ''))
+            if not found_files:
+                continue  # next alternate row
+
+            produced_any = False
+            names_seen = set()
+            for src_file_info in found_files:
+                src_file = src_file_info[0] if isinstance(src_file_info, tuple) else src_file_info
+                ident = self._chart_identity(rec, file_stem=src_file.stem)
+                if not ident:
+                    return
+                slug, uri_name, half = ident
+                if uri_name in names_seen:
+                    self.log(f"      ⚠ chart URI collision within {location} {uri_name} - keeping first file")
+                    continue
+                names_seen.add(uri_name)
+                key = f"chart/{slug}/{uri_name}"
+                out_pm = self.chart_pmtiles_dir / slug / f"{uri_name}.pmtiles"
+
+                manifest = self._chart_manifest_load()
+                existing_src = manifest.get(key)
+                if self._is_valid_chart_pmtiles(out_pm):
+                    if existing_src and existing_src != (rec.get('filename') or ''):
+                        # Cool-URIs collision policy: never silently replace a
+                        # different source scan under the same identity.
+                        self.log(f"      ⚠ {key} already exists from {existing_src!r} - keeping it")
+                    elif not existing_src:
+                        self._chart_manifest_add(self._chart_manifest_entry(key, slug, uri_name, half, rec, date_key, out_pm, gcp_context))
+                    produced_any = True
+                    continue
+
+                if self._is_pdf_payload(src_file):
+                    if not self._convert_pdf_payload_to_tif(src_file):
+                        continue
+                chart_temp.mkdir(parents=True, exist_ok=True)
+                warp_out = chart_temp / f"chartfull_{slug}_{self.sanitize_filename(src_file.stem)}.tif"
+                ok = self.warp_and_cut(src_file, shp_path, warp_out, record=rec, full_sheet=True)
+                if not ok or not self._is_reusable_output(warp_out):
+                    try:
+                        warp_out.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    continue
+                if self._chart_to_pmtiles(warp_out, out_pm):
+                    self._chart_manifest_add(self._chart_manifest_entry(key, slug, uri_name, half, rec, date_key, out_pm, gcp_context))
+                    self.log(f"      ✓ chart pmtiles: {key} ({out_pm.stat().st_size / 1e6:.1f} MB)")
+                    produced_any = True
+                if not self.keep_chart_temp:
+                    try:
+                        warp_out.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            if produced_any:
+                return  # winner found; don't emit alternates
+
+    def _chart_manifest_entry(self, key: str, slug: str, uri_name: str, half: str,
+                              rec: Dict, date_key: str, out_pm: Path, gcp_context) -> Dict:
+        return {
+            'key': key,
+            'slug': slug,
+            'name': uri_name,
+            'half': half,
+            'd': (rec.get('start_date') or rec.get('date') or '').strip(),
+            'e': (rec.get('end_date') or '').strip(),
+            'date_key': date_key,
+            'location': (rec.get('location') or '').strip(),
+            'filename': rec.get('filename') or '',
+            'edition': (rec.get('edition') or '').strip(),
+            'warp': 'gcp' if gcp_context else 'georef',
+            'size': out_pm.stat().st_size if out_pm.exists() else 0,
+            'generated': datetime.datetime.now().isoformat(timespec='seconds'),
+        }
+
+    def emit_chart_pmtiles_for_date(self, date_key: str, records: List[Dict]) -> None:
+        group_states = self._build_group_states(date_key, records)
+        if not group_states:
+            return
+        requested = getattr(self, 'parallel_warp', 0)
+        workers = max(1, min(4, cpu_count - 2))
+        if requested and requested > 0:
+            workers = max(1, min(workers, requested))
+        _configure_gdal_for_phase('warp', workers=workers)
+        self.log(f"  Chart pmtiles pass: {len(group_states)} chart group(s), {workers} worker(s)")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(self._chart_group_worker, date_key, state)
+                       for state in group_states]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    self.log(f"      ✗ chart pmtiles worker error: {e}")
 
     def _make_geotiff_progress_cb(self, start_time: float):
         """Build a GDAL progress callback that logs per-job and overall ETA every 5%.
@@ -2266,6 +2538,50 @@ class ChartSlicer:
 
         return vrt_library
 
+    def _build_group_states(self, date: str, records: List[Dict]) -> List[Dict]:
+        """Group a date's rows by candidate_group (duplicate/alternate scans of
+        one chart) and return fallback-attempt states sorted by candidate_rank.
+        Shared by the mosaic pass and the chart-pmtiles pass so both pick the
+        same winner."""
+        record_groups = []
+        record_group_map = {}
+        for rec in records:
+            location = (rec.get('location') or '').strip()
+            edition = (rec.get('edition') or '').strip()
+            candidate_group = (rec.get('candidate_group') or '').strip()
+            if not candidate_group:
+                norm_loc = self.normalize_name(location)
+                candidate_group = f"{date}|{norm_loc}" if norm_loc else f"{date}|row"
+                rec['candidate_group'] = candidate_group
+            key = candidate_group
+            if key not in record_group_map:
+                record_group_map[key] = {
+                    'location': location,
+                    'edition': edition,
+                    'candidate_group': candidate_group,
+                    'records': []
+                }
+                record_groups.append(record_group_map[key])
+            record_group_map[key]['records'].append(rec)
+
+        group_states = []
+        for group in record_groups:
+            group['records'].sort(
+                key=lambda r: int(str(r.get('candidate_rank', '')).strip())
+                if str(r.get('candidate_rank', '')).strip().isdigit() else 9999
+            )
+            norm_loc = self.normalize_name(group['location'])
+            group_states.append({
+                'location': group['location'],
+                'edition': group['edition'],
+                'candidate_group': group['candidate_group'],
+                'norm_loc': norm_loc,
+                'records': group['records'],
+                'next_index': 0,
+                'done': False
+            })
+        return group_states
+
     def process_all_dates(self, date_range: Optional[Tuple[datetime.date, datetime.date]] = None):
         """Process date ranges in CSV into mosaicked GeoTIFFs, optionally limited by start date."""
         self.log("\n=== Starting Chart Processing ===")
@@ -2337,6 +2653,20 @@ class ChartSlicer:
 
             output_tiff = self.output_dir / f"{date}.tif"
 
+            # Per-chart full-sheet pmtiles (durable chart URIs). Runs BEFORE the
+            # mosaic resume-skip so already-mosaicked dates still backfill chart
+            # artifacts; its own resume check skips valid existing artifacts.
+            if self.chart_pmtiles_dir:
+                try:
+                    self.emit_chart_pmtiles_for_date(date, self.dole_data[date])
+                except Exception as e:
+                    self.log(f"  ✗ Chart pmtiles pass failed for {date}: {e}")
+
+            # --charts-only: chart artifacts are the whole job; never touch
+            # mosaics (a backfill run must not regenerate the published set).
+            if self.charts_only:
+                continue
+
             # Resume: skip dates whose final mosaic GeoTIFF already exists
             if output_tiff.exists() and output_tiff.stat().st_size > 0:
                 self.log(f"  ✓ GeoTIFF already exists - skipping {output_tiff.name}")
@@ -2346,47 +2676,10 @@ class ChartSlicer:
             records = self.dole_data[date]
 
             # Group records by candidate_group so early/master overlap rows are alternatives.
-            record_groups = []
-            record_group_map = {}
-            for rec in records:
-                location = (rec.get('location') or '').strip()
-                edition = (rec.get('edition') or '').strip()
-                candidate_group = (rec.get('candidate_group') or '').strip()
-                if not candidate_group:
-                    norm_loc = self.normalize_name(location)
-                    candidate_group = f"{date}|{norm_loc}" if norm_loc else f"{date}|row"
-                    rec['candidate_group'] = candidate_group
-                key = candidate_group
-                if key not in record_group_map:
-                    record_group_map[key] = {
-                        'location': location,
-                        'edition': edition,
-                        'candidate_group': candidate_group,
-                        'records': []
-                    }
-                    record_groups.append(record_group_map[key])
-                record_group_map[key]['records'].append(rec)
+            group_states = self._build_group_states(date, records)
 
             # Track warped outputs selected per location for this date
             temp_warped_by_location = defaultdict(list)
-
-            # Prepare group state for fallback attempts
-            group_states = []
-            for group in record_groups:
-                group['records'].sort(
-                    key=lambda r: int(str(r.get('candidate_rank', '')).strip())
-                    if str(r.get('candidate_rank', '')).strip().isdigit() else 9999
-                )
-                norm_loc = self.normalize_name(group['location'])
-                group_states.append({
-                    'location': group['location'],
-                    'edition': group['edition'],
-                    'candidate_group': group['candidate_group'],
-                    'norm_loc': norm_loc,
-                    'records': group['records'],
-                    'next_index': 0,
-                    'done': False
-                })
 
             # Execute warp jobs in parallel, with fallback to duplicate rows on failure
             if group_states:
@@ -2790,6 +3083,46 @@ Examples:
     )
 
     parser.add_argument(
+        "--chart-pmtiles",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Also emit one full-sheet PMTiles per winning chart into DIR/<slug>/<date>[-half].pmtiles "
+             "(local mirror; publish with scripts/publish_chart_pmtiles.py to R2 sectionals/chart/... "
+             "extension-less). Convention: /Volumes/drive/pmtiles_charts"
+    )
+
+    parser.add_argument(
+        "--chart-temp",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Scratch dir for full-sheet chart warps (default: <temp-dir sibling> .temp_chartfull). "
+             "Must NOT be inside --temp-dir: the mosaic resume globs those dirs for sources."
+    )
+
+    parser.add_argument(
+        "--chart-manifest",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="JSONL manifest of emitted chart pmtiles (default: <repo>/worklists/data/chart_pmtiles/manifest.jsonl)"
+    )
+
+    parser.add_argument(
+        "--keep-chart-temp",
+        action="store_true",
+        help="Keep full-sheet warp GeoTIFFs after pmtiles conversion (default: delete on success)"
+    )
+
+    parser.add_argument(
+        "--charts-only",
+        action="store_true",
+        help="With --chart-pmtiles: emit per-chart pmtiles only, skip all mosaic work "
+             "(backfill mode — never rebuilds the published mosaic set)"
+    )
+
+    parser.add_argument(
         "-y", "--yes",
         action="store_true",
         help="Skip the 'Proceed with processing?' prompt (non-interactive)"
@@ -2851,6 +3184,36 @@ Examples:
     # GeoTIFF output settings
     slicer.num_threads = args.num_threads
     slicer.geotiff_compress = (args.compression or 'LZW').strip().upper()
+
+    # Per-chart full-sheet pmtiles emission
+    if args.chart_pmtiles:
+        chart_temp = args.chart_temp or args.temp_dir.parent / (args.temp_dir.name + '_chartfull')
+        chart_temp = Path(str(chart_temp))
+        # The mosaic resume rebuilds its source library by globbing under
+        # temp-dir; a full-sheet tif in there would leak collars into mosaics.
+        try:
+            chart_temp.resolve().relative_to(args.temp_dir.resolve())
+            print(f"ERROR: --chart-temp {chart_temp} must not be inside --temp-dir {args.temp_dir}.")
+            sys.exit(1)
+        except ValueError:
+            pass
+        if not slicer.geotiff2pmtiles_bin.exists():
+            print(f"ERROR: geotiff2pmtiles binary not found at {slicer.geotiff2pmtiles_bin} "
+                  "(required for --chart-pmtiles).")
+            sys.exit(1)
+        args.chart_pmtiles.mkdir(parents=True, exist_ok=True)
+        chart_temp.mkdir(parents=True, exist_ok=True)
+        slicer.chart_pmtiles_dir = args.chart_pmtiles
+        slicer.chart_temp_dir = chart_temp
+        slicer.chart_manifest_path = args.chart_manifest or (
+            Path(__file__).resolve().parent.parent / "worklists" / "data" / "chart_pmtiles" / "manifest.jsonl")
+        slicer.keep_chart_temp = args.keep_chart_temp
+        slicer.charts_only = args.charts_only
+    elif args.charts_only:
+        print("ERROR: --charts-only requires --chart-pmtiles.")
+        sys.exit(1)
+        print(f"Chart pmtiles: mirror={args.chart_pmtiles} temp={chart_temp} "
+              f"manifest={slicer.chart_manifest_path}")
 
     # Map resampling algorithm
     resample_map = {

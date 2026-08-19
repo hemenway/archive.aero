@@ -1644,6 +1644,184 @@ body.zooming .leaflet-control-attribution {
   color: var(--primary);
 }
 
+/* Pin inspector card (extends .chart-info-panel; see PinInspector) */
+.pin-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.2s var(--transition-smooth), color 0.2s var(--transition-smooth);
+}
+
+.pin-close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-light);
+}
+
+.pin-coords {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+  margin: -8px 0 4px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pin-list {
+  max-height: 40vh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.pin-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 0;
+}
+
+.pin-chart-row {
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pin-chart-row:last-child {
+  border-bottom: none;
+  padding-bottom: 2px;
+}
+
+.pin-chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pin-chart-loc {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-light);
+}
+
+.pin-chart-dates {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.pin-near-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+}
+
+.pin-chart-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.pin-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  font-size: 12px;
+  color: var(--secondary);
+  text-decoration: none;
+}
+
+.pin-link:hover {
+  text-decoration: underline;
+}
+
+.pin-view-alone {
+  padding: 5px 12px;
+  min-height: 28px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  color: white;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth);
+}
+
+.pin-view-alone:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: var(--primary);
+}
+
+.pin-unavailable {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Solo-view banner (one chart shown alone; see MapController.enterSolo) */
+.solo-bar {
+  position: absolute;
+  top: 82px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 900;
+  display: none;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 24px);
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 6px 6px 6px 16px;
+}
+
+.solo-bar.visible {
+  display: flex;
+}
+
+.solo-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-light);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.solo-exit {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  min-height: 30px;
+  background: rgba(30, 144, 255, 0.2);
+  border: 1px solid var(--primary);
+  border-radius: 999px;
+  color: var(--text-light);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 0.2s var(--transition-smooth);
+}
+
+.solo-exit:hover {
+  background: rgba(30, 144, 255, 0.35);
+}
+
 /* Empty State Message */
 .empty-state {
   position: absolute;
@@ -1705,6 +1883,19 @@ body.zooming .leaflet-control-attribution {
     min-width: 0;
   }
 
+  .pin-list {
+    max-height: 32vh;
+  }
+
+  .solo-bar {
+    top: 76px;
+    padding-top: env(safe-area-inset-top);
+  }
+
+  .solo-label {
+    max-width: 45vw;
+  }
+
   .loading-logo svg {
     width: 36px;
     height: 36px;
@@ -1719,6 +1910,10 @@ body.zooming .leaflet-control-attribution {
 .btn-nav:focus-visible,
 .btn-play:focus-visible,
 .tool-button:focus-visible,
+.pin-close:focus-visible,
+.pin-link:focus-visible,
+.pin-view-alone:focus-visible,
+.solo-exit:focus-visible,
 .time-select:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;

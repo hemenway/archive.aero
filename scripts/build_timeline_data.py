@@ -28,9 +28,44 @@ import dole_v2
 ROOT = Path(__file__).resolve().parent.parent
 SHAPE_DIR = ROOT / "shapefiles"
 OUT = ROOT / "timeline_data.json"
+CHART_PM_DIR = ROOT / "worklists" / "data" / "chart_pmtiles"
 
 GAP_RE = re.compile(r"GAP (\d+)d before next \((\d{4}-\d{2}-\d{2})\)")
 TYP_RE = re.compile(r"typ(\d+)d")
+
+
+def load_chart_pm_index():
+    """(location, d, e) -> [uri keys] for per-chart PMTiles that are BOTH in
+    the slicer manifest AND recorded as uploaded (uploads.jsonl, written by
+    publish_chart_pmtiles.py). Keys look like chart/<slug>/<date>[-half]; the
+    viewer builds https://data.archive.aero/sectionals/<key> from them. Half
+    sheets yield two keys for one (location, d, e)."""
+    def read_jsonl(path):
+        entries = []
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        return entries
+
+    uploaded = {e["key"] for e in read_jsonl(CHART_PM_DIR / "uploads.jsonl") if "key" in e}
+    index = collections.defaultdict(list)
+    seen = set()
+    for entry in read_jsonl(CHART_PM_DIR / "manifest.jsonl"):
+        key = entry.get("key")
+        if not key or key in seen or key not in uploaded:
+            continue
+        seen.add(key)
+        ident = (entry.get("location", ""), entry.get("d", ""), entry.get("e", ""))
+        index[ident].append(key)
+    for keys in index.values():
+        keys.sort()  # deterministic: whole sheet before halves, halves alphabetical
+    return index
 
 
 def load_shape_geom(ref):
@@ -91,6 +126,9 @@ def parse_int(s):
 
 def main():
     rows = dole_v2.load_rows(ROOT / "master_dole_v2.csv")
+    chart_pm = load_chart_pm_index()
+    if chart_pm:
+        print(f"chart pmtiles: {sum(len(v) for v in chart_pm.values())} uploaded artifacts to stamp")
 
     # ---- group rows by location, pick the majority cutline ref per location
     by_loc = collections.defaultdict(list)
@@ -158,14 +196,21 @@ def main():
         for r in lrows:
             note = r["note"] or ""
             ed = r["edition"].strip()
-            charts.append({
+            chart = {
                 "d": r["date"],
                 "e": r["end_date"] or None,
                 "ed": ed,
                 "url": r["download_link"],
                 "f": ("L" if "latest-in-collection" in note else "")
                      + ("B" if "BLANK_MAP" in note else ""),
-            })
+            }
+            # Per-chart PMTiles URI(s) (durable chart URIs; slicer --chart-pmtiles
+            # + publish_chart_pmtiles.py). String when one artifact, list for
+            # half-sheet pairs. Viewer: "View alone" shows these directly.
+            pm_keys = chart_pm.get((loc, r["date"], r["end_date"] or ""))
+            if pm_keys:
+                chart["pm"] = pm_keys[0] if len(pm_keys) == 1 else pm_keys
+            charts.append(chart)
             m = GAP_RE.search(note)
             if m:
                 days, nxt = int(m.group(1)), m.group(2)
