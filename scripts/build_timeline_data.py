@@ -200,7 +200,9 @@ def main():
                 "d": r["date"],
                 "e": r["end_date"] or None,
                 "ed": ed,
-                "url": r["download_link"],
+                # No source URL: the chart -> source-scan mapping is the
+                # scrapeable core of the catalog (decision 2026-08-19; the
+                # viewer and contribute page link sources.html instead).
                 "f": ("L" if "latest-in-collection" in note else "")
                      + ("B" if "BLANK_MAP" in note else ""),
             }

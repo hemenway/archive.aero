@@ -184,7 +184,7 @@
     .atlas-wrap { position: relative; }
     #atlasSvg { display: block; width: 100%; height: auto; background:
       radial-gradient(ellipse at 42% 40%, #101922 0%, #0a0e12 75%); }
-    .ext { stroke-width: 0.35; cursor: pointer; transition: fill 0.15s; }
+    .ext { stroke-width: 0.35; cursor: default; transition: fill 0.15s; }
     .ext.have { fill: rgba(0, 212, 170, 0.30); stroke: rgba(0, 212, 170, 0.9); }
     .ext.have.old { fill: rgba(53, 181, 201, 0.30); stroke: rgba(53, 181, 201, 0.95); }
     .ext.gap { fill: url(#hatchRed); stroke: rgba(255, 92, 92, 0.85); }
@@ -297,7 +297,7 @@
       border-radius: 3px;
       background: var(--have);
       min-width: 2px;
-      cursor: pointer;
+      cursor: default;
     }
     .seg.old { background: var(--have-old); }
     .seg:hover { top: 6px; height: 14px; box-shadow: 0 0 0 1.5px #fff; z-index: 3; }
@@ -402,12 +402,12 @@
       <h2>When and where the gaps are</h2>
       <p class="muted" style="margin-top:0">
         Scrub the timeline and the country re-tiles itself — 87 small charts in 1945, 37 big ones
-        today. Filled regions are in the archive (click any to open its source scan), red hatch means
+        today. Filled regions are in the archive, red hatch means
         a known missing edition at that date, and a faint dashed outline means the chart existed but
         nothing is archived.
       </p>
       <div class="legend">
-        <span><i class="sw-have"></i> in archive — modern series (click for source)</span>
+        <span><i class="sw-have"></i> in archive — modern series</span>
         <span><i class="sw-have-old"></i> in archive — early series (1930s–60s)</span>
         <span><i class="sw-gap"></i> known missing editions</span>
         <span><i class="sw-hole"></i> nothing covering this area yet</span>
@@ -445,12 +445,12 @@
         One row per modern sectional, with every chart that ever covered that area grouped under it —
         old Albany, Boston, and New York charts live under today's <b>New York</b> sectional, matched
         spatially from the chart extents. The collapsed row shows the combined coverage; expand it to
-        see each historical chart as its own lane. Teal segments are archived scans (click one to open
-        the source), red hatch marks known missing editions, and faint hatch means no chart of that
+        see each historical chart as its own lane. Teal segments are archived scans,
+        red hatch marks known missing editions, and faint hatch means no chart of that
         area is in the archive at all. Sort by “most missing” to turn it into a to-do list.
       </p>
       <div class="legend">
-        <span><i class="sw-have"></i> in archive — modern series (click for source)</span>
+        <span><i class="sw-have"></i> in archive — modern series</span>
         <span><i class="sw-have-old"></i> in archive — early series (1930s–60s)</span>
         <span><i class="sw-gap"></i> known missing editions</span>
         <span><i class="sw-hole"></i> nothing covering this area yet</span>
@@ -527,7 +527,7 @@
           const t0 = parse(c.d);
           let t1 = c.e ? parse(c.e) : (L.charts[i + 1] ? parse(L.charts[i + 1].d) : t0 + 182 * 86400000);
           if (t1 <= t0) t1 = t0 + 30 * 86400000;
-          return { t0, t1, ed: c.ed, url: c.url, f: c.f, d: c.d };
+          return { t0, t1, ed: c.ed, f: c.f, d: c.d };
         });
         L.gapSegs = L.gaps.map(g => ({ t0: parse(g.from), t1: parse(g.to), days: g.days, est: g.est }));
         L.first = L.segs[0].t0;
@@ -699,13 +699,12 @@
         tr.appendChild(dg);
       }
       for (const s of L.segs) {
-        const el = document.createElement('a');
+        const el = document.createElement('div');
         el.className = 'seg' + (L.era === 'old' ? ' old' : '');
-        el.href = s.url; el.target = '_blank'; el.rel = 'noopener';
         el.style.left = X(s.t0) + 'px';
         el.style.width = Math.max(2.5, X(s.t1) - X(s.t0) - 1) + 'px';
         el.addEventListener('mousemove', ev => showTip(
-          `<b>${esc(L.name)}</b> — ${edLabel(s.ed)}<br><span class="muted">${fmt(s.t0)}${s.f.includes('L') ? ' · latest in collection' : ''}</span><br><span class="link">click to open source scan ↗</span>`, ev));
+          `<b>${esc(L.name)}</b> — ${edLabel(s.ed)}<br><span class="muted">${fmt(s.t0)}${s.f.includes('L') ? ' · latest in collection' : ''}</span>`, ev));
         el.addEventListener('mouseleave', hideTip);
         tr.appendChild(el);
       }
@@ -795,7 +794,7 @@
         el.addEventListener('mousemove', ev => {
           const st = stateAt(L, cur);
           let body = st.kind === 'have'
-            ? `${edLabel(st.seg.ed)} · ${fmt(st.seg.t0)}<br><span class="link">click to open source scan ↗</span>`
+            ? `${edLabel(st.seg.ed)} · ${fmt(st.seg.t0)}`
             : st.kind === 'gap'
               ? `<span class="miss">missing edition${st.gap.est > 1 ? 's (~' + st.gap.est + ')' : ''}</span> · ${fmt(st.gap.t0)} – ${fmt(st.gap.t1)}`
               : st.kind === 'hole'
@@ -804,10 +803,6 @@
           showTip(`<b>${esc(L.name)}</b><br>${body}`, ev);
         });
         el.addEventListener('mouseleave', hideTip);
-        el.addEventListener('click', () => {
-          const st = stateAt(L, cur);
-          if (st.kind === 'have') window.open(st.seg.url, '_blank', 'noopener');
-        });
         g.appendChild(el);
         polys.push({ el, L });
       }
