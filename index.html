@@ -303,11 +303,16 @@
 
   <div id="map"></div>
 
-  <!-- Pin inspector: nearest charts at a clicked point (see PinInspector) -->
-  <div class="chart-info-panel" id="pinPanel" role="dialog" aria-label="Charts at this point">
-    <h4>Charts at this point<button class="pin-close" id="pinClose" type="button" aria-label="Clear pin">&times;</button></h4>
-    <div class="pin-coords" id="pinCoords"></div>
-    <div class="pin-list" id="pinList"></div>
+  <!-- Pin inspector: the chart at a clicked point, anchored beside the click
+       (see PinInspector) -->
+  <div class="pin-popup" id="pinPanel" role="dialog" aria-label="Chart at this point">
+    <div class="pin-chart-head">
+      <span class="pin-chart-loc" id="pinLoc"></span>
+      <span class="chart-badge sectional" id="pinBadge"></span>
+      <button class="pin-close" id="pinClose" type="button" aria-label="Clear pin">&times;</button>
+    </div>
+    <div class="pin-chart-dates" id="pinDates"></div>
+    <div class="pin-chart-actions" id="pinActions"></div>
     <a href="sources.html" class="pin-sources-link">Sources &amp; Attribution</a>
   </div>
 
@@ -2113,11 +2118,14 @@
       }
 
       /* ---- coverage heat strip ----
-         coverage.json is precomputed by build_coverage.py from dates.csv + the
-         geographic bounds in every PMTiles header: for each time segment, the %
-         of the lower-48 reference bbox covered by the archives in effect.
-         Chart count is deliberately not the signal — one merged current-cycle
-         mosaic covers 100% of the US while 1961's two charts cover ~5%. */
+         coverage.json is precomputed by build_coverage.py from the per-chart
+         extent rings in timeline_data.json: for each time segment, the % of the
+         charted lower-48 area covered by the charts in effect. AK/HI/territory
+         extents fall outside the reference bbox, so they never inflate the area
+         (regardless of statehood era); the denominator is the union of every
+         extent ever charted, not the raw bbox (~25% ocean), so a full modern
+         cycle reads ~98%. Chart count is deliberately not the signal — one
+         merged current-cycle mosaic covers 100% while 1961's two charts cover ~5%. */
       async initCoverage() {
         try {
           const resp = await fetch('coverage.json');
@@ -2165,8 +2173,8 @@
 
       coverageText(count, pct) {
         if (count === 0) return 'No charts in archive';
-        if (pct >= 95) return 'Full US coverage';
-        return `${Math.round(pct)}% of the US covered`;
+        if (pct >= 95) return 'Full lower-48 coverage';
+        return `${Math.round(pct)}% of the lower 48 covered`;
       }
 
       updateCoverageLabel() {
@@ -2357,9 +2365,11 @@
     }
 
     /** PIN INSPECTOR **/
-    // Map-click pin + floating "Charts at this point" card. The list comes from
-    // ChartIndex (fetched on the first click); "View alone" hands the chosen
-    // chart to MapController.enterSolo. Clicking again moves the pin.
+    // Map-click pin + a compact popup showing THE chart at that point (the one
+    // whose footprint contains the click, else the nearest), anchored beside
+    // the click and following the pin as the map moves. Chart data comes from
+    // ChartIndex (fetched on the first click); "View alone" hands the chart to
+    // MapController.enterSolo. Clicking again moves the pin.
     class PinInspector {
       constructor(mapCtrl, timelineApp) {
         this.mapCtrl = mapCtrl;
@@ -2368,19 +2378,23 @@
         this.latlng = null;
         this.els = {
           panel: document.getElementById('pinPanel'),
-          coords: document.getElementById('pinCoords'),
-          list: document.getElementById('pinList')
+          loc: document.getElementById('pinLoc'),
+          badge: document.getElementById('pinBadge'),
+          dates: document.getElementById('pinDates'),
+          actions: document.getElementById('pinActions')
         };
         this.refreshDebounced = Utils.debounce(() => this.refresh(), 150);
 
         if (this.els.panel && window.L && L.DomEvent) {
-          // Card clicks must not fall through to the map and move the pin.
+          // Popup clicks must not fall through to the map and move the pin.
           L.DomEvent.disableClickPropagation(this.els.panel);
           L.DomEvent.disableScrollPropagation(this.els.panel);
         }
         document.getElementById('pinClose')?.addEventListener('click', () => this.clear());
         document.getElementById('soloExit')?.addEventListener('click', () => this.mapCtrl.exitSolo());
         mapCtrl.map.on('click', (e) => this.setPin(e.latlng));
+        // Keep the popup glued to the pin while panning/zooming.
+        mapCtrl.map.on('move zoom viewreset', () => this._updatePosition());
         window.addEventListener('keydown', (e) => {
           if (e.key !== 'Escape') return;
           // Step out of solo first; a second Escape clears the pin. Coexists
@@ -2404,15 +2418,16 @@
         } else {
           this.marker.setLatLng(latlng);
         }
-        if (this.els.coords) {
-          this.els.coords.textContent = `${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}`;
-        }
         this.els.panel?.classList.add('visible');
-        if (!ChartIndex.locations) this._setMessage('Loading chart details…');
+        if (!ChartIndex.locations) {
+          this._render(null, null, 'Loading chart details…');
+          this._updatePosition();
+        }
         try {
           await ChartIndex.load();
         } catch (e) {
-          this._setMessage('Chart details unavailable — click the map again to retry.');
+          this._render(null, null, 'Chart details unavailable — click again to retry.');
+          this._updatePosition();
           return;
         }
         if (this.latlng === latlng) this.refresh();
@@ -2430,85 +2445,77 @@
         // "Show all charts" exit (as do Escape and any timeline change).
       }
 
-      // Re-rank for the current pin and selected date. Also runs (debounced)
-      // when the timeline moves while pinned, since the in-effect set changes.
+      // Re-resolve the chart at the pin for the selected date. Also runs
+      // (debounced) when the timeline moves while pinned.
       refresh() {
         if (!this.latlng || !ChartIndex.locations) return;
         const dateStr = this.timelineApp.selectedDate
           || this.timelineApp.frames[this.timelineApp.currentIndex]?.date;
         if (!dateStr) return;
-        const results = ChartIndex.query(this.latlng.lat, this.latlng.lng, dateStr);
-        this._renderList(results, dateStr);
+        const results = ChartIndex.query(this.latlng.lat, this.latlng.lng, dateStr, 1);
+        this._render(results[0] || null, dateStr);
+        this._updatePosition();
       }
 
-      _setMessage(text) {
-        const list = this.els.list;
-        if (!list) return;
-        list.textContent = '';
-        const div = document.createElement('div');
-        div.className = 'pin-empty';
-        div.textContent = text;
-        list.appendChild(div);
-      }
-
-      _renderList(results, dateStr) {
-        const list = this.els.list;
-        if (!list) return;
-        if (!results.length) {
-          this._setMessage(`No charts in effect on ${Utils.formatDateId(dateStr)}.`);
+      // Fill the popup with one chart (or a message when result is null).
+      // No per-chart source links: exposing the chart -> source-scan mapping
+      // invites scraping the catalog; the footer links sources.html instead.
+      _render(result, dateStr, message) {
+        const els = this.els;
+        if (!els.panel) return;
+        els.actions.textContent = '';
+        if (!result) {
+          els.loc.textContent = message || 'No chart here';
+          els.badge.style.display = 'none';
+          els.dates.textContent = (!message && dateStr)
+            ? `No charts in effect on ${Utils.formatDateId(dateStr)}` : '';
           return;
         }
-        list.textContent = '';
-        for (const { loc, chart, contains } of results) {
-          const row = document.createElement('div');
-          row.className = 'pin-chart-row';
-
-          const head = document.createElement('div');
-          head.className = 'pin-chart-head';
-          const name = document.createElement('span');
-          name.className = 'pin-chart-loc';
-          name.textContent = loc.name;
-          head.appendChild(name);
-          const badge = document.createElement('span');
-          badge.className = 'chart-badge sectional';
-          badge.textContent = PinInspector.edLabel(chart.ed);
-          head.appendChild(badge);
-          row.appendChild(head);
-
-          const dates = document.createElement('div');
-          dates.className = 'pin-chart-dates';
-          dates.textContent = chart.e
-            ? `${Utils.formatDateId(chart.d)} – ${Utils.formatDateId(chart.e)}`
-            : Utils.formatDateId(chart.d);
-          if (!contains) {
-            const chip = document.createElement('span');
-            chip.className = 'pin-near-chip';
-            chip.textContent = 'nearby';
-            dates.appendChild(chip);
-          }
-          row.appendChild(dates);
-
-          // No per-chart source links here: exposing the chart -> source-scan
-          // mapping row by row invites scraping the catalog wholesale. The
-          // card's footer links to sources.html instead.
-          const actions = document.createElement('div');
-          actions.className = 'pin-chart-actions';
-          if (chart.pm || chart.published) {
-            const btn = document.createElement('button');
-            btn.className = 'pin-view-alone';
-            btn.type = 'button';
-            btn.textContent = 'View alone';
-            btn.addEventListener('click', () => this.mapCtrl.enterSolo(loc, chart));
-            actions.appendChild(btn);
-          } else {
-            const note = document.createElement('span');
-            note.className = 'pin-unavailable';
-            note.textContent = 'not yet tiled';
-            actions.appendChild(note);
-          }
-          row.appendChild(actions);
-          list.appendChild(row);
+        const { loc, chart, contains } = result;
+        els.loc.textContent = loc.name;
+        els.badge.style.display = '';
+        els.badge.textContent = PinInspector.edLabel(chart.ed);
+        els.dates.textContent = chart.e
+          ? `${Utils.formatDateId(chart.d)} – ${Utils.formatDateId(chart.e)}`
+          : Utils.formatDateId(chart.d);
+        if (!contains) {
+          const chip = document.createElement('span');
+          chip.className = 'pin-near-chip';
+          chip.textContent = 'nearby';
+          els.dates.appendChild(chip);
         }
+        if (chart.pm || chart.published) {
+          const btn = document.createElement('button');
+          btn.className = 'pin-view-alone';
+          btn.type = 'button';
+          btn.textContent = 'View alone';
+          btn.addEventListener('click', () => this.mapCtrl.enterSolo(loc, chart));
+          els.actions.appendChild(btn);
+        } else {
+          const note = document.createElement('span');
+          note.className = 'pin-unavailable';
+          note.textContent = 'not yet tiled';
+          els.actions.appendChild(note);
+        }
+      }
+
+      // Anchor the popup beside the pin, flipping to stay inside the viewport
+      // and below the header bar. Runs on every render and map move/zoom.
+      _updatePosition() {
+        const panel = this.els.panel;
+        if (!this.latlng || !panel?.classList.contains('visible')) return;
+        const map = this.mapCtrl.map;
+        const rect = map.getContainer().getBoundingClientRect();
+        const pt = map.latLngToContainerPoint(this.latlng);
+        const w = panel.offsetWidth, h = panel.offsetHeight;
+        let x = rect.left + pt.x + 18;
+        let y = rect.top + pt.y - 12;
+        if (x + w > window.innerWidth - 8) x = rect.left + pt.x - w - 18;
+        if (x < 8) x = 8;
+        if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+        if (y < 78) y = 78; // clear the header bar
+        panel.style.left = x + 'px';
+        panel.style.top = y + 'px';
       }
 
       // Old-era rows carry LOC catalog numbers in the edition column — only

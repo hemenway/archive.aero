@@ -1644,11 +1644,33 @@ body.zooming .leaflet-control-attribution {
   color: var(--primary);
 }
 
-/* Pin inspector card (extends .chart-info-panel; see PinInspector) */
+/* Pin inspector popup: compact single-chart card anchored beside the click
+   (position set by PinInspector._updatePosition) */
+.pin-popup {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 900;
+  min-width: 190px;
+  max-width: min(250px, calc(100vw - 24px));
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: none;
+}
+
+.pin-popup.visible {
+  display: block;
+  animation: slideUp 0.2s var(--transition-smooth);
+}
+
 .pin-close {
-  margin-left: auto;
-  width: 28px;
-  height: 28px;
+  margin-left: 2px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1667,44 +1689,14 @@ body.zooming .leaflet-control-attribution {
   color: var(--text-light);
 }
 
-.pin-coords {
-  font-size: 11px;
-  color: var(--text-muted);
-  letter-spacing: 0.3px;
-  margin: -8px 0 4px;
-  font-variant-numeric: tabular-nums;
-}
-
-.pin-list {
-  max-height: 40vh;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.pin-empty {
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 8px 0;
-}
-
-.pin-chart-row {
-  padding: 10px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.pin-chart-row:last-child {
-  border-bottom: none;
-  padding-bottom: 2px;
-}
-
 .pin-chart-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
 }
 
 .pin-chart-loc {
+  flex: 1;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-light);
@@ -1738,10 +1730,10 @@ body.zooming .leaflet-control-attribution {
 
 .pin-sources-link {
   display: block;
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--text-muted);
   text-decoration: none;
 }
@@ -1883,10 +1875,6 @@ body.zooming .leaflet-control-attribution {
     right: 12px;
     left: 12px;
     min-width: 0;
-  }
-
-  .pin-list {
-    max-height: 32vh;
   }
 
   .solo-bar {
