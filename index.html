@@ -154,143 +154,89 @@
     </div>
   </div>
 
-  <!-- Tools Dropdown (mounted next to zoom controls) -->
+  <!-- Layers dropdown (mounted next to zoom controls; utility rail below zoom) -->
   <div class="tools-control leaflet-control" id="toolsControl">
-    <button class="tools-btn" id="toolsBtn" type="button" title="Tools" aria-expanded="false" aria-controls="toolsPanel"
-      aria-label="Open tools panel">
+    <button class="tools-btn" id="toolsBtn" type="button" title="Layers" aria-expanded="false" aria-controls="toolsPanel"
+      aria-label="Open layers panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round" aria-hidden="true">
+        <polygon points="12 2 2 7 12 12 22 7 12 2" />
+        <polyline points="2 17 12 22 22 17" />
+        <polyline points="2 12 12 17 22 12" />
+      </svg>
+      <span class="tools-btn-label">Layers</span>
+    </button>
+    <div class="tools-panel" id="toolsPanel" role="dialog" aria-label="Map layers">
+      <div class="lp-section">
+        <div class="lp-row">
+          <span class="lp-name">Sectional charts</span>
+          <button class="lp-switch" id="chartsToggleBtn" type="button" aria-pressed="true"
+            aria-label="Show sectional charts"></button>
+        </div>
+        <div class="lp-opacity">
+          <span class="lp-sub">Opacity</span>
+          <input type="range" class="tool-slider" id="toolOpacitySlider" min="0" max="100" value="100"
+            aria-label="Chart opacity">
+          <span class="lp-sub lp-opacity-val"><span id="toolOpacityValue">100</span>%</span>
+        </div>
+      </div>
+
+      <div class="lp-section">
+        <div class="lp-group-label">Overlays</div>
+        <div class="lp-row">
+          <span class="lp-name">Airfields</span>
+          <button class="lp-switch" id="airfieldsBtn" type="button" aria-pressed="true"
+            aria-label="Show airfields"></button>
+        </div>
+        <div class="af-filter-row" id="afFilterRow">
+          <button class="af-chip" type="button" data-af-status="open" aria-pressed="true">
+            <span class="af-swatch af-swatch-open" aria-hidden="true"></span>Open today
+          </button>
+          <button class="af-chip" type="button" data-af-status="gone" aria-pressed="true">
+            <span class="af-swatch af-swatch-gone" aria-hidden="true"></span>Closed
+          </button>
+          <button class="af-chip" type="button" data-af-status="unknown" aria-pressed="true">
+            <span class="af-swatch af-swatch-unknown" aria-hidden="true"></span>Unknown
+          </button>
+        </div>
+      </div>
+
+      <div class="lp-stats"><span id="chartInfoTotal">—</span> eras &middot; <span id="chartInfoEffective">—</span>
+        under view &middot; zoom <span id="chartInfoZoom">—</span></div>
+    </div>
+  </div>
+
+  <!-- Utility rail: one-shot map utilities, mounted below the zoom control (see initApp) -->
+  <div class="util-rail leaflet-control" id="utilRail">
+    <button class="rail-btn" id="locateBtn" type="button" title="My location" aria-label="Center map on my location">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
         aria-hidden="true">
-        <line x1="4" y1="21" x2="4" y2="14" />
-        <line x1="4" y1="10" x2="4" y2="3" />
-        <line x1="12" y1="21" x2="12" y2="12" />
-        <line x1="12" y1="8" x2="12" y2="3" />
-        <line x1="20" y1="21" x2="20" y2="16" />
-        <line x1="20" y1="12" x2="20" y2="3" />
-        <line x1="1" y1="14" x2="7" y2="14" />
-        <line x1="9" y1="8" x2="15" y2="8" />
-        <line x1="17" y1="16" x2="23" y2="16" />
+        <circle cx="12" cy="12" r="8" />
+        <line x1="22" y1="12" x2="20" y2="12" />
+        <line x1="4" y1="12" x2="2" y2="12" />
+        <line x1="12" y1="4" x2="12" y2="2" />
+        <line x1="12" y1="22" x2="12" y2="20" />
       </svg>
     </button>
-    <div class="tools-panel" id="toolsPanel" role="dialog" aria-label="Map tools and settings">
-      <div class="tools-section collapsible">
-        <h4 class="section-header" data-section="mapTools">
-          <span>Map Tools</span>
-          <span class="collapse-icon">▼</span>
-        </h4>
-        <div class="section-content" id="mapToolsContent">
-          <div class="tool-section">
-            <span class="tool-label">Chart Opacity</span>
-            <div class="tool-slider-container">
-              <input type="range" class="tool-slider" id="toolOpacitySlider" min="0" max="100" value="100">
-              <div class="tool-value"><span id="toolOpacityValue">100</span>%</div>
-            </div>
-          </div>
-
-          <div class="tool-section">
-            <span class="tool-label">My Location</span>
-            <button class="tool-button" id="locateBtn">
-              <span>Center Map</span>
-              <span class="tool-button-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-                  <circle cx="12" cy="12" r="8" />
-                  <line x1="22" y1="12" x2="20" y2="12" />
-                  <line x1="4" y1="12" x2="2" y2="12" />
-                  <line x1="12" y1="4" x2="12" y2="2" />
-                  <line x1="12" y1="22" x2="12" y2="20" />
-                </svg>
-              </span>
-            </button>
-          </div>
-
-          <div class="tool-section">
-            <span class="tool-label">Fullscreen</span>
-            <button class="tool-button" id="fullscreenBtn">
-              <span>Toggle Fullscreen</span>
-              <span aria-hidden="true">⛶</span>
-            </button>
-          </div>
-
-          <div class="tool-section">
-            <span class="tool-label">Shortcuts</span>
-            <button class="tool-button" id="helpBtn">
-              <span>Keyboard Shortcuts</span>
-              <span>?</span>
-            </button>
-          </div>
-
-          <div class="tool-section">
-            <span class="tool-label">Airfields</span>
-            <button class="tool-button" id="airfieldsBtn" aria-pressed="true">
-              <span id="airfieldsBtnLabel">Shown</span>
-              <span class="tool-button-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="4" />
-                </svg>
-              </span>
-            </button>
-            <div class="af-filter-row" id="afFilterRow">
-              <button class="af-chip" type="button" data-af-status="open" aria-pressed="true">
-                <span class="af-swatch af-swatch-open" aria-hidden="true"></span>Open today
-              </button>
-              <button class="af-chip" type="button" data-af-status="gone" aria-pressed="true">
-                <span class="af-swatch af-swatch-gone" aria-hidden="true"></span>Closed
-              </button>
-              <button class="af-chip" type="button" data-af-status="unknown" aria-pressed="true">
-                <span class="af-swatch af-swatch-unknown" aria-hidden="true"></span>Unknown
-              </button>
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      <div class="tools-section collapsible">
-        <h4 class="section-header" data-section="chartInfo">
-          <span>Chart Information</span>
-          <span class="collapse-icon">▼</span>
-        </h4>
-        <div class="section-content" id="chartInfoContent">
-          <div class="chart-info-row">
-            <span class="chart-info-label">Date</span>
-            <span class="chart-info-value" id="chartInfoDate">—</span>
-          </div>
-          <div class="chart-info-row">
-            <span class="chart-info-label">Type</span>
-            <span class="chart-info-value"><span class="chart-badge sectional">Sectional</span></span>
-          </div>
-          <div class="chart-info-row">
-            <span class="chart-info-label">Format</span>
-            <span class="chart-info-value">PMTiles / WebP</span>
-          </div>
-          <div class="chart-info-row">
-            <span class="chart-info-label">Total Charts</span>
-            <span class="chart-info-value" id="chartInfoTotal">—</span>
-          </div>
-          <div class="chart-info-row">
-            <span class="chart-info-label">Effective Layers</span>
-            <span class="chart-info-value" id="chartInfoEffective">—</span>
-          </div>
-          <div class="chart-info-row">
-            <span class="chart-info-label">Zoom Level</span>
-            <span class="chart-info-value" id="chartInfoZoom">—</span>
-          </div>
-        </div>
-      </div>
-
-      <div class="tools-section collapsible">
-        <h4 class="section-header" data-section="share">
-          <span>Share</span>
-          <span class="collapse-icon">▼</span>
-        </h4>
-        <div class="section-content" id="shareContent">
-          <div class="share-url-box">
-            <input type="text" class="share-url" id="shareUrl" readonly aria-label="Share URL">
-            <button class="copy-btn" id="copyBtn">Copy</button>
-          </div>
-          <div class="share-info">Share your current timeframe and map position</div>
-        </div>
-      </div>
-    </div>
+    <button class="rail-btn" id="fullscreenBtn" type="button" title="Fullscreen" aria-label="Toggle fullscreen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round" aria-hidden="true">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+        <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+        <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+        <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+      </svg>
+    </button>
+    <button class="rail-btn" id="shareBtn" type="button" title="Copy share link" aria-label="Copy share link">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+        stroke-linejoin="round" aria-hidden="true">
+        <path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7" />
+        <polyline points="16 6 12 2 8 6" />
+        <line x1="12" y1="2" x2="12" y2="15" />
+      </svg>
+    </button>
+    <button class="rail-btn" id="helpBtn" type="button" title="Keyboard shortcuts"
+      aria-label="Keyboard shortcuts">?</button>
   </div>
 
   <!-- Keyboard Shortcuts Overlay -->
@@ -314,7 +260,7 @@
         <span class="shortcut-key">F</span>
       </div>
       <div class="shortcut-item">
-        <span class="shortcut-desc">Share current view</span>
+        <span class="shortcut-desc">Copy share link</span>
         <span class="shortcut-key">S</span>
       </div>
       <div class="shortcut-item">
@@ -1123,69 +1069,6 @@
       });
     }
 
-    /** COLLAPSIBLE SECTIONS **/
-    const initCollapsibleSections = () => {
-      document.querySelectorAll('.section-header').forEach(header => {
-        const section = header.parentElement;
-        const content = header.nextElementSibling;
-        const icon = header.querySelector('.collapse-icon');
-        if (!content) return;
-
-        const setExpandedState = (isExpanded) => {
-          if (isExpanded) {
-            section.classList.remove('collapsed');
-            if (icon) icon.textContent = '▼';
-            content.style.paddingTop = '';
-            content.style.maxHeight = content.scrollHeight + 'px';
-            requestAnimationFrame(() => {
-              content.style.transform = 'scaleY(1)';
-              content.style.opacity = '1';
-            });
-          } else {
-            section.classList.add('collapsed');
-            if (icon) icon.textContent = '▶';
-            content.style.transform = 'scaleY(0)';
-            content.style.opacity = '0';
-            const onEnd = (event) => {
-              if (event.propertyName !== 'transform') return;
-              content.removeEventListener('transitionend', onEnd);
-              // If the section was re-expanded before this collapse transition ended,
-              // don't clamp it to 0 height — that would hide a now-open section.
-              if (!section.classList.contains('collapsed')) return;
-              content.style.maxHeight = '0px';
-              content.style.paddingTop = '0px';
-            };
-            content.addEventListener('transitionend', onEnd);
-          }
-        };
-
-        if (section.classList.contains('collapsed')) {
-          content.style.maxHeight = '0px';
-          content.style.paddingTop = '0px';
-          content.style.transform = 'scaleY(0)';
-          content.style.opacity = '0';
-          if (icon) icon.textContent = '▶';
-        } else {
-          content.style.maxHeight = content.scrollHeight + 'px';
-          content.style.transform = 'scaleY(1)';
-          content.style.opacity = '1';
-          if (icon) icon.textContent = '▼';
-        }
-
-        header.addEventListener('click', () => {
-          const isExpanded = !section.classList.contains('collapsed');
-          setExpandedState(!isExpanded);
-        });
-      });
-    };
-
-    // Initialize after DOM is ready
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', initCollapsibleSections);
-    } else {
-      initCollapsibleSections();
-    }
-
     /** DATA LOADER **/
     // Shared by the bundle and CSV paths: rows are {key, url|null}.
     function applyLoadedRanges(rows) {
@@ -1623,7 +1506,7 @@
         // cancel it so a stale date can't repaint over this newer frame afterward.
         this.showFrameDebounced?.cancel?.();
 
-        const opacityValue = parseFloat(this.els.opacitySlider?.value || 100) / 100;
+        const opacityValue = this.chartsHidden ? 0 : parseFloat(this.els.opacitySlider?.value || 100) / 100;
         this.overlayOpacity = opacityValue;
         this.compositeLayer.setOpacity(opacityValue);
 
@@ -1788,6 +1671,14 @@
         this.overlayOpacity = opacity;
         if (this.compositeLayer) this.compositeLayer.setOpacity(opacity);
       }
+
+      // The layers-panel charts switch. A persistent flag (not a one-shot
+      // opacity write) because showFrame re-reads the slider on every era swap.
+      setChartsHidden(hidden) {
+        this.chartsHidden = hidden;
+        const sliderValue = parseFloat(this.els.opacitySlider?.value || 100) / 100;
+        this.setOpacity(hidden ? 0 : sliderValue);
+      }
     }
 
     /** TIMELINE CONTROLLER **/
@@ -1859,7 +1750,7 @@
           }
           if (e.key === 's' || e.key === 'S') {
             e.preventDefault();
-            this.openToolsPanel('share');
+            this.copyShareLink();
           }
           if (e.key === '?') {
             e.preventDefault();
@@ -1920,45 +1811,29 @@
           }
         });
 
+        // Charts visibility switch. Dragging the opacity slider while hidden
+        // flips the switch back on rather than silently fighting it.
+        const chartsToggleBtn = document.getElementById('chartsToggleBtn');
+        const syncChartsToggle = () => {
+          chartsToggleBtn?.setAttribute('aria-pressed', String(!this.mapCtrl.chartsHidden));
+        };
+        chartsToggleBtn?.addEventListener('click', () => {
+          this.mapCtrl.setChartsHidden(!this.mapCtrl.chartsHidden);
+          syncChartsToggle();
+        });
+
         toolOpacitySlider?.addEventListener('input', (e) => {
           const value = e.target.value;
           toolOpacityValue.textContent = value;
+          if (this.mapCtrl.chartsHidden) {
+            this.mapCtrl.chartsHidden = false;
+            syncChartsToggle();
+          }
           this.mapCtrl.setOpacity(value / 100);
         });
 
-        const shareUrl = document.getElementById('shareUrl');
-        const copyBtn = document.getElementById('copyBtn');
-
-        copyBtn?.addEventListener('click', async () => {
-          try {
-            this.updateShareUrl();
-            await navigator.clipboard.writeText(shareUrl.value);
-            copyBtn.textContent = '✓ Copied';
-            copyBtn.classList.add('copied');
-            setTimeout(() => {
-              copyBtn.textContent = 'Copy';
-              copyBtn.classList.remove('copied');
-            }, 2000);
-          } catch (err) {
-            // Fallback for browsers without clipboard API support
-            try {
-              shareUrl.select();
-              shareUrl.setSelectionRange(0, 99999); // For mobile devices
-              const success = document.execCommand('copy');
-              if (success) {
-                copyBtn.textContent = '✓ Copied';
-                copyBtn.classList.add('copied');
-                setTimeout(() => {
-                  copyBtn.textContent = 'Copy';
-                  copyBtn.classList.remove('copied');
-                }, 2000);
-              } else {
-                Utils.toast('Please manually copy the URL');
-              }
-            } catch (fallbackErr) {
-              Utils.toast('Please manually copy the URL');
-            }
-          }
+        document.getElementById('shareBtn')?.addEventListener('click', () => {
+          this.copyShareLink();
         });
 
         // Play button
@@ -1974,7 +1849,7 @@
         }
       }
 
-      openToolsPanel(focusTarget) {
+      openToolsPanel() {
         const toolsControl = document.getElementById('toolsControl');
         const toolsBtn = document.getElementById('toolsBtn');
         if (!toolsControl || !toolsBtn) return;
@@ -1986,24 +1861,6 @@
         }
         toolsControl.classList.add('open');
         toolsBtn.setAttribute('aria-expanded', 'true');
-        this.updateShareUrl();
-
-        // Recalculate section heights when panel opens
-        setTimeout(() => {
-          document.querySelectorAll('.section-content').forEach(content => {
-            const section = content.parentElement;
-            if (!section.classList.contains('collapsed')) {
-              content.style.paddingTop = '';
-              content.style.maxHeight = content.scrollHeight + 'px';
-              content.style.transform = 'scaleY(1)';
-              content.style.opacity = '1';
-            }
-          });
-        }, 50);
-
-        if (focusTarget === 'share') {
-          document.getElementById('shareUrl')?.focus();
-        }
       }
 
       closeToolsPanel() {
@@ -2039,7 +1896,36 @@
         let url = `${window.location.origin}${window.location.pathname}?date=${selectedDate}&lat=${center.lat.toFixed(4)}&lng=${center.lng.toFixed(4)}&zoom=${zoom}`;
         const pin = this.pinInspector?.latlng;
         if (pin) url += `&pin=${pin.lat.toFixed(4)},${pin.lng.toFixed(4)}`;
-        document.getElementById('shareUrl').value = url;
+        return url;
+      }
+
+      async copyShareLink() {
+        const url = this.updateShareUrl();
+        try {
+          await navigator.clipboard.writeText(url);
+          Utils.toast('Link copied');
+        } catch (err) {
+          // Clipboard API can be unavailable (insecure context, old browsers).
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = url;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            ta.setSelectionRange(0, ta.value.length);
+            const ok = document.execCommand('copy');
+            ta.remove();
+            if (ok) {
+              Utils.toast('Link copied');
+            } else {
+              window.prompt('Copy this link:', url);
+            }
+          } catch (fallbackErr) {
+            window.prompt('Copy this link:', url);
+          }
+        }
       }
 
       togglePlay() {
@@ -2608,7 +2494,13 @@
       constructor(mapCtrl, timelineApp) {
         this.map = mapCtrl.map;
         this.timelineApp = timelineApp;
-        this.renderer = L.canvas({ padding: 0.5 });
+        // Canvas hit-testing is exact: a dot's tap target is radius + weight/2
+        // + renderer tolerance, so without tolerance it's ~4-6px and finger
+        // taps fall through to the map (moving the chart pin instead of
+        // opening the airfield card). Generous slop for coarse pointers, a
+        // little for mouse.
+        this.touchUI = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+        this.renderer = L.canvas({ padding: 0.5, tolerance: this.touchUI ? 14 : 4 });
         this.features = null;
         this.loadPromise = null;
         this.year = null;
@@ -2768,7 +2660,9 @@
 
       _radiusForZoom() {
         const z = this.map.getZoom() ?? 4;
-        return z >= 9 ? 5.5 : z >= 7 ? 4.5 : 3.5;
+        const r = z >= 9 ? 5.5 : z >= 7 ? 4.5 : 3.5;
+        // Slightly larger dots where the pointer is a finger.
+        return this.touchUI ? r + 1 : r;
       }
 
       _applyRadius() {
@@ -2938,6 +2832,21 @@
           L.DomEvent.disableScrollPropagation(toolsControl);
         }
       }
+      // The utility rail stacks under the zoom control: wrap both in a column
+      // so the top-right row stays [Layers | zoom-over-rail].
+      const utilRail = document.getElementById('utilRail');
+      const zoomCtl = mapControls?.querySelector('.leaflet-control-zoom');
+      if (utilRail && zoomCtl) {
+        const col = document.createElement('div');
+        col.className = 'ctl-col';
+        zoomCtl.parentNode.insertBefore(col, zoomCtl);
+        col.appendChild(zoomCtl);
+        col.appendChild(utilRail);
+        if (window.L && L.DomEvent) {
+          L.DomEvent.disableClickPropagation(utilRail);
+          L.DomEvent.disableScrollPropagation(utilRail);
+        }
+      }
       updateLoading(70, 'Loading controls...');
 
       const timelineApp = new TimelineApp(mapCtrl);
@@ -2948,9 +2857,7 @@
       const airfieldsLayer = new AirfieldsLayer(mapCtrl, timelineApp);
       timelineApp.airfieldsLayer = airfieldsLayer;
       const airfieldsBtn = document.getElementById('airfieldsBtn');
-      const airfieldsBtnLabel = document.getElementById('airfieldsBtnLabel');
       const syncAirfieldsBtn = () => {
-        if (airfieldsBtnLabel) airfieldsBtnLabel.textContent = airfieldsLayer.enabled ? 'Shown' : 'Hidden';
         airfieldsBtn?.setAttribute('aria-pressed', String(airfieldsLayer.enabled));
       };
       airfieldsBtn?.addEventListener('click', () => {
@@ -3043,29 +2950,27 @@
         }
       });
 
-      // Update chart info panel with initial data
-      const chartInfoDate = document.getElementById('chartInfoDate');
+      // Layers-panel stats footer: era count is static; zoom and charts-in-view
+      // update live (the latter from showFrame via #chartInfoEffective).
       const chartInfoTotal = document.getElementById('chartInfoTotal');
       const chartInfoZoom = document.getElementById('chartInfoZoom');
-      chartInfoTotal.textContent = CONFIG.ranges.length.toString();
+      if (chartInfoTotal) chartInfoTotal.textContent = CONFIG.ranges.length.toLocaleString('en-US');
 
       // Update zoom level display
       const updateZoomDisplay = () => {
         if (chartInfoZoom) {
-          chartInfoZoom.textContent = mapCtrl.map.getZoom().toFixed(2);
+          // Trimmed of trailing zeros: "8", "8.25" — not "8.00".
+          chartInfoZoom.textContent = parseFloat(mapCtrl.map.getZoom().toFixed(2)).toString();
         }
       };
       mapCtrl.map.on('zoomend', updateZoomDisplay);
       updateZoomDisplay(); // Initial value
 
-      // Update chart info when frame changes
+      // Follow frame changes: pin list and airfield dots track the timeline.
       const originalUpdate = timelineApp.update.bind(timelineApp);
       timelineApp.update = function (index, lazy, selectedDateOverride) {
         originalUpdate(index, lazy, selectedDateOverride);
         const displayDate = this.selectedDate || this.frames[index]?.date;
-        if (chartInfoDate && displayDate) {
-          chartInfoDate.textContent = Utils.formatDateId(displayDate);
-        }
         // A pinned list ranks charts in effect on the selected date, so it
         // follows the timeline (debounced for scrubbing).
         pinInspector.refreshDebounced();
@@ -3073,9 +2978,6 @@
         if (displayDate) airfieldsLayer.onDateChanged(displayDate);
       };
       const initialDisplayDate = timelineApp.selectedDate || timelineApp.frames[timelineApp.currentIndex]?.date;
-      if (chartInfoDate && initialDisplayDate) {
-        chartInfoDate.textContent = Utils.formatDateId(initialDisplayDate);
-      }
       airfieldsLayer.init(initialDisplayDate);
 
       // Hide loading splash

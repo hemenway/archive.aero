@@ -488,6 +488,68 @@ body.zooming .leaflet-control-attribution {
   margin: 0;
 }
 
+/* Zoom + utility rail stack (wrapper built in initApp) */
+.ctl-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.ctl-col .leaflet-control {
+  margin: 0;
+}
+
+.util-rail {
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.rail-btn {
+  width: 36px;
+  height: 36px;
+  background: var(--bg-glass);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: none;
+  color: var(--text-light);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), color 0.2s var(--transition-smooth);
+}
+
+.rail-btn:first-child {
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px 10px 0 0;
+}
+
+.rail-btn:last-child {
+  border-radius: 0 0 10px 10px;
+}
+
+.rail-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.rail-btn:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.rail-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+
 /* Tools Dropdown (Map Controls) */
 .tools-control {
   position: relative;
@@ -495,22 +557,25 @@ body.zooming .leaflet-control-attribution {
 }
 
 .tools-btn {
-  width: 38px;
   height: 38px;
+  padding: 0 13px;
   border-radius: 10px;
   background: var(--bg-glass);
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: var(--text-light);
-  font-size: 18px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
 }
 
 .tools-btn svg {
-  width: 18px;
-  height: 18px;
+  width: 17px;
+  height: 17px;
   display: block;
 }
 
@@ -525,7 +590,6 @@ body.zooming .leaflet-control-attribution {
 }
 
 .tools-control.open .tools-btn {
-  background: rgba(255, 255, 255, 0.2);
   border-color: var(--primary);
   box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
 }
@@ -563,71 +627,100 @@ body.zooming .leaflet-control-attribution {
   visibility: visible;
 }
 
-.tools-section {
+/* Layers panel content */
+.lp-section {
   display: grid;
-  gap: 4px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 10px;
 }
 
-.tools-section:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
+.lp-section + .lp-section {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
 }
 
-.tools-section.collapsible {
-  gap: 0;
+.lp-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.tools-panel h4 {
-  margin: 0;
-  font-size: 12px;
+.lp-name {
+  font-size: 13px;
   font-weight: 600;
   color: var(--text-light);
+}
+
+.lp-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.lp-opacity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lp-opacity-val {
+  min-width: 34px;
+  text-align: right;
+}
+
+.lp-group-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.section-header {
-  cursor: pointer;
-  user-select: none;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 0;
-  transition: color 0.2s var(--transition-smooth);
-}
-
-.section-header:hover {
-  color: var(--primary);
-}
-
-.collapse-icon {
-  font-size: 10px;
-  transition: transform 0.2s var(--transition-smooth);
   color: var(--text-muted);
 }
 
-.section-content {
-  overflow: hidden;
-  padding-top: 8px;
-  transform-origin: top;
-  transform: scaleY(1);
-  opacity: 1;
-  transition: transform 0.2s var(--transition-smooth), opacity 0.2s var(--transition-smooth);
-  will-change: transform, opacity;
+/* Layer visibility switch */
+.lp-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.2s var(--transition-smooth);
 }
 
-.tools-section.collapsed .section-content {
-  transform: scaleY(0);
-  opacity: 0;
+.lp-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s var(--transition-smooth);
 }
 
-.tools-section.collapsed .collapse-icon {
-  transform: rotate(-90deg);
+.lp-switch[aria-pressed="true"] {
+  background: var(--primary);
+}
+
+.lp-switch[aria-pressed="true"]::after {
+  transform: translateX(14px);
+}
+
+.lp-switch:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Live stats footer (era count / charts under view / zoom) */
+.lp-stats {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
 }
 
 /* UI Container */
@@ -1033,156 +1126,9 @@ body.zooming .leaflet-control-attribution {
   box-shadow: 0 4px 12px rgba(30, 144, 255, 0.4);
 }
 
-/* Share Panel */
-.share-panel {
-  position: absolute;
-  top: 160px;
-  right: 24px;
-  background: var(--bg-glass);
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  z-index: 900;
-  min-width: 280px;
-  display: none;
-}
-
-.share-panel.visible {
-  display: block;
-}
-
-.share-panel h4 {
-  margin: 0 0 12px 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-light);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.share-url-box {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.share-url {
-  flex: 1;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  padding: 10px;
-  color: var(--text-light);
-  font-size: 12px;
-  font-family: 'Courier New', monospace;
-  outline: none;
-  user-select: all;
-}
-
-.share-url:focus {
-  border-color: var(--primary);
-  background: rgba(255, 255, 255, 0.08);
-}
-
-.copy-btn {
-  padding: 10px 16px;
-  background: var(--primary);
-  border: none;
-  border-radius: 8px;
-  color: white;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
-  white-space: nowrap;
-}
-
-.copy-btn:hover {
-  background: var(--primary-hover);
-  transform: translateY(-1px);
-}
-
-.copy-btn:active {
-  transform: translateY(0);
-}
-
-.copy-btn.copied {
-  background: var(--secondary);
-}
-
-.share-info {
-  font-size: 11px;
-  color: var(--text-muted);
-  text-align: center;
-  margin-top: 8px;
-}
+/* (Share moved to a one-tap copy on the utility rail.) */
 
 
-
-/* Opacity Control */
-.opacity-control {
-  position: absolute;
-  top: 160px;
-  right: 24px;
-  background: var(--bg-glass);
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  z-index: 900;
-  min-width: 200px;
-  display: none;
-}
-
-.opacity-control.visible {
-  display: block;
-}
-
-.opacity-control h4 {
-  margin: 0 0 12px 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-light);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.opacity-slider {
-  width: 100%;
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.2);
-  outline: none;
-  -webkit-appearance: none;
-  appearance: none;
-}
-
-.opacity-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--primary);
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-
-.opacity-slider::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--primary);
-  cursor: pointer;
-  border: none;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-
-.opacity-value {
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 8px;
-}
 
 /* --- MOBILE OPTIMIZATIONS --- */
 @media (max-width: 640px) {
@@ -1214,24 +1160,11 @@ body.zooming .leaflet-control-attribution {
     padding: 6px 9px;
   }
 
-  /* Hide fullscreen and help buttons on mobile (in tools panel) */
+  /* Fullscreen (no iPhone API) and keyboard shortcuts are pointless on
+     touch: hide those rail buttons on mobile */
   #fullscreenBtn,
   #helpBtn {
     display: none;
-  }
-
-  .opacity-control,
-  .share-panel,
-  .map-tools-panel {
-    position: fixed;
-    top: auto;
-    bottom: 160px;
-    right: 12px;
-    left: 12px;
-    min-width: 0;
-    max-height: 50vh;
-    overflow-y: auto;
-    z-index: 1100;
   }
 
   .leaflet-top.leaflet-right {
@@ -1241,9 +1174,24 @@ body.zooming .leaflet-control-attribution {
   }
 
   .tools-btn {
+    height: 34px;
+    padding: 0 10px;
+    font-size: 12px;
+    gap: 6px;
+  }
+
+  .tools-btn svg {
+    width: 15px;
+    height: 15px;
+  }
+
+  .ctl-col {
+    gap: 6px;
+  }
+
+  .rail-btn {
     width: 34px;
     height: 34px;
-    font-size: 16px;
   }
 
   .tools-panel {
@@ -1386,12 +1334,6 @@ body.zooming .leaflet-control-attribution {
   display: block;
 }
 
-.tool-button-icon svg {
-  width: 15px;
-  height: 15px;
-  display: block;
-}
-
 .warning-title {
   display: none;
   /* Hide title for banner */
@@ -1449,89 +1391,9 @@ body.zooming .leaflet-control-attribution {
   flex: 1;
 }
 
-/* Map Tools Panel */
-.map-tools-panel {
-  position: absolute;
-  top: 160px;
-  right: 24px;
-  background: var(--bg-glass);
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  z-index: 900;
-  min-width: 220px;
-  display: none;
-}
-
-.map-tools-panel.visible {
-  display: block;
-}
-
-.map-tools-panel h4 {
-  margin: 0 0 16px 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-light);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.tool-section {
-  margin-bottom: 16px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-}
-
-.tool-section:last-child {
-  margin-bottom: 0;
-  padding-bottom: 0;
-  border-bottom: none;
-}
-
-.tool-label {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 8px;
-  display: block;
-}
-
-.tool-button {
-  width: 100%;
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  color: white;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth), box-shadow 0.2s var(--transition-smooth);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.tool-button:hover {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: var(--primary);
-}
-
-.tool-button.active {
-  background: var(--secondary);
-  border-color: var(--secondary);
-  box-shadow: 0 0 15px rgba(0, 212, 170, 0.4);
-}
-
-.tool-slider-container {
-  margin-top: 8px;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
 .tool-slider {
   flex: 1;
-  min-width: 100%;
+  min-width: 0;
   height: 6px;
   border-radius: 3px;
   background: rgba(255, 255, 255, 0.2);
@@ -1559,95 +1421,6 @@ body.zooming .leaflet-control-attribution {
   cursor: pointer;
   border: none;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-
-.tool-value {
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 8px;
-}
-
-.tool-input {
-  width: 70px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  color: var(--text-light);
-  font-size: 13px;
-  outline: none;
-  transition: background-color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth);
-}
-
-.tool-input:focus {
-  border-color: var(--primary);
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.tool-input::-webkit-inner-spin-button,
-.tool-input::-webkit-outer-spin-button {
-  opacity: 1;
-}
-
-.tool-unit {
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-left: 8px;
-}
-
-/* Chart Info Panel */
-.chart-info-panel {
-  position: absolute;
-  top: 160px;
-  right: 24px;
-  background: var(--bg-glass);
-  padding: 16px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  z-index: 900;
-  min-width: 260px;
-  display: none;
-  animation: slideUp 0.2s var(--transition-smooth);
-}
-
-.chart-info-panel.visible {
-  display: block;
-}
-
-.chart-info-panel h4 {
-  margin: 0 0 16px 0;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-light);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.chart-info-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.chart-info-row:last-child {
-  border-bottom: none;
-}
-
-.chart-info-label {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.chart-info-value {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-light);
 }
 
 .chart-badge {
@@ -1888,15 +1661,6 @@ body.zooming .leaflet-control-attribution {
     font-size: 16px;
   }
 
-  .chart-info-panel {
-    position: fixed;
-    top: auto;
-    bottom: 160px;
-    right: 12px;
-    left: 12px;
-    min-width: 0;
-  }
-
   .solo-bar {
     top: 76px;
     padding-top: env(safe-area-inset-top);
@@ -1919,7 +1683,6 @@ body.zooming .leaflet-control-attribution {
 /* Focus states for accessibility */
 .btn-nav:focus-visible,
 .btn-play:focus-visible,
-.tool-button:focus-visible,
 .pin-close:focus-visible,
 .pin-sources-link:focus-visible,
 .pin-view-alone:focus-visible,
@@ -2009,11 +1772,12 @@ body.zooming .leaflet-control-attribution {
   color: #9fd3a8;
 }
 
-/* Airfield status filter chips (Tools panel) */
+/* Airfield status filter chips (layers panel; spacing comes from the
+   .lp-section grid gap) */
 .af-filter-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
 }
 
 .af-chip {
@@ -2051,7 +1815,8 @@ body.zooming .leaflet-control-attribution {
 .af-swatch-gone { background: #a03123; }
 .af-swatch-unknown { background: #7a7365; }
 
-/* Chips read as inactive while the layer itself is hidden */
-#airfieldsBtn[aria-pressed="false"] + .af-filter-row {
+/* Chips read as inactive while the layer itself is hidden (the switch sits
+   inside the row above the chips row) */
+.lp-row:has(#airfieldsBtn[aria-pressed="false"]) + .af-filter-row {
   opacity: 0.35;
 }
