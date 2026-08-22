@@ -45,3 +45,4 @@ historical-data/
 
 # Local browser-session recording (1.4 GB) — never commit
 archive.aero-recording.json
+airfields.json

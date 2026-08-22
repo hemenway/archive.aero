@@ -76,27 +76,16 @@
           archive.aero
         </button>
         <nav class="menu-panel" id="siteMenu" aria-label="Site menu">
-          <a href="about.html" class="menu-item">
+          <div class="menu-group-label">Collections</div>
+          <a href="/" class="menu-item" aria-current="page">
             <span class="menu-item-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                 stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10" />
-                <line x1="12" y1="16" x2="12" y2="12" />
-                <line x1="12" y1="8" x2="12.01" y2="8" />
+                <polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76" />
               </svg>
             </span>
-            <span>About &amp; How It Works</span>
-          </a>
-          <a href="contribute.html" class="menu-item">
-            <span class="menu-item-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                stroke-linejoin="round">
-                <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
-                <line x1="8" y1="2" x2="8" y2="18" />
-                <line x1="16" y1="6" x2="16" y2="22" />
-              </svg>
-            </span>
-            <span>Missing Charts &amp; How to Help</span>
+            <span>Sectional Charts</span>
           </a>
           <a href="/atc/" class="menu-item">
             <span class="menu-item-icon" aria-hidden="true">
@@ -109,7 +98,40 @@
                 <path d="M4.93 19.07a10 10 0 0 1 0-14.14" />
               </svg>
             </span>
-            <span>ATC History Collection</span>
+            <span>ATC History</span>
+          </a>
+          <div class="menu-group-label">The Archive</div>
+          <a href="/about" class="menu-item">
+            <span class="menu-item-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="16" x2="12" y2="12" />
+                <line x1="12" y1="8" x2="12.01" y2="8" />
+              </svg>
+            </span>
+            <span>About &amp; How It Works</span>
+          </a>
+          <a href="/sources" class="menu-item">
+            <span class="menu-item-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round">
+                <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+              </svg>
+            </span>
+            <span>Sources &amp; Attribution</span>
+          </a>
+          <a href="/contribute" class="menu-item">
+            <span class="menu-item-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round">
+                <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
+                <line x1="8" y1="2" x2="8" y2="18" />
+                <line x1="16" y1="6" x2="16" y2="22" />
+              </svg>
+            </span>
+            <span>Missing Charts &amp; How to Help</span>
           </a>
           <a href="https://github.com/hemenway/archive.aero" target="_blank" rel="noopener" class="menu-item">
             <span class="menu-item-icon" aria-hidden="true">
@@ -125,8 +147,8 @@
       <span class="site-tagline">Historical Aviation Charts</span>
     </div>
     <div class="header-right">
-      <a href="about.html" class="about-btn" title="About this project & how it works">About</a>
-      <a href="contribute.html" class="about-btn" title="Missing charts & how you can help">Contribute</a>
+      <a href="/about" class="about-btn" title="About this project & how it works">About</a>
+      <a href="/contribute" class="about-btn" title="Missing charts & how you can help">Contribute</a>
       <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn"
         title="Support this project">Support</a>
     </div>
@@ -194,6 +216,29 @@
               <span>Keyboard Shortcuts</span>
               <span>?</span>
             </button>
+          </div>
+
+          <div class="tool-section">
+            <span class="tool-label">Airfields</span>
+            <button class="tool-button" id="airfieldsBtn" aria-pressed="true">
+              <span id="airfieldsBtnLabel">Shown</span>
+              <span class="tool-button-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="4" />
+                </svg>
+              </span>
+            </button>
+            <div class="af-filter-row" id="afFilterRow">
+              <button class="af-chip" type="button" data-af-status="open" aria-pressed="true">
+                <span class="af-swatch af-swatch-open" aria-hidden="true"></span>Open today
+              </button>
+              <button class="af-chip" type="button" data-af-status="gone" aria-pressed="true">
+                <span class="af-swatch af-swatch-gone" aria-hidden="true"></span>Closed
+              </button>
+              <button class="af-chip" type="button" data-af-status="unknown" aria-pressed="true">
+                <span class="af-swatch af-swatch-unknown" aria-hidden="true"></span>Unknown
+              </button>
+            </div>
           </div>
 
         </div>
@@ -313,7 +358,19 @@
     </div>
     <div class="pin-chart-dates" id="pinDates"></div>
     <div class="pin-chart-actions" id="pinActions"></div>
-    <a href="sources.html" class="pin-sources-link">Sources &amp; Attribution</a>
+    <a href="/sources" class="pin-sources-link">Sources &amp; Attribution</a>
+  </div>
+
+  <!-- Airfield card: name/operating dates/source links for a clicked
+       historical-airfield dot (see AirfieldsLayer) -->
+  <div class="pin-popup af-card" id="afPanel" role="dialog" aria-label="Airfield details">
+    <div class="pin-chart-head">
+      <span class="pin-chart-loc" id="afName"></span>
+      <button class="pin-close" id="afClose" type="button" aria-label="Close airfield card">&times;</button>
+    </div>
+    <div class="pin-chart-dates" id="afDates"></div>
+    <div class="af-loc" id="afLoc"></div>
+    <div class="af-links" id="afLinks"></div>
   </div>
 
   <!-- Banner shown while a single chart is displayed alone -->
@@ -323,7 +380,7 @@
   </div>
 
   <!-- Sources Link -->
-  <a href="sources.html" class="sources-link">Sources & Attribution</a>
+  <a href="/sources" class="sources-link">Sources & Attribution</a>
 
   <div class="toast" id="toast"></div>
 
@@ -2392,7 +2449,11 @@
         }
         document.getElementById('pinClose')?.addEventListener('click', () => this.clear());
         document.getElementById('soloExit')?.addEventListener('click', () => this.mapCtrl.exitSolo());
-        mapCtrl.map.on('click', (e) => this.setPin(e.latlng));
+        mapCtrl.map.on('click', (e) => {
+          // An airfield-dot click opens its own card; don't also move the pin.
+          if (Date.now() - afClickGuard < 350) return;
+          this.setPin(e.latlng);
+        });
         // Keep the popup glued to the pin while panning/zooming.
         mapCtrl.map.on('move zoom viewreset', () => this._updatePosition());
         window.addEventListener('keydown', (e) => {
@@ -2528,6 +2589,258 @@
       }
     }
 
+    /** AIRFIELDS LAYER **/
+    // Historical-airfield dots (index built offline from Paul Freeman's
+    // airfields-freeman.com: coords, operating years, source links). Dots
+    // follow the timeline — a field shows while the selected year falls in
+    // its operating span; undated fields always show, fainter. Hover shows
+    // the name (mouse only); click opens a card (#afPanel) with dates and
+    // source links. Data: airfields.json on the data host (same
+    // localhost-fallback pattern as ChartIndex).
+    let afClickGuard = 0; // stamped on dot clicks so PinInspector skips that map click
+    class AirfieldsLayer {
+      static STATUS_COLORS = {
+        open: '#2f8f4f',    // still operating today
+        gone: '#a03123',    // closure evidence
+        unknown: '#7a7365'  // no closure evidence / undated
+      };
+
+      constructor(mapCtrl, timelineApp) {
+        this.map = mapCtrl.map;
+        this.timelineApp = timelineApp;
+        this.renderer = L.canvas({ padding: 0.5 });
+        this.features = null;
+        this.loadPromise = null;
+        this.year = null;
+        this.enabled = localStorage.getItem('airfieldsShown') !== '0';
+        // Status buckets are exhaustive: open (still operating) / gone
+        // (closure evidence) / unknown (no closure evidence).
+        this.statusFilter = { open: true, gone: true, unknown: true };
+        try {
+          const saved = JSON.parse(localStorage.getItem('airfieldsStatus') || '{}');
+          for (const k of Object.keys(this.statusFilter)) {
+            if (typeof saved[k] === 'boolean') this.statusFilter[k] = saved[k];
+          }
+        } catch (e) { /* keep defaults */ }
+        this.hoverOk = !!(window.matchMedia && matchMedia('(hover: hover) and (pointer: fine)').matches);
+        this.selected = null;
+        this._lastRadius = null;
+        this.applyDebounced = Utils.debounce(() => this._apply(), 120);
+        this.els = {
+          panel: document.getElementById('afPanel'),
+          name: document.getElementById('afName'),
+          dates: document.getElementById('afDates'),
+          loc: document.getElementById('afLoc'),
+          links: document.getElementById('afLinks')
+        };
+        if (this.els.panel && window.L && L.DomEvent) {
+          L.DomEvent.disableClickPropagation(this.els.panel);
+          L.DomEvent.disableScrollPropagation(this.els.panel);
+        }
+        document.getElementById('afClose')?.addEventListener('click', () => this.closeCard());
+        this.map.on('move zoom viewreset', () => this._updatePosition());
+        this.map.on('zoomend', () => this._applyRadius());
+        window.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && this.selected) this.closeCard();
+        });
+      }
+
+      init(dateStr) {
+        if (dateStr) this.year = parseInt(dateStr.slice(0, 4), 10) || null;
+        if (this.enabled) this._ensureLoaded();
+      }
+
+      setEnabled(on) {
+        this.enabled = on;
+        localStorage.setItem('airfieldsShown', on ? '1' : '0');
+        if (on) {
+          this._ensureLoaded();
+        } else {
+          this.closeCard();
+          if (this.features) {
+            for (const f of this.features) if (f.on) { f.marker.remove(); f.on = false; }
+          }
+        }
+      }
+
+      _ensureLoaded() {
+        if (!this.loadPromise) {
+          this.loadPromise = this._fetch().then((geo) => {
+            this._build(geo);
+            this._apply();
+          }).catch((err) => {
+            console.error('airfields.json failed to load', err);
+            this.loadPromise = null; // next toggle retries
+            Utils.toast('Airfield data unavailable');
+          });
+        } else {
+          this._apply();
+        }
+      }
+
+      async _fetch() {
+        const sources = ['https://data.archive.aero/sectionals/airfields.json'];
+        if (['localhost', '127.0.0.1', ''].includes(location.hostname)) sources.unshift('airfields.json');
+        for (const src of sources) {
+          try {
+            const resp = await fetch(src);
+            if (resp.ok) return await resp.json();
+          } catch (e) { /* try next source */ }
+        }
+        throw new Error('airfields.json unavailable');
+      }
+
+      _build(geo) {
+        this.features = (geo.features || []).map((feat) => {
+          const [lng, lat] = feat.geometry.coordinates;
+          const p = feat.properties;
+          p.start_year = p.start_year ? +p.start_year : null;
+          p.end_year = p.end_year ? +p.end_year : null;
+          const undated = !p.start_year && !p.end_year;
+          const marker = L.circleMarker([lat, lng], {
+            renderer: this.renderer,
+            radius: this._radiusForZoom(),
+            weight: 1,
+            color: '#ffffff',
+            opacity: 0.85,
+            fillColor: AirfieldsLayer.STATUS_COLORS[p.status] || AirfieldsLayer.STATUS_COLORS.unknown,
+            fillOpacity: undated ? 0.35 : 0.8
+          });
+          const f = { p, lat, lng, marker, on: false };
+          if (this.hoverOk) {
+            // TextNode content so names render as text, never as HTML.
+            marker.bindTooltip(() => document.createTextNode(f.p.name),
+              { direction: 'top', offset: [0, -8], className: 'af-tip' });
+          }
+          marker.on('click', (e) => {
+            afClickGuard = Date.now();
+            if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+            this.openCard(f);
+          });
+          return f;
+        });
+        this._lastRadius = this._radiusForZoom();
+      }
+
+      onDateChanged(dateStr) {
+        const y = parseInt((dateStr || '').slice(0, 4), 10);
+        if (!y || y === this.year) return;
+        this.year = y;
+        if (this.enabled && this.features) this.applyDebounced();
+      }
+
+      setStatusFilter(key, on) {
+        if (!(key in this.statusFilter)) return;
+        this.statusFilter[key] = on;
+        localStorage.setItem('airfieldsStatus', JSON.stringify(this.statusFilter));
+        this._apply();
+      }
+
+      // A field shows when its status bucket is enabled AND the selected year
+      // falls inside its operating span. Missing bounds fail open: undated
+      // fields always show (faint), a field with only a start shows from then
+      // on, only an end shows until then.
+      _visible(p) {
+        if (!(this.statusFilter[p.status] ?? true)) return false;
+        const y = this.year;
+        if (y == null) return true;
+        if (!p.start_year && !p.end_year) return true;
+        if (p.start_year && y < p.start_year) return false;
+        if (p.status === 'open') return true;
+        if (p.end_year && y > p.end_year) return false;
+        return true;
+      }
+
+      _apply() {
+        if (!this.enabled || !this.features) return;
+        for (const f of this.features) {
+          const v = this._visible(f.p);
+          if (v && !f.on) {
+            f.marker.addTo(this.map);
+            f.on = true;
+          } else if (!v && f.on) {
+            f.marker.remove();
+            f.on = false;
+            if (this.selected === f) this.closeCard();
+          }
+        }
+      }
+
+      _radiusForZoom() {
+        const z = this.map.getZoom() ?? 4;
+        return z >= 9 ? 5.5 : z >= 7 ? 4.5 : 3.5;
+      }
+
+      _applyRadius() {
+        if (!this.features) return;
+        const r = this._radiusForZoom();
+        if (r === this._lastRadius) return;
+        this._lastRadius = r;
+        for (const f of this.features) f.marker.setRadius(r);
+      }
+
+      static fmtSpan(p) {
+        const s = p.start_year, e = p.end_year;
+        if (p.status === 'open') return s ? `In operation ${s} – present` : 'Open today';
+        if (s && e) return `In operation ~${s} – ${e}`;
+        if (s) return `In operation from ~${s}`;
+        if (e) return `In operation until ~${e}`;
+        return 'Operating dates unknown';
+      }
+
+      openCard(f) {
+        this.selected = f;
+        const els = this.els;
+        if (!els.panel) return;
+        const p = f.p;
+        els.name.textContent = p.name;
+        els.dates.textContent = AirfieldsLayer.fmtSpan(p);
+        if (p.status === 'open') {
+          const chip = document.createElement('span');
+          chip.className = 'pin-near-chip af-open-chip';
+          chip.textContent = 'open';
+          els.dates.appendChild(chip);
+        }
+        els.loc.textContent = p.rel_location || p.state || '';
+        els.links.textContent = '';
+        const mkLink = (label, href) => {
+          const a = document.createElement('a');
+          a.href = href;
+          a.target = '_blank';
+          a.rel = 'noopener';
+          a.textContent = label;
+          els.links.appendChild(a);
+        };
+        if (p.url) mkLink('Airfields-Freeman', p.url);
+        if (p.oa) mkLink('OurAirports', `https://ourairports.com/airports/${encodeURIComponent(p.oa)}/`);
+        els.panel.classList.add('visible');
+        this._updatePosition();
+      }
+
+      closeCard() {
+        this.selected = null;
+        this.els.panel?.classList.remove('visible');
+      }
+
+      // Same anchoring rules as PinInspector: beside the dot, flipping at
+      // viewport edges, clear of the header bar; follows map moves.
+      _updatePosition() {
+        const panel = this.els.panel;
+        if (!this.selected || !panel?.classList.contains('visible')) return;
+        const rect = this.map.getContainer().getBoundingClientRect();
+        const pt = this.map.latLngToContainerPoint([this.selected.lat, this.selected.lng]);
+        const w = panel.offsetWidth, h = panel.offsetHeight;
+        let x = rect.left + pt.x + 18;
+        let y = rect.top + pt.y - 12;
+        if (x + w > window.innerWidth - 8) x = rect.left + pt.x - w - 18;
+        if (x < 8) x = 8;
+        if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+        if (y < 78) y = 78; // clear the header bar
+        panel.style.left = x + 'px';
+        panel.style.top = y + 'px';
+      }
+    }
+
     // Initialize Application
     async function initApp() {
       // Loading progress elements
@@ -2631,6 +2944,35 @@
       const pinInspector = new PinInspector(mapCtrl, timelineApp);
       // Exposed so updateShareUrl can encode the pin.
       timelineApp.pinInspector = pinInspector;
+
+      const airfieldsLayer = new AirfieldsLayer(mapCtrl, timelineApp);
+      timelineApp.airfieldsLayer = airfieldsLayer;
+      const airfieldsBtn = document.getElementById('airfieldsBtn');
+      const airfieldsBtnLabel = document.getElementById('airfieldsBtnLabel');
+      const syncAirfieldsBtn = () => {
+        if (airfieldsBtnLabel) airfieldsBtnLabel.textContent = airfieldsLayer.enabled ? 'Shown' : 'Hidden';
+        airfieldsBtn?.setAttribute('aria-pressed', String(airfieldsLayer.enabled));
+      };
+      airfieldsBtn?.addEventListener('click', () => {
+        airfieldsLayer.setEnabled(!airfieldsLayer.enabled);
+        syncAirfieldsBtn();
+      });
+      syncAirfieldsBtn();
+      const afChips = document.querySelectorAll('#afFilterRow .af-chip');
+      const syncAfChips = () => {
+        afChips.forEach((chip) => {
+          const k = chip.dataset.afStatus;
+          chip.setAttribute('aria-pressed', String(!!airfieldsLayer.statusFilter[k]));
+        });
+      };
+      afChips.forEach((chip) => {
+        chip.addEventListener('click', () => {
+          const k = chip.dataset.afStatus;
+          airfieldsLayer.setStatusFilter(k, !airfieldsLayer.statusFilter[k]);
+          syncAfChips();
+        });
+      });
+      syncAfChips();
       updateLoading(90, 'Almost ready...');
 
       // Set timeframe from URL if available (view was already applied before
@@ -2727,11 +3069,14 @@
         // A pinned list ranks charts in effect on the selected date, so it
         // follows the timeline (debounced for scrubbing).
         pinInspector.refreshDebounced();
+        // Airfield dots follow the same timeline (debounced internally).
+        if (displayDate) airfieldsLayer.onDateChanged(displayDate);
       };
       const initialDisplayDate = timelineApp.selectedDate || timelineApp.frames[timelineApp.currentIndex]?.date;
       if (chartInfoDate && initialDisplayDate) {
         chartInfoDate.textContent = Utils.formatDateId(initialDisplayDate);
       }
+      airfieldsLayer.init(initialDisplayDate);
 
       // Hide loading splash
       updateLoading(100, 'Ready!');

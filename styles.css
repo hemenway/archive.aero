@@ -240,6 +240,26 @@ body {
   pointer-events: auto;
 }
 
+.menu-group-label {
+  padding: 4px 10px 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.menu-item + .menu-group-label {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.menu-item[aria-current="page"] .menu-item-icon {
+  color: var(--primary);
+}
+
 .menu-item {
   display: flex;
   align-items: center;
@@ -1926,4 +1946,112 @@ body.zooming .leaflet-control-attribution {
     --bg-glass: rgba(0, 0, 0, 0.95);
     --text-muted: rgba(255, 255, 255, 0.8);
   }
+}
+
+/* ============ Airfield dots (AirfieldsLayer) ============ */
+
+/* Hover tooltip: dark glass, matching the pin popup */
+.leaflet-tooltip.af-tip {
+  background: rgba(20, 22, 26, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text-light);
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+}
+
+.leaflet-tooltip-top.af-tip::before {
+  border-top-color: rgba(20, 22, 26, 0.92);
+}
+
+.af-card {
+  min-width: 210px;
+}
+
+.af-loc {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.af-loc:empty {
+  display: none;
+}
+
+.af-links {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.af-links a {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.af-links a:hover {
+  color: var(--text-light);
+  text-decoration: underline;
+}
+
+.af-links a::after {
+  content: " \2197";
+  font-size: 10px;
+}
+
+.af-open-chip {
+  background: rgba(80, 160, 90, 0.22);
+  color: #9fd3a8;
+}
+
+/* Airfield status filter chips (Tools panel) */
+.af-filter-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.af-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text-light);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: opacity 0.15s var(--transition-smooth), background-color 0.15s var(--transition-smooth);
+}
+
+.af-chip:hover {
+  background: rgba(255, 255, 255, 0.13);
+}
+
+.af-chip[aria-pressed="false"] {
+  opacity: 0.4;
+  border-color: transparent;
+}
+
+.af-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
+.af-swatch-open { background: #2f8f4f; }
+.af-swatch-gone { background: #a03123; }
+.af-swatch-unknown { background: #7a7365; }
+
+/* Chips read as inactive while the layer itself is hidden */
+#airfieldsBtn[aria-pressed="false"] + .af-filter-row {
+  opacity: 0.35;
 }
