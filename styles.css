@@ -1811,9 +1811,9 @@ body.zooming .leaflet-control-attribution {
   border: 1px solid rgba(255, 255, 255, 0.7);
 }
 
-.af-swatch-open { background: #2f8f4f; }
-.af-swatch-gone { background: #a03123; }
-.af-swatch-unknown { background: #7a7365; }
+.af-swatch-open { background: #36a35d; }
+.af-swatch-gone { background: #c23b2a; }
+.af-swatch-unknown { background: #8b8274; }
 
 /* Chips read as inactive while the layer itself is hidden (the switch sits
    inside the row above the chips row) */

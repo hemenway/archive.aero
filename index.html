@@ -2484,11 +2484,56 @@
     // source links. Data: airfields.json on the data host (same
     // localhost-fallback pattern as ChartIndex).
     let afClickGuard = 0; // stamped on dot clicks so PinInspector skips that map click
+
+    // Cased airfield dot: solid status fill, crisp white ring, thin dark
+    // contour outside it (road-casing contrast, so the marker reads as UI on
+    // both pale terrain and dense red/magenta chart ink), plus a blue halo on
+    // the selected dot. Drawn straight on the shared canvas renderer —
+    // CircleMarker geometry and hit-testing (radius + weight/2 + tolerance)
+    // are inherited unchanged.
+    const AfCanvas = L.Canvas.extend({
+      _updateAfDot(layer) {
+        if (!this._drawing || layer._empty()) return;
+        const p = layer._point;
+        const r = Math.max(Math.round(layer._radius * 10) / 10, 1);
+        const o = layer.options;
+        const ctx = this._ctx;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.globalAlpha = o.fillOpacity;
+        ctx.fillStyle = o.fillColor;
+        ctx.fill();
+        ctx.globalAlpha = o.opacity;
+        ctx.lineWidth = o.weight;
+        ctx.strokeStyle = o.color;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r + 1.7, 0, Math.PI * 2);
+        ctx.globalAlpha = 0.5 * o.opacity;
+        ctx.lineWidth = 1.4;
+        ctx.strokeStyle = '#0a0e12';
+        ctx.stroke();
+        if (layer._afSelected) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r + 3.8, 0, Math.PI * 2);
+          ctx.globalAlpha = 0.95;
+          ctx.lineWidth = 2.2;
+          ctx.strokeStyle = '#1e90ff';
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    });
+    const AfDot = L.CircleMarker.extend({
+      _updatePath() { this._renderer._updateAfDot(this); }
+    });
+
     class AirfieldsLayer {
       static STATUS_COLORS = {
-        open: '#2f8f4f',    // still operating today
-        gone: '#a03123',    // closure evidence
-        unknown: '#7a7365'  // no closure evidence / undated
+        open: '#36a35d',    // still operating today
+        gone: '#c23b2a',    // closure evidence
+        unknown: '#8b8274'  // no closure evidence / undated
       };
 
       constructor(mapCtrl, timelineApp) {
@@ -2500,7 +2545,7 @@
         // opening the airfield card). Generous slop for coarse pointers, a
         // little for mouse.
         this.touchUI = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
-        this.renderer = L.canvas({ padding: 0.5, tolerance: this.touchUI ? 14 : 4 });
+        this.renderer = new AfCanvas({ padding: 0.5, tolerance: this.touchUI ? 14 : 4 });
         this.features = null;
         this.loadPromise = null;
         this.year = null;
@@ -2589,14 +2634,14 @@
           p.start_year = p.start_year ? +p.start_year : null;
           p.end_year = p.end_year ? +p.end_year : null;
           const undated = !p.start_year && !p.end_year;
-          const marker = L.circleMarker([lat, lng], {
+          const marker = new AfDot([lat, lng], {
             renderer: this.renderer,
             radius: this._radiusForZoom(),
-            weight: 1,
+            weight: 2,
             color: '#ffffff',
-            opacity: 0.85,
+            opacity: undated ? 0.55 : 0.9,
             fillColor: AirfieldsLayer.STATUS_COLORS[p.status] || AirfieldsLayer.STATUS_COLORS.unknown,
-            fillOpacity: undated ? 0.35 : 0.8
+            fillOpacity: undated ? 0.45 : 1
           });
           const f = { p, lat, lng, marker, on: false };
           if (this.hoverOk) {
@@ -2660,7 +2705,7 @@
 
       _radiusForZoom() {
         const z = this.map.getZoom() ?? 4;
-        const r = z >= 9 ? 5.5 : z >= 7 ? 4.5 : 3.5;
+        const r = z >= 11 ? 8 : z >= 9 ? 7 : z >= 7 ? 5.5 : 4;
         // Slightly larger dots where the pointer is a finger.
         return this.touchUI ? r + 1 : r;
       }
@@ -2683,7 +2728,13 @@
       }
 
       openCard(f) {
+        if (this.selected && this.selected !== f) {
+          this.selected.marker._afSelected = false;
+          this.selected.marker.redraw();
+        }
         this.selected = f;
+        f.marker._afSelected = true;
+        f.marker.redraw();
         const els = this.els;
         if (!els.panel) return;
         const p = f.p;
@@ -2712,6 +2763,10 @@
       }
 
       closeCard() {
+        if (this.selected?.marker) {
+          this.selected.marker._afSelected = false;
+          this.selected.marker.redraw(); // no-op if the marker just left the map
+        }
         this.selected = null;
         this.els.panel?.classList.remove('visible');
       }
