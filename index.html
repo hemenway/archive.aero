@@ -28,10 +28,9 @@
 
   <!-- Preload critical resources -->
   <link rel="preconnect" href="https://unpkg.com" crossorigin>
+  <!-- Carries the chart archives, the metadata bundle, and (since 2026-08-26) the
+       vector basemap, so this one origin is worth the early handshake. -->
   <link rel="preconnect" href="https://data.archive.aero" crossorigin>
-  <!-- Leaflet expands {s} to a/b/c and fetches tiles as no-CORS <img>, so the hint
-       must name a real subdomain and stay out of the CORS socket pool. -->
-  <link rel="preconnect" href="https://a.basemaps.cartocdn.com">
   <link rel="preconnect" href="https://get.geojs.io" crossorigin>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -46,6 +45,9 @@
     integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs">
   <link rel="preload" as="script" href="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin="anonymous"
     integrity="sha384-4sbA4B4Oqxkzs6apu8HaZcGrL3BySmt0tO/LQf6al3hkgq8ijZFxkTkvxxZZ/3PU">
+  <link rel="preload" as="script" href="https://unpkg.com/protomaps-leaflet@5.0.0/dist/protomaps-leaflet.js"
+    crossorigin="anonymous"
+    integrity="sha384-KeIb4wv6BGhSkhTNhLPQI2jcmQmZxMVQNxqM7UUEF5Zbmy+j2KSKRwba0gvAxLRE">
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous"
     integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" />
@@ -371,15 +373,17 @@
     integrity="sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs"></script>
   <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin="anonymous"
     integrity="sha384-4sbA4B4Oqxkzs6apu8HaZcGrL3BySmt0tO/LQf6al3hkgq8ijZFxkTkvxxZZ/3PU"></script>
+  <script src="https://unpkg.com/protomaps-leaflet@5.0.0/dist/protomaps-leaflet.js" crossorigin="anonymous"
+    integrity="sha384-KeIb4wv6BGhSkhTNhLPQI2jcmQmZxMVQNxqM7UUEF5Zbmy+j2KSKRwba0gvAxLRE"></script>
 
   <script>
     // Fail fast with a visible message if any CDN library failed to load, rather
     // than throwing an opaque ReferenceError that aborts this entire script block
     // (which would otherwise leave the splash stuck on "Initializing..." forever).
-    if (typeof L === 'undefined' || typeof pmtiles === 'undefined') {
+    if (typeof L === 'undefined' || typeof pmtiles === 'undefined' || typeof protomapsL === 'undefined') {
       const status = document.getElementById('loadingStatus');
       if (status) status.textContent = 'Failed to load map libraries. Check your connection and reload.';
-      throw new Error('archive.aero: a required library (Leaflet/PMTiles) failed to load.');
+      throw new Error('archive.aero: a required library (Leaflet/PMTiles/Protomaps) failed to load.');
     }
 
     const DeviceInfo = (() => {
@@ -397,6 +401,19 @@
       // header/directories, so scrubbing needs no per-archive metadata fetches.
       // Rewritten by scripts/build_metadata_bundle.py --update-html; null = CSV only.
       bundleUrl: 'https://data.archive.aero/sectionals/metadata-ea14baeb.bundle',
+      // Vector basemap: a Protomaps (OpenStreetMap) cutout we build and host
+      // ourselves — Protomaps' daily planet builds are downloads, not a CDN, and
+      // their docs ask you not to hotlink them. Rebuild with
+      // scripts/basemap_build.py, which prints the key to paste here. The key is
+      // dated and immutable on purpose: replacing a PMTiles file in place moves
+      // every byte offset in it while the Worker's per-range cache entries carry
+      // no version, so viewers would splice new directories onto old tile bodies.
+      basemapUrl: 'https://data.archive.aero/basemap/protomaps-20260826.pmtiles',
+      // The cutout stops at z13. protomaps-leaflet reads the data tile one level
+      // below the map zoom (levelDiff 1), so z13 is native detail at the viewer's
+      // max zoom of 14 — but only if maxDataZoom says so; left at its default of
+      // 15 the layer would request z14/z15 tiles the cutout doesn't contain.
+      basemapMaxDataZoom: 13,
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       ranges: [], // Full list of PMTiles ranges
       frames: [], // Unique timeline dates (start dates)
@@ -1332,10 +1349,20 @@
           wheelDebounceTime: 60
         }).setView(initialView.center, initialView.zoom);
 
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-          maxZoom: 14, maxNativeZoom: 14, opacity: 1, zIndex: 1,
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; &copy; <a href="https://carto.com/attributions">CARTO</a> &middot; airfields <a href="https://www.airfields-freeman.com/">Freeman</a>'
-        }).addTo(this.map);
+        // Vector basemap, rendered to canvas from our own PMTiles cutout of the
+        // Protomaps OpenStreetMap planet (CONFIG.basemapUrl). Replaced CARTO's
+        // raster dark_all on 2026-08-26: same origin as the charts, no third-party
+        // tile CDN in the request path, and the labels stay sharp on HiDPI because
+        // they're drawn at devicePixelRatio rather than baked into a 256px PNG.
+        this.basemap = protomapsL.leafletLayer({
+          url: CONFIG.basemapUrl,
+          flavor: 'dark',
+          lang: 'en',
+          maxDataZoom: CONFIG.basemapMaxDataZoom,
+          zIndex: 1,
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; <a href="https://protomaps.com">Protomaps</a> &middot; airfields <a href="https://www.airfields-freeman.com/">Freeman</a>'
+        });
+        this.basemap.addTo(this.map);
 
         L.control.zoom({ position: 'topright' }).addTo(this.map);
 
