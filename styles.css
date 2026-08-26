@@ -230,7 +230,10 @@ body {
   opacity: 0;
   transform: translateY(-6px);
   pointer-events: none;
-  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
+  /* visibility:hidden takes the closed panel's links out of the tab order and
+     the accessibility tree; delayed via the transition so the fade still plays. */
+  visibility: hidden;
+  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), visibility 0.2s var(--transition-smooth);
   z-index: 950;
 }
 
@@ -238,6 +241,7 @@ body {
   opacity: 1;
   transform: translateY(0);
   pointer-events: auto;
+  visibility: visible;
 }
 
 .menu-group-label {
@@ -690,6 +694,15 @@ body.zooming .leaflet-control-attribution {
   transition: background-color 0.2s var(--transition-smooth);
 }
 
+/* Pill stays 34x20 for looks; a transparent overlay lifts the tap target to
+   38x28. The panel's rows sit 10px apart, so the overhang can't reach a
+   neighbouring control. */
+.lp-switch::before {
+  content: '';
+  position: absolute;
+  inset: -4px -2px;
+}
+
 .lp-switch::after {
   content: '';
   position: absolute;
@@ -989,7 +1002,7 @@ body.zooming .leaflet-control-attribution {
   top: 20px;
   left: 50%;
   transform: translateX(-50%);
-  background: #e74c3c;
+  background: #c0392b;
   color: white;
   padding: 10px 20px;
   border-radius: 20px;
@@ -1432,8 +1445,10 @@ body.zooming .leaflet-control-attribution {
   text-transform: uppercase;
 }
 
+/* Opaque fill, not an alpha wash: the pin popup is glass, so a translucent
+   badge rode the map underneath and fell to 3.15:1 over bright chart paper. */
 .chart-badge.sectional {
-  background: rgba(30, 144, 255, 0.2);
+  background: #0a2440;
   color: var(--primary);
 }
 
@@ -1799,9 +1814,16 @@ body.zooming .leaflet-control-attribution {
   background: rgba(255, 255, 255, 0.13);
 }
 
+/* Off state is carried by the muted label + flat chrome, not opacity: the row
+   below can dim too, and nested opacity multiplies the text away entirely. */
 .af-chip[aria-pressed="false"] {
-  opacity: 0.4;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.03);
   border-color: transparent;
+}
+
+.af-chip[aria-pressed="false"] .af-swatch {
+  opacity: 0.45;
 }
 
 .af-swatch {
@@ -1816,7 +1838,13 @@ body.zooming .leaflet-control-attribution {
 .af-swatch-unknown { background: #8b8274; }
 
 /* Chips read as inactive while the layer itself is hidden (the switch sits
-   inside the row above the chips row) */
-.lp-row:has(#airfieldsBtn[aria-pressed="false"]) + .af-filter-row {
-  opacity: 0.35;
+   inside the row above the chips row). Dim the swatches only — the labels stay
+   legible because the chips are still operable buttons. */
+.lp-row:has(#airfieldsBtn[aria-pressed="false"]) + .af-filter-row .af-chip {
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.lp-row:has(#airfieldsBtn[aria-pressed="false"]) + .af-filter-row .af-swatch {
+  opacity: 0.4;
 }

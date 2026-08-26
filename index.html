@@ -29,10 +29,16 @@
   <!-- Preload critical resources -->
   <link rel="preconnect" href="https://unpkg.com" crossorigin>
   <link rel="preconnect" href="https://data.archive.aero" crossorigin>
-  <link rel="preconnect" href="https://basemaps.cartocdn.com" crossorigin>
+  <!-- Leaflet expands {s} to a/b/c and fetches tiles as no-CORS <img>, so the hint
+       must name a real subdomain and stay out of the CORS socket pool. -->
+  <link rel="preconnect" href="https://a.basemaps.cartocdn.com">
+  <link rel="preconnect" href="https://get.geojs.io" crossorigin>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&display=swap">
+  <!-- Non-blocking: nothing in the design needs Barlow (--font-display falls back to
+       system-ui), so a null-routed fonts.googleapis.com must not hold the splash blank. -->
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&display=swap"
+    media="print" onload="this.media='all'">
 
   <link rel="preload" as="script" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"
     integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH">
@@ -41,7 +47,8 @@
   <link rel="preload" as="script" href="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js" crossorigin="anonymous"
     integrity="sha384-4sbA4B4Oqxkzs6apu8HaZcGrL3BySmt0tO/LQf6al3hkgq8ijZFxkTkvxxZZ/3PU">
 
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="anonymous"
+    integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" />
   <link rel="stylesheet" href="styles.css" />
 
 </head>
@@ -328,7 +335,7 @@
   <!-- Sources Link -->
   <a href="/sources" class="sources-link">Sources & Attribution</a>
 
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <div class="ui-layer">
     <div class="controls-card">
@@ -369,10 +376,10 @@
     // Fail fast with a visible message if any CDN library failed to load, rather
     // than throwing an opaque ReferenceError that aborts this entire script block
     // (which would otherwise leave the splash stuck on "Initializing..." forever).
-    if (typeof L === 'undefined' || typeof Papa === 'undefined' || typeof pmtiles === 'undefined') {
+    if (typeof L === 'undefined' || typeof pmtiles === 'undefined') {
       const status = document.getElementById('loadingStatus');
       if (status) status.textContent = 'Failed to load map libraries. Check your connection and reload.';
-      throw new Error('archive.aero: a required library (Leaflet/PapaParse/PMTiles) failed to load.');
+      throw new Error('archive.aero: a required library (Leaflet/PMTiles) failed to load.');
     }
 
     const DeviceInfo = (() => {
@@ -1036,6 +1043,10 @@
 
     if (menuToggle && menuPanel && menuTrigger) {
       const closeMenu = () => {
+        // The panel goes visibility:hidden when closed, so focus sitting on a link
+        // inside would be dropped to <body>. Only pull it back when it is actually
+        // in there — outside-click and link-click callers must not steal focus.
+        if (menuPanel.contains(document.activeElement)) menuToggle.focus();
         menuTrigger.classList.remove('open');
         menuToggle.setAttribute('aria-expanded', 'false');
       };
@@ -1137,6 +1148,9 @@
           console.warn('Metadata bundle unavailable, using dates.csv', e);
         }
       }
+      // PapaParse is only needed for the legacy dates.csv path; if that one script
+      // failed to load there is nothing left to fall back to.
+      if (typeof Papa === 'undefined') throw new Error('CSV fallback unavailable: PapaParse failed to load');
       return new Promise((resolve, reject) => {
         Papa.parse(CONFIG.csvUrl, {
           download: true,
@@ -1320,7 +1334,7 @@
 
         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
           maxZoom: 14, maxNativeZoom: 14, opacity: 1, zIndex: 1,
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; &copy; <a href="https://carto.com/attributions">CARTO</a> &middot; airfields <a href="https://www.airfields-freeman.com/">Freeman</a>'
         }).addTo(this.map);
 
         L.control.zoom({ position: 'topright' }).addTo(this.map);
@@ -1416,6 +1430,10 @@
             this._headerRetries[key] = attempt;
             if (attempt <= 3 && this.activeKeys.includes(key) && this.lastFrameDate) {
               setTimeout(() => {
+                // Re-check at fire time: the visitor may have entered solo view or
+                // scrubbed to another frame since this retry was armed, and
+                // showFrame would yank them out of it to heal an off-screen archive.
+                if (this.soloState || !this.activeKeys.includes(key)) return;
                 this.activeKeys = [];
                 this.showFrame(this.lastFrameDate);
               }, 2000 * attempt);
@@ -1575,6 +1593,14 @@
       // sources). Fallback while artifacts roll out: the chart's era archive,
       // clipped to its footprint ring for multi-chart mosaics.
       async enterSolo(loc, chart) {
+        // "View alone" is an explicit request to see this chart, so flip the layers
+        // switch back on rather than flying to a blank map: nothing on the solo path
+        // re-reads chartsHidden (only showFrame does). A deliberately lowered opacity
+        // slider is preserved — setChartsHidden(false) restores from the slider.
+        if (this.chartsHidden) {
+          this.setChartsHidden(false);
+          document.getElementById('chartsToggleBtn')?.setAttribute('aria-pressed', 'true');
+        }
         if (chart.pm) {
           return this._enterSoloChart(loc, chart);
         }
@@ -1734,9 +1760,12 @@
             this.hideAllPanels();
             return;
           }
-          // Don't hijack keys meant for a focused control: Space/Enter should
-          // activate the button, arrows should move a focused slider, and so on.
-          if (e.target.closest?.('button, a, input, select, textarea, [role="dialog"]')) return;
+          // Don't hijack keys a focused control actually consumes: arrows drive a
+          // focused slider/select, text fields swallow everything, the layers panel
+          // owns its own keys. Buttons and links only consume Space/Enter, so the
+          // rest of the shortcuts stay live after a click leaves one focused.
+          if (e.target.closest?.('input, select, textarea, [role="dialog"]')) return;
+          if ((e.key === ' ' || e.key === 'Enter') && e.target.closest?.('button, a')) return;
 
           if (e.key === 'ArrowRight') this.step(1);
           if (e.key === 'ArrowLeft') this.step(-1);
@@ -2056,7 +2085,10 @@
           this.trackWidthPx = null;
           // Reposition the handle for the new track width (it uses an absolute px
           // offset), else it points at the wrong date until the next interaction.
-          this.update(this.currentIndex, true, this.selectedDate);
+          // Geometry only: routing this through update() would repaint the frame,
+          // and showFrame clears solo state, so every phone rotation or iOS
+          // URL-bar collapse would silently cancel "View alone".
+          this.positionHandle(this.currentIndex);
         });
       }
 
@@ -2262,6 +2294,16 @@
         this.update(bestIdx, lazy, dateStr);
       }
 
+      // Handle offset is an absolute px value, so it has to be recomputed
+      // whenever the track width changes. Geometry only — never paints a frame.
+      positionHandle(index) {
+        const f = this.frames[index];
+        if (!f || !this.ui.handle) return;
+        const pct = Number.isFinite(f.pct) ? Math.max(0, Math.min(100, f.pct)) : 0;
+        const trackWidth = this.trackWidthPx ?? this.ui.track?.getBoundingClientRect().width ?? 0;
+        this.ui.handle.style.setProperty('--handle-position-px', `${trackWidth * (pct / 100)}px`);
+      }
+
       update(index, lazy = false, selectedDateOverride = null) {
         this.currentIndex = index;
         const f = this.frames[index];
@@ -2273,9 +2315,7 @@
           this.ui.timeSelect.value = selectedDate;
         }
 
-        const pct = Number.isFinite(f.pct) ? Math.max(0, Math.min(100, f.pct)) : 0;
-        const trackWidth = this.trackWidthPx ?? this.ui.track?.getBoundingClientRect().width ?? 0;
-        this.ui.handle.style.setProperty('--handle-position-px', `${trackWidth * (pct / 100)}px`);
+        this.positionHandle(index);
         this.updateCoverageLabel();
 
         const adjacent = [
