@@ -423,12 +423,17 @@ class ChartSlicer:
             # Duplicate rows for the same date|location are warp alternatives;
             # rows with complete pixel GCPs are tried first. Half-sheet rows
             # (…North/…South, …EAST/…WEST scans) are components of one chart,
-            # not alternates: a trailing cardinal token in the filename stem
-            # splits the group so both halves warp and mosaic together.
+            # not alternates: a trailing cardinal token in the filename stem —
+            # or the catalog's explicit `half` column for scans whose names
+            # carry no side (WASP _01/_02 recto/verso numbering) — splits the
+            # group so both halves warp and mosaic together.
             norm_loc = self.normalize_name(row.get('location', ''))
-            half = re.search(r'[\s_-](north|south|east|west)$',
-                             Path(filename).stem, re.I)
-            half_suffix = f"|{half.group(1).lower()}" if half else ""
+            half_tok = dole_v2.row_half(row)
+            if not half_tok:
+                m = re.search(r'[\s_-](north|south|east|west)$',
+                              Path(filename).stem, re.I)
+                half_tok = m.group(1).lower() if m else ""
+            half_suffix = f"|{half_tok}" if half_tok else ""
             if parsed_start and norm_loc:
                 row['candidate_group'] = f"{start_date}|{norm_loc}{half_suffix}"
             else:
@@ -1916,7 +1921,9 @@ class ChartSlicer:
         """(slug, uri_name, half) for a row, or None if not URI-safe/derivable.
 
         The half token comes from the actual source file stem when given
-        (halves are separate files), else from the CSV filename.
+        (halves are separate files), else from the CSV filename; when the
+        stem carries no cardinal token, the catalog's explicit `half`
+        column fills in (WASP-style _01/_02 scan numbering).
         """
         location = (rec.get('location') or '').strip()
         slug = self.normalize_name(location)
@@ -1929,7 +1936,7 @@ class ChartSlicer:
             return None
         stem = file_stem if file_stem is not None else Path(rec.get('filename') or '').stem
         m = self.CHART_HALF_RE.search(stem or '')
-        half = m.group(1).lower() if m else ''
+        half = m.group(1).lower() if m else dole_v2.row_half(rec)
         return slug, f"{d}-{half}" if half else d, half
 
     def _chart_manifest_load(self) -> Dict[str, str]:
@@ -2107,14 +2114,17 @@ class ChartSlicer:
             'generated': datetime.datetime.now().isoformat(timespec='seconds'),
         }
 
+    def _chart_worker_count(self) -> int:
+        requested = getattr(self, 'parallel_warp', 0)
+        if requested and requested > 0:
+            return max(1, min(6, requested))
+        return max(1, min(3, cpu_count - 2))
+
     def emit_chart_pmtiles_for_date(self, date_key: str, records: List[Dict]) -> None:
         group_states = self._build_group_states(date_key, records)
         if not group_states:
             return
-        requested = getattr(self, 'parallel_warp', 0)
-        workers = max(1, min(4, cpu_count - 2))
-        if requested and requested > 0:
-            workers = max(1, min(workers, requested))
+        workers = self._chart_worker_count()
         _configure_gdal_for_phase('warp', workers=workers)
         self.log(f"  Chart pmtiles pass: {len(group_states)} chart group(s), {workers} worker(s)")
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -2125,6 +2135,38 @@ class ChartSlicer:
                     future.result()
                 except Exception as e:
                     self.log(f"      ✗ chart pmtiles worker error: {e}")
+
+    def emit_chart_pmtiles_bulk(self, date_keys: List[str]) -> None:
+        """Backfill mode: one continuous pool across every date's chart groups.
+        The per-date pass starves on historical dates (median one chart per
+        date), so a date-scoped pool runs effectively single-file; feeding all
+        groups into one executor keeps every worker busy for the whole run."""
+        jobs: List[Tuple[str, Dict]] = []
+        for date_key in date_keys:
+            for state in self._build_group_states(date_key, self.dole_data[date_key]):
+                jobs.append((date_key, state))
+        if not jobs:
+            return
+        workers = self._chart_worker_count()
+        _configure_gdal_for_phase('warp', workers=workers)
+        self.log(f"\n=== Chart pmtiles bulk pass: {len(jobs)} chart groups across "
+                 f"{len(date_keys)} dates, {workers} workers ===")
+        done = 0
+        start = time.time()
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(self._chart_group_worker, dk, st) for dk, st in jobs]
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    self.log(f"      ✗ chart pmtiles worker error: {e}")
+                done += 1
+                if done % 25 == 0 or done == len(jobs):
+                    rate = done / max(1e-9, time.time() - start)
+                    eta_h = (len(jobs) - done) / max(1e-9, rate) / 3600
+                    self.log(f"  bulk chart progress: {done}/{len(jobs)} groups "
+                             f"({rate * 60:.1f}/min, ETA {eta_h:.1f}h)")
+        self.log("=== Chart pmtiles bulk pass complete ===")
 
     def _make_geotiff_progress_cb(self, start_time: float):
         """Build a GDAL progress callback that logs per-job and overall ETA every 5%.
@@ -2645,6 +2687,8 @@ class ChartSlicer:
         self.geotiff_completed = 0
         self.geotiff_times = []
 
+        chart_backlog: List[str] = []
+
         for date_idx, date in enumerate(sorted_dates, 1):
             self.log(f"\n[{date_idx}/{total_dates}] Processing range: {date}")
 
@@ -2657,10 +2701,15 @@ class ChartSlicer:
             # mosaic resume-skip so already-mosaicked dates still backfill chart
             # artifacts; its own resume check skips valid existing artifacts.
             if self.chart_pmtiles_dir:
-                try:
-                    self.emit_chart_pmtiles_for_date(date, self.dole_data[date])
-                except Exception as e:
-                    self.log(f"  ✗ Chart pmtiles pass failed for {date}: {e}")
+                if self.charts_only:
+                    # Deferred to one bulk pool after the loop — per-date pools
+                    # starve on single-chart dates (see emit_chart_pmtiles_bulk).
+                    chart_backlog.append(date)
+                else:
+                    try:
+                        self.emit_chart_pmtiles_for_date(date, self.dole_data[date])
+                    except Exception as e:
+                        self.log(f"  ✗ Chart pmtiles pass failed for {date}: {e}")
 
             # --charts-only: chart artifacts are the whole job; never touch
             # mosaics (a backfill run must not regenerate the published set).
@@ -2966,6 +3015,9 @@ class ChartSlicer:
                     self.log(f"  ✗ Mosaic GeoTIFF creation failed")
             else:
                 self.log(f"  Skipping {date} - no data available")
+
+        if chart_backlog:
+            self.emit_chart_pmtiles_bulk(chart_backlog)
 
         self.log("\n=== Processing Complete ===")
 

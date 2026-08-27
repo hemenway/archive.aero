@@ -55,16 +55,24 @@ def load_chart_pm_index():
 
     uploaded = {e["key"] for e in read_jsonl(CHART_PM_DIR / "uploads.jsonl") if "key" in e}
     index = collections.defaultdict(list)
+    is_half = {}
     seen = set()
     for entry in read_jsonl(CHART_PM_DIR / "manifest.jsonl"):
         key = entry.get("key")
         if not key or key in seen or key not in uploaded:
             continue
         seen.add(key)
+        is_half[key] = bool(entry.get("half"))
         ident = (entry.get("location", ""), entry.get("d", ""), entry.get("e", ""))
         index[ident].append(key)
     for keys in index.values():
-        keys.sort()  # deterministic: whole sheet before halves, halves alphabetical
+        # A bare whole-sheet key later superseded by half artifacts (a rerun
+        # that split the sheet, e.g. the WASP 1982 recut) stays in R2 forever
+        # per URI policy, but must not be stamped alongside the halves — the
+        # viewer would overlay the stale whole-sheet warp on the pair.
+        if any(is_half[k] for k in keys):
+            keys[:] = [k for k in keys if is_half[k]]
+        keys.sort()  # deterministic: halves alphabetical (north before south)
     return index
 
 

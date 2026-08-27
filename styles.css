@@ -961,12 +961,13 @@ body.zooming .leaflet-control-attribution {
   white-space: nowrap;
 }
 
-/* Invisible sizer: the label text changes while scrubbing ("9% of the US
-   covered" vs "Full US coverage"), and since the timeline flexes to fill the
-   card, a varying label width would resize the track. Reserve the widest
-   possible string so the label's width stays constant. */
+/* Invisible sizer: the label text changes while scrubbing ("9% of the lower
+   48 covered" vs "Full lower-48 coverage"), and since the timeline flexes to
+   fill the card, a varying label width would resize the track. Reserve the
+   widest possible string so the label's width stays constant — keep this in
+   sync with coverageText() in index.html. */
 .label-sub::after {
-  content: "00% of the US covered";
+  content: "00% of the lower 48 covered";
   display: block;
   height: 0;
   overflow: hidden;

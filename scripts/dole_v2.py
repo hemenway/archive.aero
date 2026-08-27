@@ -182,6 +182,17 @@ def row_src_crs(row) -> str:
     return str(row.get("src_crs") or "").strip()
 
 
+def row_half(row) -> str:
+    """Explicit half-sheet side ('north'/'south'/'east'/'west') or ''.
+
+    For half-sheet scans whose filenames carry no cardinal token (e.g. the
+    WASP _01/_02 recto/verso numbering — scan order, not sides), this column
+    is the slicer's grouping/URI override. Leave empty on multi-file zip rows
+    whose members name their own halves."""
+    value = str(row.get("half") or "").strip().lower()
+    return value if value in ("north", "south", "east", "west") else ""
+
+
 def row_rotation(row) -> int:
     """Row's display rotation in degrees clockwise: 0, 90, 180 or 270."""
     value = str(row.get("rotation") or "").strip()
