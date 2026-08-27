@@ -1,6 +1,7 @@
 # 11 — ACASIS `.imgcv2` recovery: 891 charts not in the catalog
 
-Status: **survey complete, 9 sectionals extracted, bulk extraction pending**
+Status: **extracted to the attic — 868 charts + 706 sidecars, 16.5 GB.**
+Not catalogued; resume fetch not yet run.
 Opened 2026-08-24.
 
 ## The source
@@ -136,9 +137,18 @@ container**, or read the FAA `.htm` sidecar, before calling it new.
   to `pre_vfrsec20260122_2026-08-24.csv`) → the cycle now has 51 of 53 sheets.
   Cutline rings run ~0.1° past the sheets' east edges — that's the FAA
   printed-chart overlap iFly trims off; identical signature to the published
-  2013 card rows, so slicing-safe. **Still to do: slice the 8 into the
-  2026-01-22 era, then timeline_data rebuild + R2 upload + coverage** (upload
-  deferred until slicing so the viewer never lists charts it can't render).
+  2013 card rows, so slicing-safe. **Sliced + published 2026-08-24**
+  (commit c11939f): era `2026-01-22_to_2026-03-19` rebuilt with all 51 sheets
+  (16.1 GB mosaic, resume reused the 43 existing warps; seams + Nome eyeballed),
+  converted webp q80 auto-z11 (454k tiles, 1.5 GB) and republished same-key;
+  8 chart artifacts live at `sectionals/chart/<slug>/2026-01-22`; bundle
+  `metadata-1330a553` (built off a local `rclone serve` of R2 to dodge the
+  stale worker cache); timeline_data re-uploaded with the 8 `pm` stamps;
+  coverage 79.4% → **94.2%** for the era. Worker-cache staleness window ≤24 h
+  as usual. Projection note: the whole `.gtj` family is **ellipsoidal
+  Mercator (EPSG:3395)** — height test on 14 files across both generations
+  fits ±0.6 px vs +7..+39 px spherical; the old "3857 sub-pixel" claim was a
+  shift-test blind to the corner-pinned bow (ifly_extract.py fix spawned).
 
   Original rebuild notes:
   from `/iFly/Backup/SDMMCDisk_ProdV9LowRes/VfrSec` (build 2026-01-15, every
@@ -184,13 +194,96 @@ A resume also reaches, in rough order of archival value:
 - **39 of the 40 `-BIG.png`** renders. The source was copied unlocked (`D:` could not be locked,
 see the session log), so it is not a point-in-time image.
 
+## Extracted 2026-08-24
+
+`/Volumes/projects/rawtiffs_attic/acasis_imgcv2_FAA_originals/` — **868 charts +
+706 georef sidecars, 16.5 GB**, per the new "Salvaged sources" convention in
+CLAUDE.md. 818 of the 868 are material the catalog has never held; the 50
+edition-less sectionals identified above are segregated, not deleted. Original filenames verbatim, grouped by type, `manifest.jsonl` carries
+source path / MFT record / live-vs-deleted / edition provenance.
+
+| | charts | distinct | size |
+|---|---|---|---|
+| `TAC/` | 401 | 33 | 8.08 GB |
+| `SEC/` | 9 | 9 | 0.52 GB |
+| `SEC/_dup_of_2021-02-25_cycle/` | 50 | — | 2.93 GB |
+| `HEL/` | 111 | 20 | 2.48 GB |
+| `FLY/` | 223 | 21 | 1.65 GB |
+| `WAC/` | 16 | 15 | 0.68 GB |
+| `INSET/` | 46 | 5 | 0.19 GB |
+| `GRAPHIC/` | 12 | 1 | 0.03 GB |
+
+These **supersede the `ifly_card_*` / `geotiff_*` attic sets** wherever they
+overlap — those are iFly-resampled to ~0.9x and rebuilt from `.dat` tile bundles;
+these are the FAA's own distribution GeoTIFFs. 699 carry internal LCC/NAD83
+georef; the other 169 rely on the recovered `.tfw` world files and need
+`src_crs` set in the dole row (GDAL reads `.tfw` but never `.prj`).
+
+Two corrections to the first survey, both from checking rather than assuming:
+
+- **The count was 891, not 868.** A second validation pass — head *and* tail —
+  killed 23 more. The first pass accepted file magic alone for non-TIFF formats,
+  which let through deleted files whose first cluster had been reallocated: one
+  presents as a valid 258×256 JPEG inside a 32 MB file that ends in zeroes. Every
+  alternate copy of those 23 on the disk was located and is equally overwritten.
+  They sit in `_unrecoverable/` as evidence, not as charts.
+- **The sidecars were nearly missed.** The survey had a 500 KB size floor, so
+  `.tfw`/`.prj` files — a few hundred bytes each, and the *entire* georeference
+  for 169 of these charts — were never in scope. Found on a second sweep.
+
+## Survey coverage — this is not a complete inventory of the disk
+
+The other half of this session found that **ten `$MFT` fragments fall past the
+capture boundary**, so only **3,948,023 of 5,744,640 file records (68.7 %)** were
+ever readable. Roughly 1.79 M file records — 31 % of D: — were invisible here.
+**There may be more charts.** Combined with the 53.9 % device capture, treat
+every "not on the disk" conclusion as provisional.
+
+## Copy-these-folders list (alternative to reimaging)
+
+Sizes and file counts are from the captured file table, so they are lower bounds
+where the `$MFT` was unreadable. Paths are on `D:`.
+
+**Do this one first — it costs 2 MB and decides everything else.** Copy only the
+`$I*` files out of both recycle bins and run
+`~/imgcv2-toolkit/decode_recycle_I.py` on them. Each `$I` names and dates the
+`$R` blob beside it, which turns 729 opaque `$R*.zip` files into a named list.
+Without it you are choosing 167 GB of zips by file size alone.
+
+| priority | path | files | size | why |
+|---|---|---|---|---|
+| **1** | `D:\DataDayDownloads\VFR` | 5 | **4.55 GB** | A complete current FAA VFR set in five zips: `Sectional.zip` 3.29 GB, `Terminal.zip` 0.85 GB, `Helicopter.zip` 0.31 GB, `Caribbean.zip` 0.06 GB, `Grand_Canyon.zip` 0.04 GB. **Caribbean and Grand Canyon appear nowhere in the 868 already recovered.** Best value on the disk by a wide margin. |
+| **2** | `D:\$RECYCLE.BIN\S-AD9B~1\*.zip` | 286 | 87.0 GB | Top-level zips only — skips 137 GB of subdirectory junk. The FAA cycle archive. |
+| **2** | `D:\$RECYCLE.BIN\S-9279~1\*.zip` | 443 | 80.6 GB | Same. Between them: **10 Sectional-sized (3.17–3.29 GB), ~30 Terminal/TAC-sized, 6 Helicopter-sized**, plus DDTPP plates that are not worth having. Size alone cannot separate TAC from plates — decode the `$I` files first. |
+| **3** | the orphan FAA staging folder | 22,564 | 66.5 GB | 1,873 `.tif` + 1,516 `.tfw` + 264 `.tfwx` + 17,046 `.pdf` + 1,856 `.htm`. Most of the 868 came from here, and **17.3 GB of its charts are incomplete**. Its own MFT record is in an uncaptured `$MFT` fragment so it has no resolvable name — find it by searching `D:` for `U.S. VFR Wall Planning Chart 7.tif` or `GOM_NC.tif`. |
+| **4** | `D:\Data\FAADownloads\SeamlessEFB\FromFAAUnused` | 974 | 7.61 GB | Loose FAA GeoTIFFs, named `<Place> SEC/TAC <ed>.tif`. |
+| **5** | `D:\Data\FAADownloads\SeamlessEFB\Temp\Sec_*\*-BIG.png` | 210 | 18.95 GB | Full-res georeferenced renders (`.pgw` + `.prj`). **Only 1 of ~40 sheets was captured.** Filter to `*-BIG.png`; copying all of `Temp\` is 65 GB of tile scratch. |
+| **6** | `D:\Data\FAADownloads\Heli` | 213 | 1.28 GB | Helicopter route charts, front/back halves. |
+| **7** | `D:\Data\FAADownloads\GrandCanyon` | 36 | 0.87 GB | Grand Canyon source `.bmp` + `.gcp` + `.prj`. |
+
+Lower value — the **28 iFly `.dat` device-pack folders** (`*/VfrSec`, `*/VfrSec_HighRes`,
+`*/Sectionals*`, `/_iFlyGPS_Data*/vfrsec`), 50.7 GB / 3,921 files across 12 near-identical
+generations. These are lossy (~78 m/px, collar stripped) gap-fillers, worth having only
+for eras with no FAA original — chiefly the **2014-10 to 2015-03** generation, since the
+catalog holds just 56 sheets for all of 2014. Grab `D:\_iFlyGPS_Data_v11\vfrsec` and
+`D:\_iFlyGPS_Data_v12\vfrsec` (3.3 GB each) rather than all twelve.
+
+Skip entirely: `D:\Data\FAADownloads\Plates` (150 GB of approach plates),
+`Data\DelormeRaw`, `satimages3`, `sentinel2CloudlessTiles`, `PicturesMirror`, `X-Plane 11`.
+
+Tier 1 + 4 + 6 + 7 is **14.3 GB** and needs no selection work at all.
+
 ## Next
 
-1. Resume the acquisition to ≥1.8 TB before the drive is disturbed.
-2. Bulk-extract the 891 into a staging dir — **not** into `rawtiffs`, which
-   holds sources exactly as downloaded; these are recovered, not downloaded.
+1. **Run the staged resume** — `/Volumes/ACASIS/imgcv2-resume/`, elevated, on the
+   Windows box. 218 blocks / 3.66 GB fetches the ten missing `$MFT` fragments
+   *and* the 18 incomplete charts; it writes a sidecar and never touches the
+   existing image (`imgcv2.py:attach_sidecar` layers it in). Far cheaper than the
+   185 GB sequential resume first estimated.
+2. Re-run the survey against the fuller MFT — the 31 % never seen is the single
+   biggest unknown here.
 3. Decide URI space for TAC / FLY / HEL / WAC per `URI-POLICY.md`.
-4. Catalogue the 9 sectionals (back up the CSV first), then slice.
+4. Catalogue the 9 gap-filling sectionals (back up the CSV first), then slice.
 
 ---
 
@@ -357,3 +450,80 @@ Sequential fallback if a full forensic image is wanted:
 captured — deleted files whose clusters were handed to something else. The
 bytes are present and are not charts. No amount of further copying recovers
 them; only the 18 with genuinely uncaptured data are in scope.
+
+---
+
+## 2026-08-26 — the live `FAADownloads` tree (no carving needed)
+
+`/Volumes/ACASIS/FAADownloads` is a **file-level copy of the same D: volume**, sitting
+on the ACASIS enclosure beside `image.imgcv2`. Four charts present in both the carve and
+this tree are **byte-identical (sha256)** — which independently validates the carve, and
+makes this tree the better source: it covers what the 53.9 %-complete image never
+reached, and needs no cluster-reallocation validation.
+
+Whole tree surveyed: **291,678 files**, all 1,738 `.tif` classified. Complete for that
+directory — *not* for the disk. Only `D:\FAADownloads` was copied; the rest of D:, and
+all of E:, remain unexamined (E: was never captured by the image either).
+
+### Only-copy test
+
+Every candidate checked four ways: absent from `master_dole_v2.csv`, absent from
+`rawtiffs/` (by basename **and** exact byte size), no verified-live URL among the
+2026-07 hunt's 1,490 findings, and not retrievable from Wayback (CDX over
+`aeronav.faa.gov/content/aeronav/{sectional,tac,heli,wac}_files*`, matched on
+`<location>_<edition>.zip`).
+
+Wayback holds **510** distinct sectional zips, **383** genuinely retrievable — **none**
+of our 36 SEC candidates. The one apparent match, `Washington_96.zip`, is an archived
+**404 page**. Wayback caught whatever cycle was live when its crawler ran (Cheyenne
+84/87/89/92/93 but not 90/91); this machine kept every cycle it processed.
+
+### Landed
+
+| where | what |
+|---|---|
+| `rawtiffs/acasis_live_FAADownloads/` | **31 SEC**, 1.93 GB, + `.tfw` + `.htm`, **31 dole rows** |
+| `rawtiffs_attic/acasis_live_FAADownloads/` | **85 TAC/HEL/WAC/FLY**, 2.39 GB (60 only-copy, 25 Wayback-obtainable) |
+| `rawtiffs_attic/acasis_imgcv2_FAA_originals/` | **697 FAA `.htm` sidecars** + `faa_dates.csv` |
+
+Four cycles that had **zero** catalog charts are now populated: 2014-07-24, 2014-08-21,
+2014-09-18, 2015-01-08. All copies sha256-verified on write (93 + 255 files, 0 failures).
+Verified end-to-end on Cheyenne SEC 90: warp to 3857 against `sectional/cheyenne` matches
+the cutline to ≤0.0008° (sub-pixel), render is a real sectional with collar intact.
+
+**5 candidates were dropped** as already held — `Honolulu`/`Mariana Islands`/`Samoan
+Islands Inset SEC 90` (inside `Hawaiian_Islands_90.zip`, catalogued as *Hawaiian Islands*
+ed 90) and `Western Aleutian Islands East`+`West SEC 47` (catalogued as ed 47). The
+catalog keys some sheets on the **container**, so a per-inset `(location, edition)` diff
+is not sufficient on its own.
+
+The 85 non-SEC are attic-bound only because the catalog has no schema or URI space for
+those collections yet — **not** a quality judgement. Note `shapefiles/` already carries
+`terminal/`, `helicopter/`, `insets/`, `caribbean/`, `enroute_{high,low}/`,
+`grand_canyon/` and `us_vfr_wall_planning/` cutline sets; the extents work may be largely
+done already.
+
+### `end_date` convention — bit us, now documented
+
+**`catalog end_date = FAA Ending_Date + 1 day.`** The catalog stores the next cycle's
+start (exclusive end); the FAA states the last valid day. Confirmed across 717 rows that
+matched an FAA `.htm`: **632 are exactly start+0 / end+1**. The 31 new rows were first
+written with the raw FAA value and corrected.
+
+Filling gaps also **staled 7 neighbours** — existing `end_date`s had been chained to the
+next *then-known* edition. Atlanta 92, Charlotte 95, Halifax 90, Houston 93,
+Jacksonville 93, Montreal 90, San Francisco 92 were corrected and annotated. Boundary
+check now 54/55; the one remainder, **Cape Lisburne ed 48 vs 49**, is a genuine overlap
+in the FAA's own metadata and was left as stated. Expect the same effect when cataloging
+from the attic set — re-run a boundary check after.
+
+### Still open
+
+- The 31 need a **slicer run**, then `build_metadata_bundle.py`,
+  `build_timeline_data.py` (+ R2 put) and `build_coverage.py`. Not done.
+- The 20 remaining `_unrecoverable/` charts are still unrecovered; 3 were rescued here
+  (`CE-12 WAC 27`, `CJ-26 WAC 21`, `Puerto Rico-VI TAC 40`).
+- Not copied, still on the drive: 35 ENR_L / 12 ENR_H, 17 Caribbean VFR, 6 US/Alaska VFR
+  Wall Planning, 14 Grand Canyon, and a 2013 `Heli/` set with older Front/West/East
+  sheet naming.
+- The targeted **imgcv2 resume** (218 blocks / 3.66 GB) is still not run.
