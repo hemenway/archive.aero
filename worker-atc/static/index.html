@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Air Traffic Control History — Dedicated to the history of FAA Flight Service Stations</title>
+  <meta name="description"
+    content="The atchistory.org collection, preserved at archive.aero: 1,300+ articles, facility photos, FSS class photos, historical airway maps, and scanned FAA publications covering a century of flight service history." />
+  <link rel="canonical" href="https://archive.aero/atc/" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="archive.aero" />
+  <meta property="og:title" content="Air Traffic Control History" />
+  <meta property="og:description"
+    content="Dedicated to the history of FAA Flight Service Stations. The atchistory.org collection, preserved permanently at archive.aero." />
+  <meta property="og:url" content="https://archive.aero/atc/" />
+  <meta property="og:image" content="https://archive.aero/atc/media/2016/10/1954AirlineRoutes.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="578" />
+  <meta property="og:image:alt" content="1954 map of United States airline routes" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:image" content="https://archive.aero/atc/media/2016/10/1954AirlineRoutes.jpg" />
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%231e90ff'><path d='M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@500;600;700&display=swap">
+  <style>
+    :root {
+      --primary: #1e90ff;
+      --primary-hover: #4da6ff;
+      --secondary: #00d4aa;
+      --bg-dark: #0a0e12;
+      --bg-card: #10161c;
+      --text-light: #fff;
+      --text-muted: rgba(255, 255, 255, 0.6);
+      --text-faint: rgba(255, 255, 255, 0.35);
+      --hairline: rgba(255, 255, 255, 0.09);
+      --font-display: "Barlow", system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      background: var(--bg-dark);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      color: var(--text-light);
+      line-height: 1.6;
+    }
+
+    a { color: var(--primary); text-decoration: none; }
+    a:hover { color: var(--primary-hover); text-decoration: underline; }
+
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      max-width: 1080px; margin: 0 auto; padding: 14px 20px;
+    }
+    .brand {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--font-display); font-weight: 700; font-size: 1.05rem;
+      color: var(--text-light);
+    }
+    .brand:hover { color: var(--text-light); text-decoration: none; }
+    .brand svg { width: 18px; height: 18px; fill: var(--primary); }
+    .topbar nav a {
+      color: var(--text-muted); font-size: 0.9rem; margin-left: 18px;
+      padding: 6px 12px; border: 1px solid var(--hairline); border-radius: 8px;
+    }
+    .topbar nav a:hover { color: var(--text-light); text-decoration: none; border-color: rgba(255, 255, 255, 0.25); }
+
+    .banner {
+      background: url("/atc/media/2016/10/1954AirlineRoutes.jpg") center 30% / cover no-repeat;
+      border-top: 1px solid var(--hairline);
+      border-bottom: 1px solid var(--hairline);
+      height: 172px;
+      position: relative;
+    }
+    .banner span {
+      position: absolute; right: 10px; bottom: 6px;
+      font-size: 10.5px; color: rgba(255, 255, 255, 0.75);
+      background: rgba(10, 14, 18, 0.72); padding: 2px 8px; border-radius: 6px;
+    }
+
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 30px 20px 56px; }
+
+    h1 {
+      font-family: var(--font-display); font-weight: 700;
+      font-size: 2rem; margin: 0 0 2px; letter-spacing: 0.005em;
+    }
+    .tagline { color: var(--text-muted); margin: 0 0 18px; font-size: 1.02rem; }
+    .intro { max-width: 66ch; margin: 0 0 34px; color: rgba(255, 255, 255, 0.86); }
+
+    .cols { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 40px; }
+
+    h2 {
+      font-family: var(--font-display); font-weight: 600; font-size: 1.1rem;
+      color: var(--secondary); margin: 0 0 10px;
+    }
+    section { margin-bottom: 36px; }
+
+    /* start-here list: ruled entries, featured first item */
+    .start { list-style: none; margin: 0; padding: 0; }
+    .start li { padding: 11px 0; border-bottom: 1px solid var(--hairline); }
+    .start li:first-child { padding-top: 4px; }
+    .start a { font-weight: 600; font-family: var(--font-display); font-size: 1.02rem; }
+    .start li.featured a { font-size: 1.22rem; }
+    .start .desc { display: block; color: var(--text-muted); font-size: 0.9rem; margin-top: 1px; }
+
+    .recent ul { list-style: none; margin: 0; padding: 0; font-size: 0.95rem; }
+    .recent li { padding: 6px 0; border-bottom: 1px solid var(--hairline); display: flex; justify-content: space-between; gap: 16px; }
+    .recent time { color: var(--text-faint); font-size: 0.82rem; white-space: nowrap; }
+    .older { display: inline-block; margin-top: 12px; font-size: 0.92rem; }
+
+    /* right rail */
+    aside .box {
+      background: var(--bg-card); border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px; padding: 16px 18px; margin-bottom: 18px;
+    }
+    aside h2 { font-size: 0.98rem; }
+    .cats { list-style: none; margin: 0; padding: 0; font-size: 0.94rem; }
+    .cats li { padding: 4px 0; }
+
+    dl.facts { margin: 0; font-size: 0.9rem; }
+    dl.facts div { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--hairline); }
+    dl.facts div:last-child { border-bottom: 0; }
+    dl.facts dt { color: var(--text-muted); }
+    dl.facts dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+    .help p { margin: 0 0 8px; font-size: 0.9rem; color: var(--text-muted); }
+    .help a { font-weight: 600; }
+
+    .viewer p { margin: 0 0 10px; font-size: 0.9rem; color: var(--text-muted); }
+    .viewer-link {
+      display: inline-block; padding: 8px 14px; border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 8px; color: var(--text-light); font-weight: 600; font-size: 0.9rem;
+      font-family: var(--font-display);
+    }
+    .viewer-link:hover { text-decoration: none; border-color: var(--primary-hover); color: var(--primary-hover); }
+
+    footer {
+      border-top: 1px solid var(--hairline); margin-top: 20px; padding-top: 18px;
+      color: var(--text-faint); font-size: 0.85rem; max-width: 1080px;
+    }
+    footer a { color: var(--text-muted); }
+
+    @media (max-width: 900px) {
+      .cols { grid-template-columns: 1fr; gap: 8px; }
+      .banner { height: 120px; }
+      h1 { font-size: 1.55rem; }
+    }
+    @media (max-width: 600px) {
+      .topbar { padding: 12px 14px; }
+      .brand { font-size: 0.98rem; }
+      .topbar nav a { margin-left: 6px; padding: 5px 9px; font-size: 0.8rem; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="topbar">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z" />
+      </svg>
+      archive.aero
+    </a>
+    <nav>
+      <a href="/">Chart Viewer</a>
+      <a href="/about">About</a>
+    </nav>
+  </div>
+
+  <div class="banner" role="img" aria-label="1954 map of United States airline routes">
+    <span>U.S. airline routes, 1954 — from the collection</span>
+  </div>
+
+  <div class="wrap">
+    <h1>Air Traffic Control History</h1>
+    <p class="tagline">Dedicated to the history of FAA Flight Service Stations.</p>
+    <p class="intro">
+      For more than two decades, <strong>atchistory.org</strong> gathered the history of the
+      FAA's Flight Service Stations and the people who worked them: facility photographs,
+      training class photos, early airway maps, scanned publications, and first-person life
+      stories. The collection now lives here permanently, preserved exactly as it stood in
+      August&nbsp;2026. Every old atchistory.org link redirects to its page here.
+    </p>
+
+    <div class="cols">
+      <main>
+        <section>
+          <h2>Start here</h2>
+          <ul class="start">
+            <li class="featured">
+              <a href="/atc/how-the-pilots-checklist-came-about">How the Pilot&rsquo;s Checklist Came About</a>
+              <span class="desc">The 1935 crash of the Boeing Model 299 and the origin of the
+                modern pilot's checklist — the collection's most-read page.</span>
+            </li>
+            <li>
+              <a href="/atc/facility-photos">Facility Photos</a>
+              <span class="desc">Flight Service Stations photographed across the country, organized by state.</span>
+            </li>
+            <li>
+              <a href="/atc/flight-service-class-photos">FSS Class Photos</a>
+              <span class="desc">Training class photographs from the FAA Academy, year by year.</span>
+            </li>
+            <li>
+              <a href="/atc/us-historical-airway-maps">Historical Aviation Maps</a>
+              <span class="desc">U.S. airway maps from the earliest days of the federal airway system.</span>
+            </li>
+            <li>
+              <a href="/atc/history/Pubs/faa_world/">FAA World, 1974&ndash;1986</a>
+              <span class="desc">The FAA's employee magazine — the complete monthly run, scanned.</span>
+            </li>
+            <li>
+              <a href="/atc/topics/early-radio-years">Early Radio Years</a>
+              <span class="desc">Airway beacons, lighted airways, and the radio range era.</span>
+            </li>
+            <li>
+              <a href="/atc/history/Pubs/">Publications &amp; documents</a>
+              <span class="desc">25 more collections: Alaska intercoms, beacon specifications,
+                phone directories, training booklets, and other scanned records.</span>
+            </li>
+          </ul>
+        </section>
+
+        <section class="recent">
+          <h2>Recent additions</h2>
+          <ul>
+            <!-- RECENT_POSTS:BEGIN (replaced at build time from the frozen feed) -->
+            <li><a href="/atc/feed">Latest posts feed</a></li>
+            <!-- RECENT_POSTS:END -->
+          </ul>
+          <a class="older" href="/atc/archive/2">Older posts &rarr;</a>
+        </section>
+      </main>
+
+      <aside>
+        <div class="box">
+          <h2>Browse by category</h2>
+          <ul class="cats">
+            <li><a href="/atc/topics/facilities">Facilities</a></li>
+            <li><a href="/atc/topics/class-photos-archive">Class Photos Archive</a></li>
+            <li><a href="/atc/topics/early-radio-years">Early Radio Years</a></li>
+            <li><a href="/atc/topics/historical-maps">Historical Maps</a></li>
+            <li><a href="/atc/topics/life-stories">Life Stories</a></li>
+            <li><a href="/atc/topics/publications">Publications</a></li>
+            <li><a href="/atc/topics/written-histories">Written Histories</a></li>
+          </ul>
+        </div>
+
+        <div class="box">
+          <h2>The collection</h2>
+          <dl class="facts">
+            <div><dt>Articles &amp; photo essays</dt><dd>1,300+</dd></div>
+            <div><dt>Scanned documents</dt><dd>&asymp;900 PDFs</dd></div>
+            <div><dt>FAA World issues</dt><dd>1974&ndash;1986</dd></div>
+            <div><dt>Photographs &amp; files</dt><dd>&asymp;3.5&nbsp;GB</dd></div>
+          </dl>
+        </div>
+
+        <div class="box help">
+          <h2>Can you help?</h2>
+          <p>Old photos of air traffic facilities, equipment, or the people who ran them are
+            still being added. Scans of at least 300&nbsp;dpi are best.</p>
+          <p><a href="mailto:archive@atchistory.org">archive@atchistory.org</a></p>
+        </div>
+
+        <div class="box viewer">
+          <h2>Historical charts</h2>
+          <p>This collection lives alongside archive.aero's timeline viewer of historical FAA
+            sectional charts, 1930s to present.</p>
+          <a class="viewer-link" href="/">Open the chart viewer</a>
+        </div>
+      </aside>
+    </div>
+
+    <footer>
+      Formerly <strong>www.atchistory.org</strong> &middot; preserved as part of
+      <a href="/">archive.aero</a> since 2026 &middot;
+      <a href="/about">About</a> &middot;
+      <a href="mailto:archive@atchistory.org">Contact</a>
+    </footer>
+  </div>
+</body>
+
+</html>

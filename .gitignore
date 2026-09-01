@@ -30,8 +30,10 @@ credentials.json
 # Regenerable caches
 bounds_cache.json
 
-# Proprietary catalog — never publish
+# Proprietary catalog — never publish (georef tool leaves .bak/.tmp
+# siblings beside it on every save; attic-style .pre_*.bak copies too)
 master_dole_v2.csv
+master_dole_v2.csv.*
 
 # Catalog-derived / undecided (delete a line to start tracking it)
 1georef_toolv10.py
@@ -46,3 +48,4 @@ historical-data/
 # Local browser-session recording (1.4 GB) — never commit
 archive.aero-recording.json
 airfields.json
+CLAUDE.md

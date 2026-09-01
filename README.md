@@ -6,7 +6,7 @@
 
 > ⚠️ Every chart on the site is a historical scan. **Never use it for navigation.**
 
-**Live site:** [archive.aero](https://archive.aero) · **How it works:** [archive.aero/about.html](https://archive.aero/about.html)
+**Live site:** [archive.aero](https://archive.aero) · **How it works:** [archive.aero/about](https://archive.aero/about)
 
 ---
 
@@ -52,9 +52,20 @@ A single-page app with no framework and no build step. The interesting parts:
 - **Prefetching** of adjacent editions while you scrub, with reference-counted in-flight loads
 - **Accessible UI** — keyboard shortcuts (`←` `→` `Space` `F` `S` `?`), ARIA labels, focus management
 
+### 5. ATC History collection — [`worker-atc/`](worker-atc/) (Cloudflare Worker + R2)
+
+archive.aero is also the permanent home of the
+[Air Traffic Control History collection](https://archive.aero/atc/) —
+the atchistory.org archive of FAA Flight Service Station history (facility
+photos, training class photos, airway maps, scanned publications), flattened
+to a fully static site. A dedicated Worker serves it from the `atc-site` R2
+bucket under `/atc/` and 301s every old atchistory.org URL to its preserved
+page. The content itself (≈3.6 GB) lives only in R2 and the offline build
+tree — never in this repo.
+
 ## Data sources
 
-Historical charts are digitized scans held by the [U.S. National Archives](https://catalog.archives.gov/) (Record Group 237 — Records of the Federal Aviation Administration); current editions come from FAA digital products. Full attribution and licensing: [archive.aero/sources.html](https://archive.aero/sources.html).
+Historical charts are digitized scans held by the [U.S. National Archives](https://catalog.archives.gov/) (Record Group 237 — Records of the Federal Aviation Administration); current editions come from FAA digital products. Full attribution and licensing: [archive.aero/sources](https://archive.aero/sources).
 
 ## Roadmap
 

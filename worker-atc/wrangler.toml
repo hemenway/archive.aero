@@ -1,0 +1,39 @@
+name = "atc"
+main = "src/index.js"
+compatibility_date = "2025-05-01"
+
+# archive.aero/atc/* deployed early (2026-08-09) with ATC_NOINDEX guard so the
+# rewritten absolute asset URLs resolve pre-cutover. Cutover 09:00 step
+# (run 2026-08-31) added the atchistory.org host routes below; the 11:00 step
+# clears ATC_NOINDEX.
+routes = [
+  { pattern = "atc-staging.archive.aero", custom_domain = true },
+  { pattern = "archive.aero/atc/*", zone_name = "archive.aero" },
+  # Exact bare-prefix route: /atc/* is a literal prefix match, so it never sees
+  # /atc — without this the 301 to /atc/ in src/index.js falls through to GH Pages.
+  { pattern = "archive.aero/atc", zone_name = "archive.aero" },
+  { pattern = "atchistory.org/*", zone_name = "atchistory.org" },
+  { pattern = "www.atchistory.org/*", zone_name = "atchistory.org" },
+]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "atc-site"
+
+[[analytics_engine_datasets]]
+binding = "ATC_LOGS"
+dataset = "atc_logs"
+
+[vars]
+# serve | redirect — behavior of the atchistory.org hostnames only.
+# archive.aero/atc/* and atc-staging always serve.
+MODE = "serve"
+SAMPLE_RATE = "0.05"
+# "1" = X-Robots-Tag noindex on archive.aero/atc/* (pre-cutover guard).
+# Cleared by the cutover 11:00 step, 2026-08-31. (Never gated the atchistory.org
+# hostnames — see the `staging` split in src/index.js and the 08-31 log entry.)
+ATC_NOINDEX = "0"
+
+[observability]
+enabled = true
+head_sampling_rate = 0.1

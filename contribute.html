@@ -7,13 +7,13 @@
   <title>Missing Charts &amp; How You Can Help — archive.aero</title>
   <meta name="description"
     content="archive.aero holds thousands of historical FAA Sectional charts — but hundreds of editions are still missing. See exactly what we don't have, and how you can help fill the gaps." />
-  <link rel="canonical" href="https://archive.aero/contribute.html" />
+  <link rel="canonical" href="https://archive.aero/contribute" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="archive.aero" />
   <meta property="og:title" content="Missing Charts &amp; How You Can Help — archive.aero" />
   <meta property="og:description"
     content="archive.aero holds thousands of historical FAA Sectional charts — but hundreds of editions are still missing. See exactly what we don't have, and how you can help fill the gaps." />
-  <meta property="og:url" content="https://archive.aero/contribute.html" />
+  <meta property="og:url" content="https://archive.aero/contribute" />
   <meta property="og:image" content="https://archive.aero/social-card.jpg" />
   <meta property="og:image:width" content="1200" />
   <meta property="og:image:height" content="630" />
@@ -39,7 +39,7 @@
       --bg-card: #10161c;
       --text-light: #fff;
       --text-muted: rgba(255, 255, 255, 0.6);
-      --text-faint: rgba(255, 255, 255, 0.35);
+      --text-faint: rgba(255, 255, 255, 0.45);
       --hairline: rgba(255, 255, 255, 0.09);
       --card-radius: 16px;
     }
@@ -63,12 +63,55 @@
       padding: 32px 20px 64px;
     }
 
-    .back {
+    /* shared-nav styles: keep identical across about/contribute/sources */
+    .site-nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 10px 20px;
+      margin-bottom: 28px;
+    }
+
+    .site-nav-brand {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 0.95rem;
-      margin-bottom: 24px;
+      gap: 8px;
+      font-family: "Barlow", system-ui, sans-serif;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--text-light);
+    }
+
+    .site-nav-brand:hover {
+      color: var(--text-light);
+      text-decoration: none;
+    }
+
+    .site-nav-brand svg {
+      width: 20px;
+      height: 20px;
+      color: var(--primary);
+    }
+
+    .site-nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 16px;
+      font-size: 0.9rem;
+    }
+
+    .site-nav-links a {
+      color: var(--text-muted);
+    }
+
+    .site-nav-links a:hover {
+      color: var(--primary-hover);
+      text-decoration: none;
+    }
+
+    .site-nav-links a[aria-current="page"] {
+      color: var(--text-light);
     }
 
     header h1 { font-family: "Barlow", system-ui, sans-serif; font-size: 1.7rem; margin: 0 0 4px; }
@@ -121,8 +164,8 @@
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
     }
     .cta:hover { text-decoration: none; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); }
-    .cta.email { background: rgba(30, 144, 255, 0.9); color: #fff; }
-    .cta.email:hover { background: rgba(30, 144, 255, 1); color: #fff; }
+    .cta.email { background: var(--primary); color: #10161c; }
+    .cta.email:hover { background: var(--primary-hover); color: #10161c; }
     .cta.donate { background: #ff813f; color: #10161c; }
     .cta.donate:hover { background: #ff9257; color: #10161c; }
 
@@ -185,7 +228,7 @@
     #atlasSvg { display: block; width: 100%; height: auto; background:
       radial-gradient(ellipse at 42% 40%, #101922 0%, #0a0e12 75%); }
     .ext { stroke-width: 0.35; cursor: default; transition: fill 0.15s; }
-    .ext.have { fill: rgba(0, 212, 170, 0.30); stroke: rgba(0, 212, 170, 0.9); }
+    .ext.have { fill: rgba(0, 212, 170, 0.30); stroke: rgba(0, 212, 170, 0.9); cursor: pointer; }
     .ext.have.old { fill: rgba(53, 181, 201, 0.30); stroke: rgba(53, 181, 201, 0.95); }
     .ext.gap { fill: url(#hatchRed); stroke: rgba(255, 92, 92, 0.85); }
     .ext.off { fill: transparent; stroke: rgba(255, 255, 255, 0.13); cursor: default; }
@@ -270,6 +313,7 @@
       background: rgba(255,255,255,0.025);
     }
     .grp-header:hover { background: rgba(255,255,255,0.055); }
+    .grp-header:focus-visible { background: rgba(255,255,255,0.055); outline: 2px solid var(--primary); outline-offset: -2px; }
     .lane-label {
       flex: 0 0 240px; width: 240px;
       padding: 0 10px 0 14px;
@@ -339,7 +383,23 @@
 
 <body>
   <div class="wrap">
-    <a class="back" href="index.html">← Back to the map</a>
+    <!-- shared-nav: keep identical across about/contribute/sources (URI-POLICY.md) -->
+    <div class="site-nav">
+      <a class="site-nav-brand" href="/">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z" />
+        </svg>
+        archive.aero
+      </a>
+      <nav class="site-nav-links" aria-label="Site">
+        <a href="/">Sectional Charts</a>
+        <a href="/atc/">ATC History</a>
+        <a href="/about">About</a>
+        <a href="/sources">Sources</a>
+        <a href="/contribute" aria-current="page">Contribute</a>
+      </nav>
+    </div>
+    <!-- /shared-nav -->
 
     <header>
       <h1>Help Fill the Gaps</h1>
@@ -478,8 +538,8 @@
     </section>
 
     <footer>
-      <a href="index.html">archive.aero</a> · <a href="about.html">About &amp; How It Works</a> ·
-      <a href="sources.html">Sources &amp; Attribution</a> · Historical Aviation Charts
+      <a href="/">archive.aero</a> · <a href="/about">About &amp; How It Works</a> ·
+      <a href="/sources">Sources &amp; Attribution</a> · Historical Aviation Charts
     </footer>
   </div>
 
@@ -630,6 +690,9 @@
 
         const head = document.createElement('div');
         head.className = 'grp-header';
+        head.tabIndex = 0;
+        head.setAttribute('role', 'button');
+        head.setAttribute('aria-expanded', 'false');
         head.style.width = (LABEL_W + TRACK_W) + 'px';
         const lbl = document.createElement('div');
         lbl.className = 'lane-label';
@@ -670,7 +733,14 @@
           tr.appendChild(s);
         }
         head.appendChild(tr);
-        head.addEventListener('click', () => grp.classList.toggle('open'));
+        const toggleGrp = () => {
+          const open = grp.classList.toggle('open');
+          head.setAttribute('aria-expanded', open ? 'true' : 'false');
+        };
+        head.addEventListener('click', toggleGrp);
+        head.addEventListener('keydown', ev => {
+          if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleGrp(); }
+        });
         grp.appendChild(head);
 
         const body = document.createElement('div');
@@ -803,6 +873,10 @@
           showTip(`<b>${esc(L.name)}</b><br>${body}`, ev);
         });
         el.addEventListener('mouseleave', hideTip);
+        el.addEventListener('click', () => {
+          const st = stateAt(L, cur);
+          if (st.kind === 'have') location.href = `/?date=${encodeURIComponent(st.seg.d)}`;
+        });
         g.appendChild(el);
         polys.push({ el, L });
       }
@@ -830,7 +904,7 @@
         hudStats.innerHTML = `<b class="h">${have}</b> charts in archive` +
           (gap ? ` · <b class="g">${gap}</b> known missing` : '') +
           (hole ? ` · <b style="color:var(--warn)">${hole}</b> unarchived` : '') +
-          `<br><span style="color:var(--text-faint)">click a region to open its scan</span>`;
+          (have ? `<br><span style="color:var(--text-faint)">click a region to open its scan</span>` : '');
         handle.style.left = (P(cur) * 100) + '%';
       }
 
@@ -980,10 +1054,12 @@
       buildShelf(model);
       document.getElementById('shelfSort').addEventListener('change', () => buildShelf(model));
       document.getElementById('shelfSearch').addEventListener('input', () => buildShelf(model));
-      document.getElementById('expandAll').addEventListener('click', () =>
-        document.querySelectorAll('#shelf .grp').forEach(g => g.classList.add('open')));
-      document.getElementById('collapseAll').addEventListener('click', () =>
-        document.querySelectorAll('#shelf .grp').forEach(g => g.classList.remove('open')));
+      const setAllGrps = on => document.querySelectorAll('#shelf .grp').forEach(g => {
+        g.classList.toggle('open', on);
+        g.querySelector('.grp-header')?.setAttribute('aria-expanded', on ? 'true' : 'false');
+      });
+      document.getElementById('expandAll').addEventListener('click', () => setAllGrps(true));
+      document.getElementById('collapseAll').addEventListener('click', () => setAllGrps(false));
       wireCopyWanted(model);
       if (data.generated) {
         document.getElementById('genNote').insertAdjacentHTML('beforeend',

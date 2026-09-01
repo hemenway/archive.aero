@@ -1,0 +1,14 @@
+{
+  "name": "atc-worker",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dry-run": "wrangler deploy --dry-run",
+    "dev": "wrangler dev",
+    "tail": "wrangler tail atc",
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

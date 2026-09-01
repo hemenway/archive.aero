@@ -1,0 +1,37 @@
+# rclone filter for syncing the ATC build tree to R2.
+#
+#   rclone sync /Volumes/projects/atchistory_build/site r2:atc-site \
+#     --filter-from scripts/atc_r2_sync_filter.txt --checksum
+#
+# ALWAYS pass this file. `rclone sync` deletes destination objects that are
+# absent from the source, and four objects in atc-site CANNOT exist in the
+# local build tree — see below. Without the filter, a freeze-day sync silently
+# deletes them again.
+#
+# Run with --dry-run first and confirm the deletion count is 0.
+
+# --- Case-collision survivors (recovered 2026-08-13) -------------------------
+# /Volumes/projects is case-INSENSITIVE APFS. The live Linux box has four
+# directories holding two files whose names differ only by case; copying them
+# to this Mac collapsed each pair into one file, so the build tree (and the
+# "pristine" cPanel backup, same volume) physically cannot hold both spellings.
+# These four were re-fetched from the live origin and uploaded to R2 directly
+# under their exact keys. Three are byte-identical to their twin (name-only
+# variants kept so indexed URLs resolve); north_platte_fss1973.jpg is a
+# genuinely DIFFERENT photograph from North_Platte_FSS1973.jpg.
+#
+# Patterns are case-sensitive (do not add --ignore-case), so the mixed-case
+# twins still sync normally from the build tree.
+- /History/FacilityPhotos/NE/north_platte/north_platte_fss1973.jpg
+- /History/FacilityPhotos/NE/north_platte/north_platte_fss_ne_(lbf)_1929.jpg
+- /History/FacilityPhotos/NE/omaha/omaha_antenna.jpg
+- /History/FacilityPhotos/NE/scottsbluff/scottsbluff_(BFF)_ne_1985.jpg
+
+# --- Frozen old-host sitemaps, served only on atchistory.org -----------------
+# Built into the worker/oldhost tree, never present in site/.
+- /_oldhost/**
+
+# --- Junk that must never reach the bucket ----------------------------------
+- .DS_Store
+- Thumbs.db
+- ._*
