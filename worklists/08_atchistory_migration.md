@@ -1014,3 +1014,33 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   `MODE="serve"` / `ATC_NOINDEX="1"` unchanged. Note the runbook's step order was
   inverted deliberately: routes deployed *before* the DNS flip, so the flip is a
   single transition instead of a window where CF proxies to Incapsula.
+- 2026-08-31 (later): **11:00 + 13:00 steps executed; cutover functionally
+  complete.** 11:00: `ATC_NOINDEX="0"` deployed (`0925370b`); `archive.aero/atc`
+  → 301 → `/atc/`, `/atc/` 200 with no `x-robots-tag`. Repo commit `a5c02cf`
+  pushed to main, GH Pages built clean.
+  ⚠ **The staged-set line `worker-atc/` was a trap**: with no local
+  `.gitignore` it staged **1,706 files** — `node_modules/`, `.wrangler/state/`
+  (local miniflare R2 blobs) and `node_modules/.cache/wrangler/wrangler-account.json`
+  — into a public repo. Fixed by copying `worker/.gitignore` (`node_modules/`,
+  `.wrangler/`, `.dev.vars`) to `worker-atc/`, which is what the tiles worker has
+  always used; commit dropped to the correct 12 files. Also added
+  `scripts/atc_r2_sync_filter.txt` (the `scripts/atc_*.py` glob missed it and it
+  was the only copy of a file CLAUDE.md makes mandatory on every `atc-site` sync).
+  ⚠ **Cache hazard, self-inflicted:** the sitemaps were probed ~40 s before the
+  Pages build finished, so Cloudflare cached a 404 for all three under
+  `max-age=7200`. Origin was fine throughout (cache-busted 200s). Wrangler's
+  OAuth token has no `cache_purge` scope → dashboard purge required.
+  **Next time: verify GH Pages build status (`gh api .../pages/builds/latest`)
+  BEFORE the first bare curl — a premature probe poisons the edge for 2 h.**
+  13:00: `MODE="redirect"` deployed (`54e9b414`). `atc_redirect_check.py
+  --tag cutover`: **63,499 checks, 62,511 PASS, 988 NOTE, 0 FAIL** (170 s,
+  4 scheme/host variants, all preflight sentinels OK; up from the 08-20
+  rehearsal's 16,218 because the freeze-day inventory refresh grew the matrix).
+  Every NOTE is `junk` (800) or `wp_internal` (188) "target 404 tolerated" —
+  **0 NOTEs in `bucket=content`**. The only 404s are the 4 deliberate
+  `wp-sitemap-bogus-1.xml` probes (never-frozen variant must 404 — guard works).
+  08a loop both ways: 7 targets `200 0hop`, 7 old forms one-hop 301 → 200
+  including the bare `http://` scheme-upgrade variants. Old host now serves
+  `OLD_ROBOTS` + the frozen `_oldhost` sitemaps (200) — the 14:00 prerequisite.
+  Remaining: CF cache purge (user), then 14:00 GSC Change of Address / Bing Site
+  Move / sitemap submit (user). Registrar still untouched, per §5.

@@ -27,7 +27,7 @@ dataset = "atc_logs"
 [vars]
 # serve | redirect — behavior of the atchistory.org hostnames only.
 # archive.aero/atc/* and atc-staging always serve.
-MODE = "serve"
+MODE = "redirect"
 SAMPLE_RATE = "0.05"
 # "1" = X-Robots-Tag noindex on archive.aero/atc/* (pre-cutover guard).
 # Cleared by the cutover 11:00 step, 2026-08-31. (Never gated the atchistory.org
