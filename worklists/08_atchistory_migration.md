@@ -1044,3 +1044,42 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   `OLD_ROBOTS` + the frozen `_oldhost` sitemaps (200) — the 14:00 prerequisite.
   Remaining: CF cache purge (user), then 14:00 GSC Change of Address / Bing Site
   Move / sitemap submit (user). Registrar still untouched, per §5.
+- 2026-09-01: **First unmatched-404 sweep (EOD item) — new tool
+  `scripts/atc_404_sweep.py`.** Queries the `atc_logs` Analytics Engine dataset
+  and buckets 404s, because raw volume is almost entirely noise. Note the worker
+  logs no client IP, so unlike the freeze-day log merge our own probe traffic
+  cannot be filtered by address — it is recognised by path shape (`self`
+  bucket: the top-100 inventory replay's `.well-known/` paths, the
+  redirect-check's bogus-sitemap guard). **Two classifier traps, both fixed
+  during this run:** patterns anchored `^/` match nothing on archive.aero
+  because every path arrives with the `/atc` prefix attached (`.env` probes were
+  landing in `content`); and a mangled `srcset` requested as one URL is *one*
+  crawler defect, not N missing files (153 hits, 1 cause) — our `srcset` markup
+  in all 621 pages carrying it is valid, and the referenced images serve 200.
+  48h window: 754 hits / 366 distinct paths → self 249, content 177, srcset 160,
+  scanner 77, asset 65, junk 26.
+  The sweep's real question is **"did the old site serve this?"** — it inverse-
+  maps each miss to its old-host form and probes the pre-cutover origin direct
+  (74.220.207.111, `Accept: */*`). Result: **87 inherited dead links** (404 on
+  the old origin too — including the top three by volume: the escapade theme's
+  `Genericons.svg` at 31 hits, `keepers-house-floor-plan1931.tif`, and
+  `Life_Stories/LifeStories_Home.htm` linked from our own
+  `/atc/history-of-eau-claire-fss`) and **no content-level migration
+  regression**. Those were broken before the move; fixing them is content work,
+  which §5 defers ~60 days.
+  **One real defect found.** Unmatched old paths hit a catch-all that 301s to
+  `/atc/<same path>` — proven general with `/totally-made-up-page-xyz/`. For a
+  forgotten-but-real URL that heuristic is a feature; for a URL with no new-space
+  equivalent it produces a **301 into a 404**, which is worse for search than a
+  clean 404 and breaks the one-hop promise. It bites the **WP date archives**,
+  which the canonical space deliberately dropped (dates are 2016+ bulk-import
+  timestamps — §"canonical space" reasoning): `/2017/` … `/2025/` all served 200
+  on the old origin (2016 and 2026 did not; month forms are partial —
+  `/2019/03/` 200, `/2021/07/` 404) and now chain into a 404.
+  Pagination is unaffected and correct: `/page/N/` → `/atc/archive/N` → 200.
+  Also confirmed not actionable: `jquery.js` / `wp-emoji.js` 404 but **zero**
+  built pages reference them; `robots.txt` on the old hosts self-resolved at the
+  13:00 flip (was 404 during the serve window, now 200 via `OLD_ROBOTS`).
+  **Open decision (user):** where date archives should point. Adding an alias is
+  permanent under URI-POLICY, so it is not being taken unilaterally. Candidates:
+  `/atc/archive/` (the paginated listing the space already has) or `/atc/`.
