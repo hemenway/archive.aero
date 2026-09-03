@@ -801,10 +801,23 @@
         this.sources = [];
         this.sourceVersion = 0;
         this.maxNativeZoom = options.maxNativeZoom ?? 11;
+        // Per-archive native ceiling (min of the layer's maxNativeZoom and the
+        // archive header's maxZoom), keyed by source key. Archives stop wherever
+        // their source resolution ran out — z8 for the coarsest 1950s-2000s scans,
+        // z10 for the 2004 archive.org set, z11 for 1990s-2010s, z12 only for the
+        // current cycle — and pmtiles returns nothing for a zoom above the header
+        // maxZoom, so a request must be clamped per source, not just per layer.
+        this.maxZoomByKey = options.maxZoomByKey || new Map();
         this.useImageBitmap = options.useImageBitmap ?? ('createImageBitmap' in window);
         this.tileDataCache = options.tileDataCache || null;
         this.tileBitmapCache = options.tileBitmapCache || null;
         this.tileFetchInflight = options.tileFetchInflight || new Map();
+        // Screen tiles that share one native parent (per-source overzoom below)
+        // decode the same bytes at the same time. Joining them here matters:
+        // each would otherwise make its own ImageBitmap, and the bitmap cache
+        // closes the value it overwrites — so the first tile's bitmap would be
+        // closed just before its drawImage (InvalidStateError, blank tile).
+        this.bitmapInflight = new Map();
 
         // iOS Safari retains canvas backing stores until a GC pass that lags far
         // behind pan/zoom churn; zeroing a tile's dimensions on unload frees that
@@ -838,19 +851,22 @@
         return Promise.all(renders);
       }
 
-      _normalizeCoords(coords) {
+      // Maps a screen tile onto the native tile that holds its pixels. Above
+      // maxNativeZoom (the layer default, or one archive's own ceiling) the
+      // parent tile is fetched and the matching sub-square is upscaled.
+      _normalizeCoords(coords, maxNativeZoom = this.maxNativeZoom) {
         let z = coords.z;
         let x = coords.x;
         let y = coords.y;
         let scale = 1;
         let offsetX = 0;
         let offsetY = 0;
-        if (z > this.maxNativeZoom) {
-          const zoomDiff = z - this.maxNativeZoom;
+        if (z > maxNativeZoom) {
+          const zoomDiff = z - maxNativeZoom;
           const divisor = Math.pow(2, zoomDiff);
           offsetX = ((x % divisor) + divisor) % divisor;
           offsetY = ((y % divisor) + divisor) % divisor;
-          z = this.maxNativeZoom;
+          z = maxNativeZoom;
           x = Math.floor(x / divisor);
           y = Math.floor(y / divisor);
           scale = divisor;
@@ -858,11 +874,37 @@
         return { z, x, y, scale, offsetX, offsetY };
       }
 
-      async _prepareBitmap(data, cacheKey) {
-        if (cacheKey && this.tileBitmapCache) {
-          const cached = this.tileBitmapCache.get(cacheKey);
-          if (cached) return cached;
+      // Resolves one source's native ceiling. The header is bundle-served for
+      // stock archives and cached by pmtiles either way, so after the first
+      // lookup per key this is a synchronous Map hit.
+      async sourceMaxZoom(source) {
+        const key = source.key;
+        if (key) {
+          const known = this.maxZoomByKey.get(key);
+          if (known !== undefined) return known;
         }
+        const header = await source.getPMTiles().getHeader();
+        const ceiling = Number.isFinite(header.maxZoom)
+          ? Math.min(this.maxNativeZoom, header.maxZoom)
+          : this.maxNativeZoom;
+        if (key) this.maxZoomByKey.set(key, ceiling);
+        return ceiling;
+      }
+
+      _prepareBitmap(data, cacheKey) {
+        if (!cacheKey || !this.tileBitmapCache) return this._decodeBitmap(data, null);
+        const cached = this.tileBitmapCache.get(cacheKey);
+        if (cached) return Promise.resolve(cached);
+        let pending = this.bitmapInflight.get(cacheKey);
+        if (!pending) {
+          pending = this._decodeBitmap(data, cacheKey)
+            .finally(() => this.bitmapInflight.delete(cacheKey));
+          this.bitmapInflight.set(cacheKey, pending);
+        }
+        return pending;
+      }
+
+      async _decodeBitmap(data, cacheKey) {
         const blob = new Blob([data], { type: 'image/webp' });
         if (this.useImageBitmap && 'createImageBitmap' in window) {
           const bitmap = await createImageBitmap(blob);
@@ -920,11 +962,8 @@
         // an empty tile instead of throwing (which would reject the createTile
         // promise and wedge the tile in Leaflet's loading state).
         if (!ctx) return;
-        const placement = this._normalizeCoords(coords);
-        const { z, x, y } = placement;
-        const sourceSize = 256 / placement.scale;
-        const sourceX = placement.offsetX * sourceSize;
-        const sourceY = placement.offsetY * sourceSize;
+        const layerPlacement = this._normalizeCoords(coords);
+        const { z, x, y } = layerPlacement;
 
         // Spatial cull: most archives cover one chart's region, so the median
         // z10 tile overlaps ~1 of the ~80 active archives. Dropping the rest
@@ -935,21 +974,29 @@
         const sourcesSnapshot = this.sources.filter(source =>
           !source.bounds || Utils.boundsIntersect(source.bounds, tileBounds));
         const fetched = await Promise.all(sourcesSnapshot.map(async source => {
-          const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
+          // Clamp to this archive's own ceiling: a z11 screen tile over a z10
+          // archive reads the z10 parent and upscales its quarter, instead of
+          // asking for a z11 tile that doesn't exist and painting nothing.
+          let placement = layerPlacement;
+          let cacheKey = '';
           let tileData = null;
           try {
+            const ceiling = await this.sourceMaxZoom(source);
+            if (ceiling < z) placement = this._normalizeCoords(coords, ceiling);
+            const p = placement;
+            cacheKey = source.key ? `${source.key}|${p.z}|${p.x}|${p.y}` : '';
             if (cacheKey) {
               tileData = await Utils.fetchTileDeduped(
                 source.getPMTiles, this.tileDataCache, this.tileFetchInflight,
-                cacheKey, z, x, y);
+                cacheKey, p.z, p.x, p.y);
             } else {
-              const result = await source.getPMTiles().getZxy(z, x, y);
+              const result = await source.getPMTiles().getZxy(p.z, p.x, p.y);
               tileData = result && result.data ? result.data : null;
             }
           } catch (e) {
-            // Ignore missing tiles or fetch errors.
+            // Ignore missing tiles, header failures, or fetch errors.
           }
-          return { cacheKey, tileData };
+          return { cacheKey, tileData, placement };
         }));
 
         // A newer setSources() superseded us (or the layer was removed): leave the
@@ -977,6 +1024,12 @@
           const bitmap = bitmaps[i];
           if (!bitmap) continue;
           hasChartData = true;
+          // Each source's sub-square comes from its own placement (its clamped
+          // native zoom), so the clip ring below must use the same one.
+          const placement = fetched[i].placement;
+          const sourceSize = 256 / placement.scale;
+          const sourceX = placement.offsetX * sourceSize;
+          const sourceY = placement.offsetY * sourceSize;
           // Solo view: restrict this source's paint to its footprint ring, so one
           // sheet of a multi-chart mosaic shows without its neighbors.
           const clip = sourcesSnapshot[i].clipRing;
@@ -1395,9 +1448,10 @@
         const layerOptions = {
           minZoom: 0,
           maxZoom: 14,
-          // Archives are being regenerated to contain only z8–z12. Below z8 Leaflet
-          // clamps the request up to z8 and downscales it (fixes the zoom-out blanking);
-          // above z12 it clamps down to z12 and upscales.
+          // Archives hold z8 up to somewhere between z8 and z12 depending on
+          // source resolution. Below z8 Leaflet clamps the request up to z8 and
+          // downscales it; above z12 the layer clamps down and upscales; between,
+          // CompositePMTilesLayer.sourceMaxZoom clamps per archive.
           minNativeZoom: 8,
           maxNativeZoom: 12,
           tileSize: 256,
@@ -1522,14 +1576,24 @@
           const ranges = this._rangesForDate(dateStr);
           for (const range of ranges) {
             const getSrc = () => this.getPMTilesInstance(range.key, range.url);
-            placements.forEach((placement, i) => {
-              if (range.bounds && !Utils.boundsIntersect(range.bounds, tileBounds[i])) return;
-              const cacheKey = `${range.key}|${placement.z}|${placement.x}|${placement.y}`;
-              Utils.fetchTileDeduped(
-                getSrc, this.tileDataCache, this.tileFetchInflight,
-                cacheKey, placement.z, placement.x, placement.y
-              ).catch(() => {});
-            });
+            const wanted = coords.filter((c, i) =>
+              !range.bounds || Utils.boundsIntersect(range.bounds, tileBounds[i]));
+            if (wanted.length === 0) continue;
+            // Same per-archive clamp as _renderTile, so the prefetched key is
+            // the one the render will actually ask for.
+            layer.sourceMaxZoom({ key: range.key, getPMTiles: getSrc }).then(ceiling => {
+              const seen = new Set();
+              for (const c of wanted) {
+                const p = layer._normalizeCoords(c, ceiling);
+                const cacheKey = `${range.key}|${p.z}|${p.x}|${p.y}`;
+                if (seen.has(cacheKey)) continue;
+                seen.add(cacheKey);
+                Utils.fetchTileDeduped(
+                  getSrc, this.tileDataCache, this.tileFetchInflight,
+                  cacheKey, p.z, p.x, p.y
+                ).catch(() => {});
+              }
+            }).catch(() => {});
           }
         }
       }
