@@ -175,7 +175,8 @@
     .legend i { width: 16px; height: 9px; border-radius: 2.5px; display: inline-block; }
     .sw-have { background: var(--have); }
     .sw-have-old { background: var(--have-old); }
-    .sw-gap { background: repeating-linear-gradient(-45deg, rgba(255,92,92,.75) 0 3px, rgba(255,92,92,.15) 3px 6px); }
+    .sw-gap { background: var(--gap); }
+    .sw-gap.est { background: var(--gap); opacity: .55; }
     .sw-hole { background: repeating-linear-gradient(-45deg, rgba(255,255,255,.28) 0 2px, transparent 2px 6px); }
 
     .card {
@@ -344,6 +345,9 @@
       cursor: default;
     }
     .seg.old { background: var(--have-old); }
+    .seg.miss { background: var(--gap); cursor: help; }
+    .seg.miss.est { opacity: .6; }
+    .seg.miss:hover { opacity: 1; }
     .seg:hover { top: 6px; height: 14px; box-shadow: 0 0 0 1.5px #fff; z-index: 3; }
     .seg.union { cursor: default; top: 11px; height: 12px; }
     .seg.union:hover { box-shadow: none; top: 11px; height: 12px; }
@@ -412,7 +416,7 @@
 
     <div class="stats">
       <div class="stat"><span class="num" id="statCharts">7,464</span><span class="label">editions in the archive</span></div>
-      <div class="stat bad"><span class="num" id="statMissing">~2,000</span><span class="label">known missing editions</span></div>
+      <div class="stat bad"><span class="num" id="statMissing">~2,000</span><span class="label">missing editions</span></div>
       <div class="stat"><span class="num" id="statAreas">58</span><span class="label">chart areas tracked</span></div>
       <div class="stat"><span class="num">1928 →</span><span class="label">years covered</span></div>
     </div>
@@ -462,14 +466,15 @@
       <h2>When and where the gaps are</h2>
       <p class="muted" style="margin-top:0">
         Scrub the timeline and the country re-tiles itself — 87 small charts in 1945, 37 big ones
-        today. Filled regions are in the archive, red hatch means
-        a known missing edition at that date, and a faint dashed outline means the chart existed but
-        nothing is archived.
+        today. Filled regions are in the archive, red means the edition current at that date is
+        missing from the archive, and a faint dashed outline means the chart existed but nothing is
+        archived.
       </p>
       <div class="legend">
         <span><i class="sw-have"></i> in archive — modern series</span>
         <span><i class="sw-have-old"></i> in archive — early series (1930s–60s)</span>
-        <span><i class="sw-gap"></i> known missing editions</span>
+        <span><i class="sw-gap"></i> missing edition</span>
+        <span><i class="sw-gap est"></i> missing — date estimated from the edition schedule</span>
         <span><i class="sw-hole"></i> nothing covering this area yet</span>
       </div>
       <div class="card atlas-wrap">
@@ -505,14 +510,16 @@
         One row per modern sectional, with every chart that ever covered that area grouped under it —
         old Albany, Boston, and New York charts live under today's <b>New York</b> sectional, matched
         spatially from the chart extents. The collapsed row shows the combined coverage; expand it to
-        see each historical chart as its own lane. Teal segments are archived scans,
-        red hatch marks known missing editions, and faint hatch means no chart of that
-        area is in the archive at all. Sort by “most missing” to turn it into a to-do list.
+        see each historical chart as its own lane. Every pill is one edition: teal pills are archived
+        scans, red pills are editions we don't have. Where the catalog has no row, the FAA's edition
+        schedule is interpolated from the edition numbers on neighboring charts (dimmer red = estimated
+        date). Sort by “most missing” to turn it into a to-do list.
       </p>
       <div class="legend">
         <span><i class="sw-have"></i> in archive — modern series</span>
         <span><i class="sw-have-old"></i> in archive — early series (1930s–60s)</span>
-        <span><i class="sw-gap"></i> known missing editions</span>
+        <span><i class="sw-gap"></i> missing edition</span>
+        <span><i class="sw-gap est"></i> missing — date estimated from the edition schedule</span>
         <span><i class="sw-hole"></i> nothing covering this area yet</span>
       </div>
       <div class="card">
@@ -532,8 +539,10 @@
         </div>
       </div>
       <p class="muted" style="margin-top:12px" id="genNote">
-        “Known missing” counts editions we can prove existed — from edition numbers on neighboring
-        charts and published FAA edition schedules. The real number is likely higher.
+        Missing counts come from edition numbers: every number between two archived editions is an
+        edition that existed, and the modern series is extended back to edition 1 at each chart's own
+        revision cadence (semi-annual for most, annual in Alaska). Dates of those estimated editions
+        are approximate; the edition numbers are not.
       </p>
     </section>
 
@@ -589,11 +598,14 @@
           if (t1 <= t0) t1 = t0 + 30 * 86400000;
           return { t0, t1, ed: c.ed, f: c.f, d: c.d };
         });
-        L.gapSegs = L.gaps.map(g => ({ t0: parse(g.from), t1: parse(g.to), days: g.days, est: g.est }));
-        L.first = L.segs[0].t0;
-        L.last = L.segs[L.segs.length - 1].t1;
-        L.missCount = Math.max(L.missing_eds.length,
-          L.gaps.reduce((a, g) => a + (g.est || 1), 0));
+        L.slots = buildSlots(L);
+        L.missSlots = L.slots.filter(sl => !sl.held);
+        // atlas + collapsed rows read contiguous missing spans
+        L.gapSegs = mergeIntervals(L.missSlots.map(sl => [sl.t0, sl.t1]))
+          .map(([a, b]) => ({ t0: a, t1: b, est: L.missSlots.filter(sl => sl.t0 >= a && sl.t0 < b).length }));
+        L.first = L.slots[0].t0;
+        L.last = L.slots[L.slots.length - 1].t1;
+        L.missCount = L.missSlots.length;
       }
       // group objects
       const groups = data.groups.map(g => {
@@ -601,7 +613,7 @@
           ...g.old.map(n => locs[n]).sort((a, b) => a.first - b.first),
           ...g.modern.map(n => locs[n]).sort((a, b) => a.first - b.first),
         ].filter(Boolean);
-        const union = mergeIntervals(members.flatMap(m => m.segs.map(s => [s.t0, s.t1])));
+        const union = mergeIntervals(members.flatMap(m => m.slots.filter(sl => sl.held).map(s => [s.t0, s.t1])));
         const gaps = subtract(mergeIntervals(members.flatMap(m => m.gapSegs.map(s => [s.t0, s.t1]))), union);
         const first = Math.min(...members.map(m => m.first));
         const last = Math.max(...members.map(m => m.last));
@@ -613,6 +625,120 @@
         return { ...g, members, union, gaps, holes, first, last, nCharts, nMiss };
       });
       return { locs, groups };
+    }
+
+    /* One slot per edition. Modern series: edition numbers are the FAA's own
+       sequence, so every integer between two archived editions is a real
+       edition; its date is interpolated between the neighbours, and the
+       series is extended back to edition 1 at the chart's observed cadence.
+       From Feb 2021 sectionals are on a fixed 56-day cycle. Old series
+       (catalog-numbered) keep the note-derived gap spans, spread evenly. */
+    const DAY = 86400000;
+    const CYCLE56_T0 = Date.UTC(2021, 1, 25), CYCLE56 = 56 * DAY;
+    const SERIES_FLOOR = Date.UTC(1962, 0, 1);
+    const edNum = s => (/^\d+$/.test(s.ed) && +s.ed < 150) ? +s.ed : null;
+    function buildSlots(L) {
+      const segs = L.segs;
+      const anch = new Map();
+      for (const s of segs) {
+        const e = edNum(s);
+        if (e != null && (!anch.has(e) || s.t0 < anch.get(e))) anch.set(e, s.t0);
+      }
+      // monotonic anchors only: a mis-keyed edition must not fold the timeline
+      const A = [];
+      for (const [e, t] of [...anch.entries()].sort((a, b) => a[0] - b[0])) {
+        const prev = A[A.length - 1];
+        if (prev) {
+          const rate = (t - prev[1]) / (e - prev[0]);
+          if (rate < 20 * DAY || rate > 800 * DAY) continue;
+        }
+        A.push([e, t]);
+      }
+      const held = [];
+      const slots = [];
+      if (L.era === 'modern' && A.length) {
+        const rates = [];
+        for (let i = 1; i < A.length; i++) {
+          const [e0, t0] = A[i - 1], [e1, t1] = A[i];
+          if (t1 < CYCLE56_T0) rates.push((t1 - t0) / (e1 - e0));
+        }
+        rates.sort((a, b) => a - b);
+        let cad = rates.length ? rates[rates.length >> 1] : 182 * DAY;
+        cad = Math.min(400 * DAY, Math.max(150 * DAY, cad));
+        const byEd = new Map();
+        const [ef, tf] = A[0];
+        for (let e = ef - 1; e >= 1; e--) {
+          const t = tf - (ef - e) * cad;
+          if (t < SERIES_FLOOR) break;
+          byEd.set(e, { t, est: true });
+        }
+        for (let i = 1; i < A.length; i++) {
+          const [ea, ta] = A[i - 1], [eb, tb] = A[i];
+          for (let e = ea + 1; e < eb; e++) byEd.set(e, { t: ta + (tb - ta) * (e - ea) / (eb - ea), est: true });
+        }
+        for (const [e, t] of A) byEd.set(e, { t, est: false });
+        const eds = [...byEd.keys()].sort((a, b) => a - b);
+        const tail = segs.some(s => s.t0 >= CYCLE56_T0 - 10 * DAY);
+        for (let i = 0; i < eds.length; i++) {
+          const e = eds[i], { t, est } = byEd.get(e);
+          let t1 = i + 1 < eds.length ? byEd.get(eds[i + 1]).t : t + cad;
+          if (tail && t1 > CYCLE56_T0 && t < CYCLE56_T0) t1 = CYCLE56_T0;
+          slots.push({ t0: t, t1, ed: String(e), held: anch.has(e), est });
+        }
+        // undated-edition rows (edition "Unknown"): claim the nearest slot
+        for (const s of segs) {
+          if (edNum(s) != null || s.t0 >= CYCLE56_T0 - 10 * DAY) continue;
+          let best = null, bd = cad / 2;
+          for (const sl of slots) { const d = Math.abs(sl.t0 - s.t0); if (d < bd) { bd = d; best = sl; } }
+          if (best) { best.held = true; best.seg = s; if (best.est) best.t0 = s.t0; }
+          else slots.push({ t0: s.t0, t1: s.t1, ed: s.ed, held: true, est: false, seg: s });
+        }
+        if (tail) {
+          const lastHeld = Math.max(...segs.map(s => s.t0));
+          for (let t = CYCLE56_T0; t <= lastHeld + DAY; t += CYCLE56) {
+            const seg = segs.find(s => Math.abs(s.t0 - t) < 10 * DAY);
+            slots.push({ t0: t, t1: t + CYCLE56, ed: seg ? seg.ed : '', held: !!seg, est: false, seg, cycle: true });
+          }
+        }
+        for (const sl of slots) if (sl.held && !sl.seg) sl.seg = segs.find(s => edNum(s) === +sl.ed) || segs[0];
+      } else {
+        for (const s of segs) slots.push({ t0: s.t0, t1: s.t1, ed: s.ed, held: true, est: false, seg: s });
+        for (const g of L.gaps) {
+          const a = parse(g.from), b = parse(g.to), n = Math.max(1, g.est || 1);
+          for (let k = 0; k < n; k++)
+            slots.push({ t0: a + (b - a) * k / n, t1: a + (b - a) * (k + 1) / n, ed: '', held: false, est: true });
+        }
+      }
+      slots.sort((a, b) => a.t0 - b.t0 || (a.held ? -1 : 1));
+      // dedupe identical archived dates (half-sheets, duplicate rows)
+      const out = [];
+      for (const sl of slots) {
+        const prev = out[out.length - 1];
+        if (prev && sl.held && prev.held && Math.abs(prev.t0 - sl.t0) < DAY) continue;
+        out.push(sl);
+      }
+      for (let i = 0; i < out.length; i++) {
+        const nx = out[i + 1];
+        if (nx && out[i].t1 > nx.t0) out[i].t1 = nx.t0;
+        if (out[i].t1 - out[i].t0 < 20 * DAY) out[i].t1 = out[i].t0 + 20 * DAY;
+      }
+      return out;
+    }
+
+    function pill(tr, sl, L, cls) {
+      const el = document.createElement('div');
+      el.className = cls;
+      const w = X(sl.t1) - X(sl.t0);
+      el.style.left = X(sl.t0) + 'px';
+      el.style.width = Math.max(1.4, Math.min(w - (w > 3 ? 1.4 : 0.6), 9)) + 'px';
+      const edTxt = sl.ed ? edLabel(sl.ed) : (sl.cycle ? '56-day cycle' : 'edition');
+      const when = sl.est ? `~${fmt(sl.t0)} (estimated)` : fmt(sl.t0);
+      el.addEventListener('mousemove', ev => showTip(sl.held
+        ? `<b>${esc(L.name)}</b> — ${edTxt}<br><span class="muted">${when}${sl.seg && sl.seg.f.includes('L') ? ' · latest in collection' : ''}</span>`
+        : `<b>${esc(L.name)}</b> — ${edTxt}<br><span class="miss">missing from the archive</span><br><span class="muted">${when}</span>`, ev));
+      el.addEventListener('mouseleave', hideTip);
+      tr.appendChild(el);
+      return el;
     }
 
     function mergeIntervals(iv) {
@@ -645,7 +771,7 @@
       let totC = 0, totM = 0;
       for (const g of model.groups) { totC += g.nCharts; totM += g.nMiss; }
       document.getElementById('statCharts').textContent = totC.toLocaleString();
-      document.getElementById('statMissing').textContent = '~' + totM.toLocaleString();
+      document.getElementById('statMissing').textContent = totM.toLocaleString();
       document.getElementById('statAreas').textContent = model.groups.length;
     }
 
@@ -679,7 +805,7 @@
       let totC = 0, totM = 0;
       for (const g of groups) { totC += g.nCharts; totM += g.nMiss; }
       document.getElementById('shelfStats').innerHTML =
-        `${groups.length} charts · <b style="color:var(--have)">${totC.toLocaleString()} in archive</b> · <b style="color:var(--gap)">~${totM.toLocaleString()} known missing</b>`;
+        `${groups.length} charts · <b style="color:var(--have)">${totC.toLocaleString()} in archive</b> · <b style="color:var(--gap)">${totM.toLocaleString()} missing</b>`;
 
       const decades = [];
       for (let y = 1930; y <= 2026; y += 10) decades.push(X(Date.UTC(y, 0, 1)));
@@ -697,7 +823,7 @@
         const lbl = document.createElement('div');
         lbl.className = 'lane-label';
         lbl.innerHTML = `<span class="chev">▶</span> ${esc(g.name)}
-          <span class="grp-count"><span class="ok">${g.nCharts}</span>${g.nMiss ? ` · <span class="m">~${g.nMiss} missing</span>` : ''}</span>`;
+          <span class="grp-count"><span class="ok">${g.nCharts}</span>${g.nMiss ? ` · <span class="m">${g.nMiss} missing</span>` : ''}</span>`;
         head.appendChild(lbl);
 
         const tr = document.createElement('div');
@@ -708,20 +834,12 @@
           dg.className = 'decade-grid'; dg.style.left = d + 'px';
           tr.appendChild(dg);
         }
-        for (const [a, b] of g.union) {
-          const s = document.createElement('div');
-          s.className = 'seg union';
-          s.style.left = X(a) + 'px'; s.style.width = Math.max(2, X(b) - X(a)) + 'px';
-          tr.appendChild(s);
-        }
-        for (const [a, b] of g.gaps) {
-          const s = document.createElement('div');
-          s.className = 'gapseg union';
-          s.style.left = X(a) + 'px'; s.style.width = Math.max(2, X(b) - X(a)) + 'px';
-          s.addEventListener('mousemove', ev => showTip(
-            `<b>${esc(g.name)}</b><br><span class="miss">Known missing editions</span><br><span class="muted">${fmt(a)} – ${fmt(b)}</span>`, ev));
-          s.addEventListener('mouseleave', hideTip);
-          tr.appendChild(s);
+        const covered = t => g.union.some(([a, b]) => t >= a && t < b);
+        for (const m of g.members) {
+          for (const sl of m.slots) {
+            if (sl.held) pill(tr, sl, m, 'seg union' + (m.era === 'old' ? ' old' : ''));
+            else if (!covered(sl.t0)) pill(tr, sl, m, 'seg union miss' + (sl.est ? ' est' : ''));
+          }
         }
         for (const [a, b] of g.holes) {
           const s = document.createElement('div');
@@ -768,26 +886,8 @@
         dg.className = 'decade-grid'; dg.style.left = d + 'px';
         tr.appendChild(dg);
       }
-      for (const s of L.segs) {
-        const el = document.createElement('div');
-        el.className = 'seg' + (L.era === 'old' ? ' old' : '');
-        el.style.left = X(s.t0) + 'px';
-        el.style.width = Math.max(2.5, X(s.t1) - X(s.t0) - 1) + 'px';
-        el.addEventListener('mousemove', ev => showTip(
-          `<b>${esc(L.name)}</b> — ${edLabel(s.ed)}<br><span class="muted">${fmt(s.t0)}${s.f.includes('L') ? ' · latest in collection' : ''}</span>`, ev));
-        el.addEventListener('mouseleave', hideTip);
-        tr.appendChild(el);
-      }
-      for (const gp of L.gapSegs) {
-        const el = document.createElement('div');
-        el.className = 'gapseg';
-        el.style.left = X(gp.t0) + 'px';
-        el.style.width = Math.max(2.5, X(gp.t1) - X(gp.t0) - 1) + 'px';
-        el.addEventListener('mousemove', ev => showTip(
-          `<b>${esc(L.name)}</b><br><span class="miss">~${gp.est || '?'} edition${gp.est === 1 ? '' : 's'} missing</span><br><span class="muted">${fmt(gp.t0)} – ${fmt(gp.t1)} (${gp.days} days)</span>`, ev));
-        el.addEventListener('mouseleave', hideTip);
-        tr.appendChild(el);
-      }
+      for (const sl of L.slots)
+        pill(tr, sl, L, sl.held ? 'seg' + (L.era === 'old' ? ' old' : '') : 'seg miss' + (sl.est ? ' est' : ''));
       lane.appendChild(tr);
       return lane;
     }
@@ -866,7 +966,7 @@
           let body = st.kind === 'have'
             ? `${edLabel(st.seg.ed)} · ${fmt(st.seg.t0)}`
             : st.kind === 'gap'
-              ? `<span class="miss">missing edition${st.gap.est > 1 ? 's (~' + st.gap.est + ')' : ''}</span> · ${fmt(st.gap.t0)} – ${fmt(st.gap.t1)}`
+              ? `<span class="miss">missing edition${st.gap.est > 1 ? 's (' + st.gap.est + ')' : ''}</span> · ${fmt(st.gap.t0)} – ${fmt(st.gap.t1)}`
               : st.kind === 'hole'
                 ? `<span style="color:var(--warn)">chart existed — nothing archived for this date</span>`
                 : `<span class="muted">nothing archived for this date</span>`;
@@ -902,7 +1002,7 @@
         }
         hudDate.textContent = fmt(cur);
         hudStats.innerHTML = `<b class="h">${have}</b> charts in archive` +
-          (gap ? ` · <b class="g">${gap}</b> known missing` : '') +
+          (gap ? ` · <b class="g">${gap}</b> missing` : '') +
           (hole ? ` · <b style="color:var(--warn)">${hole}</b> unarchived` : '') +
           (have ? `<br><span style="color:var(--text-faint)">click a region to open its scan</span>` : '');
         handle.style.left = (P(cur) * 100) + '%';
@@ -1016,11 +1116,10 @@
         .filter(L => L.missCount > 0)
         .sort((a, b) => b.missCount - a.missCount);
       document.getElementById('copyWanted').addEventListener('click', async ev => {
+        const iso = t => new Date(t).toISOString().slice(0, 10);
         const text = items.map(L =>
-          `${L.name} (${L.era} series): ` + (L.missing_eds.length
-            ? `missing editions ${L.missing_eds.join(', ')}`
-            : `~${L.missCount} missing editions`) +
-          (L.gaps.length ? ` — gaps: ${L.gaps.map(g => `${g.from}..${g.to}`).join(', ')}` : '')
+          `${L.name} (${L.era} series): ${L.missCount} missing — ` + L.missSlots.map(sl =>
+            (sl.ed ? `ed ${sl.ed} ` : '') + (sl.est ? `~${iso(sl.t0).slice(0, 7)}` : iso(sl.t0))).join(', ')
         ).join('\n');
         await navigator.clipboard.writeText(text);
         ev.target.textContent = 'Copied ✓';
