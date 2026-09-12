@@ -2293,24 +2293,16 @@
           ctx.closePath();
         };
 
-        // base: red hatch = "no data", painted over by covered segments
-        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        // base: solid dark = "no data", painted over by covered segments
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
         rounded();
         ctx.fill();
         ctx.save();
         rounded();
         ctx.clip();
-        ctx.strokeStyle = 'rgba(255, 92, 92, 0.4)';
-        ctx.lineWidth = 1.6;
-        for (let x = -h; x < w + h; x += 6) {
-          ctx.beginPath();
-          ctx.moveTo(x, h + 1);
-          ctx.lineTo(x + h + 2, -1);
-          ctx.stroke();
-        }
         // One pixel column at a time, aggregating every segment the column
         // spans (exact sweep, no point sampling), so a days-long gap inside a
-        // month-wide pixel still shows the hatch.
+        // month-wide pixel still shows as dark.
         let si = 0;
         for (let px = 0; px < w; px++) {
           const t0 = min + (px / w) * span;
@@ -2326,8 +2318,8 @@
             covered += overlap;
           }
           if (covered < (t1 - t0) * 0.999) anyGap = true; // time outside all segments
-          if (anyGap || covered === 0) continue; // leave hatch showing
-          // Clear the hatch first so it never bleeds through a translucent
+          if (anyGap || covered === 0) continue; // leave the dark gap showing
+          // Clear the dark base first so it never darkens a translucent
           // covered column and reads as a gap that isn't there.
           ctx.clearRect(px, 0, 1, h);
           ctx.fillStyle = 'rgba(255,255,255,0.06)';
@@ -2338,16 +2330,16 @@
         ctx.restore();
       }
 
-      // Monochrome ramp: one green, varying only in opacity. Eased so the
+      // Monochrome ramp: white, varying only in opacity. Eased so the
       // 70-90% coverage typical of the pre-1970 years already sits close to
       // fully opaque, while even a single chart still paints a clearly visible
-      // green against the no-data hatch.
+      // light bar against the dark no-data gaps.
       heatColor(pct) {
         const p = Math.max(0, Math.min(100, pct));
         const lin = p / 100;
         const t = 1 - (1 - lin) * (1 - lin);
         const alpha = 0.45 + 0.55 * t;
-        return `rgba(0, 212, 170, ${alpha.toFixed(3)})`;
+        return `rgba(255, 255, 255, ${alpha.toFixed(3)})`;
       }
 
       findClosestFrameIndexByPct(pct) {
