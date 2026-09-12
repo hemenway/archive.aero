@@ -2340,12 +2340,13 @@
 
       // Monochrome ramp: one green, varying only in opacity. Eased so the
       // 70-90% coverage typical of the pre-1970 years already sits close to
-      // fully opaque, while single-digit coverage stays faint.
+      // fully opaque, while even a single chart still paints a clearly visible
+      // green against the no-data hatch.
       heatColor(pct) {
         const p = Math.max(0, Math.min(100, pct));
         const lin = p / 100;
         const t = 1 - (1 - lin) * (1 - lin);
-        const alpha = 0.18 + 0.82 * t;
+        const alpha = 0.45 + 0.55 * t;
         return `rgba(0, 212, 170, ${alpha.toFixed(3)})`;
       }
 
