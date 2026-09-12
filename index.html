@@ -2338,20 +2338,15 @@
         ctx.restore();
       }
 
-      // Continuous ramp instead of a hard "full coverage" cutoff: orange at
-      // low coverage, blending into the full-coverage green as pct climbs.
-      // Eased so the 70-90% range typical of the pre-1970 years already reads
-      // as mostly green, while single-digit coverage stays clearly orange.
+      // Monochrome ramp: one green, varying only in opacity. Eased so the
+      // 70-90% coverage typical of the pre-1970 years already sits close to
+      // fully opaque, while single-digit coverage stays faint.
       heatColor(pct) {
         const p = Math.max(0, Math.min(100, pct));
-        const ORANGE = [255, 179, 71], GREEN = [0, 212, 170];
-        // 0 -> 1 across 20%..95%, with an ease-out so the midpoint (~57%)
-        // already sits two-thirds of the way to green.
-        const lin = Math.max(0, Math.min(1, (p - 20) / 75));
+        const lin = p / 100;
         const t = 1 - (1 - lin) * (1 - lin);
-        const ch = (i) => Math.round(ORANGE[i] + (GREEN[i] - ORANGE[i]) * t);
-        const alpha = 0.45 + 0.55 * (p / 100);
-        return `rgba(${ch(0)}, ${ch(1)}, ${ch(2)}, ${alpha.toFixed(3)})`;
+        const alpha = 0.18 + 0.82 * t;
+        return `rgba(0, 212, 170, ${alpha.toFixed(3)})`;
       }
 
       findClosestFrameIndexByPct(pct) {
