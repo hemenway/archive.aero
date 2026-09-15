@@ -2744,7 +2744,8 @@
     // more than 28 days past the newest one (a cycle is good for 28 days) —
     // nothing is drawn and the panel's status line says why: the overlay
     // shows only dates the data actually covers. Off by default and
-    // remembered once chosen.
+    // remembered once chosen; a load that fails (archive missing, host
+    // unreachable) turns it back off and the status line says why.
 
     // Sectional-style vignette along a Class E floor edge: a band on the
     // controlled side fading away from the line. The build (tile layer
@@ -2841,6 +2842,8 @@
         } catch (e) { /* keep defaults */ }
         this.layer = null;        // protomaps-leaflet GridLayer, created on first enable
         this.loadPromise = null;
+        this.url = null;          // archive URL actually tried (local mirror or data host)
+        this.loadError = null;    // why the last load failed, shown until the next attempt
         this.meta = null;         // archive_aero block from the PMTiles metadata
         this.validTo = null;      // YYYYMMDD: first day the newest cycle no longer covers
         this.dateStr = null;
@@ -2860,7 +2863,7 @@
         if (!CONFIG.airspaceUrl) return;
         this.enabled = on;
         Utils.storageSet('airspaceShown', on ? '1' : '0');
-        if (on) this._ensureLoaded();
+        if (on) { this.loadError = null; this._ensureLoaded(); }
         else if (this.layer) this.layer.remove();
         this._renderStatus();
         this.timelineApp.pinInspector?.refresh();
@@ -2917,10 +2920,13 @@
             console.error('airspace archive failed to load', err);
             this.loadPromise = null; // next toggle retries
             this.enabled = false;
+            // The switch goes back off; without the reason beside it, an
+            // unpublished archive read as a switch that would not stay on.
+            this.loadError = AirspaceLayer.failureReason(err, this.url);
             Utils.storageSet('airspaceShown', '0');
             document.getElementById('airspaceBtn')?.setAttribute('aria-pressed', 'false');
-            this._renderStatus('Airspace data unavailable');
-            Utils.toast('Airspace data unavailable');
+            this._renderStatus();
+            Utils.toast(`Airspace data unavailable: ${this.loadError}`, 6000);
           });
         } else if (this.layer) {
           this._attach();
@@ -2934,6 +2940,7 @@
 
       async _load() {
         const url = await this._resolveUrl();
+        this.url = url;
         // Header + JSON metadata: the cycle list the build stamped in, which
         // names the cycle in effect and clamps pre-2020 dates. It doubles as
         // the availability probe — protomaps-leaflet itself fails silently.
@@ -3019,12 +3026,16 @@
         return this.cyc != null && p.from <= this.dateInt && (p.to == null || this.dateInt < p.to);
       }
 
-      _renderStatus(override) {
+      _renderStatus() {
         const el = this.els.status;
         if (!el) return;
-        if (override) { el.textContent = override; return; }
         if (!CONFIG.airspaceUrl) { el.textContent = 'Airspace data not configured'; return; }
-        if (!this.enabled) { el.textContent = 'FAA NASR, 2020 to present'; return; }
+        if (!this.enabled) {
+          el.textContent = this.loadError
+            ? `Airspace data unavailable: ${this.loadError}`
+            : 'FAA NASR, 2020 to present';
+          return;
+        }
         if (!this.meta) { el.textContent = 'Loading FAA NASR…'; return; }
         if (this.cyc) { el.textContent = `FAA NASR cycle ${AirspaceLayer.fmtCycle(this.cyc)}`; return; }
         const first = this.meta.first;
@@ -3116,6 +3127,28 @@
       }
 
       static ymd(s) { return +String(s).replace(/-/g, '').slice(0, 8); }
+
+      // One line on why the archive could not be read. pmtiles.js reports a
+      // refused read as "Bad response code: N" (404: the dated key is not in
+      // R2 — publish it with scripts/airspace_build.py --upload), a server
+      // that answered a Range request with the whole file by its Byte Serving
+      // message (plain `python -m http.server`; use scripts/dev_server.py),
+      // and a network or CORS failure as fetch's TypeError. The host says
+      // which copy was tried: the local mirror or the data host.
+      static failureReason(err, url) {
+        let host = '';
+        try { host = new URL(url || CONFIG.airspaceUrl, location.href).host; } catch (e) { /* leave blank */ }
+        const at = host ? ` on ${host}` : '';
+        const msg = String((err && err.message) || err || '');
+        const code = /Bad response code: (\d+)/.exec(msg);
+        if (code) return code[1] === '404' ? `archive not found${at} (HTTP 404)` : `HTTP ${code[1]}${at}`;
+        if (/Byte Serving/i.test(msg)) return `server${at} ignored the byte-range request`;
+        if (/magic number/i.test(msg)) return `file${at} is not a PMTiles archive`;
+        if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) return `network or CORS error${at}`;
+        if (err instanceof pmtiles.EtagMismatch) return `archive${at} changed while it was being read; reload the page`;
+        if (!msg) return 'unknown error';
+        return msg.length > 80 ? msg.slice(0, 79) + '…' : msg;
+      }
 
       // YYYYMMDD int -> 'YYYY-MM-DD'.
       static isoOf(n) {
