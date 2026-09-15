@@ -1083,3 +1083,122 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   **Open decision (user):** where date archives should point. Adding an alias is
   permanent under URI-POLICY, so it is not being taken unilaterally. Candidates:
   `/atc/archive/` (the paginated listing the space already has) or `/atc/`.
+
+- 2026-09-01: **Contact + donation retarget.** The crawl still carried the
+  previous operation's contact address site-wide and, worse, its live PayPal
+  buttons: every "donate" click on 1,858 pages paid the old operator's account
+  (`business=6Z7ZGGZVY5WPL`), not the archive. Contact now goes to
+  `ryan@archive.aero`, support to `buymeacoffee.com/ryanhemenway` (the same link
+  the main site's Support button uses). Done as a **contact pass** in
+  `scripts/atc_flatten_rewrite.py` — runs after the host/canonical passes, so it
+  matches donate hrefs in their settled `/atc/` form — not by hand-editing
+  `site/`, which is rebuilt from `crawl/` on every run. Rebuild counts:
+  `contact_mail` 3,799 · `donate_button` 2,183 · `donate_prose_wp` 150 (the
+  paginated home) · `donate_form_fp` 8 (FrontPage `_s-xclick` forms) ·
+  `donate_prose_fp` 1 · `donate_page` 1 · `contact_form` 1 ·
+  `contact_form_assets` 34 · `contact_form_css` 1.
+  - `/atc/donate` **stays live** (URI-POLICY); only its body changed — PayPal
+    form out, coffee button + the material ask + the address in.
+  - Sidebar PayPal buttons became a self-contained inline-styled coffee button
+    (no external image, so no new host on 1,866 pages; #2b5f71 is the escapade
+    theme's own accent). The FrontPage class-photo page's adjacent prose cell
+    gets a link-free variant so the two cells don't repeat the same link.
+  - **`/atc/contact` had a dead form, and is now a redirect.** It ran on Ninja
+    Forms, a WordPress plugin that POSTs to PHP; there is no PHP behind the
+    static archive, so the form rendered and validated but could never deliver a
+    message — anyone who used it since cutover got nothing through. The
+    collection's living "get in touch / send us material" page is the main
+    site's `/contribute`, so `/atc/contact` **301s there** rather than serving a
+    replacement of its own: seeded in `DROP` in `scripts/atc_canonical_map.py`
+    (target outside `/atc`, as `/History/Maps/Maps.htm -> /` already does) and
+    regenerated. Map diff was exactly three lines — alias `/contact/ ->
+    /atc/contact` and key `/atc/contact -> contact/` out, drop `/contact/ ->
+    /contribute` in — so both spellings and the `?p=19` shortlink land in **one
+    hop** from either hostname (asserted; route tests 9/9). Because the flatten's
+    canonical pass reads the same drop map, all 1,858 nav "Contact Us" links were
+    rewritten to `https://archive.aero/contribute` directly — **0** pages still
+    link `/atc/contact`, so no reader pays the 301. The page's own body was
+    cleaned up too (form replaced by the address, plugin bundle + 34 Backbone
+    templates + stylesheet stripped) so the R2 object is not left holding a
+    broken form behind the redirect.
+  - Also updated at source: landing page can-you-help + footer
+    (`worker-atc/static/index.html`) and the 404 page (`worker-atc/src/index.js`).
+  - **Sitemap followed the redirect.** `sitemap-atc.xml` still advertised
+    `/atc/contact`, which would have handed Search Console a redirecting
+    sitemap URL. Regenerating exposed a gap in `scripts/atc_gen_sitemaps.py`:
+    it treated *any* drop target outside `/atc` as a mapping failure and
+    refused to write. A deliberate handoff to the main site is not a failure —
+    the URI still resolves in one hop and its target is carried by
+    `sitemap-core.xml` — so those are now reported as `handed_off` while a
+    genuinely unroutable path still aborts the run. Result: 1,378 canonical
+    URLs (was 1,379), and `--verify` says all 1,382 sitemap URLs answer **200
+    with 0 redirect hops** on production.
+  Verified: **0** occurrences of `archive@atchistory.org` anywhere in the build
+  tree; 0 `paypal.com` in any rendered page (five `_vti_cnf/` FrontPage
+  dependency manifests still name it — bookkeeping files, never served as
+  pages); rendered checks on `/donate`, `/contact`, an article sidebar, and the
+  FrontPage table layout; no console errors; worker route tests 9/9.
+
+- 2026-09-14: **Search Console 404 sweep.** First post-cutover Page-indexing
+  report (export in `~/Downloads/archive-2/`): 187 indexed, 761 not — 620 of
+  those "excluded by noindex" are the pre-cutover `ATC_NOINDEX=1` window
+  (08-10 → 08-30) still cached in Google's crawl state, not a live header
+  (checked); Validate Fix queues the recrawl. The **100 "Not found"** rows
+  broke down as follows, and 74 of them now resolve 301 → 200 in one hop:
+  - **72 `/atc/class-photos/<id>/Class<id>.htm`** — inherited link rot. The
+    FrontPage `PhotoHome.htm` links every class to a page that was never
+    uploaded (only the photo was; only `03001` and `Academy/YvonneDuncan` are
+    real — confirmed against the pristine backup). Live atchistory.org 404'd
+    them for years; the old host's 301 now hands Google the `/atc/` spelling.
+    `atc_canonical_map.py` reads the backup's `PhotoHome.htm` and drops each
+    dead link to the generated listing that holds the photo (same treatment as
+    the RadioBeacons legacy entries): **243 drops**; the 7 directories with no
+    photo either (`82023`, `84013`, …) keep an honest 404. The flatten's
+    canonical pass being drop-aware, the served `photo-home` now links the
+    listings directly — no reader pays the hop.
+  - **`/atc/2/` — our bug, 149 pages wide.** WP core's `rel_canonical()` on a
+    paged static front page emits `home/N/` (link-template.php, `paged`
+    branch), so every `/page/N/` shipped `<link rel=canonical href="/atc/N/">`
+    — a 404 — which also explains the report's duplicate/alternate-canonical
+    rows. Drops `/N/ -> /atc/archive/N` for each archive page; the rebuilt pages
+    declare `/atc/archive/N` themselves (verified 0 remaining).
+  - **2 renamed WP slugs** (`…-elko-nevada-…`) — live WP 301'd `_wp_old_slug`
+    renames, the static archive lost that lookup. `atc_p_map.py` now extracts
+    them from the freeze-day dump (`worklists/data/atc/old_slugs.json`, **14**
+    entries incl. two year-typo fixes: `cold-bay-…-1999 -> -1992`,
+    `ketchikan-fss-2023 -> -2019`) and the map loads them beside the legacy
+    map. The two hand-written links on `/atc/us-historical-airway-maps` were
+    rewritten to the living slugs.
+  - **8 `Thumbs.db` — our bug.** `atc_gen_indexes.py` listed 19 thumbnail
+    caches that survived the backup rsync into `static/`, while the R2 sync
+    filter excludes them. Generator now skips `Thumbs.db`/`.DS_Store`; 17
+    listings regenerated.
+  - **1 `federal_airway_system_early_years.htm`** — the Word-export original
+    of "Federal Airway System Early Days" (only its `_files/` dir survived);
+    the WP post is the same text and links back to the .htm's `#_ftn16`. Drop
+    to `/atc/federal-airway-system-early-days`.
+  - **1 `History/Life_Stories/LifeStories_Home.htm` — real lost content, NOT
+    fixed.** Not in the backup, but Wayback holds 2010 captures of
+    `History/Life_Stories/*` (Jim Brown's combined station-tower story, at
+    least), and the sidebar widget on **1,858** pages still links it ("Submit
+    your life stories to be posted here"). Recover the section from Wayback
+    (CDX was rate-limiting / offline during this session) and restore it under
+    `/atc/history/life-stories` with the old path as alias — a salvage job, not
+    a redirect. Until then the link stays a 404 deliberately.
+  - Remaining 15: WP admin/feed probes (410), robots-style wildcards, `cdn-cgi`
+    email-protection, `data.archive.aero` — noise, correct as answered.
+  **Worker gap found on the way:** drops are keyed by old spelling, and
+  `routeOldPath()` only looked the request path up as given — so
+  `/atc/History/X/dead.htm` 301'd while `/atc/history/X/dead.htm` (the
+  spelling the old host's own 301 produces and crawlers keep) 404'd. Even the
+  08-13 RadioBeacons legacy entries were affected. `routes.js` now reverses the
+  prefix rules and looks again (`oldShapeOf`); the no-self-redirect test proves
+  it redirects no canonical URI. Route tests **10/10**; `--verify` 0
+  unresolved / 0 chains; map 597 → **1,004 drops**, alias/key unchanged, so
+  `sitemap-atc.xml` is unchanged. Published: `rclone sync` with the filter
+  (**171 uploads, 0 deletions** — 149 `page/N`, 17 listings, `PhotoHome.htm`,
+  3 content pages, one Word `filelist.xml`), worker `e4c9687b`
+  (MODE=redirect, ATC_NOINDEX=0 intact). Re-probed all 100: 74 → 200 in one
+  hop, 4 → 410, 14 stay 404 by design (8 Thumbs.db, 2 photo-less class dirs,
+  Life Stories, plugin dir, cdn-cgi, data domain), 8 wildcards unprobeable.
+  Search Console: Validate Fix on both the noindex and 404 rows next.

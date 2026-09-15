@@ -18,6 +18,10 @@ TREES = ["History", "Images", "Masters", "classphotos", "pdf", "video"]
 # Apache DirectoryIndex names only — curated pages like classphotos/PhotoHome.htm
 # are NOT index files (the live site shows autoindex for those dirs).
 INDEX_NAMES = {"index.htm", "index.html", "default.htm"}
+# Never listed: OS thumbnail caches (19 survived the backup rsync into static/)
+# and dotfiles. The R2 sync filter drops them, so a listed Thumbs.db is a link
+# to a 404 — Search Console found 8 (2026-09-14).
+JUNK_NAMES = {"thumbs.db", ".ds_store"}
 MARKER = "<!-- generated directory listing: archive.aero /atc/ migration -->"
 
 PAGE = """{marker}
@@ -89,7 +93,8 @@ def main():
             rows = ['<tr><td><a href="../">[parent directory]</a></td>'
                     "<td></td><td></td></tr>"]
             for e in entries:
-                if e.name == "index.html" or e.name.startswith("."):
+                if (e.name == "index.html" or e.name.startswith(".")
+                        or e.name.lower() in JUNK_NAMES):
                     continue
                 name = e.name + ("/" if e.is_dir() else "")
                 href = quote(e.name) + ("/" if e.is_dir() else "")

@@ -57,13 +57,33 @@ export function keyCandidates(canon) {
           `${base}/Default.htm`, `${base}.htm`, `${base}.html`];
 }
 
+// Canonical-shaped path -> its old spelling under the prefix rules
+// (/history/X -> /History/X, /class-photos/X -> /classphotos/X), or null when
+// no rule applies. The inverse of canonicalOf's rule step.
+function oldShapeOf(path) {
+  for (const [oldP, newP] of RULES) {
+    const cn = newP.slice(PREFIX.length);
+    if (path.startsWith(cn)) return oldP + path.slice(cn.length);
+  }
+  return null;
+}
+
 // Where does an old site path belong? Returns {status} for a tombstone, {to}
 // for a 301 target, or null to fall through to serving. Shared by both
 // hostnames so atchistory.org/X and archive.aero/atc/X agree, and so a stale
 // link costs exactly ONE hop from either direction.
 export function routeOldPath(path) {
   const alt = path.endsWith("/") ? path.slice(0, -1) : path + "/";
-  const dropped = DROP[path] ?? DROP[alt];
+  // Drops are keyed by old spelling, but the request may arrive in canonical
+  // shape: the old host's own 301 of an unknown path prefixes it through the
+  // rules, and that is the spelling crawlers keep. Without the second lookup
+  // /atc/history/X/dead.htm 404'd while /atc/History/X/dead.htm redirected
+  // (Search Console, 2026-09-14).
+  const oldShape = oldShapeOf(path);
+  const oldAlt = oldShape &&
+    (oldShape.endsWith("/") ? oldShape.slice(0, -1) : oldShape + "/");
+  const dropped = DROP[path] ?? DROP[alt] ??
+    (oldShape ? DROP[oldShape] ?? DROP[oldAlt] : undefined);
   if (dropped === "410") return { status: 410 };
   if (dropped) return { to: dropped };
   if (GONE_RE.test(path)) return { status: 410 };

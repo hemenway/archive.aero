@@ -34,9 +34,37 @@ test("old paths reach canonical in one hop", () => {
     "/page/2/": "/atc/archive/2",
     "/category/early-radio-years/page/3/": "/atc/topics/early-radio-years/3",
     "/advertising-area-one/": "/atc/",
+    // renamed WP slugs (wp_postmeta _wp_old_slug): live WP 301'd these
+    "/san-francisco-elko-nevada-slc-airway-map/": "/atc/san-francisco-elko-slc-airway-map",
+    "/wink/": "/atc/wink-1975",
+    // WP's paged-front-page rel=canonical shape (home/N/) is the site archive
+    "/2/": "/atc/archive/2",
+    "/150/": "/atc/archive/150",
+    // class-photos home links pages that were never uploaded: the listing
+    // holding the photo answers; a directory with no photo stays 404
+    "/classphotos/85005/Class85005.htm": "/atc/class-photos/85005/",
+    "/History/FacilityPhotos/WY/MedicineBow/federal_airway_system_early_years.htm":
+      "/atc/federal-airway-system-early-days",
   };
   for (const [old, want] of Object.entries(cases))
     assert.equal(routeOldPath(old)?.to, want, old);
+  // no photo in 84013: the old spelling still 301s to canonical shape, and
+  // canonical shape falls through to serving, which 404s honestly
+  assert.equal(routeOldPath("/class-photos/84013/Class84013.htm"), null);
+});
+
+test("drops fire in canonical shape too — the spelling the old host's 301 makes", () => {
+  const cases = {
+    "/class-photos/85005/Class85005.htm": "/atc/class-photos/85005/",
+    "/history/FacilityPhotos/WY/RadioBeacons/Summit_RadioBeacon1_WY.htm":
+      "/atc/history/FacilityPhotos/WY/RadioBeacons/",
+    "/history/FacilityPhotos/index.htm": "/atc/facility-photos",
+  };
+  for (const [canonShaped, want] of Object.entries(cases))
+    assert.equal(routeOldPath(canonShaped)?.to, want, canonShaped);
+  // the same paths in old spelling agree (one hop from either direction)
+  assert.equal(routeOldPath("/classphotos/85005/Class85005.htm")?.to,
+               routeOldPath("/class-photos/85005/Class85005.htm")?.to);
 });
 
 test("tombstones stay 410", () => {

@@ -48,10 +48,20 @@ import sys
 import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
+from urllib.parse import unquote
 
 REPO = Path("/Users/ryanhemenway/archive.aero")
 INVENTORY = REPO / "worklists/data/atc/url_inventory.csv"
 LEGACY = REPO / "worker-atc/src/legacy_map.json"
+# Renamed WP slugs (wp_postmeta `_wp_old_slug`, extracted by atc_p_map.py from
+# the freeze-day dump). Live WP 301'd each to its post; the static archive has
+# no such lookup, so they become drops. 14 entries; Search Console surfaced two
+# (2026-09-14).
+OLD_SLUGS = REPO / "worklists/data/atc/old_slugs.json"
+# The FrontPage class-photos home in the pristine backup — never the build
+# tree, where the rewrite pass has already rewritten its hrefs in place.
+PHOTO_HOME = Path("/Volumes/projects/atchistory_backup/full_mirror/public_html"
+                  "/classphotos/PhotoHome.htm")
 OUT_MAP = REPO / "worker-atc/src/route_map.json"
 REPORT = REPO / "worklists/data/atc/canonical_report.txt"
 
@@ -108,7 +118,23 @@ MANUAL = {
 # page), and ?page_id=156 resolves here via p_map — the path never appears in
 # the inventory, so without a seed it would mint a dead /atc/home/ (found
 # 2026-08-20 building the redirect checker). Mirror live: one hop to landing.
-DROP = {"/home/": PREFIX + "/"}
+DROP = {
+    "/home/": PREFIX + "/",
+    # /contact/ ran on Ninja Forms, which POSTs to PHP. Nothing behind the
+    # static archive answers that, so the form rendered, validated, and
+    # delivered nothing — every message sent through it since cutover was lost.
+    # The collection's living "get in touch / send us material" page is the main
+    # site's /contribute, so the URI redirects there rather than serving a
+    # replacement of its own. One hop from either hostname; the target sits
+    # outside /atc, like /History/Maps/Maps.htm -> / already does.
+    "/contact/": "/contribute",
+    # The Word-export original of "Federal Airway System Early Days". Only its
+    # _files/ support directory survived on the server; the WP post is the same
+    # text (Medicine Bow, Site 32, the footnotes) and links back to the .htm's
+    # #_ftn16. One hop to the living copy (Search Console 404, 2026-09-14).
+    "/History/FacilityPhotos/WY/MedicineBow/federal_airway_system_early_years.htm":
+        "/atc/federal-airway-system-early-days",
+}
 GONE_RE = re.compile(
     r"^/(wp-admin(/|$)|wp-login\.php|xmlrpc\.php|wp-cron\.php|wp-json(/|$)"
     r"|forum(/|$)|readme\.html$|backup(/|$)|ads\.txt$|___proxy_subdomain)")
@@ -178,6 +204,24 @@ def build_has(old_path):
     d = SITE / q.rstrip("/")
     return d.is_dir() and any((d / n).is_file()
                               for n in ("index.html", "index.htm", "Default.htm"))
+
+
+def dead_photo_home_links(by_path):
+    """Relative <dir>/<page>.htm hrefs in the class-photos home that name no
+    inventory resource. The page links every class to such a page, but for
+    70 of 72 only the photo was ever uploaded (checked against the pristine
+    backup); live atchistory.org 404'd them for years."""
+    if not PHOTO_HOME.is_file():
+        return []
+    text = PHOTO_HOME.read_bytes().decode("windows-1252", "replace")
+    dead = set()
+    for href in re.findall(r'href="([^"#?]+)"', text, re.I):
+        if "://" in href or href.startswith(("/", ".", "mailto:")):
+            continue
+        old = norm("/classphotos/" + unquote(href))
+        if DOC_EXT.search(old) and old not in by_path:
+            dead.add(old)
+    return sorted(dead)
 
 
 def resolve_key(canon, keymap):
@@ -263,6 +307,13 @@ def main():
     # living successors. Those decisions win: they are drops, not canonicals.
     for old, target in json.loads(LEGACY.read_text()).items():
         DROP[norm(old)] = target
+    # Renamed slugs are the same decision made by the site owner: the old path
+    # is not a resource, its post lives on under the new slug. Targets are in
+    # old permalink shape here; the re-point pass below canonicalizes them.
+    if OLD_SLUGS.is_file():
+        for old, target in json.loads(OLD_SLUGS.read_text()).items():
+            DROP.setdefault(norm(old), PREFIX + target)
+            stats["renamed_slug"] += 1
 
     # Slugs occupied by the corpus, used to decide whether a "-2" strip is free.
     doc_slugs = {p.strip("/") for p in paths
@@ -428,6 +479,37 @@ def main():
             DROP[old] = derived
             notes["legacy targets not in the inventory (derived by rule)"].append(
                 f"{old} -> {target} => {derived}")
+
+    # --- drops derived from the corpus. Added after the re-point pass: their
+    # targets are taken straight from `alias`, so they are already canonical.
+
+    # WP core's rel_canonical() on a paged static front page emits home/N/,
+    # not /page/N/ (wp-includes/link-template.php, the `paged` branch), so all
+    # 149 site-archive pages shipped <link rel=canonical href="/N/"> — a URL
+    # WP answered with the front page — and Search Console holds /2/ as a 404
+    # canonical (2026-09-14). The rewrite pass is drop-aware, so this entry
+    # also repairs the tag itself: /page/N/ now declares /atc/archive/N.
+    for old, canon in alias.items():
+        m = ROOT_PAGE_RE.match(old)
+        if m and f"/{m.group(1)}/" not in by_path:
+            DROP[f"/{m.group(1)}/"] = canon
+            stats["paged_canonical_to_archive"] += 1
+
+    # Class-photos home dead links: same treatment as the RadioBeacons legacy
+    # entries — one hop to the generated listing that holds the photo. Most
+    # class directories have no listing row of their own (only the photo is
+    # in the inventory), so the target is rule-derived, gated on the directory
+    # holding at least one real file. Where it holds nothing (82023, 84013 —
+    # photo never uploaded either) the 404 stands.
+    dirs_with_files = {p.rpartition("/")[0] + "/" for p in by_path
+                       if not p.endswith("/")}
+    for old in dead_photo_home_links(by_path):
+        d = old.rpartition("/")[0] + "/"
+        if d in dirs_with_files and build_has(d):
+            DROP[old] = alias.get(d) or despace(apply_rules(d) or PREFIX + d)
+            stats["photo_home_dead_link"] += 1
+        else:
+            notes["class-photo links with nothing to redirect to"].append(old)
 
     payload = {
         "_source": "scripts/atc_canonical_map.py",
