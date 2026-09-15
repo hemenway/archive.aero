@@ -40,6 +40,12 @@ def main():
     for p in plan:
         if p["filename"] in existing:
             continue
+        # Same chart under another name? (location, edition) or (location, date),
+        # never filename alone.
+        held = dole_v2.find_same_chart(rows, p["location"], p["date"], p["edition"])
+        if held:
+            print(f"skip {p['filename']}: {p['location']} ed {p['edition']} {p['date']} already held as {held[0]['filename']}")
+            continue
         row = {k: "" for k in dole_v2.V2_FIELDS}
         row.update({
             "filename": p["filename"],
@@ -60,6 +66,11 @@ def main():
     if not new_rows:
         print("nothing to import (all plan rows already present)")
         return
+    rechained = 0
+    for row in new_rows:
+        rechained += len(dole_v2.rechain_predecessor(rows, row["location"], row["date"]))
+    if rechained:
+        print(f"closed {rechained} predecessor row(s) at the new editions' start dates")
 
     os.makedirs(BACKUP_DIR, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")

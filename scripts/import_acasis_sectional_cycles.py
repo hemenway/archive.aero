@@ -135,6 +135,13 @@ def main():
     if not new_rows:
         print("no new rows to write")
         return 0
+    # Close each predecessor edition's era at the new start date so the
+    # inserted cycle never overlaps it.
+    rechained = 0
+    for r in new_rows:
+        rechained += len(dole_v2.rechain_predecessor(rows, r["location"], r["date"]))
+    if rechained:
+        print("closed %d predecessor row(s) at the new cycles' start dates" % rechained)
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     backup = BACKUP_DIR / ("master_dole_v2.csv.pre_acasis_sectional_cycles_%s.bak" % stamp)

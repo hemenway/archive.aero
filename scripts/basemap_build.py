@@ -103,6 +103,14 @@ def find_build(stamp: str) -> dict:
 
 def region_geojson() -> dict:
     boxes = list(REGION_BOXES.items())
+    for name, (w, s, e, n) in boxes:
+        # Each box must be a proper west<east, south<north rectangle that
+        # does not cross the antimeridian: a wrapped box is not a valid ring
+        # and an inverted one silently covers nothing (the coverage check
+        # would only notice if a chart happened to fall in it).
+        if not (-180 <= w < e <= 180 and -90 <= s < n <= 90):
+            raise SystemExit(f"REGION_BOXES {name} = {(w, s, e, n)} is not a west<east, south<north box "
+                             f"inside [-180,180]x[-90,90]; the western Aleutians get their own east-of-180 box")
     for i, (n1, b1) in enumerate(boxes):
         for n2, b2 in boxes[i + 1:]:
             overlap_x = min(b1[2], b2[2]) - max(b1[0], b2[0])
@@ -161,6 +169,13 @@ def main() -> int:
         raise SystemExit("pmtiles CLI not on PATH (brew install pmtiles)")
     if not args.out_dir.parent.exists():
         raise SystemExit(f"{args.out_dir.parent} not mounted")
+    if args.maxzoom != REGION_MAXZOOM:
+        # The viewer asks for exactly REGION_MAXZOOM (CONFIG.basemapMaxDataZoom
+        # in index.html, levelDiff 1 below its max zoom). The published key
+        # does not encode the zoom, so a different ceiling would silently
+        # blank or overzoom the top level for every viewer.
+        raise SystemExit(f"--maxzoom {args.maxzoom} != REGION_MAXZOOM {REGION_MAXZOOM}; change both this "
+                         f"constant and CONFIG.basemapMaxDataZoom in index.html deliberately, not per run")
 
     build = find_build(args.build) if args.build else latest_build()
     stamp = build["key"].removesuffix(".pmtiles")
@@ -227,6 +242,14 @@ def main() -> int:
               "--s3-upload-concurrency=8", "--s3-chunk-size=64M",
               "--stats-one-line", "--stats", "30s", "-v"]
     if args.upload:
+        # The dated key is never overwritten (see module docstring): a
+        # same-stamp rerun after widening REGION_BOXES must publish under a
+        # new stamp, or viewers splice new directories onto old tile bodies
+        # for up to 24 h through the Worker's version-less range cache.
+        probe = subprocess.run(["rclone", "lsjson", f"{R2_REMOTE}/{key}"], capture_output=True, text=True)
+        if probe.returncode == 0 and probe.stdout.strip() not in ("", "[]"):
+            raise SystemExit(f"{R2_REMOTE}/{key} already exists in R2 - the dated basemap key is immutable. "
+                             f"Rebuild with a different --build stamp (or a newer daily build) instead.")
         run(upload)
         print(f"\npublished https://data.archive.aero/{key}")
     else:

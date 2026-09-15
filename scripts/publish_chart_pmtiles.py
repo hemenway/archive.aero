@@ -58,8 +58,18 @@ def manifest_index(path: Path):
     return index
 
 
-def uploaded_keys(uploads_path: Path):
-    return {e["key"] for e in load_jsonl(uploads_path) if "key" in e}
+def uploaded_index(uploads_path: Path):
+    """key -> latest upload record (append-only log, last line wins)."""
+    index = {}
+    for e in load_jsonl(uploads_path):
+        if "key" in e:
+            index[e["key"]] = e
+    return index
+
+
+def local_stamp(path: Path):
+    st = path.stat()
+    return st.st_size, int(st.st_mtime)
 
 
 def remote_listing(remote: str, prefix: str):
@@ -104,11 +114,11 @@ def main():
 
     uploads_path = args.manifest.parent / "uploads.jsonl"
     manifest = manifest_index(args.manifest)
-    already = uploaded_keys(uploads_path)
+    already = uploaded_index(uploads_path)
     remote = remote_listing(args.remote, args.prefix)
     print(f"{len(manifest)} manifest keys; {len(already)} recorded uploads; {len(remote)} objects at {args.remote}/{args.prefix}")
 
-    todo, missing_local, in_sync = [], [], 0
+    todo, missing_local, in_sync, rewarped = [], [], 0, 0
     for key, entry in sorted(manifest.items()):
         # key = chart/<slug>/<name>; local mirror path adds .pmtiles
         rel = key.split("/", 1)[1]  # <slug>/<name>
@@ -116,14 +126,27 @@ def main():
         if not local.exists():
             missing_local.append(key)
             continue
-        size = local.stat().st_size
+        size, mtime = local_stamp(local)
+        prior = already.get(key)
         if remote.get(rel) == size:
+            # Size equality alone is not identity: a re-warp of the same chart
+            # can land on the same byte count. The upload record carries the
+            # local file's mtime; a newer local file is a changed artifact and
+            # must be pushed even when the size matches. Records without an
+            # mtime predate this check and are trusted once.
+            if prior and prior.get("mtime") is not None and mtime > int(prior["mtime"]):
+                rewarped += 1
+                todo.append((key, rel, local, size))
+                continue
             in_sync += 1
-            if key not in already and not args.dry_run:
+            if (not prior or prior.get("mtime") is None) and not args.dry_run:
                 with open(uploads_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"key": key, "size": size, "uploaded_at": "preexisting"}) + "\n")
+                    f.write(json.dumps({"key": key, "size": size, "mtime": mtime,
+                                        "uploaded_at": prior.get("uploaded_at", "preexisting") if prior else "preexisting"}) + "\n")
             continue
         todo.append((key, rel, local, size))
+    if rewarped:
+        print(f"{rewarped} artifact(s) re-warped since their last upload (same size, newer mtime) - re-uploading")
 
     print(f"{in_sync} already in sync; {len(todo)} to upload; {len(missing_local)} manifest keys missing locally")
     for key in missing_local[:10]:
@@ -159,7 +182,8 @@ def main():
             for key, rel, local, size in todo:
                 if after.get(rel) == size:
                     ok += 1
-                    f.write(json.dumps({"key": key, "size": size, "uploaded_at": now}) + "\n")
+                    f.write(json.dumps({"key": key, "size": size, "mtime": local_stamp(local)[1],
+                                        "uploaded_at": now}) + "\n")
                 else:
                     bad += 1
                     print(f"  ✗ not verified in R2: {rel} (local {size}, remote {after.get(rel)})",
@@ -184,7 +208,7 @@ def main():
             continue
         with open(uploads_path, "a", encoding="utf-8") as f:
             f.write(json.dumps({
-                "key": key, "size": size,
+                "key": key, "size": size, "mtime": local_stamp(local)[1],
                 "uploaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
             }) + "\n")
 

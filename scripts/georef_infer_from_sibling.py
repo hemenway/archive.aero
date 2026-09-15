@@ -24,7 +24,13 @@ import dole_v2
 from slicer import ChartSlicer
 
 RAW = Path("/Volumes/projects/rawtiffs")
-SCRATCH = Path("/private/tmp/claude-501/-Users-ryanhemenway-archive-aero/979396e4-d26f-44e2-a132-01bc48223900/scratchpad")
+REPO = Path(__file__).resolve().parent.parent
+# Transfer results live under the gitignored worklists/data/ (they used
+# to be written to a session scratchpad that no longer exists);
+# override with the first command-line argument.
+TRANSFER_DIR = REPO / "worklists" / "data" / "georef_transfer"
+TRANSFER_DIR.mkdir(parents=True, exist_ok=True)
+TRANSFER = Path(sys.argv[1]) if len(sys.argv) > 1 else TRANSFER_DIR / "georef_transfer2.json"
 CSV = Path("/Users/ryanhemenway/archive.aero/master_dole_v2.csv")
 TARGET_DATES = {"2025-11-27", "2026-01-22", "2026-03-19", "2015-10-15"}
 NARA_TARGETS = {
@@ -36,7 +42,7 @@ ZIP_COVERED_0319 = {"Albuquerque", "Bethel", "Billings", "Brownsville", "Cheyenn
                     "Juneau", "Los_Angeles", "McGrath", "Montreal", "San_Francisco", "Seattle", "Wichita"}
 
 DEC = 8
-s = ChartSlicer(RAW, SCRATCH / "out", CSV, Path("/Users/ryanhemenway/archive.aero/shapefiles"))
+s = ChartSlicer(RAW, TRANSFER_DIR / "out", CSV, REPO / "shapefiles")
 s._build_source_index()
 s._build_shapefile_index()
 zip_covered_norm = {s.normalize_name(n.replace("_", " ")) for n in ZIP_COVERED_0319}
@@ -313,7 +319,16 @@ for row in rows:
         results[fn] = entry
         continue
     try:
-        tds = gdal.Open(str(local))
+        # A PDF payload must be opened at the slicer's 300-dpi convention
+        # (slicer._convert_pdf_payload_to_tif): a bare gdal.Open rasterizes
+        # at GDAL's 150-dpi default and the "300-dpi grid" dims/GCPs come
+        # out half-scale.
+        with open(local, "rb") as fh:
+            is_pdf = fh.read(5) == b"%PDF-"
+        if is_pdf:
+            tds = gdal.OpenEx(str(local), gdal.OF_RASTER, allowed_drivers=["PDF"], open_options=["DPI=300"])
+        else:
+            tds = gdal.Open(str(local))
         has_geo = tds.GetGeoTransform(can_return_null=True) is not None or tds.GetGCPCount() > 0
         dims = (tds.RasterXSize, tds.RasterYSize)
         tds = None
@@ -339,7 +354,7 @@ for row in rows:
     tag = f"s={entry.get('scale')} in={entry.get('inliers')}/{entry.get('windows')} rmax={entry.get('resid_max')}"
     print(f"{entry['status']:<24} {row['location']:<26} {tag if entry['status'] == 'ok' else ''} {fn[:55]}", flush=True)
 
-with open(SCRATCH / "georef_transfer2.json", "w") as f:
+with open(TRANSFER, "w") as f:
     json.dump(results, f, indent=1)
 counts = {}
 for e in results.values():

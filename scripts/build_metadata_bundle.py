@@ -219,11 +219,14 @@ def extract_one(source, key, warnings):
     try:
         header = deserialize_header(head[:127])
     except Exception as e:
-        warnings.append(f"{key}: header parse failed ({e}), skipped")
-        return None
+        # Not a warning: an era the bundle omits vanishes from the viewer's
+        # timeline (index.html builds CONFIG.ranges from the bundle), so a
+        # truncated or 0-byte mirror file must abort the build like any
+        # other unreadable archive (the caller collects these as FAIL).
+        raise RuntimeError(f"header parse failed ({e}); truncated or corrupt .pmtiles?") from e
     prefix = metadata_prefix_len(header, size, key, warnings)
     if prefix is None:
-        return None
+        raise RuntimeError("metadata prefix unusable (see warning above); era would be dropped")
     bounds = header_bounds(header, key, warnings)
     blob = head[:prefix] if prefix <= len(head) else source.read(key, prefix)
     return key, dates[0], dates[1], size, bounds, blob

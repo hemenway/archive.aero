@@ -1,6 +1,10 @@
 name = "tiles"
 main = "src/index.js"
 compatibility_date = "2025-05-01"
+# No tiles.<account>.workers.dev hostname: it would expose the whole charts
+# bucket outside the archive.aero zone (WAF, cache namespace) and defaults to
+# enabled on every deploy when unset.
+workers_dev = false
 
 # Custom domain attaches via dashboard or `routes` block.
 # routes = [{ pattern = "tiles.archive.aero", custom_domain = true }]

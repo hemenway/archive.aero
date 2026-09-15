@@ -117,6 +117,10 @@ FAA-era content was already held from other sources (NARA rg-237 cycle pulls, FA
   to do.
 - **31 on disk but uncataloged** — file already in rawtiffs, no dole row: 25 old-layout
   SEC editions + 6 LOC ca-scans. Need dole rows only, no download.
+  **STALE — closed 2026-08-20:** the fresh two-way audit (`scripts/audit_disk_vs_dole.py`)
+  finds **0 catalogable files left**; everything real got rows during the July–August
+  sessions, and the 13 residual unclaimed files are all explained (see worklist 02's
+  2026-08-20 note + `data/uncataloged_on_disk_2026-08-20.csv`).
 
 ## 2026-07-25 — HUNT26: staged, then reverted to the 6 ready zips
 
@@ -151,5 +155,5 @@ Durable findings from the identification pass (all encoded in the plan CSV):
 - GPO fiche zips hold jp2 camera tiles + a hugin .pto — stitch before GCP.
 
 Remaining on the candidates volume besides these: the 1,021 edition-dups, 158
-already cataloged, 13 reference-only, and the 31 disk-but-uncataloged rows
-(still need dole rows only).
+already cataloged, and 13 reference-only. (The 31 disk-but-uncataloged rows are
+closed as of 2026-08-20 — see the dedupe section above.)

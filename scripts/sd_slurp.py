@@ -77,13 +77,45 @@ def detect_cards(out_dir, max_bytes):
                 labels.append(p["VolumeName"])
             uuid = uuid or p.get("VolumeUUID", "")
         info = plist("diskutil", "info", "-plist", dev)
+        uuid = uuid.replace("-", "").lower()
+        # A FAT card with a zeroed volume serial reports UUID 00000000-...:
+        # every such card matched the SAME resume/skip tag ("_00000000"), so a
+        # second zero-serial card was skipped as already slurped, or ddrescue
+        # resumed card A's mapfile onto card B's bytes. Treat an all-zero (or
+        # missing) UUID as no identity and fall back to a fingerprint of the
+        # card's first MiB plus its exact byte size.
+        if not uuid.strip("0"):
+            uuid = ""
         cards.append({
             "dev": dev, "size": size,
             "label": " ".join(labels) or "UNTITLED",
-            "uuid": uuid.replace("-", "").lower(),
+            "uuid": uuid,
+            "fingerprint": card_fingerprint(dev, size),
             "media": info.get("MediaName", ""),
         })
     return cards
+
+
+def card_fingerprint(dev, size):
+    """sha256 of the first MiB + exact size: identity for cards without a
+    usable volume UUID. Needs read access to the raw device (sudo); '' when
+    it cannot be read."""
+    try:
+        import hashlib
+        with open(f"/dev/r{dev}", "rb") as f:
+            head = f.read(1 << 20)
+        return hashlib.sha256(head + str(size).encode()).hexdigest()[:12] if head else ""
+    except OSError:
+        return ""
+
+
+def card_tag(card):
+    """The identity token used in image/map names and for resume matching."""
+    if card.get("uuid"):
+        return f"_{card['uuid'][:8]}"
+    if card.get("fingerprint"):
+        return f"_fp{card['fingerprint']}"
+    return ""
 
 
 def gb(size):
@@ -101,9 +133,9 @@ def next_seq(out_dir):
 
 
 def _maps_for(out_dir, card):
-    if not card["uuid"]:
+    tag = card_tag(card)
+    if not tag:
         return []
-    tag = f"_{card['uuid'][:8]}"
     return [os.path.join(out_dir, f) for f in sorted(os.listdir(out_dir))
             if f.endswith(".map") and tag in f]
 
@@ -125,9 +157,7 @@ def find_finished(out_dir, card):
 
 
 def card_basename(out_dir, card, seq):
-    name = f"{seq:03d}_{sanitize(card['label'])}_{gb(card['size'])}"
-    if card["uuid"]:
-        name += f"_{card['uuid'][:8]}"
+    name = f"{seq:03d}_{sanitize(card['label'])}_{gb(card['size'])}" + card_tag(card)
     return os.path.join(out_dir, name)
 
 

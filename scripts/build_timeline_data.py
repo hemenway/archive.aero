@@ -54,16 +54,23 @@ def load_chart_pm_index():
         return entries
 
     uploaded = {e["key"] for e in read_jsonl(CHART_PM_DIR / "uploads.jsonl") if "key" in e}
-    index = collections.defaultdict(list)
-    is_half = {}
-    seen = set()
+    # The manifest is an append-only log: a regenerated artifact appends a
+    # fresh line under the same key, and the slicer and publisher both read
+    # it last-line-wins. Do the same here. Identity is (location, d): the key
+    # `chart/<slug>/<date>[-half]` already names the artifact without the
+    # end date, and keying on `e` as well silently unstamped every live
+    # artifact whose end date was later corrected in the catalog (12 charts
+    # on 2026-09-08 — Atlanta 2014-03-06, Charlotte N+S, Cincinnati ...).
+    latest = {}
     for entry in read_jsonl(CHART_PM_DIR / "manifest.jsonl"):
         key = entry.get("key")
-        if not key or key in seen or key not in uploaded:
-            continue
-        seen.add(key)
+        if key and key in uploaded:
+            latest[key] = entry
+    index = collections.defaultdict(list)
+    is_half = {}
+    for key, entry in latest.items():
         is_half[key] = bool(entry.get("half"))
-        ident = (entry.get("location", ""), entry.get("d", ""), entry.get("e", ""))
+        ident = (entry.get("location", ""), entry.get("d", ""))
         index[ident].append(key)
     for keys in index.values():
         # A bare whole-sheet key later superseded by half artifacts (a rerun
@@ -217,7 +224,7 @@ def main():
             # Per-chart PMTiles URI(s) (durable chart URIs; slicer --chart-pmtiles
             # + publish_chart_pmtiles.py). String when one artifact, list for
             # half-sheet pairs. Viewer: "View alone" shows these directly.
-            pm_keys = chart_pm.get((loc, r["date"], r["end_date"] or ""))
+            pm_keys = chart_pm.get((loc, r["date"]))
             if pm_keys:
                 chart["pm"] = pm_keys[0] if len(pm_keys) == 1 else pm_keys
             charts.append(chart)

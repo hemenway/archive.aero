@@ -28,7 +28,7 @@ signal for the heat strip, which describes holdings, not uptime.
 Run after every build_timeline_data.py run:
   ~/venv/bin/python scripts/build_coverage.py
 """
-import datetime as dt, json, os
+import datetime as dt, json, os, sys
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -65,8 +65,14 @@ def main():
 
     # (start, end, ref) per chart; ref can be None (Key West local, no extent —
     # counts but adds no area) and AK/HI refs rasterize to empty masks here.
+    # A chart with no end date belongs to no era: the viewer skips start-only
+    # rows (index.html _rangesForDate), so coverage skips them too instead of
+    # comparing None against date strings.
     charts = [(c['d'], c['e'], loc.get('ref'))
-              for loc in td['locations'].values() for c in loc['charts']]
+              for loc in td['locations'].values() for c in loc['charts'] if c.get('e')]
+    skipped = sum(1 for loc in td['locations'].values() for c in loc['charts'] if not c.get('e'))
+    if skipped:
+        print(f"coverage: {skipped} chart(s) without an end date skipped", file=sys.stderr)
 
     days = sorted({d for c in charts for d in c[:2]})
     segments = []

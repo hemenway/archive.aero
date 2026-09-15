@@ -297,6 +297,14 @@ def main():
         row, cycle, stem = p["row"], p["cycle"], p["stem"]
         old = row["filename"]
         anom = HTM_ANOMALY.get((cycle, stem))
+        if not anom:
+            # The note claims the FAA .htm dates agree with the cycle; check
+            # it rather than assert it (it was logged for every row before).
+            b, e = htm_dates(os.path.join(p["src_dir"], stem + ".htm"))
+            if b and b != cycle:
+                anom = "FAA .htm Beginning_Date %s differs from the cycle date %s" % (b, cycle)
+            elif e and NEXT_CYCLE.get(cycle) and e >= NEXT_CYCLE[cycle]:
+                anom = "FAA .htm Ending_Date %s runs into the next cycle %s" % (e, NEXT_CYCLE[cycle])
         kind = "ifly" if old.startswith("ifly_") else "pdf"
         had_gcps = bool(dole_v2.row_gcp_pixels(row))
         for f in GCP_FIELDS:

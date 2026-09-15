@@ -2,7 +2,7 @@
 
 **Nearly a century of U.S. aeronautical charts, scrubbable like a time machine.**
 
-[archive.aero](https://archive.aero) is a free, open-source web viewer for historical FAA VFR Sectional charts — **7,464 chart editions across 3,698 edition dates, spanning 1930 to today**, georeferenced, mosaicked, tiled, and served from edge storage. Drag the timeline and watch airspace, airports, and cartography evolve across nine decades.
+[archive.aero](https://archive.aero) is a free, open-source web viewer for historical FAA VFR Sectional charts — **7,668 chart editions across 3,741 edition dates (as of September 2026), spanning 1930 to today**, georeferenced, mosaicked, tiled, and served from edge storage. Drag the timeline and watch airspace, airports, and cartography evolve across nine decades.
 
 > ⚠️ Every chart on the site is a historical scan. **Never use it for navigation.**
 
@@ -35,9 +35,9 @@ flowchart LR
 
 Takes raw chart scans (from the U.S. National Archives for historical editions, FAA digital products for current ones), georeferences them, crops the paper collars, warps everything to Web Mercator, and mosaics the individual sheets into one nationwide GeoTIFF per edition date. Handles scans that are actually PDFs, mixed projections, and decades of inconsistent FAA cartographic conventions.
 
-### 2. Tile conversion — [`geotiff2pmtiles/`](geotiff2pmtiles/) (Go)
+### 2. Tile conversion — geotiff2pmtiles (Go, separate repository)
 
-A standalone, memory-efficient converter from GeoTIFF to [PMTiles](https://github.com/protomaps/PMTiles) single-file tile archives, with native WebP encoding, multiple resampling methods, and Hilbert-curve tile ordering. Has its own [README](geotiff2pmtiles/README.md), [ARCHITECTURE](geotiff2pmtiles/ARCHITECTURE.md), and [DESIGN](geotiff2pmtiles/DESIGN.md) docs.
+A standalone, memory-efficient converter from GeoTIFF to [PMTiles](https://github.com/protomaps/PMTiles) single-file tile archives, with native WebP encoding, multiple resampling methods, and Hilbert-curve tile ordering. It is developed in its own repository, [pspoerri/geotiff2pmtiles](https://github.com/pspoerri/geotiff2pmtiles), and checked out beside this one as `geotiff2pmtiles/` (gitignored here); the slicer invokes its binary. Its README, ARCHITECTURE and DESIGN docs live there.
 
 ### 3. Delivery — [`worker/`](worker/) (Cloudflare Worker + R2)
 

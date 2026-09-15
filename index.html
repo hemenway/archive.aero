@@ -416,7 +416,10 @@
 
     /** CONFIGURATION **/
     const CONFIG = {
-      baseUrl: 'https://data.archive.aero/sectionals/pmtiles/',
+      // Era archives live directly under sectionals/ (the bundle index and every
+      // dates.csv row say so); the old '.../sectionals/pmtiles/' default 404'd
+      // for any CSV row without its own url.
+      baseUrl: 'https://data.archive.aero/sectionals/',
       csvUrl: 'dates.csv', // Fallback source when the metadata bundle is unavailable
       // Single-file metadata bundle: era index + every archive's PMTiles
       // header/directories, so scrubbing needs no per-archive metadata fetches.
@@ -443,6 +446,15 @@
 
     /** UTILITIES **/
     const Utils = {
+      // localStorage access itself throws SecurityError when storage is blocked
+      // (block-all-cookies, third-party iframe). It is a per-viewer convenience
+      // only, so treat it as absent rather than letting the viewer fail to boot.
+      storageGet: (key) => {
+        try { return window.localStorage.getItem(key); } catch (_) { return null; }
+      },
+      storageSet: (key, value) => {
+        try { window.localStorage.setItem(key, value); } catch (_) { /* unavailable */ }
+      },
       buildPMTilesUrl: (key, customUrl) => {
         if (customUrl) return customUrl;
         return `${CONFIG.baseUrl}${key}.pmtiles`;
@@ -765,6 +777,14 @@
         this.net = new pmtiles.FetchSource(url);
         this.rangeInflight = new Map();
         this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
+        // ETag of the live archive as seen by this instance's first network
+        // read. pmtiles only arms its own etag check when the HEADER read
+        // returned one, and bundle-served headers carry none — so for every
+        // bundle-backed era a same-key republish went undetected: old bundle
+        // offsets read new bytes and decoded as garbage tiles for as long as
+        // the Worker's cache served them. Tracking the etag here restores the
+        // check (see _netBytes).
+        this.liveEtag = null;
       }
 
       getKey() {
@@ -800,19 +820,36 @@
       }
 
       async _netBytes(offset, length, signal, etag) {
+        let resp;
         try {
-          return await this.net.getBytes(offset, length, signal, etag);
+          resp = await this.net.getBytes(offset, length, signal, etag || this.liveEtag || undefined);
         } catch (e) {
           // A 416 (surfaced by FetchSource as EtagMismatch) means the archive
           // changed after the bundle was built — its bundled offsets are lies
           // now, and so is every range this instance has cached. Drop both so
           // the retry pmtiles performs reads fresh bytes.
-          if (e instanceof pmtiles.EtagMismatch) {
-            MetaBundle.dropEra(this.key);
-            this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
-          }
+          if (e instanceof pmtiles.EtagMismatch) this._archiveChanged();
           throw e;
         }
+        if (resp && resp.etag) {
+          if (this.liveEtag && resp.etag !== this.liveEtag) {
+            // The archive was republished under the same key since this
+            // instance first read it. Every bundled offset and cached range
+            // is now wrong; make pmtiles refetch header + directories with
+            // cache:"reload" (the Worker honours the no-cache it sends).
+            this._archiveChanged();
+            throw new pmtiles.EtagMismatch(this.liveEtag);
+          }
+          this.liveEtag = resp.etag;
+        }
+        return resp;
+      }
+
+      _archiveChanged() {
+        MetaBundle.dropEra(this.key);
+        this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
+        this.net.mustReload = true;
+        this.liveEtag = null;
       }
     }
 
@@ -866,7 +903,11 @@
         for (const key in this._tiles) {
           const tileObj = this._tiles[key];
           if (tileObj && tileObj.el) {
-            renders.push(this._renderTile(tileObj.el, tileObj.coords, version));
+            // Leaflet hands createTile WRAPPED coords but stores the unwrapped
+            // ones on _tiles; a tile past the antimeridian (x = -1 or 2^z)
+            // repainted with those fails the bounds cull against every
+            // archive and cleared to basemap on each scrub.
+            renders.push(this._renderTile(tileObj.el, this._wrapCoords(tileObj.coords), version));
           }
         }
         return Promise.all(renders);
@@ -1409,6 +1450,12 @@
       constructor(mapId, initialView = CONFIG.initialView) {
         this.map = L.map(mapId, {
           zoomControl: false,
+          // Leaflet's Keyboard handler focuses the container on mousedown and
+          // stops propagation of arrow keys, so after any map click the
+          // documented ←/→ timeline shortcuts died and the arrows panned the
+          // map instead. Panning is on the mouse/touch; keep the arrows for the
+          // timeline (+/- zoom still comes from the zoom control and wheel).
+          keyboard: false,
           // Floor the zoom-out. Below ~z6 the composite overlay (minNativeZoom 8)
           // renders 4x more 256x256 canvas tiles per level down; by z4 that is
           // ~1,200 canvases (~320MB of backing store), which gets the tab
@@ -1509,6 +1556,22 @@
           const source = new BundleSource(pmtilesUrl, customUrl ? null : key);
           pmtilesSource = new pmtiles.PMTiles(source);
           this.pmtilesInstances[key] = pmtilesSource;
+          // pmtiles' SharedPromiseCache also keeps a REJECTED leaf-directory
+          // promise (keyed url|etag|offset|length) for the instance's lifetime,
+          // and only the header path below ever recreated an instance. For the
+          // ~200 eras whose leaf directories are read over the network, one
+          // transient range failure blanked that region for the session with
+          // zero further network. Drop the instance on any read failure so the
+          // next tile request rebuilds it; a bundle-served header costs nothing
+          // to re-read and a network one is 16 KB.
+          const rawGetZxy = pmtilesSource.getZxy.bind(pmtilesSource);
+          pmtilesSource.getZxy = (z, x, y, signal) => rawGetZxy(z, x, y, signal).catch(err => {
+            if (this.pmtilesInstances[key] === pmtilesSource) {
+              delete this.pmtilesInstances[key];
+              delete this.pmtilesAccess[key];
+            }
+            throw err;
+          });
           // Surface hard archive failures (404 / CORS / corrupt header) once, so a
           // data outage shows a message instead of a silently bare basemap. pmtiles
           // caches the header, so this adds no extra network round-trip for getZxy.
@@ -1537,7 +1600,7 @@
                 // showFrame would yank them out of it to heal an off-screen archive.
                 if (this.soloState || !this.activeKeys.includes(key)) return;
                 this.activeKeys = [];
-                this.showFrame(this.lastFrameDate);
+                this.showFrame(this.lastFrameDate).catch(err => console.warn('header retry repaint failed', err));
               }, 2000 * attempt);
             }
             const now = performance.now();
@@ -1582,7 +1645,7 @@
         if (!layer || !layer._tiles) return;
         const coords = Object.values(layer._tiles)
           .filter(t => t && t.current && t.coords)
-          .map(t => t.coords)
+          .map(t => layer._wrapCoords(t.coords))  // stored coords are unwrapped (see _repaintTiles)
           .slice(0, DeviceInfo.isIOS ? 12 : 40);
         if (coords.length === 0) return;
 
@@ -1799,7 +1862,7 @@
         if (this.lastFrameDate) {
           // showFrame's solo guard clears the state and banner, then the normal
           // composite path repaints the frame.
-          this.showFrame(this.lastFrameDate);
+          this.showFrame(this.lastFrameDate).catch(err => console.warn('solo exit repaint failed', err));
         } else {
           this._clearSoloState();
         }
@@ -2707,12 +2770,12 @@
         this.features = null;
         this.loadPromise = null;
         this.year = null;
-        this.enabled = localStorage.getItem('airfieldsShown') !== '0';
+        this.enabled = Utils.storageGet('airfieldsShown') !== '0';
         // Status buckets are exhaustive: open (still operating) / gone
         // (closure evidence) / unknown (no closure evidence).
         this.statusFilter = { open: true, gone: true, unknown: true };
         try {
-          const saved = JSON.parse(localStorage.getItem('airfieldsStatus') || '{}');
+          const saved = JSON.parse(Utils.storageGet('airfieldsStatus') || '{}');
           for (const k of Object.keys(this.statusFilter)) {
             if (typeof saved[k] === 'boolean') this.statusFilter[k] = saved[k];
           }
@@ -2747,7 +2810,7 @@
 
       setEnabled(on) {
         this.enabled = on;
-        localStorage.setItem('airfieldsShown', on ? '1' : '0');
+        Utils.storageSet('airfieldsShown', on ? '1' : '0');
         if (on) {
           this._ensureLoaded();
         } else {
@@ -2791,6 +2854,9 @@
           const p = feat.properties;
           p.start_year = p.start_year ? +p.start_year : null;
           p.end_year = p.end_year ? +p.end_year : null;
+          // "Still listed in the 1988 FAA data" is a last-known-alive year,
+          // not a closure: it never hides or reddens a field.
+          p.last_known_year = p.last_known_year ? +p.last_known_year : null;
           const undated = !p.start_year && !p.end_year;
           const marker = new AfDot([lat, lng], {
             renderer: this.renderer,
@@ -2827,7 +2893,7 @@
       setStatusFilter(key, on) {
         if (!(key in this.statusFilter)) return;
         this.statusFilter[key] = on;
-        localStorage.setItem('airfieldsStatus', JSON.stringify(this.statusFilter));
+        Utils.storageSet('airfieldsStatus', JSON.stringify(this.statusFilter));
         this._apply();
       }
 
@@ -2877,11 +2943,13 @@
       }
 
       static fmtSpan(p) {
-        const s = p.start_year, e = p.end_year;
+        const s = p.start_year, e = p.end_year, k = p.last_known_year;
         if (p.status === 'open') return s ? `In operation ${s} – present` : 'Open today';
         if (s && e) return `In operation ~${s} – ${e}`;
+        if (s && k) return `In operation ~${s} – at least ${k}`;
         if (s) return `In operation from ~${s}`;
         if (e) return `In operation until ~${e}`;
+        if (k) return `Still listed in ${k}; closure date unknown`;
         return 'Operating dates unknown';
       }
 

@@ -10,18 +10,32 @@ worklist; row-level data lives in [`data/`](data/); the complete verbatim hunt r
 | Doc | Category | Headline |
 |---|---|---|
 | [01_dole_slicer_failures.md](01_dole_slicer_failures.md) | In the dole but failed in the slicer | 222 files never warped; 90 date ranges skipped; **2026-01-22 mosaic has only Wichita**; 2 pipeline bugs (zip-PDF resolver, zip-bytes-saved-as-.pdf); 6 silent single-chart holes |
-| [02_disk_vs_dole.md](02_disk_vs_dole.md) | On disk but not in the dole (and vice versa) | Only 11 rows unresolvable (Pack-12 JPGs sitting in ~/Downloads); 623 deletable NARA duplicates = 38 GB; 2 genuinely unexplained files |
+| [02_disk_vs_dole.md](02_disk_vs_dole.md) | On disk but not in the dole (and vice versa) | **CLEAN as of 2026-08-20** (0 rows unresolvable — the 11 Pack-12 JPGs were staged; the 2 mystery G4332 files identified as Grand Canyon VFR charts, out of scope); 623 deletable NARA duplicates = 38 GB; re-runnable via `scripts/audit_disk_vs_dole.py` |
 | [03_web_sources_searched.md](03_web_sources_searched.md) | Places on the web already searched | Master venue index with verdicts; do-not-re-search list; ranked open frontiers (ASU contact, NLA scan request, AVSIM logins) |
 | [04_georef_backlog.md](04_georef_backlog.md) | Dole rows without GCPs | 226 pre-2011 rows need georeferencing (mostly the 189 newly cataloged downloads); 8 rows lack even a cutline |
 | [05_date_quality.md](05_date_quality.md) | Date uncertainty flags | 259 END-ESTIMATED, 236 GAP (ranked as search targets), 40 DATE-APPROX |
 | [06_publish_sync.md](06_publish_sync.md) | Live site out of sync with the new run | 485 mosaics unpublished; 209 stale pmtiles keys; regenerate coverage/timeline after upload |
-| [07_download_queue.md](07_download_queue.md) | Verified online findings not yet downloaded/cataloged | 1,309 of 1,490 pending (760 wayback PDFs, 279 wayback zips, 72 LOC gct00498, 43 raremaps DZI…); batching plan |
+| [07_download_queue.md](07_download_queue.md) | Verified online findings not yet downloaded/cataloged | 1,309 of 1,490 pending (760 wayback PDFs, 279 wayback zips, 72 LOC gct00498, 43 raremaps DZI…); batching plan; the "31 on disk but uncataloged" item is closed (2026-08-20) |
+
+Docs 08+ are **project plans rather than error categories** — same self-contained format,
+but they track a piece of work start-to-finish instead of a backlog of rows:
+
+| Doc | Category | Headline |
+|---|---|---|
+| [08_atchistory_migration.md](08_atchistory_migration.md) | atchistory.org → archive.aero/atc/ | Full static flatten of a 3.6 GB WordPress+FrontPage site into R2 + a redirect worker; designed canonical URI scheme; **cutover executed 2026-08-31** (freeze ran a day late) — [08a](08a_backlink_repair.md) backlink repair, [08b](08b_freeze_cutover_runbook.md) runbook |
+| [09_growth_and_revenue.md](09_growth_and_revenue.md) | Growth & revenue after the merge | 4 indexable pages vs. atchistory's ~1,400 + Wikipedia backlinks; programmatic airport/edition pages (~8,700 URLs); prints as the primary revenue bet; 6 open decisions |
+| [10_cold_archive.md](10_cold_archive.md) | Private cold archive of the originals | Off-site copy of the source scans and the catalog |
+| [11_acasis_img_recovery.md](11_acasis_img_recovery.md) | ACASIS `.imgcv2` recovery | 891 charts not in the catalog carved off the iFly build machine's disk image; 868 extracted to the attic, 9 promoted 2026-08-29 |
+| [12_sdcard_batch.md](12_sdcard_batch.md) | 2026-08 SD-card batch | Five iFly EFB cards mined; 18 only-copy 2014-15 rows published |
+| [13_sdcard_batch2.md](13_sdcard_batch2.md) | 2026-08/09 second SD-card batch + ACASIS pre2015 | 17 TAC + Grand Canyon ed 3 to the attic, zero new sectionals; edition numbers are per chart type |
+
+`helper_prompt.md` is the standing brief for a helper session (read `CLAUDE.md` first). Docs 09, 10, 13 and `helper_prompt.md` are not yet tracked in git — add them when their contents settle.
 
 ## Suggested working order
 
-1. **Mechanical unblocks** (hours): stage the 11 Pack-12 JPGs (02A), unzip the 13
-   fake-PDFs (01B), fix the Denver `Service_Unavailable` row (01D), re-pull Seward_93
-   (01B), fix the zip-PDF resolver in slicer.py (01B).
+1. **Mechanical unblocks** (hours): ~~stage the 11 Pack-12 JPGs (02A)~~ (done 2026-08-20),
+   unzip the 13 fake-PDFs (01B), fix the Denver `Service_Unavailable` row (01D), re-pull
+   Seward_93 (01B), fix the zip-PDF resolver in slicer.py (01B).
 2. **Re-warp the two crippled newest mosaics** with an SRS-capable GDAL (01A) — biggest
    user-visible payoff.
 3. **Georeferencing sprints** (04 + 01C): Juneau's 18 editions light up 1994–2012;

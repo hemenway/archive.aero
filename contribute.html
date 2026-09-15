@@ -561,15 +561,15 @@
     <header>
       <h1>Help Fill the Gaps</h1>
       <p class="tagline">
-        archive.aero holds thousands of historical chart editions — but we know of hundreds more that
+        archive.aero holds thousands of historical chart editions — but we know of thousands more that
         were published and haven't been found yet. This page is the honest inventory: what the archive
         has, what's missing, and how you can help.
       </p>
     </header>
 
     <div class="stats">
-      <div class="stat"><span class="num" id="statCharts">7,464</span><span class="label">editions in the archive</span></div>
-      <div class="stat bad"><span class="num" id="statMissing">~2,000</span><span class="label">missing editions</span></div>
+      <div class="stat"><span class="num" id="statCharts">7,668</span><span class="label">editions in the archive</span></div>
+      <div class="stat bad"><span class="num" id="statMissing">~5,600</span><span class="label">missing editions</span></div>
       <div class="stat"><span class="num" id="statAreas">58</span><span class="label">chart areas tracked</span></div>
       <div class="stat"><span class="num">1928 →</span><span class="label">years covered</span></div>
     </div>
@@ -752,14 +752,25 @@
           return { t0, t1, ed: c.ed, f: c.f, d: c.d };
         });
         L.slots = buildSlots(L);
-        L.missSlots = L.slots.filter(sl => !sl.held);
+        L.first = L.slots[0].t0;
+        L.last = L.slots[L.slots.length - 1].t1;
+      }
+      // A lane's missing editions are reconciled against its GROUP: the
+      // catalog carries the same chart under several location strings
+      // (Western Aleutian Islands, ... East, ... West), and an edition held by
+      // a sibling lane is not missing from the archive. Collapsed pills
+      // already read the group union (covered()); the counts, red pills and
+      // "most missing" sort did not, and showed 14 Western Aleutian cycles as
+      // missing that the East/West lanes hold.
+      const setMissing = (L, union) => {
+        const inUnion = t => union.some(([a, b]) => t >= a && t < b);
+        L.missSlots = L.slots.filter(sl => !sl.held && !inUnion(sl.t0));
         // atlas + collapsed rows read contiguous missing spans
         L.gapSegs = mergeIntervals(L.missSlots.map(sl => [sl.t0, sl.t1]))
           .map(([a, b]) => ({ t0: a, t1: b, est: L.missSlots.filter(sl => sl.t0 >= a && sl.t0 < b).length }));
-        L.first = L.slots[0].t0;
-        L.last = L.slots[L.slots.length - 1].t1;
         L.missCount = L.missSlots.length;
-      }
+      };
+      const grouped = new Set();
       // group objects
       const groups = data.groups.map(g => {
         const members = [
@@ -767,6 +778,7 @@
           ...g.modern.map(n => locs[n]).sort((a, b) => a.first - b.first),
         ].filter(Boolean);
         const union = mergeIntervals(members.flatMap(m => m.slots.filter(sl => sl.held).map(s => [s.t0, s.t1])));
+        for (const m of members) { setMissing(m, union); grouped.add(m); }
         const gaps = subtract(mergeIntervals(members.flatMap(m => m.gapSegs.map(s => [s.t0, s.t1]))), union);
         const first = Math.min(...members.map(m => m.first));
         const last = Math.max(...members.map(m => m.last));
@@ -777,6 +789,7 @@
         const nMiss = members.reduce((a, m) => a + m.missCount, 0);
         return { ...g, members, union, gaps, holes, first, last, nCharts, nMiss };
       });
+      for (const L of Object.values(locs)) if (!grouped.has(L)) setMissing(L, []);
       return { locs, groups };
     }
 
@@ -847,9 +860,19 @@
           else slots.push({ t0: s.t0, t1: s.t1, ed: s.ed, held: true, est: false, seg: s });
         }
         if (tail) {
+          // From Feb 2021 the 56-day cycle is the whole story: drop the
+          // edition-interpolated slots that fall inside it, or a missing
+          // cycle draws two red pills (its estimated edition and the cycle)
+          // once post-2021 rows carry edition numbers. A held row claims the
+          // cycle it is nearest to (within half a cycle), so a scan dated a
+          // couple of weeks off the nominal date is not also "missing".
+          for (let i = slots.length - 1; i >= 0; i--) {
+            if (slots[i].t0 >= CYCLE56_T0 - 10 * DAY) slots.splice(i, 1);
+          }
           const lastHeld = Math.max(...segs.map(s => s.t0));
           for (let t = CYCLE56_T0; t <= lastHeld + DAY; t += CYCLE56) {
-            const seg = segs.find(s => Math.abs(s.t0 - t) < 10 * DAY);
+            let seg = null, best = CYCLE56 / 2;
+            for (const s of segs) { const d = Math.abs(s.t0 - t); if (d < best) { best = d; seg = s; } }
             slots.push({ t0: t, t1: t + CYCLE56, ed: seg ? seg.ed : '', held: !!seg, est: false, seg, cycle: true });
           }
         }

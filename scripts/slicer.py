@@ -9,6 +9,7 @@ import os
 import sys
 import re
 import csv
+import hashlib
 import json
 import argparse
 import zipfile
@@ -182,6 +183,9 @@ class ChartSlicer:
         self.geotiff2pmtiles_bin = Path(__file__).resolve().parent.parent / "geotiff2pmtiles" / "geotiff2pmtiles"
         self._chart_manifest_lock = threading.Lock()
         self._chart_manifest_index: Optional[Dict[str, str]] = None  # key -> source filename
+        # (date_key, location, uri_name, file) for every group refused because
+        # two source files resolved to one chart key; reported at the end.
+        self.chart_collisions: List[Tuple[str, str, str, str]] = []
 
     def log(self, msg: str):
         """Print log message with timestamp."""
@@ -713,6 +717,22 @@ class ChartSlicer:
             shutil.rmtree(payload_dir, ignore_errors=True)
         return ok
 
+    @staticmethod
+    def _asfound_sidecar(path: Path, suffix: str) -> Path:
+        """Name for preserving an as-found source next to its derived copy.
+
+        `<stem><suffix>`, or `<stem>.asfound<suffix>` if that name is already
+        taken by something else (never clobber a sibling source).
+        """
+        keep = path.with_name(path.stem + suffix)
+        if keep.exists():
+            keep = path.with_name(path.stem + '.asfound' + suffix)
+        n = 1
+        while keep.exists():
+            n += 1
+            keep = path.with_name(f"{path.stem}.asfound{n}{suffix}")
+        return keep
+
     def _ensure_8bit_tif(self, path: Path) -> bool:
         """
         Rescale 16-bit scans (LOC ca-series Trinidad CO / Portland OR batches)
@@ -739,8 +759,16 @@ class ChartSlicer:
                 self.log(f"    ✗ 8-bit rescale failed for {path.name}")
                 return False
             out = None
+            # Keep the as-found 16-bit scan beside the 8-bit working copy
+            # (rawtiffs is as-found; the catalog row keeps pointing at the
+            # .tif name the slicer consumes).
+            # `.tiff`, not `.tif`: the source index globs *.tif per container
+            # directory, and a zip member's sibling must not become a second
+            # member of that row's container.
+            keep = self._asfound_sidecar(path, '.16bit.tiff')
+            os.rename(path, keep)
             os.replace(tmp, path)
-            self.log(f"    ✓ Rescaled {path.name} to 8-bit")
+            self.log(f"    ✓ Rescaled {path.name} to 8-bit (original kept as {keep.name})")
             return True
         except Exception as e:
             self.log(f"    ✗ 8-bit rescale failed for {path.name}: {e}")
@@ -778,6 +806,15 @@ class ChartSlicer:
                 creationOptions=['TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE', 'ZLEVEL=1'],
             ))
             ds = None
+            if dest == path:
+                # In-place: rawtiffs holds sources exactly as found, so the
+                # PDF payload (vector GeoPDF bytes) is kept beside the raster
+                # under its honest extension rather than overwritten.
+                # `.payload.pdf`, not `.pdf`: a bare <stem>.pdf could shadow a
+                # catalog row of that name in the source index.
+                keep = self._asfound_sidecar(path, '.payload.pdf')
+                os.rename(path, keep)
+                self.log(f"    ↳ as-found PDF payload kept as {keep.name}")
             os.replace(tmp_out, dest)
             self.log(f"    ✓ Converted PDF to GeoTIFF: {dest.name}")
             return True
@@ -1127,6 +1164,53 @@ class ChartSlicer:
         self.srs_cache[shapefile_key] = result
         return result
 
+    def _guard_container_members(self, rec: Dict, location: str, found_files: List,
+                                 shp_path: Optional[Path], gcp_context) -> List:
+        """The zip-row cutline trap: a .zip row applies one cutline (and one
+        GCP set) to every tif in the container. That is only right when each
+        member selects its own directional cutline (Western Aleutian East/West).
+        A container of insets (Hawaiian Islands + Honolulu/Mariana/Samoa 88)
+        under one row clipped the insets away and overlaid Oahu at inset scale
+        — it cost eight cycles their Samoa/Mariana coverage before it was
+        understood. Keep one member per distinct cutline (the one whose name
+        best matches the location), skip the rest loudly, and point at
+        scripts/split_faa_inset_containers.py, which splits such rows.
+        """
+        if len(found_files) <= 1:
+            return found_files
+        norm_loc = self.normalize_name(location)
+
+        def path_of(info):
+            return info[0] if isinstance(info, tuple) else info
+
+        def name_score(info):
+            stem = self.normalize_name(path_of(info).stem)
+            return (stem.startswith(norm_loc), -len(stem))  # exact location name first, shortest next
+
+        if gcp_context:
+            keep = max(found_files, key=name_score)
+            self.log(f"    ⚠ {location}: row carries GCPs but its container holds {len(found_files)} tifs; "
+                     f"GCPs describe one image - warping only {path_of(keep).name}. Split the row "
+                     f"(scripts/split_faa_inset_containers.py).")
+            return [keep]
+        by_cutline: Dict[str, List] = {}
+        for info in found_files:
+            chosen = self._pick_shapefile_for_source(location, path_of(info), shp_path) if shp_path else None
+            by_cutline.setdefault(str(chosen), []).append(info)
+        kept = []
+        for cutline, members in by_cutline.items():
+            if len(members) == 1:
+                kept.extend(members)
+                continue
+            winner = max(members, key=name_score)
+            kept.append(winner)
+            skipped = ", ".join(path_of(m).name for m in members if m is not winner)
+            self.log(f"    ⚠ {location}: {len(members)} container members share cutline "
+                     f"{Path(cutline).name if cutline != 'None' else '(none)'}; keeping {path_of(winner).name}, "
+                     f"skipping {skipped}. One cutline cannot serve several sheets - split the row "
+                     f"(scripts/split_faa_inset_containers.py).")
+        return kept
+
     def _pick_shapefile_for_source(self, location: str, src_file: Path, default_shp: Optional[Path]) -> Optional[Path]:
         """
         Prefer directional shapefile variants (east/west/north/south) when the source filename
@@ -1329,11 +1413,20 @@ class ChartSlicer:
                 return False
             if abs(float(gt[1])) * float(ds.RasterXSize) >= WORLD_WIDTH_M:
                 return False
-            # Force a read of the last rows so a truncated/partially-written raster
-            # (pixel data missing at EOF) raises here instead of at mosaic time.
-            strip = min(8, ds.RasterYSize)
-            for band_idx in range(1, ds.RasterCount + 1):
-                ds.GetRasterBand(band_idx).Checksum(0, ds.RasterYSize - strip, ds.RasterXSize, strip)
+            # Read every block. A bottom-strip probe only caught truncation at
+            # EOF; the corrupt-on-write DEFLATE temps seen under RAM pressure
+            # (2026-07) fail in the middle, passed the strip, and then failed
+            # the whole date at mosaic time on every resume (2026-09-08 audit).
+            # A warped VRT is computed lazily, so a full read there would
+            # redo the warp; its failure mode is a bad XML/source, which
+            # gdal.Open and _vrt_sources_exist already cover — keep the strip.
+            if path.suffix.lower() == '.vrt':
+                strip = min(8, ds.RasterYSize)
+                for band_idx in range(1, ds.RasterCount + 1):
+                    ds.GetRasterBand(band_idx).Checksum(0, ds.RasterYSize - strip, ds.RasterXSize, strip)
+            else:
+                for band_idx in range(1, ds.RasterCount + 1):
+                    ds.GetRasterBand(band_idx).Checksum()
             return True
         except Exception:
             return False
@@ -1398,8 +1491,108 @@ class ChartSlicer:
             'attempt_id': job.get('attempt_id')
         }
 
+    # ---- warp-temp provenance -------------------------------------------
+    # Every warp output gets a `<output>.georef.json` sidecar recording a
+    # fingerprint of the inputs that produced it: the source file (path, size,
+    # mtime), the row's georef columns (GCPs, cutline, LCC, rotation,
+    # src_crs), the cutline shapefile (path, size, mtime) and the warp mode.
+    # Resume reuses a temp only when the sidecar matches the current row, and
+    # the library rebuild restores only temps whose sidecar names a row that
+    # still exists. Before this (2026-09-08 audit) a temp was trusted by
+    # filename alone: a corrected GCP was ignored on rerun, a retired
+    # alternate's leftover warp was mosaicked alongside the new winner, and
+    # `washington_*` temps were credited to `washington_dc`.
+    GEOREF_FIELDS = (
+        'filename', 'location', 'date', 'end_date', 'rotation', 'src_crs', 'half',
+        'cutline', 'cutline_wkt', 'lcc_lat1', 'lcc_lat2', 'lcc_lat0', 'lcc_lon0',
+    )
+
+    @staticmethod
+    def _sidecar_path(output: Path) -> Path:
+        return output.with_name(output.name + '.georef.json')
+
+    @staticmethod
+    def _file_stamp(path: Optional[Path]) -> Optional[List]:
+        if not path:
+            return None
+        try:
+            st = Path(path).stat()
+            return [str(Path(path).resolve()), st.st_size, int(st.st_mtime)]
+        except OSError:
+            return [str(path), None, None]
+
+    def _georef_fingerprint(self, input_tiff: Path, record: Optional[Dict], shapefile: Optional[Path],
+                            full_sheet: bool) -> str:
+        rec = record or {}
+        payload = {
+            'input': self._file_stamp(input_tiff),
+            'shapefile': self._file_stamp(shapefile),
+            'full_sheet': bool(full_sheet),
+            'warp_output': 'tif' if full_sheet else getattr(self, 'warp_output', 'tif').lower(),
+            'resample': int(getattr(self, 'resample_alg', gdal.GRA_Bilinear)),
+            'row': {k: (rec.get(k) or '').strip() for k in self.GEOREF_FIELDS},
+            'gcps': {k: (rec.get(k) or '').strip() for k in dole_v2.V2_FIELDS if k.startswith('gcp')},
+        }
+        return hashlib.sha1(json.dumps(payload, sort_keys=True).encode('utf-8')).hexdigest()
+
+    def _write_sidecar(self, output: Path, fingerprint: str, input_tiff: Path, record: Optional[Dict],
+                       shapefile: Optional[Path], full_sheet: bool) -> None:
+        rec = record or {}
+        data = {
+            'fingerprint': fingerprint,
+            'location': (rec.get('location') or '').strip(),
+            'norm_loc': self.normalize_name(rec.get('location') or ''),
+            'filename': rec.get('filename') or '',
+            'input': str(input_tiff),
+            'shapefile': str(shapefile) if shapefile else '',
+            'full_sheet': bool(full_sheet),
+            'written': datetime.datetime.now().isoformat(timespec='seconds'),
+        }
+        try:
+            self._sidecar_path(output).write_text(json.dumps(data, sort_keys=True))
+        except OSError as e:
+            self.log(f"      ⚠ could not write warp sidecar for {output.name}: {e}")
+
+    def _read_sidecar(self, output: Path) -> Optional[Dict]:
+        try:
+            return json.loads(self._sidecar_path(output).read_text())
+        except (OSError, ValueError):
+            return None
+
+    def _discard_output(self, output: Path) -> None:
+        for path in (output, self._sidecar_path(output)):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def warp_and_cut(self, input_tiff: Path, shapefile: Optional[Path], output_tiff: Path, record: Optional[Dict] = None,
                      full_sheet: bool = False) -> bool:
+        """Warp (and cut) one source into output_tiff, reusing a matching temp on resume.
+
+        See _warp_and_cut_impl for the warp itself. This wrapper owns the
+        provenance sidecar: an existing output is reused only when it is fully
+        readable AND its sidecar fingerprint matches the current inputs.
+        """
+        fingerprint = self._georef_fingerprint(input_tiff, record, shapefile, full_sheet)
+        if self._is_reusable_output(output_tiff):
+            side = self._read_sidecar(output_tiff)
+            if side and side.get('fingerprint') == fingerprint:
+                self.log(f"      ↻ Reusing existing warp output {output_tiff.name}")
+                return True
+            self.log(f"      ↻ Existing warp output {output_tiff.name} "
+                     f"{'predates provenance sidecars' if not side else 'was made from different georef inputs'}"
+                     f" - re-warping")
+        self._discard_output(output_tiff)
+        ok = self._warp_and_cut_impl(input_tiff, shapefile, output_tiff, record=record, full_sheet=full_sheet)
+        if ok:
+            self._write_sidecar(output_tiff, fingerprint, input_tiff, record, shapefile, full_sheet)
+        else:
+            self._discard_output(output_tiff)
+        return ok
+
+    def _warp_and_cut_impl(self, input_tiff: Path, shapefile: Optional[Path], output_tiff: Path,
+                           record: Optional[Dict] = None, full_sheet: bool = False) -> bool:
         """Warp and cut TIFF using shapefile as cutline.
 
         If self.warp_output is set to "vrt", write a VRT instead of a TIFF
@@ -1410,13 +1603,6 @@ class ChartSlicer:
         context is still resolved (GCP sanity checks, antimeridian windows);
         it just isn't applied as a mask.
         """
-        # Resume: reuse a fully-readable existing output instead of re-warping
-        # (see _is_reusable_output). output_tiff already carries the correct
-        # .tif/.vrt suffix from _prepare_warp_job.
-        if self._is_reusable_output(output_tiff):
-            self.log(f"      ↻ Reusing existing warp output {output_tiff.name}")
-            return True
-
         # Safety net for sources downloaded by earlier runs: a .tif that is really
         # a GeoPDF payload gets rasterized in place before warping.
         if self._is_pdf_payload(input_tiff):
@@ -1428,9 +1614,17 @@ class ChartSlicer:
             if context:
                 if self.warp_and_cut_from_row_gcps(input_tiff, record, output_tiff, full_sheet=full_sheet):
                     return True
-                if shapefile or full_sheet:
-                    self.log(f"      ⚠ GCP warp failed for {input_tiff.name}; falling back to "
-                             f"{'plain' if full_sheet else 'shapefile'} warp")
+                if full_sheet:
+                    # A GCP row exists because the file's own georeferencing is
+                    # not trusted. The mosaic path may still fall back to a
+                    # cutline-protected shapefile warp, but a full-sheet warp
+                    # has no cutline to catch a bad or missing CRS: falling
+                    # back here published null-island artifacts for the 103
+                    # GCP .jpg rows without src_crs (2026-09-08 audit).
+                    self.log(f"      ✗ GCP warp failed for {input_tiff.name}; no plain-warp fallback for a GCP row")
+                    return False
+                if shapefile:
+                    self.log(f"      ⚠ GCP warp failed for {input_tiff.name}; falling back to shapefile warp")
             elif not shapefile and not full_sheet:
                 self.log(f"      ✗ Missing/invalid GCP metadata and no shapefile fallback for {input_tiff.name}")
                 return False
@@ -1463,6 +1657,18 @@ class ChartSlicer:
             src_ds = gdal.Open(str(input_tiff))
             if not src_ds:
                 self.log(f"      ✗ Could not open {input_tiff.name}")
+                return False
+            # Refuse a CRS-less source outright. With a cutline GDAL raises
+            # ("Cannot find source SRS"), but a full-sheet warp has no cutline
+            # and gdal.Warp then SUCCEEDS with world-file degrees relabelled as
+            # EPSG:3857 metres: a 3 m wide artifact at null island that passes
+            # every downstream size check (2026-09-08 audit). The CRS belongs
+            # in the row's src_crs column, never in an injected sidecar.
+            if not src_crs and not src_ds.GetProjection() and src_ds.GetGCPCount() == 0:
+                self.log(f"      ✗ {input_tiff.name} has no embedded CRS or GCPs and the row has no "
+                         f"src_crs - refusing to warp (would land at null island). "
+                         f"Set src_crs on the catalog row (usually EPSG:4269).")
+                src_ds = None
                 return False
             first_band = src_ds.GetRasterBand(1)
             has_color_table = bool(first_band and first_band.GetColorTable())
@@ -1664,7 +1870,7 @@ class ChartSlicer:
             # Safety guard: if output still spans near full-world width, retry with split bounds.
             if success and self._is_world_width_warp(output_tiff):
                 self.log("      ⚠ Detected near-world-width warp output; forcing antimeridian split retry...")
-                forced_bounds = split_bounds or self._antimeridian_split_bounds_3857(input_tiff)
+                forced_bounds = split_bounds or self._antimeridian_split_bounds_3857(input_tiff, src_crs)
                 if forced_bounds:
                     success = _run_split_warp(['ALLOW_BALLPARK=YES'], forced_bounds)
                 if success and self._is_world_width_warp(output_tiff):
@@ -1915,7 +2121,33 @@ class ChartSlicer:
     # ------------------------------------------------------------------
 
     CHART_HALF_RE = re.compile(r'[\s_-](north|south|east|west)$', re.I)
+    # A cardinal token anywhere in a stem, as a whole word ("East SEC", not
+    # the "West" inside "Western"). Only applied after the location name has
+    # been removed from the stem, so "Key West SEC 97" carries no half.
+    CHART_HALF_WORD_RE = re.compile(r'(?<![a-z])(north|south|east|west)(?![a-z])', re.I)
     CHART_SLUG_RE = re.compile(r'^[a-z0-9_]+$')
+
+    def _half_from_stem(self, stem: str, location: str) -> str:
+        """Cardinal half token encoded in a source file stem, or ''.
+
+        FAA container members are named "<Location> East SEC.tif" — the
+        token sits before a suffix, so an end-anchored match alone never saw
+        it and both halves of every Western Aleutian zip row collapsed onto
+        one chart key (2026-09-08 audit). Rule, in order: trailing token on
+        the stem; else a whole-word token in the stem with the location name
+        stripped (the mosaic pass's _pick_shapefile_for_source picks
+        cutlines by the same substring idea, so the two passes now agree).
+        """
+        stem = stem or ''
+        m = self.CHART_HALF_RE.search(stem)
+        if m:
+            return m.group(1).lower()
+        norm_stem = ' ' + re.sub(r'[^a-z0-9]+', ' ', stem.lower()) + ' '
+        norm_loc = ' ' + re.sub(r'[^a-z0-9]+', ' ', (location or '').lower()).strip() + ' '
+        if norm_loc.strip() and norm_loc in norm_stem:
+            norm_stem = norm_stem.replace(norm_loc, ' ', 1)
+        m = self.CHART_HALF_WORD_RE.search(norm_stem)
+        return m.group(1).lower() if m else ''
 
     def _chart_identity(self, rec: Dict, file_stem: Optional[str] = None) -> Optional[Tuple[str, str, str]]:
         """(slug, uri_name, half) for a row, or None if not URI-safe/derivable.
@@ -1935,32 +2167,38 @@ class ChartSlicer:
             self.log(f"      ✗ chart URI: no usable effective date for {location!r} - skipping")
             return None
         stem = file_stem if file_stem is not None else Path(rec.get('filename') or '').stem
-        m = self.CHART_HALF_RE.search(stem or '')
-        half = m.group(1).lower() if m else dole_v2.row_half(rec)
+        half = self._half_from_stem(stem, location) or dole_v2.row_half(rec)
         return slug, f"{d}-{half}" if half else d, half
 
     def _chart_manifest_load(self) -> Dict[str, str]:
         """key -> source filename, from the append-only JSONL (last line wins)."""
         if self._chart_manifest_index is None:
-            index: Dict[str, str] = {}
-            path = self.chart_manifest_path
-            if path and path.exists():
-                with open(path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            entry = json.loads(line)
-                            index[entry['key']] = entry.get('filename', '')
-                        except Exception:
-                            continue
-            self._chart_manifest_index = index
+            with self._chart_manifest_lock:
+                if self._chart_manifest_index is None:
+                    self._chart_manifest_index = self._chart_manifest_read()
         return self._chart_manifest_index
+
+    def _chart_manifest_read(self) -> Dict[str, str]:
+        index: Dict[str, str] = {}
+        path = self.chart_manifest_path
+        if path and path.exists():
+            with open(path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        index[entry['key']] = entry.get('filename', '')
+                    except Exception:
+                        continue
+        return index
 
     def _chart_manifest_add(self, entry: Dict) -> None:
         with self._chart_manifest_lock:
-            index = self._chart_manifest_load()
+            if self._chart_manifest_index is None:
+                self._chart_manifest_index = self._chart_manifest_read()
+            index = self._chart_manifest_index
             index[entry['key']] = entry.get('filename', '')
             self.chart_manifest_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.chart_manifest_path, 'a', encoding='utf-8') as f:
@@ -2054,8 +2292,14 @@ class ChartSlicer:
                     return
                 slug, uri_name, half = ident
                 if uri_name in names_seen:
-                    self.log(f"      ⚠ chart URI collision within {location} {uri_name} - keeping first file")
-                    continue
+                    # Two source files resolving to one chart key means the
+                    # half rule failed to tell them apart. Publishing
+                    # whichever glob order delivered first silently dropped
+                    # the other half; treat it as a failed group instead.
+                    self.log(f"      ✗ chart URI collision within {location}: {src_file.name} also maps to "
+                             f"{uri_name} - refusing to publish either (fix the half rule or the catalog)")
+                    self.stats['chart_pmtiles_failed'] = self.stats.get('chart_pmtiles_failed', 0) + 1
+                    return
                 names_seen.add(uri_name)
                 key = f"chart/{slug}/{uri_name}"
                 out_pm = self.chart_pmtiles_dir / slug / f"{uri_name}.pmtiles"
@@ -2495,88 +2739,71 @@ class ChartSlicer:
 
     def _rebuild_vrt_library(self, all_locations: List[str]) -> Dict[str, Dict[str, List[Path]]]:
         """
-        Rebuild vrt_library from existing temp VRTs for resume support.
+        Rebuild vrt_library from existing temp warps for resume support.
 
-        Scans temp_dir for previously created location VRTs so that
-        resuming an interrupted run can reuse existing intermediates.
+        Only temps that carry a provenance sidecar (see _georef_fingerprint)
+        are restored, and only when that sidecar names a row that still
+        exists for the date with an identical fingerprint. Everything else
+        is left on disk but ignored: a warp from a retired alternate, a temp
+        made before a GCP correction, or a source-side VRT (`_src.vrt`,
+        `_srcgcp.vrt`) that a warped VRT depends on must never become a
+        mosaic input on its own. Location comes from the sidecar, never from
+        a filename prefix (`washington_` also matches `washington_dc_*`).
 
         Returns:
-            Dict mapping location -> date -> list of VRT/TIF paths
+            Dict mapping normalized location -> date -> list of warp paths
         """
         vrt_library: Dict[str, Dict[str, List[Path]]] = defaultdict(dict)
 
         if not self.temp_dir.exists():
             return vrt_library
 
-        self.log("Rebuilding VRT library from existing temp files...")
-
-        # Scan date subdirectories in temp_dir
-        date_dirs = [d for d in self.temp_dir.iterdir() if d.is_dir()]
+        self.log("Rebuilding warp library from existing temp files...")
+        all_norm = {self.normalize_name(loc) for loc in all_locations} | set(all_locations)
 
         found_count = 0
-        for date_dir in date_dirs:
+        unverified = 0
+        for date_dir in (d for d in self.temp_dir.iterdir() if d.is_dir()):
             date = date_dir.name
-
-            # Skip non-date directories (simple validation: should contain hyphen)
             if '-' not in date:
                 continue
+            rows = self.dole_data.get(date, [])
+            if not rows:
+                continue
+            by_loc_file = {}
+            for rec in rows:
+                by_loc_file.setdefault((self.normalize_name(rec.get('location') or ''),
+                                        rec.get('filename') or ''), []).append(rec)
 
-            # Collect per-location warped outputs (TIF/VRT) and fall back to combined VRTs
-            combined_vrt_by_loc = {}
-
-            for vrt_file in date_dir.glob("*.vrt"):
-                # Skip mosaic VRTs
-                if vrt_file.name.startswith("mosaic_"):
+            for temp in list(date_dir.glob("*.tif")) + list(date_dir.glob("*.vrt")):
+                name = temp.name
+                if name.startswith("mosaic_") or name.endswith(("_rgba.vrt", "_src.vrt", "_srcgcp.vrt")):
                     continue
-                # Skip RGBA intermediate VRTs
-                if "_rgba.vrt" in vrt_file.name:
+                side = self._read_sidecar(temp)
+                if not side or side.get('full_sheet'):
+                    unverified += 1
                     continue
-                # NOTE: world-width (pathological) filtering is deferred to mosaic-input
-                # assembly (see process_all_dates) so this rebuild stays pure filesystem
-                # globbing with no GDAL opens.
-
-                # Track per-location combined VRTs: {location}_{date}.vrt
-                stem = vrt_file.stem
-                if stem.endswith(f"_{date}"):
-                    location = stem[:-len(f"_{date}")]
-                    if location in all_locations or self.normalize_name(location) in all_locations:
-                        norm_loc = self.normalize_name(location)
-                        combined_vrt_by_loc[norm_loc] = vrt_file
+                norm_loc = side.get('norm_loc') or self.normalize_name(side.get('location') or '')
+                if norm_loc not in all_norm:
                     continue
-
-                # Treat other VRTs as individual warped outputs: {location}_{original_stem}.vrt
-                for loc in all_locations:
-                    if stem.startswith(f"{loc}_"):
-                        if date not in vrt_library.get(loc, {}):
-                            vrt_library[loc][date] = []
-                        vrt_library[loc][date].append(vrt_file)
-                        found_count += 1
-                        break
-
-            # Collect warped TIFs: {location}_{original_stem}.tif
-            for tif_file in date_dir.glob("*.tif"):
-                stem = tif_file.stem
-                for loc in all_locations:
-                    if stem.startswith(f"{loc}_"):
-                        if date not in vrt_library.get(loc, {}):
-                            vrt_library[loc][date] = []
-                        vrt_library[loc][date].append(tif_file)
-                        found_count += 1
-                        break
-
-            # If no individual warped outputs were found, fall back to per-location combined VRTs
-            for norm_loc, loc_vrt in combined_vrt_by_loc.items():
-                if date in vrt_library.get(norm_loc, {}):
+                candidates = by_loc_file.get((norm_loc, side.get('filename') or ''), [])
+                shapefile = Path(side['shapefile']) if side.get('shapefile') else None
+                input_path = Path(side.get('input') or '')
+                if not any(self._georef_fingerprint(input_path, rec, shapefile, False) == side.get('fingerprint')
+                           for rec in candidates):
+                    unverified += 1
                     continue
-                vrt_library[norm_loc][date] = [loc_vrt]
+                vrt_library[norm_loc].setdefault(date, []).append(temp)
                 found_count += 1
 
         if found_count > 0:
-            # Count unique location-date pairs
             total_pairs = sum(len(dates) for dates in vrt_library.values())
             self.log(f"  Restored {total_pairs} location-date entries from {len(vrt_library)} locations")
         else:
-            self.log("  No existing VRTs found (fresh run)")
+            self.log("  No reusable warp temps found (fresh run)")
+        if unverified:
+            self.log(f"  {unverified} temp file(s) ignored: no provenance sidecar or no matching current row "
+                     f"(they are re-warped on demand)")
 
         return vrt_library
 
@@ -2774,12 +3001,25 @@ class ChartSlicer:
                         if not gcp_context:
                             shp_path = self._row_shapefile(rec)
                             if not shp_path:
+                                # This row cannot warp; try the next alternate
+                                # like every other per-row failure does. Marking
+                                # the whole group done here made the mosaic pass
+                                # disagree with the chart pass, which does move
+                                # on to the next alternate (2026-09-08 audit).
                                 self.log(
                                     f"    {location} (edition {edition}){attempt_label}: "
                                     "no valid GCP context and no cutline shapefile"
                                 )
-                                state['done'] = True
+                                state['next_index'] += 1
                                 made_progress = True
+                                if state['next_index'] < len(state['records']):
+                                    self.log(f"    {location} (edition {edition}): trying next duplicate option")
+                                else:
+                                    self.log(
+                                        f"    ✗ {location} (edition {edition}): all "
+                                        f"{len(state['records'])} option(s) exhausted - "
+                                        f"location will be missing from {date}"
+                                    )
                                 continue
 
                         # Find source files (use filename from CSV if available)
@@ -2807,6 +3047,7 @@ class ChartSlicer:
                         attempt_map[attempt_id] = state
 
                         # Prepare warp jobs for this record attempt
+                        found_files = self._guard_container_members(rec, location, found_files, shp_path, gcp_context)
                         for src_file_info in found_files:
                             jobs = self._prepare_warp_job(
                                 src_file_info,
@@ -2984,12 +3225,17 @@ class ChartSlicer:
             # (e.g. a renamed rawtiffs dir), which opens fine but explodes with
             # IReadBlock errors mid-mosaic. _is_reusable_output force-reads the
             # bottom strip so those (and near-world-width warps) are caught here.
+            # Deterministic input order: sorted locations, then sorted file
+            # names within a location. gdalwarp composites last-source-wins,
+            # so half-sheet seams and same-location overlaps must not follow
+            # thread completion order (they did, via as_completed).
             mosaic_sources = []
-            for location in all_locations:
+            for location in sorted(all_locations):
                 entries = vrt_library.get(location, {}).get(date)
                 if not entries:
                     continue
                 candidates = entries if isinstance(entries, list) else [entries]
+                candidates = sorted(candidates, key=lambda p: p.name)
                 for entry in candidates:
                     if not self._is_reusable_output(entry):
                         self.log(f"      Warning: Skipping stale/unreadable mosaic source: {entry.name}")
@@ -3013,11 +3259,28 @@ class ChartSlicer:
                     self.log(f"  ✓✓✓ {date.upper()} GEOTIFF COMPLETE")
                 else:
                     self.log(f"  ✗ Mosaic GeoTIFF creation failed")
+                    # A mosaic read failure usually means a corrupt warp temp.
+                    # Remove any input that no longer passes the full-read
+                    # probe so the next --resume re-warps it instead of
+                    # replaying the same multi-hour failure.
+                    for src in mosaic_sources:
+                        if src.suffix.lower() == '.tif' and not self._is_reusable_output(src):
+                            self.log(f"    ↻ removing unreadable warp temp {src.name} so resume re-warps it")
+                            try:
+                                src.unlink(missing_ok=True)
+                            except OSError:
+                                pass
             else:
                 self.log(f"  Skipping {date} - no data available")
 
         if chart_backlog:
             self.emit_chart_pmtiles_bulk(chart_backlog)
+
+        if self.chart_collisions:
+            self.log(f"\n✗ {len(self.chart_collisions)} chart group(s) NOT published: two source files "
+                     f"resolved to one chart key (half rule could not tell them apart):")
+            for date_key, location, uri_name, fname in self.chart_collisions:
+                self.log(f"    {date_key}  {location}  {uri_name}  <- {fname}")
 
         self.log("\n=== Processing Complete ===")
 
@@ -3261,11 +3524,11 @@ Examples:
             Path(__file__).resolve().parent.parent / "worklists" / "data" / "chart_pmtiles" / "manifest.jsonl")
         slicer.keep_chart_temp = args.keep_chart_temp
         slicer.charts_only = args.charts_only
+        print(f"Chart pmtiles: mirror={args.chart_pmtiles} temp={chart_temp} "
+              f"manifest={slicer.chart_manifest_path}")
     elif args.charts_only:
         print("ERROR: --charts-only requires --chart-pmtiles.")
         sys.exit(1)
-        print(f"Chart pmtiles: mirror={args.chart_pmtiles} temp={chart_temp} "
-              f"manifest={slicer.chart_manifest_path}")
 
     # Map resampling algorithm
     resample_map = {

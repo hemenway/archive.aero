@@ -2,7 +2,7 @@
 <!--
   REGRESSION GUARD: CompositePMTilesLayer self-double-buffering flicker fix.
 
-  What must not regress (see index.html around lines 380-523):
+  What must not regress (index.html, class CompositePMTilesLayer):
     - setSources() repaints EXISTING tile canvases in place via _renderTile()
       instead of GridLayer.redraw() (redraw destroys/recreates tiles and briefly
       exposes the basemap -> flicker).
@@ -12,14 +12,20 @@
     - A render whose version !== this.sourceVersion returns early WITHOUT touching
       the canvas (a newer setSources supersedes it).
 
-  This file inlines a FAITHFUL minimal copy of CompositePMTilesLayer + LRUCache
-  (the _renderTile double-buffer logic is byte-for-byte the same as index.html)
-  and drives it with mock sources that return solid-color image bytes after a
-  controllable delay, then samples a tile's center pixel DURING a swap to prove
-  the old frame's pixels persist (basemap never exposed).
+  This file loads the SHIPPED classes from ../index.html at test time (Utils,
+  LRUCache, DeviceInfo, CompositePMTilesLayer are cut out of the page source and
+  evaluated here), so the guard always exercises the code that is deployed.
+  An inlined copy went stale once (2026-09-08 audit: the copy predated the
+  per-archive zoom clamp, bounds cull and deduped fetches, so a regression in
+  the real _renderTile could not fail this page). Mock sources return
+  solid-color image bytes after a controllable delay; a tile's center pixel is
+  sampled DURING a swap to prove the old frame's pixels persist.
 
-  Open in a browser. A big PASS/FAIL banner renders in the DOM; details go to the
-  console. Runnable headless via Puppeteer/Playwright by reading window.__RESULT__.
+  Serve the repo over HTTP and open tests/flicker-regression-guard.html (the
+  page fetches ../index.html, which file:// blocks):
+      python3 -m http.server 8000   ->   http://localhost:8000/tests/flicker-regression-guard.html
+  A big PASS/FAIL banner renders in the DOM; details go to the console.
+  Runnable headless via Puppeteer/Playwright by reading window.__RESULT__.
 -->
 <html>
 <head>
@@ -81,165 +87,51 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // ---------------------------------------------------------------------------
-  // FAITHFUL MINIMAL COPY of index.html classes.
-  // _renderTile is IDENTICAL to the shipped implementation (the invariant under
-  // test). Anything simplified here is unrelated to the double-buffer path.
-  // NOTE: getZxy in the mocks returns real PNG bytes and _prepareBitmap decodes
-  // them as image/png (the app uses webp; the decode path is format-agnostic via
-  // createImageBitmap/Image, so PNG is a faithful stand-in for the test).
+  // Load the SHIPPED classes from ../index.html. Each block is cut out of the
+  // page source by brace matching and evaluated in this page's global scope, so
+  // the object under test is the deployed implementation, never a copy.
   // ---------------------------------------------------------------------------
-  class LRUCache {
-    constructor(limit = 500, onEvict = null) {
-      this.limit = Math.max(1, limit);
-      this.map = new Map();
-      this.onEvict = onEvict;
+  function cutBlock(src, marker, closer) {
+    const at = src.indexOf(marker);
+    if (at < 0) throw new Error(`index.html: cannot find "${marker}"`);
+    const open = src.indexOf('{', at);
+    let depth = 0, i = open, inStr = null, inTpl = 0;
+    for (; i < src.length; i++) {
+      const ch = src[i], prev = src[i - 1];
+      if (inStr) { if (ch === inStr && prev !== '\\') inStr = null; continue; }
+      if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue; }
+      if (ch === '/' && src[i + 1] === '/') { i = src.indexOf('\n', i); continue; }
+      if (ch === '/' && src[i + 1] === '*') { i = src.indexOf('*/', i) + 1; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') { depth--; if (depth === 0) break; }
     }
-    get(key) {
-      if (!this.map.has(key)) return null;
-      const value = this.map.get(key);
-      this.map.delete(key);
-      this.map.set(key, value);
-      return value;
-    }
-    set(key, value) {
-      if (this.map.has(key)) this.map.delete(key);
-      this.map.set(key, value);
-      while (this.map.size > this.limit) {
-        const oldestKey = this.map.keys().next().value;
-        if (oldestKey === undefined) break;
-        const evicted = this.map.get(oldestKey);
-        this.map.delete(oldestKey);
-        if (this.onEvict) this.onEvict(oldestKey, evicted);
-      }
-    }
+    const tail = closer ? src.indexOf(closer, i) + closer.length : i + 1;
+    return src.slice(at, tail);
   }
 
-  class CompositePMTilesLayer extends L.GridLayer {
-    constructor(options = {}) {
-      super(options);
-      this.sources = [];
-      this.sourceVersion = 0;
-      this.maxNativeZoom = options.maxNativeZoom ?? 11;
-      this.useImageBitmap = options.useImageBitmap ?? ('createImageBitmap' in window);
-      this.tileDataCache = options.tileDataCache || null;
-      this.tileBitmapCache = options.tileBitmapCache || null;
-      // GUARD instrumentation only (not present in production): trip a flag if
-      // anything ever calls redraw() as part of a source change.
-      this._redrawCalls = 0;
-    }
-
-    // Instrumented override: prove setSources never triggers redraw().
-    redraw() {
-      this._redrawCalls++;
-      return super.redraw();
-    }
-
-    setSources(sources) {
-      this.sources = sources || [];
-      const version = ++this.sourceVersion;
-      return this._repaintTiles(version);
-    }
-
-    _repaintTiles(version) {
-      if (!this._map) return Promise.resolve();
-      const renders = [];
-      for (const key in this._tiles) {
-        const tileObj = this._tiles[key];
-        if (tileObj && tileObj.el) {
-          renders.push(this._renderTile(tileObj.el, tileObj.coords, version));
-        }
-      }
-      return Promise.all(renders);
-    }
-
-    _normalizeCoords(coords) {
-      let z = coords.z, x = coords.x, y = coords.y;
-      let scale = 1, offsetX = 0, offsetY = 0;
-      if (z > this.maxNativeZoom) {
-        const zoomDiff = z - this.maxNativeZoom;
-        const divisor = Math.pow(2, zoomDiff);
-        offsetX = ((x % divisor) + divisor) % divisor;
-        offsetY = ((y % divisor) + divisor) % divisor;
-        z = this.maxNativeZoom;
-        x = Math.floor(x / divisor);
-        y = Math.floor(y / divisor);
-        scale = divisor;
-      }
-      return { z, x, y, scale, offsetX, offsetY };
-    }
-
-    async _prepareBitmap(data, cacheKey) {
-      if (cacheKey && this.tileBitmapCache) {
-        const cached = this.tileBitmapCache.get(cacheKey);
-        if (cached) return cached;
-      }
-      const blob = new Blob([data], { type: 'image/png' });
-      if (this.useImageBitmap && 'createImageBitmap' in window) {
-        const bitmap = await createImageBitmap(blob);
-        if (cacheKey && this.tileBitmapCache) this.tileBitmapCache.set(cacheKey, bitmap);
-        return bitmap;
-      }
-      return await new Promise(resolve => {
-        const img = new Image();
-        const url = URL.createObjectURL(blob);
-        img.onload = () => { img._objectUrl = url; resolve(img); };
-        img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-        img.src = url;
-      });
-    }
-
-    createTile(coords, done) {
-      const tile = document.createElement('canvas');
-      tile.width = 256;
-      tile.height = 256;
-      this._renderTile(tile, coords, this.sourceVersion).then(() => done(null, tile));
-      return tile;
-    }
-
-    // ---- IDENTICAL to index.html _renderTile (the double-buffer invariant) ----
-    async _renderTile(canvas, coords, version) {
-      const ctx = canvas.getContext('2d');
-      const placement = this._normalizeCoords(coords);
-      const { z, x, y } = placement;
-      const sourceSize = 256 / placement.scale;
-      const sourceX = placement.offsetX * sourceSize;
-      const sourceY = placement.offsetY * sourceSize;
-
-      const sourcesSnapshot = this.sources.slice();
-      const fetched = await Promise.all(sourcesSnapshot.map(async source => {
-        const cacheKey = source.key ? `${source.key}|${z}|${x}|${y}` : '';
-        let tileData = cacheKey && this.tileDataCache ? this.tileDataCache.get(cacheKey) : null;
-        if (!tileData) {
-          try {
-            const result = await source.pmtiles.getZxy(z, x, y);
-            if (result && result.data) {
-              tileData = result.data;
-              if (cacheKey && this.tileDataCache) this.tileDataCache.set(cacheKey, tileData);
-            }
-          } catch (e) { /* ignore missing tiles */ }
-        }
-        return { cacheKey, tileData };
-      }));
-
-      // A newer setSources() superseded us: leave existing pixels untouched.
-      if (!this._map || version !== this.sourceVersion) return;
-
-      const bitmaps = await Promise.all(fetched.map(({ cacheKey, tileData }) =>
-        tileData ? this._prepareBitmap(tileData, cacheKey).catch(() => null) : Promise.resolve(null)
-      ));
-      if (!this._map || version !== this.sourceVersion) return;
-
-      // Single synchronous paint: clear old frame and stamp new one together.
-      ctx.clearRect(0, 0, 256, 256);
-      let hasChartData = false;
-      for (const bitmap of bitmaps) {
-        if (!bitmap) continue;
-        hasChartData = true;
-        ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
-        if (bitmap._objectUrl) { URL.revokeObjectURL(bitmap._objectUrl); bitmap._objectUrl = null; }
-      }
-      canvas._hasChartData = hasChartData;
-    }
+  let Utils, LRUCache, DeviceInfo, CompositePMTilesLayer, ShippedLayer;
+  async function loadShipped() {
+    const res = await fetch('../index.html', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`fetch ../index.html -> HTTP ${res.status}`);
+    const html = await res.text();
+    const blocks = [
+      cutBlock(html, 'const DeviceInfo = (() => {', ')();'),
+      cutBlock(html, 'const Utils = {', ';'),
+      cutBlock(html, 'class LRUCache {'),
+      cutBlock(html, 'class CompositePMTilesLayer extends L.GridLayer {'),
+    ];
+    // CONFIG is only touched by Utils.buildPMTilesUrl, which the mocks never call.
+    const factory = new Function('L', 'pmtiles', 'CONFIG',
+      blocks.join('\n') + '\nreturn { Utils, LRUCache, DeviceInfo, CompositePMTilesLayer };');
+    const shipped = factory(window.L, window.pmtiles, { baseUrl: '' });
+    ({ Utils, LRUCache, DeviceInfo, CompositePMTilesLayer } = shipped);
+    // GUARD instrumentation only: trip a counter if anything ever calls
+    // redraw() as part of a source change. Everything else is the shipped code.
+    ShippedLayer = class extends CompositePMTilesLayer {
+      constructor(options) { super(options); this._redrawCalls = 0; }
+      redraw() { this._redrawCalls++; return super.redraw(); }
+    };
+    log(`loaded shipped classes from ../index.html (${html.length} bytes)`, 'info');
   }
 
   // ---------------------------------------------------------------------------
@@ -264,19 +156,19 @@
   function makeSource(key, rgb) {
     const bytes = solidColorPngBytes(rgb[0], rgb[1], rgb[2]);
     const state = { key, delay: 0, calls: 0 };
-    const src = {
-      key,
-      _state: state,
-      pmtiles: {
-        async getZxy(z, x, y) {
-          state.calls++;
-          if (state.delay > 0) await sleep(state.delay);
-          // Return a fresh copy so mutation elsewhere can't corrupt the source.
-          return { data: bytes.slice() };
-        }
+    // Same shape the app hands setSources(): a key, a thunk returning the
+    // PMTiles instance (header answers the per-archive zoom clamp), no bounds
+    // (so the spatial cull keeps the source) and no solo clip ring.
+    const pm = {
+      async getHeader() { return { maxZoom: 11, minZoom: 0 }; },
+      async getZxy(z, x, y) {
+        state.calls++;
+        if (state.delay > 0) await sleep(state.delay);
+        // Return a fresh copy so mutation elsewhere can't corrupt the source.
+        return { data: bytes.slice() };
       }
     };
-    return src;
+    return { key, _state: state, getPMTiles: () => pm, bounds: null, clipRing: null };
   }
 
   // Sample the center pixel of a specific tile canvas. Returns {r,g,b,a}.
@@ -315,7 +207,13 @@
   // The test
   // ---------------------------------------------------------------------------
   async function run() {
-    log('Booting Leaflet map + CompositePMTilesLayer', 'info');
+    try {
+      await loadShipped();
+    } catch (e) {
+      assert('shipped classes load from ../index.html (serve over HTTP, not file://)', false, String(e));
+      return finish();
+    }
+    log('Booting Leaflet map + shipped CompositePMTilesLayer', 'info');
 
     const map = L.map('map', {
       center: [0, 0],
@@ -340,11 +238,12 @@
     }))();
     baseLayer.addTo(map);
 
-    const layer = new CompositePMTilesLayer({
+    const layer = new ShippedLayer({
       maxNativeZoom: 11,
-      // Force the synchronous-decode-friendly ImageBitmap path when available.
+      useImageBitmap: 'createImageBitmap' in window,
       tileDataCache: new LRUCache(200),
-      tileBitmapCache: new LRUCache(200)
+      tileBitmapCache: new LRUCache(200),
+      tileFetchInflight: new Map()
     });
     layer.addTo(map);
 

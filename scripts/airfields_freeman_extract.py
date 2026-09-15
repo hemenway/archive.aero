@@ -34,7 +34,11 @@ BASE_URL = "https://www.airfields-freeman.com/"
 
 SEP_RE = re.compile(r"_{20,}")
 # integer degrees occur ("39.79, -86"); digit-boundary guards keep years etc. out
-DEC_RE = re.compile(r"(?<![\d.])(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-\d{1,3}(?:\.\d+)?)(?![\d.])")
+# Longitude may be positive: Attu/Shemya (~173E) and Guam/Saipan (~145E)
+# entries were dropped when the regex demanded a leading '-'. A positive
+# longitude is accepted only when it is east of 100E and carries a decimal
+# fraction, so runway dimensions like "12, 100" never read as coordinates.
+DEC_RE = re.compile(r"(?<![\d.])(-?\d{1,2}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)(?![\d.])")
 NW_RE = re.compile(
     r"(\d{1,2}\.\d+)\s*(?:North|N\.?)\s*/\s*(\d{1,3}\.\d+)\s*(?:(West|W\.?)|(East|E\.?))",
     re.IGNORECASE,
@@ -66,7 +70,9 @@ def walk_page(soup):
 
 
 def plausible(lat, lon):
-    return 15.0 <= lat <= 75.0 and (60.0 <= abs(lon) <= 180.0)
+    # Latitude reaches down to Guam (13.4N); American Samoa (14S) is the
+    # southernmost US territory with an airfield page.
+    return -15.0 <= lat <= 75.0 and (60.0 <= abs(lon) <= 180.0)
 
 
 def bridge_digits(s):
@@ -121,6 +127,8 @@ def find_coords(segment):
     hits = []
     for m in DEC_RE.finditer(bridged):
         lat, lon = float(m.group(1)), float(m.group(2))
+        if lon > 0 and (lon < 100.0 or "." not in m.group(2)):
+            continue
         if plausible(lat, lon):
             hits.append((*orig_span(m), lat, lon, "decimal"))
     for m in NW_RE.finditer(bridged):

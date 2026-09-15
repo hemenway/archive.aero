@@ -24,7 +24,13 @@ gdal.UseExceptions()
 import dole_v2
 
 RAW = Path("/Volumes/projects/rawtiffs")
-SCRATCH = Path("/private/tmp/claude-501/-Users-ryanhemenway-archive-aero/979396e4-d26f-44e2-a132-01bc48223900/scratchpad")
+REPO = Path(__file__).resolve().parent.parent
+# Transfer results live under the gitignored worklists/data/ (they used
+# to be written to a session scratchpad that no longer exists);
+# override with the first command-line argument.
+TRANSFER_DIR = REPO / "worklists" / "data" / "georef_transfer"
+TRANSFER_DIR.mkdir(parents=True, exist_ok=True)
+TRANSFER = Path(sys.argv[1]) if len(sys.argv) > 1 else TRANSFER_DIR / "georef_transfer_hi.json"
 SIB = RAW / "05-14-2026/aeronav.faa.gov_visual_05-14-2026_sectional-files_Hawaiian_Islands/Hawaiian Islands SEC.tif"
 TARGETS = [
     "11-27-2025/web.archive.org_web_20251223180751_aeronav.faa.gov_visual_11-27-2025_PDFs_Hawaiian_Islands.tif",
@@ -233,6 +239,6 @@ for rel in TARGETS:
     }
     print(f"OK {fn[:60]} angle={deg} inl={inl.sum()}/{n} rmax={rmax:.1f}px scale={results[fn]['scale']}")
 
-with open(SCRATCH / "georef_transfer_hi.json", "w") as f:
+with open(TRANSFER, "w") as f:
     json.dump(results, f, indent=1)
 print("done")

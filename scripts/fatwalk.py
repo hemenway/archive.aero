@@ -128,6 +128,32 @@ class Fat32:
             raise IOError(f"chain ended {need} bytes short of directory size")
 
 
+def content_ok(name, blob):
+    """'ok' when the carved bytes carry the format's own structure."""
+    ext = os.path.splitext(name)[1].lower()
+    if not blob:
+        return "empty"
+    if ext in (".jpg", ".jpeg"):
+        return "ok" if blob[:2] == b"\xff\xd8" and blob.rstrip(b"\0")[-2:] == b"\xff\xd9" else "no JPEG SOI/EOI"
+    if ext in (".tif", ".tiff"):
+        if blob[:4] not in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+"):
+            return "no TIFF magic"
+        if blob[:4] in (b"II*\x00", b"MM\x00*"):
+            le = blob[:2] == b"II"
+            off = struct.unpack("<I" if le else ">I", blob[4:8])[0]
+            if off + 2 > len(blob) or struct.unpack("<H" if le else ">H", blob[off:off + 2])[0] == 0:
+                return "first IFD unreadable"
+        return "ok"
+    if ext == ".zip":
+        return "ok" if b"PK\x05\x06" in blob[-65557:] else "no ZIP end-of-central-directory"
+    if ext == ".png":
+        return "ok" if blob[:8] == b"\x89PNG\r\n\x1a\n" and blob.rstrip(b"\0")[-8:-4] == b"IEND" else "no PNG signature/IEND"
+    if ext in (".gti", ".gtj", ".fil", ".fil2", ".txt", ".csv"):
+        head = blob[:4096]
+        return "ok" if all(32 <= b < 127 or b in (9, 10, 13) for b in head) else "non-text bytes in a text file"
+    return "ok"  # unknown format: contiguity is all we can check
+
+
 def main():
     cmd, img = sys.argv[1], sys.argv[2]
     fs = Fat32(img)
@@ -158,7 +184,14 @@ def main():
     elif cmd == "carve":
         # deleted files: FAT chain is zeroed on delete, so recover by
         # contiguity from the surviving (first_cluster, size) -- but only
-        # when no cluster in that run has been reallocated to a live file.
+        # when no cluster in that run has been reallocated to a live file,
+        # AND the carved bytes pass the format's own structure check:
+        # zeroed FAT entries prove nothing about content (the ACASIS lesson).
+        # Windows FAT32 drivers zero DIR_FstClusHI on delete, so a deleted
+        # entry whose first cluster reads < 65536 while the volume has more
+        # clusters than that may be pointing 64K-cluster-multiples short of
+        # its real data: try each candidate high word and keep the one whose
+        # bytes validate.
         dirpath, outdir = sys.argv[3], sys.argv[4]
         os.makedirs(outdir, exist_ok=True)
         start = fs.resolve(dirpath)
@@ -168,18 +201,49 @@ def main():
                 continue
             total += 1
             n = -(-size // fs.clb)
-            reused = sum(1 for c in range(first, first + n)
-                         if c >= fs.nclus or fs.ent(c) != 0)
-            print(f"{name:<36} {size:>10} {wdate} c{first:<8} "
-                  + ("clean" if reused == 0 else f"REUSED {reused}/{n} clusters"))
-            if reused == 0:
+            candidates = [first]
+            if first < 0x10000 and fs.nclus > 0x10000:
+                candidates += [first | (hi << 16) for hi in range(1, (fs.nclus >> 16) + 1)]
+            result = None
+            for cand in candidates:
+                if cand + n > fs.nclus:
+                    continue
+                reused = sum(1 for c in range(cand, cand + n) if fs.ent(c) != 0)
+                if reused:
+                    result = result or ("reused", cand, reused)
+                    continue
+                chunks, need, truncated = [], size, False
+                for c in range(cand, cand + n):
+                    data = fs.read_clus(c)
+                    if data is None:
+                        truncated = True
+                        break
+                    chunks.append(data[:min(fs.clb, need)])
+                    need -= fs.clb
+                if truncated:
+                    result = result or ("truncated", cand, 0)
+                    continue
+                blob = b"".join(chunks)
+                verdict = content_ok(name, blob)
+                if verdict == "ok":
+                    result = ("ok", cand, blob)
+                    break
+                result = result if result and result[0] == "ok" else ("bad-content", cand, verdict)
+            if result and result[0] == "ok":
                 carved += 1
+                cand, blob = result[1], result[2]
+                note = "" if cand == first else f" (FstClusHI restored: c{first} -> c{cand})"
+                print(f"{name:<36} {size:>10} {wdate} c{cand:<8} clean, content verified{note}")
                 with open(os.path.join(outdir, name), "wb") as out:
-                    need = size
-                    for c in range(first, first + n):
-                        out.write(fs.read_clus(c)[:min(fs.clb, need)])
-                        need -= fs.clb
-        print(f"{carved}/{total} deleted files carved clean to {outdir}")
+                    out.write(blob)
+            elif result:
+                why = {"reused": f"REUSED {result[2]}/{n} clusters",
+                       "truncated": "runs past end of image",
+                       "bad-content": f"contiguous but content check failed: {result[2]}"}[result[0]]
+                print(f"{name:<36} {size:>10} {wdate} c{first:<8} {why}")
+            else:
+                print(f"{name:<36} {size:>10} {wdate} c{first:<8} no cluster candidate fits the image")
+        print(f"{carved}/{total} deleted files carved with verified content to {outdir}")
     else:
         raise SystemExit(__doc__)
 

@@ -18,6 +18,9 @@ import ROUTES from "./route_map.json" with { type: "json" };
 export const PREFIX = "/atc";
 export const INDEX_NAMES = ["index.html", "index.htm", "Default.htm"];
 const { rules: RULES, alias: ALIAS, key: KEYS, drop: DROP } = ROUTES;
+// Every canonical URI the map knows (alias targets + explicit keys): a path
+// that IS canonical is served, never redirected by the shape rules below.
+const CANON = new Set([...Object.values(ALIAS), ...Object.keys(KEYS)]);
 
 export const GONE_RE =
   /^\/(wp-admin(\/|$)|wp-login\.php|xmlrpc\.php|wp-cron\.php|wp-json(\/|$)|forum(\/|$))/;
@@ -96,5 +99,33 @@ export function routeOldPath(path) {
     return { status: 410 };
   const canon = canonicalOf(path);
   if (canon && canon !== PREFIX + path) return { to: canon };
+  // A path that IS a canonical URI is served, whatever shape it has; its
+  // other slash spelling is an alias of it (one hop).
+  if (CANON.has(PREFIX + path)) return null;
+  if (CANON.has(PREFIX + alt)) return { to: PREFIX + alt };
+  const trimmed = path.endsWith("/") ? path : path + "/";
+  // The same page requested in canonical SHAPE but old spelling
+  // (/atc/class-photos/PhotoHome.htm, /atc/history/checklst.htm): the alias
+  // table is keyed by the old spelling, so without this lookup the serving
+  // side found the R2 key through keyCandidates and answered 200 at a
+  // non-canonical URI — the curated page living twice (2026-09-08 audit).
+  // Only explicit alias entries apply; rule-derived paths (the FrontPage
+  // tree's own .htm files) are canonical in their rule-mapped spelling.
+  if (oldShape) {
+    const c2 = ALIAS[oldShape] ?? ALIAS[oldAlt];
+    if (c2 && c2 !== PREFIX + path) return { to: c2 };
+  }
+  // A rule directory's root in its new spelling (/atc/history, /atc/history/,
+  // /atc/class-photos ...) is an alias of the canonical the map gave the old
+  // directory (/atc/History ...): one hop to one canonical, instead of a 404
+  // for the slashless form and a second 200 for the slashed one.
+  for (const [oldP, newP] of RULES) {
+    if (trimmed === newP.slice(PREFIX.length)) {
+      const c3 = ALIAS[oldP] ?? ALIAS[oldP.slice(0, -1)];
+      if (c3 && c3 !== PREFIX + path) return { to: c3 };
+    }
+  }
+  // The site root named as a file is the landing page: /atc/index.html -> /atc/
+  if (/^\/(index\.html?|Default\.htm)$/i.test(path)) return { to: PREFIX + "/" };
   return null;
 }

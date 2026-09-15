@@ -137,7 +137,6 @@ def main():
     by_loc = defaultdict(list)
     for r in rows:
         by_loc[norm(r["location"])].append(r)
-    existing_filenames = {r["filename"] for r in rows}
 
     planned = []
     for (outdir, loc, ed), recs in sorted(load_groups().items()):
@@ -160,6 +159,11 @@ def main():
         cutline = Counter(r["cutline"] for r in sibs if r["cutline"]).most_common(1)
         cutline = cutline[0][0] if cutline else ""
 
+        # Already held? (location, edition) — or date when the edition is
+        # unknown — never filename (the WAI ed 50 duplicate of 2026-08-27
+        # got in on a filename check).
+        held = dole_v2.find_same_chart(rows, loc_exact, date, ed)
+
         stem = f"{PARENT[outdir]}_{loc_exact.replace(' ', '_')}_{ed}"
         row = {k: "" for k in dole_v2.V2_FIELDS}
         row.update({
@@ -171,11 +175,11 @@ def main():
             "note": NOTE[outdir],
             "cutline": cutline,
         })
-        planned.append((row, outdir, stem, recs))
+        planned.append((row, outdir, stem, recs, held))
 
     print(f"{len(planned)} rows planned:")
-    for row, outdir, stem, recs in planned:
-        dupe = "  (ALREADY IN CSV - will skip)" if row["filename"] in existing_filenames else ""
+    for row, outdir, stem, recs, held in planned:
+        dupe = (f"  (ALREADY IN CSV as {held[0]['filename']} - will skip)" if held else "")
         exp = recs[0]["expire_date"]
         print(f"  {row['location']:<28} ed {row['edition']:<4} {row['date']} -> "
               f"{row['end_date']} (card expire {exp})  {len(recs)} tif(s)  "
@@ -183,7 +187,9 @@ def main():
 
     if args.copy:
         copied = skipped = 0
-        for row, outdir, stem, recs in planned:
+        for row, outdir, stem, recs, held in planned:
+            if held:
+                continue
             parent_dir = os.path.join(RAWTIFFS, PARENT[outdir])
             os.makedirs(parent_dir, exist_ok=True)
             readme = os.path.join(parent_dir, "README.txt")
@@ -202,11 +208,15 @@ def main():
         print(f"copied {copied} tifs into rawtiffs ({skipped} already present)")
 
     if args.write:
-        new_rows = [row for row, *_ in planned
-                    if row["filename"] not in existing_filenames]
+        new_rows = [row for row, _o, _s, _r, held in planned if not held]
         if not new_rows:
             print("no new rows to write")
             return
+        rechained = 0
+        for row in new_rows:
+            rechained += len(dole_v2.rechain_predecessor(rows, row["location"], row["date"]))
+        if rechained:
+            print(f"closed {rechained} predecessor row(s) at the new editions' start dates")
         os.makedirs(BACKUP_DIR, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         backup = os.path.join(BACKUP_DIR, f"master_dole_v2.csv.pre_ifly_sdcards_{stamp}.bak")

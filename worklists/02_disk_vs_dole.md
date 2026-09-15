@@ -11,6 +11,20 @@ Note: rawtiffs is the slicer's **only** source tree — there are no sibling ind
 This supersedes the older `unlogged_in_rawtiffs.csv` (2025-12) and complements the CLOSED
 `search_archive/missing_from_dole.csv` local audit (2026-07-14).
 
+> **2026-08-20 — re-audited both directions against the current dole: CLEAN.**
+> Re-runnable tool: `scripts/audit_disk_vs_dole.py` (same claim rules as this doc).
+> Reverse direction: **0 rows unresolvable** (the 11 Pack-12 JPGs were staged, §A done).
+> Forward direction: 13 unclaimed-and-unexplained files, every one dispositioned —
+> row-level record in `data/uncataloged_on_disk_2026-08-20.csv`. Highlights: the two
+> G4332 mysteries are **Grand Canyon VFR Aeronautical Charts** (2nd ed. 1998-09-10,
+> 3rd ed. 2001-04-19) → out of scope like the NARA GC air-tour specials; `ca000444.tif`
+> is the Boston 1955-05-26 **verso scanned without the v suffix**; WASP 423_02/427_02
+> are blank versos already noted in their _01 rows; the W. Aleutian 47_P print zip
+> duplicates the held ed-47 GeoTIFF zip; 3 NARA rg-237 `*_Inset_SEC_95` files stay out
+> under the no-insets policy (the Mariana/Samoan pair is the only Guam/Samoa content on
+> disk if that scope ever opens). Worklist 07's "31 on disk but uncataloged" is thereby
+> stale — everything real got rows during the July–August cataloging sessions.
+
 ## A. Dole rows NOT resolvable on disk — 11 rows (99.85% resolve) ⚠ FIX FIRST
 
 All 11 are the AVSIM **us_sectionals Pack 12** (Matt Fox) JPGs cataloged 2026-07-14 with
@@ -23,7 +37,8 @@ skips them ("No source files found"):
 **The files exist, they were never staged**: they're in
 `~/Downloads/us_sectionals_pack_12/` (with JGW/prj sidecars).
 
-- [ ] Copy the 11 JPGs into `/Volumes/projects/rawtiffs/` (bring the sidecars too).
+- [x] Copy the 11 JPGs into `/Volumes/projects/rawtiffs/` (bring the sidecars too) —
+  done (verified resolvable by the 2026-08-20 re-audit).
 - [ ] Note they're also on Worklist 04 (no GCPs) — georeference after staging.
 
 Plus one hidden hazard that "resolves" but will fail at runtime:
@@ -47,11 +62,11 @@ Plus one hidden hazard that "resolves" but will fail at runtime:
 
 ### The only genuinely unexplained files (2)
 
-- [ ] `G4332.G7.P6_1998_front.jpg` (52 MB) and `G4332.G7.P6_2001_front.jpg` (69 MB) —
-  LOC call-number-style scans at rawtiffs root. In neither the dole, the closed audit, nor
-  the additions report. Identify (call number G4332.G7 ≈ Gulf-coast region) and either
-  catalog or discard. *(G4332.G7.P6 is a Guam/Pacific-style call number pattern — open
-  them and read the margin before deciding.)*
+- [x] `G4332.G7.P6_1998_front.jpg` (52 MB) and `G4332.G7.P6_2001_front.jpg` (69 MB) —
+  **IDENTIFIED 2026-08-20 by reading the title blocks: Grand Canyon VFR Aeronautical
+  Chart (General Aviation)**, 2nd edition 1998-09-10 and 3rd edition 2001-04-19
+  (1:250,000, SFRA corridor/sector chart). Non-sectional product → out of scope, same
+  disposition as the NARA Grand Canyon air-tour specials. Kept on disk, not cataloged.
 
 ### Optional cleanups
 

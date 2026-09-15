@@ -277,8 +277,9 @@ def cmd_image(args):
     os.makedirs(out_dir, exist_ok=True)
     img = os.path.join(out_dir, "card.img")
     mapf = os.path.join(out_dir, "card.map")
-    disk = re.sub(r"^/dev/r?", "/dev/", dev).rstrip("0123456789") \
-        if re.search(r"s\d+$", dev) else re.sub(r"^/dev/r?", "/dev/", dev)
+    # /dev/rdisk6s1 -> /dev/disk6 (strip the partition slice "sN"; rstrip on
+    # digits alone left "/dev/disk6s", and diskutil then failed silently).
+    disk = re.sub(r"s\d+$", "", re.sub(r"^/dev/r?", "/dev/", dev))
     if os.geteuid() != 0:
         print("Raw device reads need root. Run:\n"
               f"  sudo {sys.executable} {os.path.abspath(__file__)} "
@@ -339,6 +340,28 @@ def jpeg_ok(buf, off, ln):
     return buf[off:off + 2] == b"\xff\xd8" if off + ln <= len(buf) else False
 
 
+def structure_check(path, data):
+    """Content validation per format, so a recovered file is counted only
+    when its own structure holds (captured clusters != intact file)."""
+    ext = os.path.splitext(path)[1].lower()
+    if not data:
+        return "empty"
+    if ext in (".jpg", ".jpeg"):
+        return "jpeg soi+eoi" if data[:2] == b"\xff\xd8" and data.rstrip(b"\0")[-2:] == b"\xff\xd9" else "JPEG STRUCTURE FAILED"
+    if ext in (".tif", ".tiff"):
+        return "tiff magic" if data[:4] in (b"II*\x00", b"MM\x00*", b"II+\x00", b"MM\x00+") else "TIFF MAGIC FAILED"
+    if ext == ".zip":
+        return "zip eocd" if b"PK\x05\x06" in data[-65557:] else "ZIP EOCD MISSING"
+    if ext in (".gti", ".gtj", ".fil", ".fil2"):
+        # Text index/georef files: printable ASCII lines, no NUL runs.
+        head = data[:4096]
+        return ("text ok" if b"\0" not in head and all(32 <= b < 127 or b in (9, 10, 13) for b in head)
+                else "TEXT STRUCTURE FAILED (binary/NUL content)")
+    if ext == ".dat":
+        return "tile container (validated against .fil below)"
+    return "not checked"
+
+
 def cmd_recover(args):
     fs = ExFat(args.image)
     find_bitmap(fs)
@@ -358,13 +381,21 @@ def cmd_recover(args):
         data = fs.read_clusters(cls, e["size"])
         rel = e["path"].lstrip("/").replace("..", "_")
         dst = os.path.join(out_root, rel)
+        # Deleted entries that share a path (every updater rewrite of the same
+        # bundle name) are separate generations. Keep the original name for
+        # the first one seen and disambiguate later ones by appending the
+        # source identifier (first cluster), never by silently overwriting.
+        if os.path.exists(dst):
+            base, ext = os.path.splitext(dst)
+            dst = f"{base}__cl{e['first_cluster']}{ext}"
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(dst, "wb") as fh:
             fh.write(data)
         manifest.append({**{k: e[k] for k in
                             ("path", "size", "first_cluster", "nofat", "mtime")},
                          "chain": how, "reused_clusters": reused,
-                         "n_clusters": len(cls), "out": dst})
+                         "n_clusters": len(cls), "out": dst,
+                         "verification": structure_check(dst, data)})
         recovered += 1
     # validate chart triples: .fil offsets must hit JPEG SOI in the .dat
     by_stem = {}

@@ -3,9 +3,13 @@
 *Generated 2026-07-16 from `/Volumes/projects/2026-07-14 slicer run/slicer_run.log`
 (161,719 lines; `L…` = log line numbers) + `processing_review_20260714_232303.csv`.*
 
-> **Tracked live:** sections A–E are mirrored as the checkbox to-do list in the
-> georef tool's Timeline sidebar (`scripts/1georef_toolv10.py`, items A1–E2, with
-> live dole-row matching). Done-state persists in `worklists/data/georef_todo.json`.
+> **Tracked live:** the open remainder of this list (+ worklist 04) is the checkbox
+> to-do in the georef tool's Timeline sidebar (`scripts/1georef_toolv10.py`,
+> `WORKLIST_TODOS`, live dole-row matching). Refreshed 2026-09-14: items A1–E2
+> that closed in July/August moved to a locked "Closed" section; open work is now
+> A1–A6 (hand GCPs), B1–B4 (catalog/tool fixes), C1 (Seward replacement scan).
+> Done-state persists in `worklists/data/georef_todo.json`. The timeline is the
+> tool's home screen since 2026-09-14 (`T` toggles it; `PORT=5002` runs a test copy).
 
 ## Run summary
 

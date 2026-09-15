@@ -11,6 +11,7 @@ import argparse
 import csv
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from analyze_dole import analyze_csv, build_file_index, resolve_tif_file
+import dole_v2
 from dole_v2 import LCC_TEMPLATE
 from dole_v2 import missing_required_fields as dole_v2_missing_required_fields
 
@@ -72,11 +74,13 @@ def _to_float(value):
 
 
 def _normalize_longitude(value):
+    # Clean only. This used to negate every positive longitude on every save
+    # (a western-hemisphere assumption): correct for CONUS scans, silent
+    # corruption for any GCP east of the antimeridian (western Aleutians).
+    # Hemisphere sign is the georef's business, not the editor's.
     numeric = _to_float(value)
     if numeric is None:
         return ""
-    if numeric > 0:
-        numeric = -numeric
     return str(numeric)
 
 
@@ -151,7 +155,19 @@ def load_csv_row_by_line(csv_path, line_num):
     raise RuntimeError(f"CSV row not found at line {line_num}: {csv_path}")
 
 
-def update_csv_row_by_line(csv_path, line_num, updates):
+def update_csv_row_by_line(csv_path, line_num, updates, expected_filename=None):
+    """Write `updates` (editor columns only) into the row at CSV line `line_num`.
+
+    - The row is addressed by ordinal, so its identity is checked against
+      `expected_filename` first: if the catalog was reordered under the
+      editor, the save is refused instead of landing on another chart.
+    - Only the keys present in `updates` are rewritten. A save that carries
+      no gcp*_px/py keys leaves the row's pixel GCPs alone (metadata-only
+      save while the image is missing or still decoding).
+    - The file is written to a sibling temp and renamed into place after a
+      row-count check, with the previous version kept as <csv>.bak, like
+      every other catalog writer (a crash mid-write used to truncate it).
+    """
     if not line_num or line_num < 2:
         raise ValueError(f"Invalid CSV line number: {line_num}")
 
@@ -166,23 +182,34 @@ def update_csv_row_by_line(csv_path, line_num, updates):
         raise RuntimeError(f"CSV row not found at line {line_num}: {csv_path}")
 
     row = rows[target_index]
-    normalized = normalize_editor_row(row)
+    if expected_filename is not None and _clean_value(row.get("filename")) != _clean_value(expected_filename):
+        raise RuntimeError(
+            f"CSV line {line_num} now holds {row.get('filename')!r}, not {expected_filename!r} - "
+            f"the catalog changed under the editor; reload before saving")
+
     for key, value in updates.items():
-        if key in normalized:
-            normalized[key] = _clean_value(value)
+        if key in CSV_EDITOR_FIELDS:
+            row[key] = _clean_value(value)
+    if "date" in updates:
+        row["date"] = _normalize_date_value(row.get("date"))
+    if "end_date" in updates:
+        row["end_date"] = _normalize_date_value(row.get("end_date"))
 
-    normalized["date"] = _normalize_date_value(normalized.get("date"))
-    normalized["end_date"] = _normalize_date_value(normalized.get("end_date"))
-
-    # Only the editor-managed columns are rewritten; the rest of the row
-    # (location, download_link, note, cutline, cutline_wkt, ...) is preserved.
-    for key in CSV_EDITOR_FIELDS:
-        row[key] = normalized.get(key, "")
-
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+    tmp_path = f"{csv_path}.tmp"
+    with open(tmp_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+    with open(tmp_path, "r", newline="", encoding="utf-8-sig") as f:
+        written = sum(1 for _ in csv.DictReader(f))
+    if written != len(rows):
+        os.remove(tmp_path)
+        raise RuntimeError(f"refusing to save: wrote {written} rows, expected {len(rows)}")
+    try:
+        shutil.copy2(csv_path, f"{csv_path}.bak")
+    except OSError:
+        pass
+    os.replace(tmp_path, csv_path)
 
 @dataclass
 class Segment:
@@ -919,7 +946,8 @@ class TimelinePreviewApp(tk.Tk):
             return False
 
         try:
-            update_csv_row_by_line(csv_path, seg.line_num, updates)
+            update_csv_row_by_line(csv_path, seg.line_num, updates,
+                                   expected_filename=seg.tif_filename or updates.get("filename"))
         except Exception as exc:
             messagebox.showerror("Save failed", f"Failed to save metadata to CSV:\n\n{csv_path}\n\n{exc}")
             self._set_status(f"Metadata save failed: {exc}")
@@ -1070,6 +1098,20 @@ class SegmentEditorWindow(tk.Toplevel):
         self.original_points_count = 0
         self.original_locked_points = []
         self.has_saved_locked_points = self._row_has_locked_points()
+        # Pixel GCPs are only written back once the image has been decoded
+        # and the saved points placed on it. Before that (file missing, or a
+        # multi-GB TIFF still loading) a save is metadata-only: it used to
+        # collect an empty point list and erase the row's four GCPs.
+        self.points_loaded = False
+        # Display frame = raw pixel frame (Pillow's auto-applied TIFF
+        # orientation undone) rotated by the row's `rotation`. The catalog
+        # stores gcp*_px/py in that DISPLAY frame — the georef tool authors
+        # them there and the slicer maps them to the raw frame itself
+        # (slicer.py, px_display_to_raw) — so the preview must show the same
+        # frame or saved points land on the wrong pixels.
+        self.rotation = dole_v2.row_rotation(self.row_data)
+        self.raw_width = None
+        self.raw_height = None
         self.last_render_size = None
         self.last_render_resample = None
         self.loupe_image = None
@@ -1480,7 +1522,11 @@ class SegmentEditorWindow(tk.Toplevel):
         self.seg.end_date = validated["end_date"]
         self.seg.end_date_missing = validated["end_date"] is None
         self.seg.edition = updates.get("edition") or "Unknown"
-        self.row_data = normalize_editor_row(updates)
+        # A metadata-only save carries no gcp*_px/py keys; keep the row's
+        # existing pixel GCPs in the editor state rather than blanking them.
+        merged = dict(self.row_data)
+        merged.update(updates)
+        self.row_data = normalize_editor_row(merged)
         self.original_metadata = {
             "date": updates.get("date", ""),
             "end_date": updates.get("end_date", ""),
@@ -1541,10 +1587,16 @@ class SegmentEditorWindow(tk.Toplevel):
         self.status_var.set("Loading image preview...")
         self._render_placeholder("Loading image preview...")
 
+        rotation = self.rotation
+
         def worker():
             try:
-                with Image.open(path) as img:
-                    rgb = img.convert("RGB")
+                # Raw frame (Pillow's auto-applied TIFF orientation undone),
+                # then the catalog rotation — the same frame the slicer
+                # constructs, so points drawn here line up with saved GCPs.
+                with dole_v2.open_raw(path) as img:
+                    raw_width, raw_height = img.size
+                    rgb = dole_v2.rotate_for_display(img.convert("RGB"), rotation)
                     original_width, original_height = rgb.size
                     if rgb.width > MAX_PREVIEW_WIDTH:
                         ratio = MAX_PREVIEW_WIDTH / float(rgb.width)
@@ -1554,6 +1606,8 @@ class SegmentEditorWindow(tk.Toplevel):
                         "preview_image": rgb,
                         "original_width": original_width,
                         "original_height": original_height,
+                        "raw_width": raw_width,
+                        "raw_height": raw_height,
                     }
             except Exception as exc:
                 result = {"error": str(exc)}
@@ -1580,12 +1634,15 @@ class SegmentEditorWindow(tk.Toplevel):
         self.preview_image = result["preview_image"]
         self.original_width = result["original_width"]
         self.original_height = result["original_height"]
+        self.raw_width = result["raw_width"]
+        self.raw_height = result["raw_height"]
         self.preview_scale_x = self.original_width / float(self.preview_image.width)
         self.preview_scale_y = self.original_height / float(self.preview_image.height)
         if self.has_saved_locked_points:
             self.locked_points = self._load_locked_points()
             self.original_points_count = len(self.locked_points)
             self.original_locked_points = [dict(point) for point in self.locked_points]
+        self.points_loaded = True
 
         self._update_dirty_state()
         self.after(0, self.fit_image)
@@ -1773,7 +1830,7 @@ class SegmentEditorWindow(tk.Toplevel):
             updates[f"gcp{idx}_lat"] = self.gcp_vars[corner]["lat"].get().strip()
             updates[f"gcp{idx}_lon"] = self.gcp_vars[corner]["lon"].get().strip()
 
-        if include_points:
+        if include_points and self.points_loaded:
             if len(self.locked_points) == 4:
                 original_points = [self._preview_point_to_original(point) for point in self.locked_points]
                 for corner, point in zip(CORNER_KEYS, original_points):
@@ -1798,6 +1855,7 @@ class SegmentEditorWindow(tk.Toplevel):
         return filtered
 
     def _load_locked_points(self):
+        """Saved display-frame GCP pixels -> preview pixels."""
         points = []
         for corner in CORNER_KEYS:
             idx = CORNER_TO_GCP[corner]
@@ -1814,6 +1872,7 @@ class SegmentEditorWindow(tk.Toplevel):
         return points
 
     def _preview_point_to_original(self, point):
+        """Preview pixel -> full-resolution display-frame pixel (what the catalog stores)."""
         return {
             "x": float(point["x"]) * self.preview_scale_x,
             "y": float(point["y"]) * self.preview_scale_y,

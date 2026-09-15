@@ -76,13 +76,23 @@ ABANDONED_IMG_RE = re.compile(
 )
 
 
+# Two-digit years pivot at the current year: "7/4/27" is 1927 until 2027
+# actually arrives in a mirror. A hard-coded 26 would misdate the first
+# 2027-dated photo.
+PIVOT_YY = __import__("datetime").date.today().year % 100
+
+
+def yy_to_year(yy):
+    return 2000 + yy if yy <= PIVOT_YY else 1900 + yy
+
+
 def segment_years(seg):
     ys = []
     for m in FULLYEAR.finditer(seg):
         ys.append((m.start(), int(m.group(1))))
     for m in SLASHDATE.finditer(seg):
         yy = int(m.group(1))
-        ys.append((m.start(), 2000 + yy if yy <= 26 else 1900 + yy))
+        ys.append((m.start(), yy_to_year(yy)))
     for m in MYY.finditer(seg):
         mo, yy = int(m.group(1)), int(m.group(2))
         if not 1 <= mo <= 12:
@@ -91,7 +101,7 @@ def segment_years(seg):
             continue
         if not CHARTWORD.search(seg[m.end() : m.end() + 45]):
             continue
-        ys.append((m.start(), 2000 + yy if yy <= 26 else 1900 + yy))
+        ys.append((m.start(), yy_to_year(yy)))
     ys.sort()
     return ys
 
@@ -207,15 +217,20 @@ def derive(ev, in_1988, oa_open):
         end, basis_e = ev["nolonger"], "no_longer_by"
     elif "lastseen" in ev:
         end, basis_e = ev["lastseen"], "last_seen"
+    # Being listed in the 1988 FAA data is evidence the field existed THEN,
+    # not that it closed then. It used to become end_year=1988/"gone", so the
+    # viewer painted 56 such fields red, captioned them "– 1988" and hid them
+    # from 1989 on. Keep it as a last-known-alive year with status unknown.
+    last_known = None
     if end is None and in_1988:
-        end, basis_e = 1988, "faa1988_listed"
+        last_known, basis_e = 1988, "faa1988_listed"
     status = "gone" if end else "unknown"
     if oa_open:
-        status, end, basis_e = "open", None, "oa_open"
+        status, end, basis_e, last_known = "open", None, "oa_open", None
     if start and end and end < start:
         end, basis_e = None, "conflict"
         status = "unknown"
-    return start, basis_s, end, basis_e, status
+    return start, basis_s, end, basis_e, status, last_known
 
 
 def main():
@@ -270,7 +285,7 @@ def main():
             and row["match_via"] not in ("", "collision-reverted")
             and oa_type.get(row["match_id"], "closed") != "closed"
         )
-        start, bs, end, be, status = derive(ev, in_1988, oa_open)
+        start, bs, end, be, status, last_known = derive(ev, in_1988, oa_open)
 
         if lifespan and (start is None or (end is None and status != "open")):
             flat, flon = float(row["lat"]), float(row["lon"])
@@ -291,6 +306,7 @@ def main():
         row["start_basis"] = bs or ""
         row["end_year"] = end or ""
         row["end_basis"] = be or ""
+        row["last_known_year"] = last_known or ""
         row["status"] = status
         # OurAirports ident for the viewer's source link (only when the
         # enrich pass confidently matched an OA record)
@@ -323,7 +339,8 @@ def main():
                 k: r[k]
                 for k in (
                     "name", "state", "url", "page", "anchor", "rel_location",
-                    "coord_source", "start_year", "end_year", "status", "oa",
+                    "coord_source", "start_year", "end_year", "end_basis",
+                    "last_known_year", "status", "oa",
                 )
             },
         }

@@ -73,6 +73,11 @@ REWRITES = [
 ROUTE_MAP = Path("/Users/ryanhemenway/archive.aero/worker-atc/src/route_map.json")
 _R = json.loads(ROUTE_MAP.read_text())
 _ALIAS, _RULES, _DROP = _R["alias"], _R["rules"], _R["drop"]
+# WordPress post ids -> old path (worker-atc/src/p_map.json): every preserved
+# page ships <link rel="shortlink" href=".../atc/?p=N">, which the serving
+# Worker now resolves, but a flattened page should not need a redirect to
+# name itself. Rewritten to the canonical URI below.
+P_MAP = json.loads((ROUTE_MAP.parent / "p_map.json").read_text())
 
 
 def canonical_of(inner):
@@ -111,7 +116,18 @@ def _canon_bytes(raw, sep, prefix):
         i = path.find(mark)
         if i >= 0:
             path, cut = path[:i], path[i:] + cut
-    canon = canonical_of(unquote(path.replace("&amp;", "&")))
+    query = cut.split("#", 1)[0] if cut.startswith("?") else ""
+    canon = None
+    if path in ("/", "") and query:
+        # /atc/?p=N (or page_id=N): a WP shortlink; resolve through the post map
+        # and drop the query, exactly as the Worker would.
+        m_pid = re.search(r"[?&](?:p|page_id)=(\d+)", query.replace("&amp;", "&"))
+        if m_pid and m_pid.group(1) in P_MAP:
+            old_path = P_MAP[m_pid.group(1)]
+            canon = canonical_of(old_path) or ("/atc" + old_path)
+            cut = cut[len(query):]
+    if canon is None:
+        canon = canonical_of(unquote(path.replace("&amp;", "&")))
     if not canon:
         return None
     # A target may legitimately leave the /atc space — A2 sends the old
@@ -159,7 +175,7 @@ def canonicalize_relative(data, rel_dir, counts):
 # means our own pages advertise dead endpoints to feed readers and crawlers.
 # Runs after canonicalization, when the hrefs have settled into /atc/ form.
 DEAD_FEED_ALT = re.compile(
-    rb'''(?is)<link[^>]+href=["']?[^"'>]*/atc/(?:category|author)/'''
+    rb'''(?is)<link[^>]+href=["']?[^"'>]*/atc/(?:category|author|comments)/'''
     rb'''[^"'>]*feed/?["']?[^>]*>\s*''')
 
 
@@ -185,6 +201,95 @@ def canonicalize(data, counts):
     counts["dead_feed_alt_stripped"] += n
     return data
 
+
+# --- contact + donation pass (2026-09-01) --------------------------------
+# The crawl carries the previous operation's contact address and its PayPal
+# donation calls on nearly every page. The mailbox forwards, but the archive is
+# ours now and the PayPal account is not: every "donate" button on the site
+# still paid the old operator. Both are retargeted -- support goes to the
+# archive's own Buy Me a Coffee, contact to the archive's own address. Runs
+# AFTER the host/canonical passes, so the donate hrefs it matches are already
+# in their /atc/ form.
+CONTACT = b"ryan@archive.aero"
+MAILTO = b'<a href="mailto:' + CONTACT + b'">' + CONTACT + b"</a>"
+COFFEE = b"https://buymeacoffee.com/ryanhemenway"
+# Self-contained button: no external image, so the page gains no new host.
+# #2b5f71 is the escapade theme's own accent (see escapade-inline-css).
+COFFEE_BTN = (
+    b'<a href="' + COFFEE + b'" target="_blank" rel="noopener" '
+    b'style="display:inline-block;padding:8px 15px;border:1px solid #2b5f71;'
+    b'border-radius:4px;color:#2b5f71;font-family:Oswald,sans-serif;'
+    b'font-weight:600;text-decoration:none">Buy me a coffee</a>')
+SUPPORT_COPY = (
+    b"This archive is free to read and free to search. If it is useful to "
+    b'you, you can <a href="' + COFFEE + b'" target="_blank" '
+    b'rel="noopener">buy me a coffee</a> &mdash; it goes towards hosting, '
+    b"storage, and the scanning that keeps the collection growing. Material "
+    b"helps just as much: photographs, directories, and documents are always "
+    b"welcome at " + MAILTO + b".")
+
+CONTACTS = [
+    # 1. the address itself, in mailto: and in prose alike
+    ("contact_mail", re.compile(rb"(?i)archive@atchistory\.org"), CONTACT),
+    # 2. the /donate page body: PayPal form + its ask, replaced wholesale.
+    #    The URI stays live (URI-POLICY); only what it says changes.
+    ("donate_page", re.compile(
+        rb"(?is)<p><strong>Thank you for donating.*?"
+        rb"The Air Traffic Control History Archive</p>"),
+     b"<p><strong>Thank you for supporting this archive.</strong></p>\n"
+     b"<p>The Air Traffic Control History collection is preserved and "
+     b'maintained as part of <a href="/">archive.aero</a>, free to read and '
+     b"free to search. If it has been useful to you, you can chip in towards "
+     b"what keeps it online: hosting, storage, and the scanning that adds to "
+     b"it.</p>\n"
+     b"<p>" + COFFEE_BTN + b"</p>\n"
+     b"<p>Contributions of material help just as much &mdash; photographs of "
+     b"air traffic facilities, equipment, and the people who ran them; "
+     b"directories, manuals, and other documents. Scans of at least "
+     b"300&nbsp;dpi are best. Write to " + MAILTO + b".</p>\n"
+     b"<p>Many Thanks!<br />\nThe Air Traffic Control History Archive</p>"),
+    # 3. the sidebar PayPal button widget, on ~1,850 pages
+    ("donate_button", re.compile(
+        rb'(?is)<a href="[^"]*/donate[^"]*">\s*'
+        rb"<img[^>]*btn_donateCC_LG\.gif[^>]*>\s*</a>"),
+     COFFEE_BTN),
+    # 4. FrontPage-era PayPal buttons (encrypted _s-xclick forms)
+    ("donate_form_fp", re.compile(
+        rb'(?is)<form action="https://www\.paypal\.com/cgi-bin/webscr"'
+        rb"[^>]*>.*?</form>"),
+     COFFEE_BTN),
+    # 5. the two donation asks in prose (WP home, FrontPage class-photo index)
+    ("donate_prose_wp", re.compile(
+        rb"(?is)<p>Any monetary donations will be used.*?</p>"),
+     b"<p>" + SUPPORT_COPY + b"</p>"),
+    # ...but the FrontPage one sits in the table cell right beside the button,
+    # so it gets a variant that does not repeat the link.
+    ("donate_prose_fp", re.compile(
+        rb"(?is)Donations will go towards.*?Thank you for your "
+        rb"consideration\."),
+     b"Support goes towards hosting, storage, and the scanning that keeps "
+     b"this archive growing. Material helps just as much: photographs, "
+     b"directories, and documents are always welcome at " + MAILTO + b"."),
+    # 6. /contact ran on Ninja Forms -- a WordPress plugin that POSTs to PHP.
+    #    There is no PHP behind the static archive, so the form rendered but
+    #    could never deliver a message. Replaced by the address it would have
+    #    mailed. Only this page carries the plugin, so its front-end bundle and
+    #    Backbone templates (~200 KB, next rule) go with it.
+    ("contact_form", re.compile(
+        rb'(?is)<noscript class="ninja-forms-noscript-message">.*?'
+        rb"nfForms\.push\(form\);</script>"),
+     b"<p>Email " + MAILTO + b".</p>\n"
+     b"<p>Photographs, documents, corrections, and questions about the "
+     b"collection are all welcome. Scans of at least 300&nbsp;dpi are "
+     b"best.</p>"),
+    ("contact_form_assets", re.compile(
+        rb'(?is)<script id=[\'"](?:nf-front-end|tmpl-nf-)[^\'"]*[\'"]'
+        rb"[^>]*>.*?</script>\s*"),
+     b""),
+    ("contact_form_css", re.compile(
+        rb'(?is)<link[^>]+id=[\'"]nf-[^\'"]*[\'"][^>]*>\s*'),
+     b""),
+]
 
 SCAN_RESIDUAL = re.compile(rb"(?i)atchistory\.org")
 # Old-shaped references that survived the canonical pass — these would each
@@ -302,6 +407,9 @@ def main():
             data = canonicalize_relative(data, str(rel.parent) + "/"
                                          if str(rel.parent) != "." else "",
                                          rw_counts)
+            for name, rx, repl in CONTACTS:
+                data, n = rx.subn(repl, data)
+                rw_counts[name] += n
         if data != orig:
             f.write_bytes(data)
             n_changed += 1

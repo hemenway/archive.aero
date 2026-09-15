@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
 """
+Sibling georef transfer, AFFINE variant (2026-08-19) - use when the
+similarity-fit georef_infer_2004jpg.py returns ransac-failed with plenty of
+matches but <4 inliers: that is the signature of a skewed scan (the 12
+Juneau NARA rg-370 sheets were rotated 0.05-0.2deg, which shears corners by
+hundreds of px across a 22k-px sheet). Identical pipeline, but the RANSAC
+fits a full 6-parameter affine (3-point sampling) with a sanity gate on the
+decomposed scale/rotation/anisotropy/orthogonality. Corner GCPs come from
+the inverted affine, so the order-1 GCP warp reproduces the rotation.
+
+!! candidate_rank trap: applying GCPs promotes a row to rank 1 in its
+candidate group (slicer.py ~L438). Do NOT apply GCPs to a scan whose group
+has a better native-georef sibling (e.g. a wayback zip GeoTIFF of the same
+edition) or the scan will win future rebuilds. Juneau 2013/2014 were
+withheld for exactly this reason - see their row notes.
+
+Original similarity-variant docstring follows.
+
 Sibling georef transfer for the ungeoreferenced catalogued .jpg scans
 (dole_gap_2026-07/archive2004 halves, NARA rg-370, NOAA jpgs, ...).
 
@@ -36,15 +53,8 @@ import dole_v2
 from slicer import ChartSlicer
 
 RAW = Path("/Volumes/projects/rawtiffs")
-REPO = Path(__file__).resolve().parent.parent
-# Transfer results and slicer scratch live under the gitignored
-# worklists/data/ (they used to go to a session scratchpad that no longer
-# exists); override the output with the first command-line argument.
-TRANSFER_DIR = REPO / "worklists" / "data" / "georef_transfer"
-TRANSFER_DIR.mkdir(parents=True, exist_ok=True)
-SCRATCH = TRANSFER_DIR
-TRANSFER = Path(sys.argv[1]) if len(sys.argv) > 1 else TRANSFER_DIR / "georef_transfer_2004.json"
-CSV = REPO / "master_dole_v2.csv"
+SCRATCH = Path(".")  # output georef_transfer_2004.json lands in the cwd
+CSV = Path("/Users/ryanhemenway/archive.aero/master_dole_v2.csv")
 
 DEC = 8
 HALF_TOKENS = ("north", "south", "east", "west")
@@ -238,40 +248,65 @@ def solve_pair(tgt_path, sib_ds):
     if len(matches) < 4:
         return {"status": f"too-few-matches ({len(matches)})"}
 
+    # Full 6-parameter affine RANSAC (tgt = M @ sib + b): the NARA scans are
+    # skewed a fraction of a degree, which across a 22k-px sheet moves corners
+    # by hundreds of px — a similarity (no-rotation) fit finds good NCC
+    # matches but no consistent inlier set. 3-point sampling, 4px band,
+    # then a sanity gate on the decomposed affine (scale/rotation/shear).
     pts_s = np.array([m[0] for m in matches])
     pts_t = np.array([m[1] for m in matches])
-    best_fit = None
     n = len(matches)
+    best_fit = None
     for i in range(n):
         for j in range(i + 1, n):
-            d_s = np.linalg.norm(pts_s[j] - pts_s[i])
-            d_t = np.linalg.norm(pts_t[j] - pts_t[i])
-            if d_s < 500:
-                continue
-            sc = d_t / d_s
-            # wider than the FAA-PDF run: sc_est absorbs resolution, this
-            # band only has to absorb margin-crop error in the estimate
-            if not 0.93 <= sc <= 1.07:
-                continue
-            T = pts_t[i] - sc * pts_s[i]
-            resid = np.linalg.norm(pts_t - (sc * pts_s + T), axis=1)
-            # 4px inlier band (vs 3 in the FAA-PDF run): cross-era scans +
-            # 2x downsampling of the donor blur the correlation peaks
-            inliers = resid < 4.0
-            if best_fit is None or inliers.sum() > best_fit[0]:
-                best_fit = (int(inliers.sum()), sc, T, inliers)
-    if best_fit is None or best_fit[0] < 4:
-        return {"status": f"ransac-failed (matches={n}, best={best_fit[0] if best_fit else 0})",
+            for k in range(j + 1, n):
+                src = np.array([[pts_s[m_][0], pts_s[m_][1], 1.0] for m_ in (i, j, k)])
+                if abs(np.linalg.det(src)) < 1e6:   # near-collinear triple
+                    continue
+                try:
+                    coefx = np.linalg.solve(src, pts_t[[i, j, k], 0])
+                    coefy = np.linalg.solve(src, pts_t[[i, j, k], 1])
+                except np.linalg.LinAlgError:
+                    continue
+                pred = np.column_stack([
+                    pts_s[:, 0] * coefx[0] + pts_s[:, 1] * coefx[1] + coefx[2],
+                    pts_s[:, 0] * coefy[0] + pts_s[:, 1] * coefy[1] + coefy[2]])
+                resid = np.linalg.norm(pred - pts_t, axis=1)
+                inliers = resid < 4.0
+                if best_fit is None or inliers.sum() > best_fit[0]:
+                    best_fit = (int(inliers.sum()), inliers)
+    # Three samples are inliers by construction, so a 3-point affine needs
+    # at least three FURTHER matches inside the band (6 inliers) before it
+    # counts as verified; "< 4" accepted a fit vouched for by one extra point.
+    if best_fit is None or best_fit[0] < 6:
+        return {"status": f"ransac-failed (matches={n}, best={best_fit[0] if best_fit else 0}, need 6)",
                 "matches": n}
-    n_in, sc, T, inliers = best_fit
-    A_s = pts_s[inliers]
-    A_t = pts_t[inliers]
-    cs = A_s.mean(axis=0)
-    ct = A_t.mean(axis=0)
-    sc = float((((A_t - ct) * (A_s - cs)).sum()) / (((A_s - cs) ** 2).sum()))
-    T = ct - sc * cs
-    resid = np.linalg.norm(A_t - (sc * A_s + T), axis=1)
+    inliers = best_fit[1]
+    A = np.column_stack([pts_s[inliers, 0], pts_s[inliers, 1], np.ones(int(inliers.sum()))])
+    coefx, *_ = np.linalg.lstsq(A, pts_t[inliers, 0], rcond=None)
+    coefy, *_ = np.linalg.lstsq(A, pts_t[inliers, 1], rcond=None)
+    M = np.array([[coefx[0], coefx[1]], [coefy[0], coefy[1]]])
+    b = np.array([coefx[2], coefy[2]])
+    pred = (pts_s[inliers] @ M.T) + b
+    resid = np.linalg.norm(pred - pts_t[inliers], axis=1)
+    n_in = int(inliers.sum())
 
+    # sanity: |det| scale near 1 (sc_est absorbed resolution), small rotation,
+    # near-isotropic, near-orthogonal columns
+    det = float(np.linalg.det(M))
+    sc = float(np.sqrt(abs(det)))
+    rot_deg = float(np.degrees(np.arctan2(M[1, 0], M[0, 0])))
+    sx = float(np.linalg.norm(M[:, 0]))
+    sy = float(np.linalg.norm(M[:, 1]))
+    ortho_dev = float(abs(90.0 - np.degrees(np.arccos(
+        np.clip((M[:, 0] @ M[:, 1]) / (sx * sy), -1, 1)))))
+    if det <= 0 or not 0.93 <= sc <= 1.07 or abs(rot_deg) > 6.0 \
+            or abs(sx / sy - 1.0) > 0.05 or ortho_dev > 3.0:
+        return {"status": f"affine-insane (sc={sc:.4f} rot={rot_deg:.2f} "
+                          f"aniso={sx / sy:.4f} ortho={ortho_dev:.2f})",
+                "inliers": n_in, "windows": n}
+
+    Minv = np.linalg.inv(M)
     proj4 = dole_v2.LCC_TEMPLATE.format(lat1=params[0], lat2=params[1], lat0=params[2], lon0=params[3])
     lcc = osr.SpatialReference(); lcc.SetFromUserInput(proj4)
     nad83 = osr.SpatialReference(); nad83.ImportFromEPSG(4269)
@@ -280,15 +315,14 @@ def solve_pair(tgt_path, sib_ds):
     inv = osr.CoordinateTransformation(lcc, nad83)
     gcps = []
     for px, py in [(0, 0), (tw, 0), (tw, th), (0, th)]:
-        sx_f = (px - T[0]) / sc
-        sy_f = (py - T[1]) / sc
-        mx = gt[0] + sx_f * gt[1]
-        my = gt[3] + sy_f * gt[5]
+        sp = Minv @ (np.array([px, py], dtype=float) - b)
+        mx = gt[0] + sp[0] * gt[1]
+        my = gt[3] + sp[1] * gt[5]
         lon, lat, _ = inv.TransformPoint(mx, my)
         gcps.append({"px": px, "py": py, "lat": round(lat, 7), "lon": round(lon, 7)})
     return {
-        "status": "ok", "scale": round(sc, 6),
-        "T": [round(float(T[0]), 1), round(float(T[1]), 1)],
+        "status": "ok", "scale": round(sc, 6), "rotation_deg": round(rot_deg, 3),
+        "T": [round(float(b[0]), 1), round(float(b[1]), 1)],
         "inliers": n_in, "windows": n, "resid_max": round(float(resid.max()), 2),
         "dims": [tw, th], "lcc": params, "gcps": gcps,
         "lcc_srs_proj4": proj4,
@@ -410,7 +444,7 @@ def main():
         tag = f"s={entry.get('scale')} in={entry.get('inliers')}/{entry.get('windows')} rmax={entry.get('resid_max')} sib={Path(entry.get('sibling','')).stem[:28]}"
         print(f"{entry['status']:<28} {entry['location']:<26} {tag if entry['status'] == 'ok' else Path(entry.get('sibling','?')).stem[:30]} {fn[:48]}", flush=True)
 
-    out = TRANSFER
+    out = SCRATCH / "georef_transfer_2004.json"
     with open(out, "w") as f:
         json.dump(results, f, indent=1)
     counts = {}

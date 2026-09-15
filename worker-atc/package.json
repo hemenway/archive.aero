@@ -1,6 +1,7 @@
 {
   "name": "atc-worker",
   "private": true,
+  "type": "module",
   "scripts": {
     "deploy": "wrangler deploy",
     "dry-run": "wrangler deploy --dry-run",

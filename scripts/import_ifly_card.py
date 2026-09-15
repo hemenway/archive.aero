@@ -37,8 +37,16 @@ PARENT = "ifly_efb_card_2013"
 CSV_PATH = os.path.expanduser("~/archive.aero/master_dole_v2.csv")
 BACKUP_DIR = os.path.expanduser("~/archive.aero-attic/csv-backups")
 
-# inset sheets ride in the Hawaiian Islands folder, like the FAA zips
-FOLD_INTO_HAWAII = {"Honolulu Inset", "Mariana Islands Inset", "Samoan Islands Inset"}
+# The inset sheets used to be folded into the Hawaiian Islands row "like the
+# FAA zips". That is the zip-row cutline trap: one row applies one cutline to
+# every tif in its container, so Mariana/Samoa clipped to nothing and the
+# Honolulu inset landed on Oahu at 2x scale. Each inset now gets its own row
+# and cutline (the shape scripts/split_faa_inset_containers.py restores).
+INSET_CUTLINES = {
+    "Honolulu Inset": "sectional/honolulu_inset",
+    "Mariana Islands Inset": "sectional/mariana_islands_inset",
+    "Samoan Islands Inset": "sectional/samoan_islands_inset",
+}
 
 NOTE = ("extracted 2026-08-19 from iFly EFB data card via scripts/ifly_extract.py "
         "(level-1 JPEG tiles stitched; georef copied from FAA GeoTIFF via .gti; "
@@ -64,15 +72,12 @@ def norm(s):
 
 
 def load_groups():
-    """manifest.jsonl -> {(loc, ed): [recs]} with insets folded into Hawaii."""
+    """manifest.jsonl -> {(loc, ed): [recs]}; every location, insets included, is its own group."""
     groups = defaultdict(list)
     with open(os.path.join(STAGING, "manifest.jsonl")) as fh:
         for line in fh:
             rec = json.loads(line)
-            loc = rec["location"]
-            if loc in FOLD_INTO_HAWAII:
-                loc = "Hawaiian Islands"
-            groups[(loc, rec["edition"])].append(rec)
+            groups[(rec["location"], rec["edition"])].append(rec)
     return groups
 
 
@@ -87,7 +92,6 @@ def main():
     by_loc = defaultdict(list)
     for r in rows:
         by_loc[norm(r["location"])].append(r)
-    existing_filenames = {r["filename"] for r in rows}
 
     groups = load_groups()
     planned = []
@@ -111,8 +115,15 @@ def main():
         end_date = later[0]
         expire = recs[0]["expire_date"]
 
-        cutline = Counter(r["cutline"] for r in sibs if r["cutline"]).most_common(1)
-        cutline = cutline[0][0] if cutline else ""
+        cutline = INSET_CUTLINES.get(loc_exact)
+        if not cutline:
+            cutline = Counter(r["cutline"] for r in sibs if r["cutline"]).most_common(1)
+            cutline = cutline[0][0] if cutline else ""
+
+        # Already held? Diff on (location, edition) — and on date when the
+        # edition is unknown — never on filename: the same edition lives under
+        # NARA, FAA and salvage names (the WAI ed 50 duplicate, 2026-08-27).
+        held = dole_v2.find_same_chart(rows, loc_exact, date, ed)
 
         stem = f"{PARENT}_{loc_exact.replace(' ', '_')}_{ed}"
         row = {k: "" for k in dole_v2.V2_FIELDS}
@@ -125,11 +136,11 @@ def main():
             "note": NOTE,
             "cutline": cutline,
         })
-        planned.append((row, stem, recs, expire))
+        planned.append((row, stem, recs, expire, held))
 
     print(f"{len(planned)} rows planned:")
-    for row, stem, recs, expire in planned:
-        dupe = "  (ALREADY IN CSV - will skip)" if row["filename"] in existing_filenames else ""
+    for row, stem, recs, expire, held in planned:
+        dupe = (f"  (ALREADY IN CSV as {held[0]['filename']} - will skip)" if held else "")
         print(f"  {row['location']:<26} ed {row['edition']:<3} {row['date']} -> "
               f"{row['end_date']} (card expire {expire})  "
               f"{len(recs)} tif(s)  cutline={row['cutline'] or '-'}{dupe}")
@@ -142,7 +153,9 @@ def main():
             with open(readme, "w") as fh:
                 fh.write(README)
         copied = skipped = 0
-        for row, stem, recs, _ in planned:
+        for row, stem, recs, _expire, held in planned:
+            if held:
+                continue
             dst_dir = os.path.join(parent_dir, stem)
             os.makedirs(dst_dir, exist_ok=True)
             for rec in recs:
@@ -155,11 +168,17 @@ def main():
         print(f"copied {copied} tifs into {parent_dir} ({skipped} already present)")
 
     if args.write:
-        new_rows = [row for row, *_ in planned
-                    if row["filename"] not in existing_filenames]
+        new_rows = [row for row, _stem, _recs, _expire, held in planned if not held]
         if not new_rows:
             print("no new rows to write")
             return
+        # Close the era of each predecessor edition so the new row never
+        # overlaps it (the slicer keys mosaics on date_to_end_date).
+        rechained = 0
+        for row in new_rows:
+            rechained += len(dole_v2.rechain_predecessor(rows, row["location"], row["date"]))
+        if rechained:
+            print(f"closed {rechained} predecessor row(s) at the new editions' start dates")
         os.makedirs(BACKUP_DIR, exist_ok=True)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
         backup = os.path.join(BACKUP_DIR, f"master_dole_v2.csv.pre_ifly_card_{stamp}.bak")

@@ -1,4 +1,5 @@
-#!/usr/bin/env ~/venv/bin/python
+#!/usr/bin/env python3
+# Run with ~/venv/bin/python (env does not expand ~ in a shebang).
 """Sweep the atc worker's Analytics Engine log for unmatched 404s.
 
 The cutover redirect map covers every URL the inventory knew about. This finds
@@ -98,7 +99,10 @@ SCANNER = (
 # https://…" percent-encoded into a single path. Every such row is the same
 # defect in one rewrite pass, not N separate missing files, so they are bucketed
 # together and reported once with a representative sample.
-SRCSET = re.compile(r"%20\d+w(,|%2C)|,%20https?:")
+# Matched against the DECODED path (see the unquote below), so both the
+# single-encoded ("img.jpg 480w, https://...") and the double-encoded
+# ("%2520480w") shapes the log carries reduce to the same text.
+SRCSET = re.compile(r"(?: |%20)\d+w(,|%2C)|,(?: |%20)https?:")
 JUNK = (
     re.compile(r"/\.DS_Store$"),
     re.compile(r"/Thumbs\.db$"),
@@ -249,6 +253,11 @@ def main():
     for r in rows:
         if r["host"] in SKIP_HOSTS:
             continue
+        # The Worker logs url.pathname, which is ALREADY percent-encoded
+        # ("/atc/.../Omaha%20Antenna.jpg"). Decode it once here so the probes
+        # below quote it exactly once; re-quoting the logged form produced
+        # %2520 and no such row could ever register as resolved.
+        r["path"] = urllib.parse.unquote(r["path"])
         key = (r["host"], r["path"])
         a = agg.setdefault(key, {"n": 0, "refs": set(), "first": r["first"],
                                  "last": r["last"]})

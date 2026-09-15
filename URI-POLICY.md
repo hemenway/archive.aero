@@ -109,3 +109,23 @@ Do **not** simply switch on **Always Use HTTPS**: it runs ahead of Bulk
 Redirects, so `http://www.archive.aero/x` would become a two-hop chain
 (`-> https://www/x -> https://apex/x`) — the exact chain 08 §F avoided. Add HSTS
 (`max-age=31536000`, no preload at first) once the redirect is in place.
+
+## Exceptions log
+
+Covenants 6 and 7 are absolute for anything a reader could have reached. The
+entries below are the only departures, each recorded here before it was made.
+
+- **2026-09-01 — `/contact/` retargeted out of the collection.** The alias
+  `/contact/` (and `/atc/contact`) now 301s to `/contribute` instead of serving
+  a static copy of a Ninja Forms page that silently delivered nothing. The
+  key entry `/atc/contact` was removed from `route_map.json`; the URI itself
+  still answers in one hop from either hostname. Retarget, not removal.
+- **2026-09-14 — `/atc/BLOG` and `/atc/Blog` key entries removed.** Both were
+  canonicals minted by `atc_canonical_map.py` because case-insensitive APFS
+  vouched for `BLOG/` and `Blog/` while only `blog/` exists in R2: they have
+  been 301 → 404 since cutover and no reader ever reached a page there. The
+  aliases `/BLOG/` and `/Blog/` stay and now resolve in one hop to `/atc/`
+  (the WordPress "Blog" listing's content is gone; the landing page carries
+  the recent-posts list). The generator now refuses to write a map that
+  removes entries (`--allow-delete`) or holds case-colliding canonicals, and
+  checks the build tree case-exactly.

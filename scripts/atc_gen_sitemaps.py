@@ -72,7 +72,7 @@ def main():
     args = ap.parse_args()
 
     canon = {}          # canonical URI -> lastmod
-    problems, collapsed = [], []
+    problems, collapsed, handed_off = [], [], []
     canon["/atc/"] = ""  # the designed landing page (replaces the WP home)
 
     for src in SOURCES:
@@ -93,7 +93,13 @@ def main():
             if target == "/atc/" and path != "/":
                 collapsed.append(path)   # e.g. /home/ (drop-map)
             if not target.startswith("/atc"):
-                problems.append((path, r))
+                # A drop that points OUT of the collection is a deliberate
+                # handoff to the main site, not a mapping failure: /contact/
+                # -> /contribute (2026-09-01), /History/Maps/Maps.htm -> /.
+                # The URI still resolves in one hop; it is simply no longer a
+                # resource this sitemap advertises, and its target is carried
+                # by sitemap-core. Only an unroutable path is a problem.
+                handed_off.append((path, target))
                 continue
             prev = canon.get(target, "")
             canon[target] = max(prev, lastmod)  # keep newest lastmod
@@ -124,6 +130,10 @@ def main():
           f"({len(collapsed)} old URLs collapsed into the landing: "
           f"{collapsed or '—'})")
     print(f"sitemap-core.xml: {len(core_entries)} URLs; sitemap.xml: index")
+    if handed_off:
+        print(f"{len(handed_off)} URLs handed off outside the collection "
+              f"(redirect, not advertised here): "
+              + ", ".join(f"{p} -> {t}" for p, t in handed_off))
 
     if not args.verify:
         return
@@ -147,6 +157,18 @@ def main():
     urls = [u for u, _ in atc_entries + core_entries]
     with ThreadPoolExecutor(max_workers=16) as ex:
         list(ex.map(check, urls))
+    # Hand-offs leave the collection but must still land somewhere real: the
+    # target (on the main site) has to answer 200 itself, or the redirect the
+    # Worker issues is a 301 into a 404.
+    for path, target in handed_off:
+        try:
+            r = sess.get("https://archive.aero" + target, allow_redirects=False, timeout=30, stream=True)
+            st = r.status_code
+            r.close()
+        except Exception as e:
+            st = f"{type(e).__name__}"
+        if st != 200:
+            bad.append((f"https://archive.aero{target}", st, f"(hand-off target of {path})"))
     if bad:
         print(f"\nVERIFY FAILED — {len(bad)} URLs not a clean 200:")
         for u, st, loc in sorted(bad)[:30]:

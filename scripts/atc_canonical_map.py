@@ -41,8 +41,10 @@ Outputs:
   worklists/data/atc/canonical_report.txt   review report, incl. anything the
                                             automatic rules could not settle
 """
+import argparse
 import csv
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -134,6 +136,16 @@ DROP = {
     # #_ftn16. One hop to the living copy (Search Console 404, 2026-09-14).
     "/History/FacilityPhotos/WY/MedicineBow/federal_airway_system_early_years.htm":
         "/atc/federal-airway-system-early-days",
+    # Case twins the build tree cannot hold: the live Linux origin served
+    # /BLOG/ and /Blog/ (the 53 KB WordPress "Blog" posts listing) beside
+    # /blog/ (an 812-byte Apache autoindex). Copied onto case-insensitive
+    # APFS all three collapsed into one `blog` directory, and build_has()
+    # — which runs on that filesystem — vouched for all three, minting
+    # /atc/BLOG and /atc/Blog as canonicals whose R2 keys never existed
+    # (301 -> 404 since cutover). The listing's content is gone; its living
+    # equivalent is the landing page's recent-posts + archive, like /home/.
+    "/BLOG/": PREFIX + "/",
+    "/Blog/": PREFIX + "/",
 }
 GONE_RE = re.compile(
     r"^/(wp-admin(/|$)|wp-login\.php|xmlrpc\.php|wp-cron\.php|wp-json(/|$)"
@@ -199,11 +211,30 @@ def build_has(old_path):
     if not SITE.is_dir():
         return True
     q = old_path.lstrip("/")
+    if not _exists_exact_case(SITE, q.rstrip("/")):
+        return False
     if (SITE / q).is_file():
         return True
     d = SITE / q.rstrip("/")
     return d.is_dir() and any((d / n).is_file()
                               for n in ("index.html", "index.htm", "Default.htm"))
+
+
+def _exists_exact_case(root, rel):
+    """Path exists with EXACTLY this spelling. /Volumes/projects is
+    case-insensitive APFS, so a plain exists() said yes to /BLOG/ and /Blog/
+    when only `blog` was on disk; the R2 bucket (and the Linux origin) are
+    case-sensitive, so a canonical minted that way 301s to a 404."""
+    cur = root
+    for part in [x for x in rel.split("/") if x]:
+        try:
+            names = os.listdir(cur)
+        except OSError:
+            return False
+        if part not in names:
+            return False
+        cur = cur / part
+    return True
 
 
 def dead_photo_home_links(by_path):
@@ -290,6 +321,12 @@ def classify(row):
 
 
 def main():
+    ap = argparse.ArgumentParser(description="generate worker-atc/src/route_map.json")
+    ap.add_argument("--allow-delete", action="store_true",
+                    help="permit removing alias/key/drop entries present in the current map")
+    ap.add_argument("--allow-unmounted", action="store_true",
+                    help="generate without the build-tree existence filter")
+    args = ap.parse_args()
     rows = list(csv.DictReader(INVENTORY.open()))
     for r in rows:
         r["old_path"] = norm(r["old_path"])
@@ -511,6 +548,16 @@ def main():
         else:
             notes["class-photo links with nothing to redirect to"].append(old)
 
+    # Canonicals that differ only by case cannot all be served from a
+    # case-sensitive bucket that was filled from a case-insensitive tree.
+    lower = {}
+    for c in claimed:
+        lower.setdefault(c.lower(), []).append(c)
+    twins = {k: v for k, v in lower.items() if len(v) > 1}
+    if twins:
+        raise SystemExit("case-colliding canonicals (resolve with DROP or MANUAL): "
+                         + "; ".join(", ".join(sorted(v)) for v in twins.values()))
+
     payload = {
         "_source": "scripts/atc_canonical_map.py",
         "_policy": "https://www.w3.org/Provider/Style/URI — aliases are "
@@ -528,6 +575,30 @@ def main():
         "key": dict(sorted(key.items())),
         "drop": dict(sorted(DROP.items())),
     }
+    # Policy check: aliases/keys/drops are permanent. Compare with the map on
+    # disk and refuse to drop an entry unless --allow-delete says so (a
+    # retargeted alias is fine; a vanished one would turn a published URI
+    # into a 404). Regeneration is also refused when the build tree is not
+    # mounted, because build_has() then vouches for everything (+221
+    # canonicals in a 2026-09-08 dry run).
+    if not SITE.is_dir() and not args.allow_unmounted:
+        raise SystemExit(f"{SITE} not mounted: the map would be generated without the existence "
+                         f"filter (pass --allow-unmounted to override)")
+    if OUT_MAP.exists():
+        prev = json.loads(OUT_MAP.read_text())
+        removed = []
+        for section in ("alias", "key", "drop"):
+            old_keys = set(prev.get(section, {}))
+            new_keys = set(payload[section])
+            for k in sorted(old_keys - new_keys):
+                # an alias promoted to a drop (or vice versa) is a retarget, not a deletion
+                if any(k in payload[s2] for s2 in ("alias", "key", "drop") if s2 != section):
+                    continue
+                removed.append(f"{section}:{k}")
+        if removed and not args.allow_delete:
+            raise SystemExit("route_map.json entries would be DELETED (policy: never): "
+                             + ", ".join(removed[:20]) + (" ..." if len(removed) > 20 else "")
+                             + "\n(pass --allow-delete after recording the exception in URI-POLICY.md)")
     OUT_MAP.write_text(json.dumps(payload, indent=1, sort_keys=False) + "\n")
 
     with REPORT.open("w") as r:

@@ -2,6 +2,7 @@
   "name": "archive-aero-tiles",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "Cloudflare Worker: R2 PMTiles range proxy for archive.aero with sampled Analytics Engine logging",
   "scripts": {
     "deploy": "wrangler deploy",

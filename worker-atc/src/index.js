@@ -156,6 +156,19 @@ async function serveKey(env, key, request, headers, shell = null) {
   h.set("etag", obj.httpEtag);
   h.set("accept-ranges", "bytes");
   const isHtml = /\.(html?|shtml)$/i.test(key);
+  // Conditional GET: the ETag was emitted but never honoured, so every
+  // revalidating browser got a full 200 body. The shell-spliced HTML carries
+  // a distinct validator (see below); both are accepted here.
+  const inm = request.headers.get("if-none-match");
+  const shellEtag = obj.httpEtag.replace(/"$/, '-shell"');
+  if (inm && !range && inm.split(",").some((t) => {
+        t = t.trim().replace(/^W\//, "");
+        return t === "*" || t === obj.httpEtag || t === shellEtag;
+      })) {
+    const cc = isHtml ? "public, max-age=3600" : "public, max-age=86400";
+    const etagOut = shell && isHtml && (shell.all || key === "index.html") ? shellEtag : obj.httpEtag;
+    return new Response(null, { status: 304, headers: { ...headers, etag: etagOut, "cache-control": cc } });
+  }
   // FrontPage-era .htm pages are windows-1252 with meta tags. rclone stored
   // "text/html; charset=utf-8" (Go's mime table), and a header charset beats
   // the meta tag — strip it on .htm/.shtml so the page's own declaration wins.
@@ -180,7 +193,7 @@ async function serveKey(env, key, request, headers, shell = null) {
     const bytes = spliced ?? raw;
     // a different representation than the stored object: give caches a
     // distinct validator and the real length
-    if (spliced) h.set("etag", obj.httpEtag.replace(/"$/, '-shell"'));
+    if (spliced) h.set("etag", shellEtag);
     h.set("content-length", String(bytes.length));
     return new Response(request.method === "HEAD" ? null : bytes, { status, headers: h });
   }
@@ -249,12 +262,65 @@ async function redirectOldHost(env, url, request) {
   return Response.redirect(NEW_ORIGIN + PREFIX + rawPath, 301);
 }
 
+const PAGE_500 = pageShell(
+  "Temporary error — Air Traffic Control History",
+  "Something went wrong on our side",
+  `<p>The archive's storage did not answer this request. Nothing is lost;
+please try again in a moment.</p>
+<div class="links">
+  <a href="${NEW_ORIGIN}/atc/">ATC History home</a>
+</div>`);
+
+// Edge cache for whole-object GETs (not ranges, not errors): every hit used
+// to be a full R2 read. Keyed on the full URL, so host-specific headers
+// (noindex on staging, the shell) never leak across hostnames; Cache-Control
+// on the response (1 h HTML / 24 h assets) bounds staleness.
+async function cachedServe(request, url, ctx, produce) {
+  const cacheable = request.method === "GET" && !request.headers.get("range");
+  const cache = caches.default;
+  const cacheKey = new Request(url.toString(), { method: "GET" });
+  if (cacheable) {
+    const hit = await cache.match(cacheKey);
+    if (hit) {
+      const inm = request.headers.get("if-none-match");
+      const et = hit.headers.get("etag");
+      if (inm && et && inm.split(",").some((t) => t.trim().replace(/^W\//, "") === et)) {
+        return new Response(null, { status: 304, headers: { etag: et, "cache-control": hit.headers.get("cache-control") || "" } });
+      }
+      const h = new Headers(hit.headers);
+      h.set("x-cache", "HIT");
+      return new Response(hit.body, { status: hit.status, headers: h });
+    }
+  }
+  const response = await produce();
+  if (cacheable && response.status === 200 && response.headers.get("cache-control")?.includes("max-age")) {
+    ctx.waitUntil(cache.put(cacheKey, response.clone()).catch(() => {}));
+  }
+  return response;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const host = url.hostname;
     const referer = request.headers.get("referer");
+    let response;
+    try {
+      response = await handle(request, env, ctx, url, host);
+    } catch (err) {
+      // An R2 outage or a bug used to escape as an unlogged Cloudflare 1101;
+      // answer with the site's own error page and record it.
+      console.error(`atc: unhandled error for ${host}${url.pathname}: ${String((err && err.stack) || err)}`);
+      response = html(PAGE_500, 500, { "cache-control": "no-store", "retry-after": "5" });
+    }
+    // Every response is logged, including the early 400/404/405s that used
+    // to return before this line (the "always log >= 400" rule missed them).
+    ctx.waitUntil(Promise.resolve(log(env, host, url.pathname, response.status, referer)));
+    return response;
+  },
+};
 
+async function handle(request, env, ctx, url, host) {
     if (request.method !== "GET" && request.method !== "HEAD")
       return new Response("Method not allowed", {
         status: 405,
@@ -277,6 +343,18 @@ export default {
         path = decodeURIComponent(rawPath);
       } catch {
         return html("Bad request", 400);
+      }
+      // WordPress ?p= / ?page_id= shortlinks reach the NEW host too: every
+      // preserved page ships <link rel="shortlink" href=".../atc/?p=N">, and
+      // the serve branch answered them with the landing page. Same one-hop
+      // resolution as the old host.
+      const pid = url.searchParams.get("p") || url.searchParams.get("page_id");
+      if (pid && P_MAP[pid]) {
+        const r = routeOldPath(P_MAP[pid]);
+        if (r?.status === 410) return html(PAGE_410, 410);
+        const to = r?.to ?? PREFIX + P_MAP[pid];
+        return Response.redirect(
+          to.startsWith(PREFIX) && staging ? url.origin + to.slice(PREFIX.length) : NEW_ORIGIN + to, 301);
       }
       // `staging` above means "serve the bare site root, no /atc/ prefix" — a
       // shape the old hostnames share with atc-staging once the cutover 09:00
@@ -305,12 +383,9 @@ export default {
             : NEW_ORIGIN + route.to,
           301);
       else
-        response =
+        response = await cachedServe(request, url, ctx, async () =>
           (await serveCanonical(env, PREFIX + path, request, extra, shell)) ??
-          html(PAGE_404, 404, extra);
+          html(PAGE_404, 404, extra));
     }
-
-    ctx.waitUntil(Promise.resolve(log(env, host, url.pathname, response.status, referer)));
     return response;
-  },
-};
+}

@@ -27,6 +27,7 @@ Usage:
 """
 import argparse
 import json
+import datetime
 import os
 import re
 import sys
@@ -292,19 +293,30 @@ def stage_apply(args):
             print(f"  !! no chart cells recorded for {fname}; row left untouched")
             out_rows.append(row)
             continue
+        # The parent zip row is rewritten as the first cell's row and each
+        # further cell becomes a sibling. A cell whose tif already has a row
+        # is skipped — but skipping cell 0 used to drop the parent row from
+        # the output entirely (and the shrink guard below passed whenever a
+        # sibling was added elsewhere). Emit the parent unchanged in that
+        # case so no row is ever lost.
+        parent_emitted = False
         for k, (frame_i, cell_i) in enumerate(cells):
             new_name = cell_tif_name(fname, frame_i, cell_i)
             if new_name in by_fname:
                 print(f"  !! {new_name} already a dole row; skipping")
                 continue
-            r = row if k == 0 else dict(row)
+            r = row if not parent_emitted else dict(row)
             r["filename"] = new_name
             r["note"] = build_cell_note(base_note, k + 1, len(cells))
             out_rows.append(r)
-            if k == 0:
+            if not parent_emitted:
                 changed += 1
+                parent_emitted = True
             else:
                 added += 1
+        if not parent_emitted:
+            print(f"  !! every cell of {fname} already had a row; parent row left untouched")
+            out_rows.append(row)
     print(f"rows rewritten: {changed}, sibling rows added: {added}, "
           f"total {len(rows)} -> {len(out_rows)}")
     if args.dry_run:
@@ -315,7 +327,14 @@ def stage_apply(args):
     if len(out_rows) < len(rows):
         print("Refusing to shrink row count.")
         return 1
-    bak = CSV_PATH + ".gpo_apply.bak"
+    # Every original row must survive (rewritten or untouched), not just the count.
+    surviving = sum(1 for r in rows if any(o is r for o in out_rows))
+    if surviving != len(rows):
+        print(f"Refusing to write: {len(rows) - surviving} original row(s) would be lost.")
+        return 1
+    bak_dir = os.path.expanduser("~/archive.aero-attic/csv-backups")
+    os.makedirs(bak_dir, exist_ok=True)
+    bak = os.path.join(bak_dir, "pre_gpo_apply_%s.csv" % datetime.date.today().isoformat())
     with open(CSV_PATH, "rb") as f, open(bak, "wb") as g:
         g.write(f.read())
     import csv
@@ -334,8 +353,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", choices=["detect", "crop", "apply"])
     ap.add_argument("--only", help="process only zips whose name contains S")
-    ap.add_argument("--workdir", default=os.path.join(GPO_DIR, "_extract_work"),
-                    help="where boxes.json + preview PNGs go")
+    ap.add_argument("--workdir",
+                    default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                         "worklists", "data", "gpo_microfiche_work"),
+                    help="where boxes.json + preview PNGs go (derived scratch; never inside rawtiffs)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     if args.stage == "detect":

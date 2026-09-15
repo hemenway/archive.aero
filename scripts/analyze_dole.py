@@ -28,12 +28,10 @@ def _parse_date(value: str) -> Optional[datetime]:
     if not value:
         return None
 
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
-    except Exception:
-        pass
-
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S"):
+    # Explicit formats only. datetime.fromisoformat on 3.11+ also accepts
+    # compact ("19350501") and ISO-week ("1935-W01") spellings, so a typo'd
+    # catalog date passed "validation" here.
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
             return datetime.strptime(value, fmt)
         except ValueError:

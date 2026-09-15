@@ -12,17 +12,19 @@ from pathlib import Path
 sys.path.insert(0, "/Users/ryanhemenway/archive.aero/scripts")
 import dole_v2
 
-SCRATCH = Path("/private/tmp/claude-501/-Users-ryanhemenway-archive-aero/f7ec1c59-1503-421f-87f9-bf71cfb5dec6/scratchpad")
+REPO = Path(__file__).resolve().parent.parent
+# Transfer results live under the gitignored worklists/data/ (they used
+# to be written to a session scratchpad that no longer exists);
+# override with the first command-line argument.
+TRANSFER_DIR = REPO / "worklists" / "data" / "georef_transfer"
+TRANSFER_DIR.mkdir(parents=True, exist_ok=True)
+TRANSFER = Path(sys.argv[1]) if len(sys.argv) > 1 else TRANSFER_DIR / "georef_transfer_2004.json"
 CSV = "/Users/ryanhemenway/archive.aero/master_dole_v2.csv"
 ATTIC = Path.home() / "archive.aero-attic" / "csv-backups"
 
-with open(SCRATCH / "georef_transfer_2004.json") as f:
+with open(TRANSFER) as f:
     transfer = json.load(f)
 
-backup = ATTIC / f"pre_2004jpg_georef_{date.today().isoformat()}.csv"
-ATTIC.mkdir(parents=True, exist_ok=True)
-shutil.copy2(CSV, backup)
-print(f"backup: {backup}")
 
 rows = dole_v2.load_rows(CSV)
 by_fn = {}
@@ -56,11 +58,8 @@ for fn, e in transfer.items():
         f"native scan pixel grid ({e['dims'][0]}x{e['dims'][1]})")
     applied.append(fn)
 
-with open(CSV, "w", encoding="utf-8", newline="") as f:
-    w = csv.DictWriter(f, fieldnames=dole_v2.V2_FIELDS)
-    w.writeheader()
-    for row in rows:
-        w.writerow({k: row.get(k, "") for k in dole_v2.V2_FIELDS})
+backup = dole_v2.write_rows(CSV, rows, "2004jpg_georef")
+print(f"backup: {backup}")
 
 print(f"applied GCPs to {len(applied)} rows")
 for fn, why in sorted(skipped):
