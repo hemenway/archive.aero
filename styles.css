@@ -312,11 +312,72 @@ body {
   display: block;
 }
 
-.site-tagline {
-  font-size: 13px;
-  color: var(--text-muted);
-  font-weight: 500;
+/* Collections strip beside the wordmark: says what the archive holds and
+   which collection you're in. Hidden below 768px (the header-right pill
+   carries the ATC link there); label + descriptors need >=1100px. */
+.collections {
   display: none;
+  align-items: center;
+  gap: 18px;
+  margin-left: 4px;
+  padding-left: 20px;
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.collections-label {
+  display: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.collection {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 3px 0;
+  text-decoration: none;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s var(--transition-smooth), border-color 0.2s var(--transition-smooth);
+}
+
+.collection:hover {
+  color: var(--text-light);
+}
+
+.collection:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+.collection[aria-current="page"] {
+  color: var(--text-light);
+  border-bottom-color: var(--primary);
+}
+
+.collection-name {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.collection-desc {
+  display: none;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+
+.collection[aria-current="page"] .collection-desc {
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .header-right {
@@ -349,6 +410,15 @@ body {
 .about-btn:focus-visible {
   outline: 2px solid var(--primary);
   outline-offset: 2px;
+}
+
+/* Phone-width stand-in for the collections strip: a compact pill in the
+   button cluster (the strip takes over from 768px up) */
+.atc-btn svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--primary);
 }
 
 .donate-btn {
@@ -1160,10 +1230,6 @@ body.zooming .leaflet-control-attribution {
     min-width: 180px;
   }
 
-  .site-tagline {
-    display: none;
-  }
-
   .header-right {
     gap: 6px;
   }
@@ -1172,6 +1238,18 @@ body.zooming .leaflet-control-attribution {
   .donate-btn {
     font-size: 11px;
     padding: 6px 9px;
+  }
+
+  /* The wordmark + three pills already fill a 375px header, so the
+     collection pill takes About's slot (About stays in the site menu) and
+     shortens to a bare "ATC" (the menu carries the full name) */
+  .header-right a[href="/about"] {
+    display: none;
+  }
+
+  .atc-btn svg,
+  .atc-btn-tail {
+    display: none;
   }
 
   /* Fullscreen (no iPhone API) and keyboard shortcuts are pointless on
@@ -1295,7 +1373,18 @@ body.zooming .leaflet-control-attribution {
 }
 
 @media (min-width: 768px) {
-  .site-tagline {
+  .collections {
+    display: flex;
+  }
+
+  .atc-btn {
+    display: none;
+  }
+}
+
+@media (min-width: 1100px) {
+  .collections-label,
+  .collection-desc {
     display: block;
   }
 }
