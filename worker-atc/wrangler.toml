@@ -35,9 +35,10 @@ SAMPLE_RATE = "0.05"
 ATC_NOINDEX = "0"
 # "1" = splice the site shell (src/shell.js: wordmark, collections strip,
 # About, Support) into every HTML page served on archive.aero/atc/*. The
-# landing page always carries it; atc-staging always shows it. Interior pages
-# wait for the post-cutover stabilization window (worklist 08 §5).
-ATC_SHELL = "0"
+# landing page always carries it; atc-staging always shows it. Flipped on
+# 2026-09-14 (user's call, ahead of the §5 stabilization window); "0" turns
+# the interior pages back to byte-identical in one deploy.
+ATC_SHELL = "1"
 
 [observability]
 enabled = true

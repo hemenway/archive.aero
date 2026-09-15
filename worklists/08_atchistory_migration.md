@@ -532,11 +532,12 @@ the frozen freeze-day build; the old site is hands-off. Findings worth keeping:
   to Cloudflare Registrar post-stabilization. **The domain never lapses** — the
   Wikipedia/AOPA backlinks are the crown jewels.
 - Backlog (post-stabilization): Pagefind client search over `/atc/`; design
-  integration pass (**built 2026-09-14, gated** — the site shell is live on the
-  landing + error pages and previewable on atc-staging; interior pages flip
-  with `ATC_SHELL = "1"` in `worker-atc/wrangler.toml` + deploy, see the
-  09-14 log entry); Wikipedia citation URL updates (careful, COI-aware — 301s
-  make this optional); mixed-content sweep of old pages; domain transfer.
+  integration pass (**step 1 live 2026-09-14, user's call ahead of the
+  window** — the site shell is spliced into every `/atc/` page; `ATC_SHELL =
+  "0"` in `worker-atc/wrangler.toml` + deploy reverts the interior pages to
+  byte-identical, see the 09-14 log entry); Wikipedia citation URL updates
+  (careful, COI-aware — 301s make this optional); mixed-content sweep of old
+  pages; domain transfer.
 - **Domain-transfer timing constraints (verified 2026-08-21 against CF Registrar
   docs + PIR RDAP; the post-stabilization date already satisfies all of them):**
   1. *45-day renewal rule (real, financial):* transferring within 45 days of the
@@ -1175,6 +1176,16 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   301s intact; staging shell on every page (+4,768 B). Also committed on the
   way: the 09-01 contact-pass edits to the 404 page and landing
   (`ryan@archive.aero`) that were deployed but never committed.
+  **Flipped the same night** on the user's explicit call ("flip it all now",
+  §5 concern stated and overruled): `ATC_SHELL = "1"`, worker `99fafa33`.
+  Verified on prod across every page type (landing, WP article, WP page,
+  topic listing, `/archive/N`, FrontPage `.htm`, generated `Pubs/` listing,
+  class-photo home, 404) shell=1; feed and binaries untouched; old-host 301s
+  one hop; the cp1252 South Dakota page equals the build file byte-for-byte
+  once the shell block is stripped. Full parity run against prod
+  (`--base prod --tag shell`, 15,524 rows, 245 s): **14,118 PASS / 0 FAIL**,
+  0 canonical chains, asset closure 8 broken = all live-broken-too. Revert is
+  the one var + deploy.
 
 - 2026-09-14: **Search Console 404 sweep.** First post-cutover Page-indexing
   report (export in `~/Downloads/archive-2/`): 187 indexed, 761 not — 620 of
