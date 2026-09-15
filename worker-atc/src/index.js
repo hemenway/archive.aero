@@ -12,13 +12,15 @@
 
 import P_MAP from "./p_map.json" with { type: "json" };
 import { PREFIX, keyCandidates, routeOldPath } from "./routes.js";
+import { injectShell, shellBody, shellHead } from "./shell.js";
 
 const NEW_ORIGIN = "https://archive.aero";
 const OLD_HOSTS = new Set(["atchistory.org", "www.atchistory.org"]);
 
 // Error pages share the archive.aero design language (Barlow display face,
-// dark solid surfaces, plane mark — see design-de-ai conventions). Inline and
-// self-contained: they must render even when R2 or the fonts host is down.
+// dark solid surfaces, plane mark — see design-de-ai conventions) and carry
+// the same site shell as every served page. Inline and self-contained: they
+// must render even when R2 or the fonts host is down.
 function pageShell(title, heading, inner) {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -27,16 +29,11 @@ function pageShell(title, heading, inner) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%231e90ff'><path d='M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z'/></svg>">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@600;700&display=swap">
+${shellHead()}
 <style>
   body { margin: 0; background: #0a0e12; color: #fff; line-height: 1.6;
          font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-  main { max-width: 34rem; margin: 14vh auto 0; padding: 0 20px; }
-  .brand { display: inline-flex; align-items: center; gap: 8px; color: #fff;
-           font-family: Barlow, system-ui, sans-serif; font-weight: 700;
-           text-decoration: none; font-size: 1.02rem; margin-bottom: 34px; }
-  .brand svg { width: 18px; height: 18px; fill: #1e90ff; }
+  main { max-width: 34rem; margin: 12vh auto 0; padding: 0 20px; }
   h1 { font-family: Barlow, system-ui, sans-serif; font-weight: 700;
        font-size: 1.7rem; margin: 0 0 10px; }
   p { margin: 0 0 14px; color: rgba(255,255,255,0.75); }
@@ -52,8 +49,8 @@ function pageShell(title, heading, inner) {
 </style>
 </head>
 <body>
+${shellBody({ atcHome: NEW_ORIGIN + PREFIX + "/" })}
 <main>
-  <a class="brand" href="${NEW_ORIGIN}/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 16v-2l-8-5V3.5c0-.83-.67-1.5-1.5-1.5S10 2.67 10 3.5V9l-8 5v2l8-2.5V19l-2 1.5V22l3.5-1 3.5 1v-1.5L13 19v-5.5l8 2.5z"/></svg>archive.aero</a>
   <h1>${heading}</h1>
   ${inner}
 </main>
@@ -68,7 +65,7 @@ const PAGE_404 = pageShell(
 collection.</p>
 <p>If a link from the old <strong>atchistory.org</strong> brought you here, it
 should have landed on the page's new home — tell
-<a href="mailto:archive@atchistory.org">archive@atchistory.org</a> and it will
+<a href="mailto:ryan@archive.aero">ryan@archive.aero</a> and it will
 be fixed.</p>
 <div class="links">
   <a href="${NEW_ORIGIN}/atc/">ATC History home</a>
@@ -127,7 +124,13 @@ function parseRange(header) {
   return { offset, length };
 }
 
-async function serveKey(env, key, request, headers) {
+// `shell` = { atcHome, all }: splice the site shell (shell.js) into HTML.
+// `all` covers every page; without it only the landing page (index.html)
+// gets it — the switch that lets the landing carry the new header while the
+// preserved interior pages wait for the post-cutover stabilization window
+// (worklist 08 §5). Whole-object responses only: a Range request gets the
+// raw bytes, since offsets into the spliced page would mean nothing.
+async function serveKey(env, key, request, headers, shell = null) {
   const range = parseRange(request.headers.get("range"));
   let obj;
   try {
@@ -168,6 +171,19 @@ async function serveKey(env, key, request, headers) {
     h.set("content-range", `bytes ${off}-${off + len - 1}/${obj.size}`);
     h.set("content-length", String(len));
   }
+  const withShell =
+    shell && isHtml && status === 200 && key !== "feed/index.html" &&
+    (shell.all || key === "index.html");
+  if (withShell) {
+    const raw = new Uint8Array(await obj.arrayBuffer());
+    const spliced = injectShell(raw, shell); // null: no <body> to hang it on
+    const bytes = spliced ?? raw;
+    // a different representation than the stored object: give caches a
+    // distinct validator and the real length
+    if (spliced) h.set("etag", obj.httpEtag.replace(/"$/, '-shell"'));
+    h.set("content-length", String(bytes.length));
+    return new Response(request.method === "HEAD" ? null : bytes, { status, headers: h });
+  }
   if (request.method === "HEAD") {
     // the runtime omits Content-Length for null-body responses; clients
     // (and the parity harness) want the real size on HEAD
@@ -179,9 +195,9 @@ async function serveKey(env, key, request, headers) {
 
 // Serve a canonical URI ("/atc/lewiston", "/atc/history/checklst") from R2 by
 // probing its key candidates.
-async function serveCanonical(env, canon, request, extraHeaders) {
+async function serveCanonical(env, canon, request, extraHeaders, shell) {
   for (const k of keyCandidates(canon)) {
-    const r = await serveKey(env, k, request, extraHeaders);
+    const r = await serveKey(env, k, request, extraHeaders, shell);
     if (r) return r;
   }
   return null;
@@ -272,6 +288,10 @@ export default {
       const extra = noindex ? { "x-robots-tag": "noindex, nofollow" } : {};
       const selfOrigin = staging ? url.origin : NEW_ORIGIN;
       const selfPrefix = staging ? "" : PREFIX;
+      // Site shell on every page: staging always (that is where it is
+      // previewed), archive.aero once ATC_SHELL=1. The landing page carries it
+      // regardless — see serveKey.
+      const shell = { atcHome: selfPrefix + "/", all: staging || env.ATC_SHELL === "1" };
 
       // An old spelling reaching the new host 301s to the canonical URI —
       // same map, same single hop, so a stale link costs one redirect whether
@@ -286,7 +306,7 @@ export default {
           301);
       else
         response =
-          (await serveCanonical(env, PREFIX + path, request, extra)) ??
+          (await serveCanonical(env, PREFIX + path, request, extra, shell)) ??
           html(PAGE_404, 404, extra);
     }
 

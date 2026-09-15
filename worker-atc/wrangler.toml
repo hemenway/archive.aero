@@ -33,6 +33,11 @@ SAMPLE_RATE = "0.05"
 # Cleared by the cutover 11:00 step, 2026-08-31. (Never gated the atchistory.org
 # hostnames — see the `staging` split in src/index.js and the 08-31 log entry.)
 ATC_NOINDEX = "0"
+# "1" = splice the site shell (src/shell.js: wordmark, collections strip,
+# About, Support) into every HTML page served on archive.aero/atc/*. The
+# landing page always carries it; atc-staging always shows it. Interior pages
+# wait for the post-cutover stabilization window (worklist 08 §5).
+ATC_SHELL = "0"
 
 [observability]
 enabled = true

@@ -160,6 +160,16 @@ def looks_challenged(status, body):
         b"Incapsula" in body or b"_Incap_" in body)
 
 
+# The worker splices the site shell (worker-atc/src/shell.js) into every HTML
+# page between these markers. It is archive.aero chrome, not atchistory.org
+# content: strip it before any title/length comparison against live.
+SHELL_RE = re.compile(rb"<!--aa-shell-->.*?<!--/aa-shell-->", re.S)
+
+
+def strip_shell(body):
+    return SHELL_RE.sub(b"", body) if body and b"aa-shell" in body else body
+
+
 def norm_title(raw):
     if raw is None:
         return None
@@ -201,7 +211,7 @@ def fetch(session, throttle, url, method="GET", max_hops=4, want_body=True,
             etag = (r.headers.get("etag") or "").strip('W/"')
             crange = r.headers.get("content-range") or ""
             if want_body and method == "GET":
-                body = r.content
+                body = strip_shell(r.content)
                 length = len(body)
             else:
                 length = int(clen) if clen is not None else -1

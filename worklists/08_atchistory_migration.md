@@ -532,8 +532,11 @@ the frozen freeze-day build; the old site is hands-off. Findings worth keeping:
   to Cloudflare Registrar post-stabilization. **The domain never lapses** — the
   Wikipedia/AOPA backlinks are the crown jewels.
 - Backlog (post-stabilization): Pagefind client search over `/atc/`; design
-  integration pass; Wikipedia citation URL updates (careful, COI-aware — 301s make
-  this optional); mixed-content sweep of old pages; domain transfer.
+  integration pass (**built 2026-09-14, gated** — the site shell is live on the
+  landing + error pages and previewable on atc-staging; interior pages flip
+  with `ATC_SHELL = "1"` in `worker-atc/wrangler.toml` + deploy, see the
+  09-14 log entry); Wikipedia citation URL updates (careful, COI-aware — 301s
+  make this optional); mixed-content sweep of old pages; domain transfer.
 - **Domain-transfer timing constraints (verified 2026-08-21 against CF Registrar
   docs + PIR RDAP; the post-stabilization date already satisfies all of them):**
   1. *45-day renewal rule (real, financial):* transferring within 45 days of the
@@ -1138,6 +1141,40 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   dependency manifests still name it — bookkeeping files, never served as
   pages); rendered checks on `/donate`, `/contact`, an article sidebar, and the
   FrontPage table layout; no console errors; worker route tests 9/9.
+
+- 2026-09-14: **Site shell (design integration pass, step 1) — built, landing
+  live, interior gated.** The chart viewer got a "Collections" header strip
+  the same evening (Sectional Charts · ATC History, current one underlined);
+  the ATC side now carries the identical shell so the two collections read as
+  one archive. It is **spliced by the worker, not written into the pages**:
+  `worker-atc/src/shell.js` holds one ASCII-only copy of the markup + CSS
+  (wordmark, collections strip with ATC History current, About, Support —
+  pixel-matched to `styles.css`), and `serveKey()` inserts it after `<body>`
+  (after WP's skip link) and its `<style>` before `</head>` at the **byte**
+  level, so the 65 iso-8859-1/windows-1252 FrontPage pages are preserved
+  byte-for-byte either side of the inserts (test: cp1252 curly quotes survive).
+  Whole-object GET/HEAD only — Range requests get raw bytes; feeds and the
+  6 body-less stubs pass through; spliced responses carry an `-shell` etag
+  suffix and their real length. Theme-aware CSS, scoped to the escapade body
+  class carried by all 1,858 WP pages, pulls the shell out of the theme's
+  `body{padding-left:250px}` and starts the fixed side masthead at 56px; the
+  2003 parchment pages and the WP article/listing pages all render with the
+  strip on top and nothing else moved (eyeballed desktop + 375px; the 4px
+  horizontal overflow on phones is the theme's own search field, present with
+  the shell removed). The landing source (`worker-atc/static/index.html`)
+  lost its private topbar — it starts at the banner now and the worker adds
+  the shell like any other page (one source of truth). 404/410 pages carry it
+  natively. **Gate:** `ATC_SHELL` var — landing always, atc-staging always,
+  archive.aero interior pages only when `"1"`; shipped `"0"` because §5 says
+  no `/atc/` content change until ~Oct 30, and this is the first visible one.
+  Parity harness strips `<!--aa-shell-->…<!--/aa-shell-->` before title/length
+  checks (`strip_shell`), so a flipped production stays comparable. Tests
+  16/16 (10 routes + 6 shell). Published: landing via `rclone copyto`
+  (12,434 B), worker `d46db6c1`; verified prod landing shell=1 / interior
+  pages byte-identical (52,821 B checklist page) / feed untouched / old-host
+  301s intact; staging shell on every page (+4,768 B). Also committed on the
+  way: the 09-01 contact-pass edits to the 404 page and landing
+  (`ryan@archive.aero`) that were deployed but never committed.
 
 - 2026-09-14: **Search Console 404 sweep.** First post-cutover Page-indexing
   report (export in `~/Downloads/archive-2/`): 187 indexed, 761 not — 620 of
