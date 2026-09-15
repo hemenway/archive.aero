@@ -1938,3 +1938,99 @@ body.zooming .leaflet-control-attribution {
 .lp-row:has(#airfieldsBtn[aria-pressed="false"]) + .af-filter-row .af-swatch {
   opacity: 0.4;
 }
+
+/* Airspace overlay (layers panel): the chips reuse the airfield chip chrome;
+   the swatches are line samples — solid blue for B/C/D, dashed magenta for E */
+.as-swatch {
+  width: 14px;
+  height: 0;
+  border: none;
+  border-radius: 0;
+  border-top: 2.5px solid #4f8cf5;
+}
+
+.as-swatch-e {
+  border-top-style: dashed;
+  border-top-color: #ee52b2;
+}
+
+/* Status line under the chips: the NASR cycle in effect, or why there is none */
+.as-status {
+  margin-top: -4px;
+  line-height: 1.3;
+}
+
+.lp-row:has(#airspaceBtn[aria-pressed="false"]) + .af-filter-row .af-chip {
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.lp-row:has(#airspaceBtn[aria-pressed="false"]) + .af-filter-row .af-swatch {
+  opacity: 0.4;
+}
+
+/* "Airspace here" stack in the pin card (AirspaceLayer.renderStack). No
+   display rule on .pin-as itself so the hidden attribute keeps working. */
+.pin-as {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pin-as-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.pin-as-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-top: 5px;
+  font-size: 12px;
+  line-height: 1.25;
+  color: var(--text-light);
+}
+
+.pin-as-cls {
+  flex-shrink: 0;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+  color: #fff;
+}
+
+.pin-as-cls-B,
+.pin-as-cls-D { background: #3a76d8; }
+
+.pin-as-cls-C,
+.pin-as-cls-E { background: #c8409a; }
+
+.pin-as-alt {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.pin-as-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-as-note {
+  margin-top: 4px;
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted);
+}

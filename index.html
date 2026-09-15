@@ -229,6 +229,20 @@
             <span class="af-swatch af-swatch-unknown" aria-hidden="true"></span>Unknown
           </button>
         </div>
+        <div class="lp-row">
+          <span class="lp-name">Airspace</span>
+          <button class="lp-switch" id="airspaceBtn" type="button" aria-pressed="false"
+            aria-label="Show airspace"></button>
+        </div>
+        <div class="af-filter-row" id="asFilterRow">
+          <button class="af-chip" type="button" data-as-key="bcd" aria-pressed="true">
+            <span class="af-swatch as-swatch as-swatch-bcd" aria-hidden="true"></span>Class B / C / D
+          </button>
+          <button class="af-chip" type="button" data-as-key="e" aria-pressed="true">
+            <span class="af-swatch as-swatch as-swatch-e" aria-hidden="true"></span>Class E
+          </button>
+        </div>
+        <div class="lp-sub as-status" id="asStatus" aria-live="polite"></div>
       </div>
 
       <div class="lp-stats"><span id="chartInfoTotal">—</span> eras &middot; <span id="chartInfoEffective">—</span>
@@ -334,6 +348,7 @@
     </div>
     <div class="pin-chart-dates" id="pinDates"></div>
     <div class="pin-chart-actions" id="pinActions"></div>
+    <div class="pin-as" id="pinAirspace" hidden></div>
     <a href="/sources" class="pin-sources-link">Sources &amp; Attribution</a>
   </div>
 
@@ -438,6 +453,15 @@
       // max zoom of 14 — but only if maxDataZoom says so; left at its default of
       // 15 the layer would request z14/z15 tiles the cutout doesn't contain.
       basemapMaxDataZoom: 13,
+      // Airspace overlay: one vector PMTiles archive of FAA NASR class airspace
+      // — every 28-day cycle since 2020-03-26, merged into polygon versions
+      // that carry a from/to validity interval (scripts/airspace_build.py,
+      // which rewrites this key with --update-html). Dated and immutable for
+      // the same reason as the basemap key. null disables the layer.
+      airspaceUrl: 'https://data.archive.aero/airspace/nasr-20261001.pmtiles',
+      // The archive is tiled to z11 and overzoomed past that (a z11 tile unit
+      // is ~5 m, plenty for airspace lines at the viewer's max zoom of 14).
+      airspaceMaxDataZoom: 11,
       initialView: { center: [32.7767, -96.7970], zoom: 10 },
       ranges: [], // Full list of PMTiles ranges
       frames: [], // Unique timeline dates (start dates)
@@ -2545,7 +2569,8 @@
           loc: document.getElementById('pinLoc'),
           badge: document.getElementById('pinBadge'),
           dates: document.getElementById('pinDates'),
-          actions: document.getElementById('pinActions')
+          actions: document.getElementById('pinActions'),
+          airspace: document.getElementById('pinAirspace')
         };
         this.refreshDebounced = Utils.debounce(() => this.refresh(), 150);
 
@@ -2632,6 +2657,7 @@
         const els = this.els;
         if (!els.panel) return;
         els.actions.textContent = '';
+        this._renderAirspace();
         if (!result) {
           els.loc.textContent = message || 'No chart here';
           els.badge.style.display = 'none';
@@ -2667,6 +2693,17 @@
         }
       }
 
+      // "Airspace here": the class-airspace stack under the pin on the selected
+      // date, read from the airspace overlay's cached tiles — so only while
+      // that layer is on, since it is the source of the polygons.
+      _renderAirspace() {
+        const el = this.els.airspace;
+        if (!el) return;
+        const layer = this.timelineApp.airspaceLayer;
+        if (layer) layer.renderStack(el, this.latlng);
+        else el.hidden = true;
+      }
+
       // Anchor the popup beside the pin, flipping to stay inside the viewport
       // and below the header bar. Runs on every render and map move/zoom.
       _updatePosition() {
@@ -2693,6 +2730,441 @@
         if (ed && /^\d+$/.test(ed) && +ed < 150) return `ed. ${ed}`;
         if (ed && !/^\d+$/.test(ed) && ed !== 'Unknown') return ed;
         return 'scan';
+      }
+    }
+
+    /** AIRSPACE LAYER **/
+    // Class B/C/D/E airspace from FAA NASR: one vector PMTiles archive
+    // (CONFIG.airspaceUrl, built by scripts/airspace_build.py) holding every
+    // 28-day cycle since 2020-03-26 as polygon *versions*, each with a from/to
+    // validity interval. A second protomaps-leaflet layer paints it with the
+    // sectional legend's symbology; the timeline date is applied inside the
+    // paint-rule filters, so a date change repaints the cached tiles and
+    // fetches nothing. Outside the held window — before the first cycle, or
+    // more than 28 days past the newest one (a cycle is good for 28 days) —
+    // nothing is drawn and the panel's status line says why: the overlay
+    // shows only dates the data actually covers. Off by default and
+    // remembered once chosen.
+
+    // Sectional-style vignette along a Class E floor edge: a band on the
+    // controlled side fading away from the line. The build (tile layer
+    // "efloor") emits only the edges where the floor really changes — a 700 ft
+    // area's boundary, a 1,200 ft area's boundary only where Class G lies
+    // beyond it — each walking with the controlled side on its left. A wide
+    // stroke clipped to a ribbon offset to that side leaves the band on that
+    // side only; three strokes of shrinking width stack into the fade. Screen
+    // coordinates have y down, so "left of (dx, dy)" is (dy, -dx). Ribbon
+    // corners are mitred from the two adjacent normals and capped; the ribbon
+    // is only a clip, so a self-overlap at a sharp concave corner shows
+    // nothing. The stroke's round joins fill the corners; its butt caps stop
+    // at the tile buffer, out of sight.
+    class RibbonSymbolizer {
+      constructor(opts) {
+        this.color = opts.color;      // css color, or (zoom, feature) => color
+        this.band = opts.band;        // px, or (zoom) => px
+        this.opacity = opts.opacity ?? 0.5;
+      }
+
+      static offset(line, i, w) {
+        const p = line[i];
+        let nx = 0, ny = 0, sides = 0;
+        if (i > 0) {
+          const a = line[i - 1];
+          const dx = p.x - a.x, dy = p.y - a.y, len = Math.hypot(dx, dy);
+          if (len > 0) { nx += dy / len; ny -= dx / len; sides++; }
+        }
+        if (i < line.length - 1) {
+          const b = line[i + 1];
+          const dx = b.x - p.x, dy = b.y - p.y, len = Math.hypot(dx, dy);
+          if (len > 0) { nx += dy / len; ny -= dx / len; sides++; }
+        }
+        const len = Math.hypot(nx, ny);
+        if (!len) return [p.x, p.y];
+        // |n1 + n2| = 2cos(θ/2), so the mitre length w / cos(θ/2) is 2w / len.
+        const k = sides === 2 ? Math.min(2 * w / len, 2.5 * w) : w;
+        return [p.x + nx / len * k, p.y + ny / len * k];
+      }
+
+      draw(ctx, geom, z, f) {
+        const band = typeof this.band === 'function' ? this.band(z) : this.band;
+        const color = typeof this.color === 'function' ? this.color(z, f) : this.color;
+        const w = band + 1.5;
+        for (const line of geom) {
+          const n = line.length;
+          if (n < 2) continue;
+          const path = new Path2D();
+          const ribbon = new Path2D();
+          path.moveTo(line[0].x, line[0].y);
+          ribbon.moveTo(line[0].x, line[0].y);
+          for (let i = 1; i < n; i++) {
+            path.lineTo(line[i].x, line[i].y);
+            ribbon.lineTo(line[i].x, line[i].y);
+          }
+          for (let i = n - 1; i >= 0; i--) {
+            const [ox, oy] = RibbonSymbolizer.offset(line, i, w);
+            ribbon.lineTo(ox, oy);
+          }
+          ribbon.closePath();
+          ctx.save();
+          ctx.clip(ribbon);
+          ctx.lineJoin = 'round';
+          ctx.lineCap = 'butt';
+          ctx.strokeStyle = color;
+          const steps = 3;
+          for (let s = steps; s >= 1; s--) {
+            ctx.lineWidth = 2 * band * s / steps;
+            ctx.globalAlpha = this.opacity / steps;
+            ctx.stroke(path);
+          }
+          ctx.restore();
+        }
+      }
+    }
+
+    class AirspaceLayer {
+      static BLUE = '#4f8cf5';
+      static MAGENTA = '#ee52b2';
+      static CASING = 'rgba(8, 12, 18, 0.6)';
+      static E_LABEL = { E2: 'surface area', E3: 'extension', E4: 'extension', E6: 'en route', E7: 'en route' };
+
+      constructor(mapCtrl, timelineApp) {
+        this.map = mapCtrl.map;
+        this.timelineApp = timelineApp;
+        this.enabled = !!CONFIG.airspaceUrl && Utils.storageGet('airspaceShown') === '1';
+        // Chip filters: B/C/D together (the solid/dashed line classes), E on its own.
+        this.filter = { bcd: true, e: true };
+        try {
+          const saved = JSON.parse(Utils.storageGet('airspaceFilter') || '{}');
+          for (const k of Object.keys(this.filter)) {
+            if (typeof saved[k] === 'boolean') this.filter[k] = saved[k];
+          }
+        } catch (e) { /* keep defaults */ }
+        this.layer = null;        // protomaps-leaflet GridLayer, created on first enable
+        this.loadPromise = null;
+        this.meta = null;         // archive_aero block from the PMTiles metadata
+        this.validTo = null;      // YYYYMMDD: first day the newest cycle no longer covers
+        this.dateStr = null;
+        this.dateInt = null;      // selected timeline date as YYYYMMDD
+        this.cyc = null;          // cycle in effect on that date, null outside the window
+        this.rerenderDebounced = Utils.debounce(() => this.layer?.rerenderTiles(), 120);
+        this.els = { status: document.getElementById('asStatus') };
+      }
+
+      init(dateStr) {
+        this._setDate(dateStr);
+        this._renderStatus();
+        if (this.enabled) this._ensureLoaded();
+      }
+
+      setEnabled(on) {
+        if (!CONFIG.airspaceUrl) return;
+        this.enabled = on;
+        Utils.storageSet('airspaceShown', on ? '1' : '0');
+        if (on) this._ensureLoaded();
+        else if (this.layer) this.layer.remove();
+        this._renderStatus();
+        this.timelineApp.pinInspector?.refresh();
+      }
+
+      setFilter(key, on) {
+        if (!(key in this.filter)) return;
+        this.filter[key] = on;
+        Utils.storageSet('airspaceFilter', JSON.stringify(this.filter));
+        if (this.enabled && this.layer) this.layer.rerenderTiles();
+        this.timelineApp.pinInspector?.refresh();
+      }
+
+      onDateChanged(dateStr) {
+        const before = this.cyc;
+        if (!this._setDate(dateStr)) return;
+        this._renderStatus();
+        // Versions only change at cycle boundaries, so a repaint is needed
+        // only when the cycle in effect changes — never while scrubbing
+        // through decades outside the window, where nothing is drawn.
+        if (this.cyc !== before && this.enabled && this.layer) this.rerenderDebounced();
+      }
+
+      // Returns true when the date changed. Also resolves the cycle in effect
+      // on it (null before the first held cycle, or from 28 days past the
+      // newest one — each cycle covers 28 days, so beyond that is unknown).
+      _setDate(dateStr) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr || '');
+        const d = m ? +(m[1] + m[2] + m[3]) : null;
+        const changed = d !== this.dateInt;
+        this.dateStr = dateStr || null;
+        this.dateInt = d;
+        this.cyc = this._cycleFor(d);
+        return changed;
+      }
+
+      _cycleFor(d) {
+        const cycles = this.meta?.cycles || [];
+        if (d == null || !cycles.length) return null;
+        if (this.validTo != null && d >= this.validTo) return null;
+        let best = null;
+        for (const c of cycles) {
+          if (AirspaceLayer.ymd(c) <= d) best = c;
+          else break;
+        }
+        return best;
+      }
+
+      _ensureLoaded() {
+        if (!this.loadPromise) {
+          this.loadPromise = this._load().then(() => {
+            if (this.enabled) this._attach();
+          }).catch((err) => {
+            console.error('airspace archive failed to load', err);
+            this.loadPromise = null; // next toggle retries
+            this.enabled = false;
+            Utils.storageSet('airspaceShown', '0');
+            document.getElementById('airspaceBtn')?.setAttribute('aria-pressed', 'false');
+            this._renderStatus('Airspace data unavailable');
+            Utils.toast('Airspace data unavailable');
+          });
+        } else if (this.layer) {
+          this._attach();
+        }
+      }
+
+      _attach() {
+        if (this.layer && !this.map.hasLayer(this.layer)) this.layer.addTo(this.map);
+        this._renderStatus();
+      }
+
+      async _load() {
+        const url = await this._resolveUrl();
+        // Header + JSON metadata: the cycle list the build stamped in, which
+        // names the cycle in effect and clamps pre-2020 dates. It doubles as
+        // the availability probe — protomaps-leaflet itself fails silently.
+        const meta = await new pmtiles.PMTiles(url).getMetadata();
+        this.meta = meta.archive_aero || {};
+        this.validTo = this.meta.last ? AirspaceLayer.plusDays(this.meta.last, 28) : null;
+        this._setDate(this.dateStr);
+        this.layer = protomapsL.leafletLayer({
+          url,
+          paintRules: this._paintRules(),
+          labelRules: [],
+          maxDataZoom: CONFIG.airspaceMaxDataZoom,
+          zIndex: 20, // above the chart GridLayer (10), below the airfield canvas
+          attribution: 'airspace <a href="https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data/NASR_Subscription/">FAA NASR</a>'
+        });
+      }
+
+      // Same localhost fallback as airfields.json: a local mirror copy at
+      // airspace/<name>.pmtiles wins when the page is served from localhost
+      // (scripts/dev_server.py mounts the mirror there and answers Range).
+      async _resolveUrl() {
+        const url = CONFIG.airspaceUrl;
+        if (['localhost', '127.0.0.1', ''].includes(location.hostname)) {
+          const local = 'airspace/' + url.split('/').pop();
+          try {
+            const resp = await fetch(local, { method: 'HEAD' });
+            if (resp.ok) return new URL(local, location.href).href;
+          } catch (e) { /* fall through to the data host */ }
+        }
+        return url;
+      }
+
+      // Sectional legend: Class B solid blue, C solid magenta, D dashed blue,
+      // E surface areas and extensions dashed magenta, E floors as a vignette
+      // along the "efloor" edges (magenta for 700 ft AGL, blue for 1,200 ft
+      // and higher, shaded on the controlled side). Every line sits on a dark
+      // casing so it reads on pale terrain and dense chart ink alike; widths
+      // grow with zoom so a state-level view isn't swamped.
+      _paintRules() {
+        const P = protomapsL;
+        const { BLUE, MAGENTA, CASING } = AirspaceLayer;
+        const show = (types) => (z, f) => {
+          const p = f.props;
+          return types.includes(p.lt) && this._typeOn(p.lt) && this._inEffect(p);
+        };
+        const w = (base) => (z) => z >= 10 ? base : z >= 8 ? base * 0.8 : base * 0.65;
+        const casing = (width) => (z) => width(z) + 2.2;
+        const solid = (color, width) => new P.LineSymbolizer({ color, width, lineCap: 'round', lineJoin: 'round' });
+        const dashed = (color, width, dash) => new P.LineSymbolizer({
+          color, width, dash, dashColor: color, dashWidth: width, lineCap: 'butt', lineJoin: 'round'
+        });
+        const rules = [];
+        const add = (types, symbolizer, minzoom) => rules.push({ dataLayer: 'class', symbolizer, filter: show(types), minzoom });
+        rules.push({
+          dataLayer: 'efloor',
+          symbolizer: new RibbonSymbolizer({
+            color: (z, f) => f.props.k === '700' ? MAGENTA : BLUE,
+            band: (z) => z >= 10 ? 11 : z >= 9 ? 9 : z >= 8 ? 7 : 5,
+            opacity: 0.5
+          }),
+          filter: (z, f) => this.filter.e && this._inEffect(f.props),
+          minzoom: 7
+        });
+        add(['B'], solid(CASING, casing(w(2.6))));
+        add(['C'], solid(CASING, casing(w(2.4))));
+        add(['D'], dashed(CASING, casing(w(1.8)), [7, 4]));
+        add(['E2', 'E3', 'E4'], dashed(CASING, casing(w(1.6)), [5, 4]));
+        add(['B'], solid(BLUE, w(2.6)));
+        add(['C'], solid(MAGENTA, w(2.4)));
+        add(['D'], dashed(BLUE, w(1.8), [7, 4]));
+        add(['E2', 'E3', 'E4'], dashed(MAGENTA, w(1.6), [5, 4]));
+        return rules;
+      }
+
+      _typeOn(lt) {
+        return (lt === 'B' || lt === 'C' || lt === 'D') ? this.filter.bcd : this.filter.e;
+      }
+
+      // A version is in effect from its first cycle up to (not including) the
+      // first later cycle without it; no `to` means "still current". Nothing
+      // is in effect outside the held window (no cycle resolved).
+      _inEffect(p) {
+        return this.cyc != null && p.from <= this.dateInt && (p.to == null || this.dateInt < p.to);
+      }
+
+      _renderStatus(override) {
+        const el = this.els.status;
+        if (!el) return;
+        if (override) { el.textContent = override; return; }
+        if (!CONFIG.airspaceUrl) { el.textContent = 'Airspace data not configured'; return; }
+        if (!this.enabled) { el.textContent = 'FAA NASR, 2020 to present'; return; }
+        if (!this.meta) { el.textContent = 'Loading FAA NASR…'; return; }
+        if (this.cyc) { el.textContent = `FAA NASR cycle ${AirspaceLayer.fmtCycle(this.cyc)}`; return; }
+        const first = this.meta.first;
+        if (first && this.dateInt != null && this.dateInt < AirspaceLayer.ymd(first)) {
+          el.textContent = `No FAA airspace data before ${AirspaceLayer.fmtCycle(first)}`;
+        } else if (this.validTo != null && this.dateInt != null && this.dateInt >= this.validTo) {
+          el.textContent = `No FAA airspace data after ${AirspaceLayer.fmtCycle(AirspaceLayer.isoOf(this.validTo - 1))} yet`;
+        } else {
+          el.textContent = 'FAA NASR';
+        }
+      }
+
+      // The airspace stack under a point on the selected date, into `el`
+      // (the pin card's section). Reads the layer's decoded tiles, so it only
+      // knows what is on screen: Class E floors enter the tiles at z7.
+      renderStack(el, latlng) {
+        el.textContent = '';
+        el.hidden = true;
+        // Outside the held window the section stays hidden: the panel's
+        // status line already says there is no data for the date.
+        if (!this.enabled || !this.layer || !latlng || this.cyc == null) return;
+        const seen = new Set();
+        const rows = [];
+        let hits;
+        try {
+          hits = this.layer.queryTileFeaturesDebug(latlng.lng, latlng.lat, 2);
+        } catch (e) {
+          return;
+        }
+        for (const list of hits.values()) {
+          for (const h of list) {
+            const p = h.feature?.props;
+            if (!p || h.layerName !== 'class') continue;
+            // Exclusion polygons mark notches cut out of a shelf; they are
+            // drawn (their edges are real boundaries) but not listed.
+            if (p.ex || seen.has(p.v) || !this._typeOn(p.lt) || !this._inEffect(p)) continue;
+            seen.add(p.v);
+            rows.push(p);
+          }
+        }
+        rows.sort((a, b) => AirspaceLayer.floorFt(a) - AirspaceLayer.floorFt(b)
+          || 'BCDE'.indexOf(a.cls) - 'BCDE'.indexOf(b.cls));
+        // The FAA models shelves as overlapping polygons (DFW's outer 4,000 ft
+        // shelf is the whole footprint, with the core drawn on top), and a
+        // 700 ft area sits inside the state 1,200 ft blanket. At one point the
+        // lowest floor of a class governs, so one row per class, lowest first.
+        const perClass = new Set();
+        const governing = rows.filter((p) => {
+          const key = p.cls || '?';
+          if (perClass.has(key)) return false;
+          perClass.add(key);
+          return true;
+        });
+        rows.length = 0;
+        rows.push(...governing);
+        const title = document.createElement('div');
+        title.className = 'pin-as-title';
+        title.textContent = `Airspace · NASR ${AirspaceLayer.fmtCycle(this.cyc)}`;
+        el.appendChild(title);
+        for (const p of rows) {
+          const row = document.createElement('div');
+          row.className = 'pin-as-row';
+          const cls = document.createElement('span');
+          cls.className = `pin-as-cls pin-as-cls-${p.cls || 'E'}`;
+          cls.textContent = p.cls || '?';
+          const alt = document.createElement('span');
+          alt.className = 'pin-as-alt';
+          alt.textContent = AirspaceLayer.altSpan(p);
+          const name = document.createElement('span');
+          name.className = 'pin-as-name';
+          const bits = [AirspaceLayer.shortName(p)];
+          if (AirspaceLayer.E_LABEL[p.lt]) bits.push(AirspaceLayer.E_LABEL[p.lt]);
+          if (p.hrs === 'NOTAM') bits.push('by NOTAM');
+          else if (p.hrs === 'RMK' && p.rmk) bits.push(p.rmk);
+          name.textContent = bits.filter(Boolean).join(' · ');
+          name.title = [p.name, p.rmk].filter(Boolean).join(' — ');
+          row.append(cls, alt, name);
+          el.appendChild(row);
+        }
+        const note = document.createElement('div');
+        note.className = 'pin-as-note';
+        if (this.map.getZoom() < 7) {
+          note.textContent = rows.length ? 'Zoom in to include Class E floors' : 'Zoom in for Class E; none of B, C or D here';
+        } else if (!rows.length) {
+          note.textContent = 'No class airspace here';
+        }
+        if (note.textContent) el.appendChild(note);
+        el.hidden = false;
+      }
+
+      static ymd(s) { return +String(s).replace(/-/g, '').slice(0, 8); }
+
+      // YYYYMMDD int -> 'YYYY-MM-DD'.
+      static isoOf(n) {
+        const s = String(n).padStart(8, '0');
+        return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+      }
+
+      // 'YYYY-MM-DD' + n days -> YYYYMMDD int (UTC arithmetic, no DST drift).
+      static plusDays(s, n) {
+        const [y, m, d] = String(s).split('-').map(Number);
+        const t = new Date(Date.UTC(y, m - 1, d) + n * 86400000);
+        return t.getUTCFullYear() * 10000 + (t.getUTCMonth() + 1) * 100 + t.getUTCDate();
+      }
+
+      static fmtCycle(s) {
+        const [y, m, d] = String(s).split('-').map(Number);
+        if (!y || !m || !d) return String(s);
+        return new Date(y, m - 1, d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+      }
+
+      // Sort key in feet: SFC 0, AGL/MSL as given, flight levels x100.
+      static floorFt(p) {
+        if (p.lo == null) return 0;
+        return p.loc === 'STD' ? p.lo * 100 : p.lo;
+      }
+
+      static fmtAlt(val, code) {
+        if (val == null) return null;
+        if (code === 'SFC') return val ? `${val.toLocaleString()} AGL` : 'SFC';
+        if (code === 'STD') return `FL${val}`;
+        if (code === 'UNLTD') return 'unlimited';
+        return `${val.toLocaleString()} ${code || 'MSL'}`;
+      }
+
+      static altSpan(p) {
+        const lo = AirspaceLayer.fmtAlt(p.lo, p.loc);
+        const hi = AirspaceLayer.fmtAlt(p.hi, p.hic);
+        if (lo && hi) {
+          if (p.loc === 'MSL' && p.hic === 'MSL') return `${p.lo.toLocaleString()} – ${hi}`;
+          return `${lo} – ${hi}`;
+        }
+        if (lo) return `from ${lo}`;
+        if (hi) return `to ${hi}`;
+        return '';
+      }
+
+      // "ADDISON CLASS D" -> "ADDISON": the class badge already says it.
+      static shortName(p) {
+        return (p.name || p.id || '').replace(/\s+CLASS\s+[A-G]\d?\s*$/i, '').trim() || p.name || '';
       }
     }
 
@@ -3161,6 +3633,32 @@
         });
       });
       syncAfChips();
+
+      const airspaceLayer = new AirspaceLayer(mapCtrl, timelineApp);
+      timelineApp.airspaceLayer = airspaceLayer;
+      const airspaceBtn = document.getElementById('airspaceBtn');
+      const syncAirspaceBtn = () => {
+        airspaceBtn?.setAttribute('aria-pressed', String(airspaceLayer.enabled));
+      };
+      airspaceBtn?.addEventListener('click', () => {
+        airspaceLayer.setEnabled(!airspaceLayer.enabled);
+        syncAirspaceBtn();
+      });
+      syncAirspaceBtn();
+      const asChips = document.querySelectorAll('#asFilterRow .af-chip');
+      const syncAsChips = () => {
+        asChips.forEach((chip) => {
+          chip.setAttribute('aria-pressed', String(!!airspaceLayer.filter[chip.dataset.asKey]));
+        });
+      };
+      asChips.forEach((chip) => {
+        chip.addEventListener('click', () => {
+          const k = chip.dataset.asKey;
+          airspaceLayer.setFilter(k, !airspaceLayer.filter[k]);
+          syncAsChips();
+        });
+      });
+      syncAsChips();
       updateLoading(90, 'Almost ready...');
 
       // Set timeframe from URL if available (view was already applied before
@@ -3257,9 +3755,12 @@
         pinInspector.refreshDebounced();
         // Airfield dots follow the same timeline (debounced internally).
         if (displayDate) airfieldsLayer.onDateChanged(displayDate);
+        // Airspace repaints its cached tiles for the new date (debounced too).
+        if (displayDate) airspaceLayer.onDateChanged(displayDate);
       };
       const initialDisplayDate = timelineApp.selectedDate || timelineApp.frames[timelineApp.currentIndex]?.date;
       airfieldsLayer.init(initialDisplayDate);
+      airspaceLayer.init(initialDisplayDate);
 
       // Hide loading splash
       updateLoading(100, 'Ready!');
