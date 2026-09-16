@@ -1954,7 +1954,7 @@ body.zooming .leaflet-control-attribution {
   border-top-color: #ee52b2;
 }
 
-/* Status line under the chips: the NASR cycle in effect, or why there is none */
+/* Status line under the chips: per region under view, the cycle in effect or why there is none */
 .as-status {
   margin-top: -4px;
   line-height: 1.3;
@@ -2007,11 +2007,20 @@ body.zooming .leaflet-control-attribution {
   color: #fff;
 }
 
+.pin-as-cls-A,
 .pin-as-cls-B,
 .pin-as-cls-D { background: #3a76d8; }
 
 .pin-as-cls-C,
 .pin-as-cls-E { background: #c8409a; }
+
+/* Area type (TMA, CTR...) where the source publishes no ICAO class */
+.pin-as-cls-type {
+  padding: 0 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  background: #4b5b73;
+}
 
 .pin-as-alt {
   flex-shrink: 0;

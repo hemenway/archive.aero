@@ -424,17 +424,42 @@
     <section>
       <h2>Airspace</h2>
       <p>
-        The airspace overlay &mdash; Class B, C, D and E boundaries and floors, and the
-        &ldquo;Airspace here&rdquo; list in the pin card &mdash; is built from the FAA's
-        <a href="https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data/NASR_Subscription/" target="_blank" rel="noopener">National Airspace System Resources (NASR)</a>
-        28-day subscription files, a U.S. Government work in the public domain. Every
-        cycle since March 2020 is kept, so the overlay follows the timeline: it shows the
-        airspace in effect on the selected date, and nothing at all for dates the data
-        does not cover.
+        The airspace overlay &mdash; class airspace boundaries and floors, and the
+        &ldquo;Airspace here&rdquo; list in the pin card &mdash; is built from each
+        country's own aeronautical information service. Every cycle held is kept, so the
+        overlay follows the timeline: it shows the airspace in effect on the selected date,
+        and nothing at all for dates a source does not cover.
       </p>
+      <ul>
+        <li>
+          <strong>United States</strong> &mdash; the FAA's
+          <a href="https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data/NASR_Subscription/" target="_blank" rel="noopener">National Airspace System Resources (NASR)</a>
+          28-day subscription files, a U.S. Government work in the public domain. Class B, C, D
+          and E, every cycle since March 2020.
+        </li>
+        <li>
+          <strong>France</strong> &mdash; the
+          <a href="https://www.sia.aviation-civile.gouv.fr/produits-numeriques-en-libre-disposition/les-bases-de-donnees-sia.html" target="_blank" rel="noopener">SIA (Service de l'Information A&eacute;ronautique)</a>
+          aeronautical database export for each AIRAC cycle, published under the
+          <a href="https://www.etalab.gouv.fr/licence-ouverte-open-licence/" target="_blank" rel="noopener">Licence Ouverte 2.0</a>;
+          the 2019&ndash;2023 cycles come from
+          <a href="http://data.cquest.org/dgac/aip/" target="_blank" rel="noopener">Christian Quest's mirror</a>.
+          CTR, TMA, CTA and the mountain LTA parts, with their ICAO class (A&ndash;E),
+          France and overseas. Gaps in the series stay gaps.
+        </li>
+        <li>
+          <strong>Brazil</strong> &mdash; DECEA's
+          <a href="https://geoaisweb.decea.mil.br/" target="_blank" rel="noopener">GeoAISWEB</a>
+          public map service (official AIS data, used with attribution under the AISWEB terms
+          of use). TMA, CTR, CTA and ATZ boundaries from the current AIP amendment; the service
+          publishes no ICAO class, so these are drawn as controlled airspace of unstated class,
+          and only the snapshots taken so far are covered.
+        </li>
+      </ul>
       <p class="muted">
-        Drawn in the sectional legend's symbology from the FAA's polygons, not traced from
-        the charts. Historical reference only &mdash; not for navigation.
+        Drawn in the sectional legend's symbology, keyed on the ICAO class, from each service's
+        own polygons &mdash; not traced from the charts. Historical reference only &mdash; not
+        for navigation.
       </p>
     </section>
 

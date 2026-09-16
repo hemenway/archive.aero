@@ -236,7 +236,7 @@
         </div>
         <div class="af-filter-row" id="asFilterRow">
           <button class="af-chip" type="button" data-as-key="bcd" aria-pressed="true">
-            <span class="af-swatch as-swatch as-swatch-bcd" aria-hidden="true"></span>Class B / C / D
+            <span class="af-swatch as-swatch as-swatch-bcd" aria-hidden="true"></span>Class A – D
           </button>
           <button class="af-chip" type="button" data-as-key="e" aria-pressed="true">
             <span class="af-swatch as-swatch as-swatch-e" aria-hidden="true"></span>Class E
@@ -453,12 +453,13 @@
       // max zoom of 14 — but only if maxDataZoom says so; left at its default of
       // 15 the layer would request z14/z15 tiles the cutout doesn't contain.
       basemapMaxDataZoom: 13,
-      // Airspace overlay: one vector PMTiles archive of FAA NASR class airspace
-      // — every 28-day cycle since 2020-03-26, merged into polygon versions
-      // that carry a from/to validity interval (scripts/airspace_build.py,
-      // which rewrites this key with --update-html). Dated and immutable for
-      // the same reason as the basemap key. null disables the layer.
-      airspaceUrl: 'https://data.archive.aero/airspace/nasr-20261001.pmtiles',
+      // Airspace overlay: one vector PMTiles archive of class airspace from
+      // FAA NASR (US), SIA (France) and DECEA GeoAISWEB (Brazil) — every held
+      // cycle of each, merged into polygon versions that carry a region tag
+      // and a from/to validity interval (scripts/airspace_build.py, which
+      // rewrites this key with --update-html). Dated and immutable for the
+      // same reason as the basemap key. null disables the layer.
+      airspaceUrl: 'https://data.archive.aero/airspace/class-20260916.pmtiles',
       // The archive is tiled to z11 and overzoomed past that (a z11 tile unit
       // is ~5 m, plenty for airspace lines at the viewer's max zoom of 14).
       airspaceMaxDataZoom: 11,
@@ -2734,15 +2735,18 @@
     }
 
     /** AIRSPACE LAYER **/
-    // Class B/C/D/E airspace from FAA NASR: one vector PMTiles archive
-    // (CONFIG.airspaceUrl, built by scripts/airspace_build.py) holding every
-    // 28-day cycle since 2020-03-26 as polygon *versions*, each with a from/to
+    // Class airspace from three national AIS sources — FAA NASR (US, every
+    // 28-day cycle since 2020-03-26), SIA (France, AIRAC cycles 2019–2023 with
+    // holes) and DECEA GeoAISWEB (Brazil, current snapshots) — in one vector
+    // PMTiles archive (CONFIG.airspaceUrl, built by scripts/airspace_build.py)
+    // as polygon *versions*, each tagged with its region and a from/to
     // validity interval. A second protomaps-leaflet layer paints it with the
-    // sectional legend's symbology; the timeline date is applied inside the
-    // paint-rule filters, so a date change repaints the cached tiles and
-    // fetches nothing. Outside the held window — before the first cycle, or
-    // more than 28 days past the newest one (a cycle is good for 28 days) —
-    // nothing is drawn and the panel's status line says why: the overlay
+    // sectional legend's symbology keyed on the ICAO class; the timeline date
+    // is applied inside the paint-rule filters, so a date change repaints the
+    // cached tiles and fetches nothing. A region draws only while one of its
+    // held cycles is in effect on the date (each is good for 28 days): before
+    // its first cycle, inside a hole of its series, or past its newest cycle
+    // nothing is drawn and the panel's status line says why — the overlay
     // shows only dates the data actually covers. Off by default and
     // remembered once chosen; a load that fails (archive missing, host
     // unreachable) turns it back off and the status line says why.
@@ -2827,12 +2831,21 @@
       static MAGENTA = '#ee52b2';
       static CASING = 'rgba(8, 12, 18, 0.6)';
       static E_LABEL = { E2: 'surface area', E3: 'extension', E4: 'extension', E6: 'en route', E7: 'en route' };
+      // FAA Class E floor areas: never drawn as a line, only as the vignette
+      // along their "efloor" edges.
+      static E_FLOOR = { E5: true, E6: true, E7: true };
+      // Regions a build can carry, in the order the panel lists them.
+      static REGION_ORDER = ['us', 'fr', 'br'];
+      // Pin-card order on equal floors: classes first, then the type badges
+      // of regions whose source publishes no class.
+      static BADGE_ORDER = ['A', 'B', 'C', 'D', 'E', 'TMA', 'CTA', 'CTR', 'ATZ'];
 
       constructor(mapCtrl, timelineApp) {
         this.map = mapCtrl.map;
         this.timelineApp = timelineApp;
         this.enabled = !!CONFIG.airspaceUrl && Utils.storageGet('airspaceShown') === '1';
-        // Chip filters: B/C/D together (the solid/dashed line classes), E on its own.
+        // Chip filters: Class A–D together (the solid/dashed line classes, plus
+        // controlled airspace whose source publishes no class), E on its own.
         this.filter = { bcd: true, e: true };
         try {
           const saved = JSON.parse(Utils.storageGet('airspaceFilter') || '{}');
@@ -2845,12 +2858,15 @@
         this.url = null;          // archive URL actually tried (local mirror or data host)
         this.loadError = null;    // why the last load failed, shown until the next attempt
         this.meta = null;         // archive_aero block from the PMTiles metadata
-        this.validTo = null;      // YYYYMMDD: first day the newest cycle no longer covers
+        this.regions = {};        // rg -> { name, source, cycles, boxes, note } from that block
         this.dateStr = null;
         this.dateInt = null;      // selected timeline date as YYYYMMDD
-        this.cyc = null;          // cycle in effect on that date, null outside the window
+        this.cyc = {};            // rg -> cycle in effect on that date (absent: no data for it)
+        this.cycKey = '';         // this.cyc serialised, to spot a change
         this.rerenderDebounced = Utils.debounce(() => this.layer?.rerenderTiles(), 120);
         this.els = { status: document.getElementById('asStatus') };
+        // The status line speaks for the region(s) under view, so it follows the map.
+        this.map.on('moveend', () => this._renderStatus());
       }
 
       init(dateStr) {
@@ -2878,39 +2894,49 @@
       }
 
       onDateChanged(dateStr) {
-        const before = this.cyc;
+        const before = this.cycKey;
         if (!this._setDate(dateStr)) return;
         this._renderStatus();
         // Versions only change at cycle boundaries, so a repaint is needed
-        // only when the cycle in effect changes — never while scrubbing
-        // through decades outside the window, where nothing is drawn.
-        if (this.cyc !== before && this.enabled && this.layer) this.rerenderDebounced();
+        // only when some region's cycle in effect changes — never while
+        // scrubbing through decades outside every window, where nothing is drawn.
+        if (this.cycKey !== before && this.enabled && this.layer) this.rerenderDebounced();
       }
 
-      // Returns true when the date changed. Also resolves the cycle in effect
-      // on it (null before the first held cycle, or from 28 days past the
-      // newest one — each cycle covers 28 days, so beyond that is unknown).
+      // Returns true when the date changed. Also resolves, per region, the
+      // held cycle in effect on it.
       _setDate(dateStr) {
         const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr || '');
         const d = m ? +(m[1] + m[2] + m[3]) : null;
         const changed = d !== this.dateInt;
         this.dateStr = dateStr || null;
         this.dateInt = d;
-        this.cyc = this._cycleFor(d);
+        this.cyc = {};
+        for (const rg of Object.keys(this.regions)) {
+          const c = this._cycleFor(rg, d);
+          if (c) this.cyc[rg] = c;
+        }
+        this.cycKey = JSON.stringify(this.cyc);
         return changed;
       }
 
-      _cycleFor(d) {
-        const cycles = this.meta?.cycles || [];
-        if (d == null || !cycles.length) return null;
-        if (this.validTo != null && d >= this.validTo) return null;
+      // The region's newest held cycle on or before day d — provided d falls
+      // within that cycle's 28 days. A hole in the series, or a date past the
+      // newest cycle, resolves to null: nothing is known about those dates,
+      // so nothing is drawn and the status line says why.
+      _cycleFor(rg, d) {
+        const r = this.regions[rg];
+        if (d == null || !r?.cycles?.length) return null;
         let best = null;
-        for (const c of cycles) {
+        for (const c of r.cycles) {
           if (AirspaceLayer.ymd(c) <= d) best = c;
           else break;
         }
+        if (best == null || d >= AirspaceLayer.plusDays(best, this._cycleDays())) return null;
         return best;
       }
+
+      _cycleDays() { return this.meta?.cycle_days || 28; }
 
       _ensureLoaded() {
         if (!this.loadPromise) {
@@ -2941,20 +2967,25 @@
       async _load() {
         const url = await this._resolveUrl();
         this.url = url;
-        // Header + JSON metadata: the cycle list the build stamped in, which
-        // names the cycle in effect and clamps pre-2020 dates. It doubles as
-        // the availability probe — protomaps-leaflet itself fails silently.
+        // Header + JSON metadata: per region, the cycle list the build stamped
+        // in (which names the cycle in effect) and the extent boxes (which say
+        // whose data is under view). It doubles as the availability probe —
+        // protomaps-leaflet itself fails silently.
         const meta = await new pmtiles.PMTiles(url).getMetadata();
         this.meta = meta.archive_aero || {};
-        this.validTo = this.meta.last ? AirspaceLayer.plusDays(this.meta.last, 28) : null;
+        this.regions = this.meta.regions || {};
         this._setDate(this.dateStr);
+        const credits = AirspaceLayer.REGION_ORDER.filter((rg) => this.regions[rg]).map((rg) => {
+          const r = this.regions[rg];
+          return r.source_url ? `<a href="${r.source_url}">${r.source}</a>` : r.source;
+        });
         this.layer = protomapsL.leafletLayer({
           url,
           paintRules: this._paintRules(),
           labelRules: [],
           maxDataZoom: CONFIG.airspaceMaxDataZoom,
           zIndex: 20, // above the chart GridLayer (10), below the airfield canvas
-          attribution: 'airspace <a href="https://www.faa.gov/air_traffic/flight_info/aeronav/aero_data/NASR_Subscription/">FAA NASR</a>'
+          attribution: 'airspace ' + (credits.join(', ') || 'archive.aero')
         });
       }
 
@@ -2973,18 +3004,21 @@
         return url;
       }
 
-      // Sectional legend: Class B solid blue, C solid magenta, D dashed blue,
-      // E surface areas and extensions dashed magenta, E floors as a vignette
-      // along the "efloor" edges (magenta for 700 ft AGL, blue for 1,200 ft
-      // and higher, shaded on the controlled side). Every line sits on a dark
-      // casing so it reads on pale terrain and dense chart ink alike; widths
-      // grow with zoom so a state-level view isn't swamped.
+      // Sectional legend, keyed on the ICAO class so every region reads the
+      // same: Class A and B solid blue (A heaviest; sectionals chart no A),
+      // C solid magenta, D dashed blue, E dashed magenta (surface areas and
+      // extensions; the FAA's E floors are a vignette along the "efloor"
+      // edges instead — magenta for 700 ft AGL, blue for 1,200 ft and higher,
+      // shaded on the controlled side). Controlled airspace whose source
+      // publishes no class (Brazil) is a plain solid blue line. Every line
+      // sits on a dark casing so it reads on pale terrain and dense chart ink
+      // alike; widths grow with zoom so a state-level view isn't swamped.
       _paintRules() {
         const P = protomapsL;
         const { BLUE, MAGENTA, CASING } = AirspaceLayer;
-        const show = (types) => (z, f) => {
+        const show = (pick) => (z, f) => {
           const p = f.props;
-          return types.includes(p.lt) && this._typeOn(p.lt) && this._inEffect(p);
+          return pick(p) && this._typeOn(p) && this._inEffect(p);
         };
         const w = (base) => (z) => z >= 10 ? base : z >= 8 ? base * 0.8 : base * 0.65;
         const casing = (width) => (z) => width(z) + 2.2;
@@ -2992,8 +3026,14 @@
         const dashed = (color, width, dash) => new P.LineSymbolizer({
           color, width, dash, dashColor: color, dashWidth: width, lineCap: 'butt', lineJoin: 'round'
         });
+        const isA = (p) => p.cls === 'A';
+        const isB = (p) => p.cls === 'B';
+        const isC = (p) => p.cls === 'C';
+        const isD = (p) => p.cls === 'D';
+        const isE = (p) => p.cls === 'E' && !AirspaceLayer.E_FLOOR[p.lt];
+        const unclassed = (p) => !p.cls;
         const rules = [];
-        const add = (types, symbolizer, minzoom) => rules.push({ dataLayer: 'class', symbolizer, filter: show(types), minzoom });
+        const add = (pick, symbolizer, minzoom) => rules.push({ dataLayer: 'class', symbolizer, filter: show(pick), minzoom });
         rules.push({
           dataLayer: 'efloor',
           symbolizer: new RibbonSymbolizer({
@@ -3004,59 +3044,104 @@
           filter: (z, f) => this.filter.e && this._inEffect(f.props),
           minzoom: 7
         });
-        add(['B'], solid(CASING, casing(w(2.6))));
-        add(['C'], solid(CASING, casing(w(2.4))));
-        add(['D'], dashed(CASING, casing(w(1.8)), [7, 4]));
-        add(['E2', 'E3', 'E4'], dashed(CASING, casing(w(1.6)), [5, 4]));
-        add(['B'], solid(BLUE, w(2.6)));
-        add(['C'], solid(MAGENTA, w(2.4)));
-        add(['D'], dashed(BLUE, w(1.8), [7, 4]));
-        add(['E2', 'E3', 'E4'], dashed(MAGENTA, w(1.6), [5, 4]));
+        add(isA, solid(CASING, casing(w(2.8))));
+        add(isB, solid(CASING, casing(w(2.6))));
+        add(isC, solid(CASING, casing(w(2.4))));
+        add(isD, dashed(CASING, casing(w(1.8)), [7, 4]));
+        add(isE, dashed(CASING, casing(w(1.6)), [5, 4]));
+        add(unclassed, solid(CASING, casing(w(2))));
+        add(isA, solid(BLUE, w(2.8)));
+        add(isB, solid(BLUE, w(2.6)));
+        add(isC, solid(MAGENTA, w(2.4)));
+        add(isD, dashed(BLUE, w(1.8), [7, 4]));
+        add(isE, dashed(MAGENTA, w(1.6), [5, 4]));
+        add(unclassed, solid(BLUE, w(2)));
         return rules;
       }
 
-      _typeOn(lt) {
-        return (lt === 'B' || lt === 'C' || lt === 'D') ? this.filter.bcd : this.filter.e;
+      _typeOn(p) {
+        return p.cls === 'E' ? this.filter.e : this.filter.bcd;
       }
 
       // A version is in effect from its first cycle up to (not including) the
-      // first later cycle without it; no `to` means "still current". Nothing
-      // is in effect outside the held window (no cycle resolved).
+      // first later held cycle without it; no `to` means "still current". And
+      // only while its region has a cycle in effect on the date at all.
       _inEffect(p) {
-        return this.cyc != null && p.from <= this.dateInt && (p.to == null || this.dateInt < p.to);
+        return this.cyc[p.rg] != null && p.from <= this.dateInt && (p.to == null || this.dateInt < p.to);
+      }
+
+      // Regions whose extent boxes meet the current view. Leaflet bounds run
+      // past ±180 when the map is panned around the world, so each box is
+      // also tried shifted by a full turn.
+      _regionsInView() {
+        const b = this.map.getBounds();
+        const s = b.getSouth(), n = b.getNorth(), wv = b.getWest(), ev = b.getEast();
+        const hit = ([w0, s0, e0, n0]) => n0 >= s && s0 <= n
+          && [0, 360, -360].some((k) => e0 + k >= wv && w0 + k <= ev);
+        return AirspaceLayer.REGION_ORDER.filter((rg) => (this.regions[rg]?.boxes || []).some(hit));
+      }
+
+      _regionsAt(latlng) {
+        const { lat, lng } = latlng;
+        const hit = ([w0, s0, e0, n0]) => lat >= s0 && lat <= n0
+          && [0, 360, -360].some((k) => lng + k >= w0 && lng + k <= e0);
+        return AirspaceLayer.REGION_ORDER.filter((rg) => (this.regions[rg]?.boxes || []).some(hit));
       }
 
       _renderStatus() {
         const el = this.els.status;
         if (!el) return;
+        el.textContent = '';
         if (!CONFIG.airspaceUrl) { el.textContent = 'Airspace data not configured'; return; }
         if (!this.enabled) {
           el.textContent = this.loadError
             ? `Airspace data unavailable: ${this.loadError}`
-            : 'FAA NASR, 2020 to present';
+            : 'US (FAA NASR), France (SIA), Brazil (DECEA)';
           return;
         }
-        if (!this.meta) { el.textContent = 'Loading FAA NASR…'; return; }
-        if (this.cyc) { el.textContent = `FAA NASR cycle ${AirspaceLayer.fmtCycle(this.cyc)}`; return; }
-        const first = this.meta.first;
-        if (first && this.dateInt != null && this.dateInt < AirspaceLayer.ymd(first)) {
-          el.textContent = `No FAA airspace data before ${AirspaceLayer.fmtCycle(first)}`;
-        } else if (this.validTo != null && this.dateInt != null && this.dateInt >= this.validTo) {
-          el.textContent = `No FAA airspace data after ${AirspaceLayer.fmtCycle(AirspaceLayer.isoOf(this.validTo - 1))} yet`;
-        } else {
-          el.textContent = 'FAA NASR';
+        if (!this.meta) { el.textContent = 'Loading airspace…'; return; }
+        const inView = this._regionsInView();
+        if (!inView.length) { el.textContent = 'No airspace data for this area'; return; }
+        for (const rg of inView) {
+          const line = document.createElement('div');
+          line.textContent = this._regionStatus(rg);
+          el.appendChild(line);
         }
+      }
+
+      // "France · SIA cycle Oct 5, 2023", or why the region draws nothing on
+      // the selected date: before its first cycle, inside a hole of the
+      // series, or past its newest cycle.
+      _regionStatus(rg) {
+        const r = this.regions[rg];
+        const F = AirspaceLayer.fmtCycle;
+        const cyc = this.cyc[rg];
+        if (cyc) return `${r.name} · ${r.source} cycle ${F(cyc)}`;
+        const d = this.dateInt;
+        const first = r.cycles?.[0];
+        if (d == null || !first) return `${r.name} · ${r.source}`;
+        if (d < AirspaceLayer.ymd(first)) return `${r.name} · no ${r.source} data before ${F(first)}`;
+        let prev = null, next = null;
+        for (const c of r.cycles) {
+          if (AirspaceLayer.ymd(c) <= d) prev = c;
+          else { next = c; break; }
+        }
+        const gapFrom = AirspaceLayer.isoOf(AirspaceLayer.plusDays(prev, this._cycleDays()));
+        if (next) return `${r.name} · no ${r.source} data ${F(gapFrom)} to ${F(AirspaceLayer.isoOf(AirspaceLayer.plusDays(next, -1)))}`;
+        return `${r.name} · no ${r.source} data after ${F(AirspaceLayer.isoOf(AirspaceLayer.plusDays(prev, this._cycleDays() - 1)))} yet`;
       }
 
       // The airspace stack under a point on the selected date, into `el`
       // (the pin card's section). Reads the layer's decoded tiles, so it only
-      // knows what is on screen: Class E floors enter the tiles at z7.
+      // knows what is on screen: the FAA's Class E floors enter the tiles at z7.
       renderStack(el, latlng) {
         el.textContent = '';
         el.hidden = true;
-        // Outside the held window the section stays hidden: the panel's
-        // status line already says there is no data for the date.
-        if (!this.enabled || !this.layer || !latlng || this.cyc == null) return;
+        if (!this.enabled || !this.layer || !latlng) return;
+        // Only regions with a cycle in effect under the pin have anything to
+        // say; for the others the panel's status line already explains.
+        const here = this._regionsAt(latlng).filter((rg) => this.cyc[rg]);
+        if (!here.length) return;
         const seen = new Set();
         const rows = [];
         let hits;
@@ -3071,45 +3156,51 @@
             if (!p || h.layerName !== 'class') continue;
             // Exclusion polygons mark notches cut out of a shelf; they are
             // drawn (their edges are real boundaries) but not listed.
-            if (p.ex || seen.has(p.v) || !this._typeOn(p.lt) || !this._inEffect(p)) continue;
+            if (p.ex || seen.has(p.v) || !this._typeOn(p) || !this._inEffect(p)) continue;
             seen.add(p.v);
             rows.push(p);
           }
         }
-        rows.sort((a, b) => AirspaceLayer.floorFt(a) - AirspaceLayer.floorFt(b)
-          || 'BCDE'.indexOf(a.cls) - 'BCDE'.indexOf(b.cls));
-        // The FAA models shelves as overlapping polygons (DFW's outer 4,000 ft
-        // shelf is the whole footprint, with the core drawn on top), and a
+        const order = (p) => AirspaceLayer.BADGE_ORDER.indexOf(AirspaceLayer.badge(p));
+        rows.sort((a, b) => AirspaceLayer.floorFt(a) - AirspaceLayer.floorFt(b) || order(a) - order(b));
+        // Shelves overlap (DFW's outer 4,000 ft shelf is the whole footprint,
+        // with the core drawn on top; TMA Paris stacks nine parts), and a
         // 700 ft area sits inside the state 1,200 ft blanket. At one point the
-        // lowest floor of a class governs, so one row per class, lowest first.
-        const perClass = new Set();
+        // lowest floor of a class governs, so one row per class — per type
+        // where the source publishes no class — lowest first.
+        const perBadge = new Set();
         const governing = rows.filter((p) => {
-          const key = p.cls || '?';
-          if (perClass.has(key)) return false;
-          perClass.add(key);
+          const key = AirspaceLayer.badge(p);
+          if (perBadge.has(key)) return false;
+          perBadge.add(key);
           return true;
         });
-        rows.length = 0;
-        rows.push(...governing);
+        const rg = governing[0]?.rg || here[0];
+        const region = this.regions[rg] || {};
         const title = document.createElement('div');
         title.className = 'pin-as-title';
-        title.textContent = `Airspace · NASR ${AirspaceLayer.fmtCycle(this.cyc)}`;
+        title.textContent = `Airspace · ${region.source || rg} ${AirspaceLayer.fmtCycle(this.cyc[rg])}`;
         el.appendChild(title);
-        for (const p of rows) {
+        for (const p of governing) {
           const row = document.createElement('div');
           row.className = 'pin-as-row';
           const cls = document.createElement('span');
-          cls.className = `pin-as-cls pin-as-cls-${p.cls || 'E'}`;
-          cls.textContent = p.cls || '?';
+          cls.className = `pin-as-cls pin-as-cls-${p.cls || 'type'}`;
+          cls.textContent = AirspaceLayer.badge(p);
           const alt = document.createElement('span');
           alt.className = 'pin-as-alt';
           alt.textContent = AirspaceLayer.altSpan(p);
           const name = document.createElement('span');
           name.className = 'pin-as-name';
           const bits = [AirspaceLayer.shortName(p)];
-          if (AirspaceLayer.E_LABEL[p.lt]) bits.push(AirspaceLayer.E_LABEL[p.lt]);
+          if (p.rg === 'us') {
+            if (AirspaceLayer.E_LABEL[p.lt]) bits.push(AirspaceLayer.E_LABEL[p.lt]);
+          } else if (p.cls && p.lt) {
+            bits.push(p.lt); // the badge shows the class; say which kind of area it is
+          }
           if (p.hrs === 'NOTAM') bits.push('by NOTAM');
           else if (p.hrs === 'RMK' && p.rmk) bits.push(p.rmk);
+          else if (p.hrs && p.hrs !== 'H24') bits.push(p.hrs); // AIP hours codes: HJ, HX, HO, HN, TS (H24 is the default)
           name.textContent = bits.filter(Boolean).join(' · ');
           name.title = [p.name, p.rmk].filter(Boolean).join(' — ');
           row.append(cls, alt, name);
@@ -3117,14 +3208,20 @@
         }
         const note = document.createElement('div');
         note.className = 'pin-as-note';
-        if (this.map.getZoom() < 7) {
-          note.textContent = rows.length ? 'Zoom in to include Class E floors' : 'Zoom in for Class E; none of B, C or D here';
-        } else if (!rows.length) {
+        if (rg === 'us' && this.map.getZoom() < 7) {
+          note.textContent = governing.length ? 'Zoom in to include Class E floors' : 'Zoom in for Class E; none of B, C or D here';
+        } else if (!governing.length) {
           note.textContent = 'No class airspace here';
+        } else if (region.note) {
+          note.textContent = region.note;
         }
         if (note.textContent) el.appendChild(note);
         el.hidden = false;
       }
+
+      // What the pin card's badge says: the ICAO class, or the area type
+      // where the source publishes no class.
+      static badge(p) { return p.cls || p.lt || '?'; }
 
       static ymd(s) { return +String(s).replace(/-/g, '').slice(0, 8); }
 
@@ -3176,10 +3273,10 @@
       }
 
       static fmtAlt(val, code) {
+        if (code === 'UNLTD') return 'unlimited';
         if (val == null) return null;
         if (code === 'SFC') return val ? `${val.toLocaleString()} AGL` : 'SFC';
         if (code === 'STD') return `FL${val}`;
-        if (code === 'UNLTD') return 'unlimited';
         return `${val.toLocaleString()} ${code || 'MSL'}`;
       }
 
