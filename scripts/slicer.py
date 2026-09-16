@@ -223,7 +223,9 @@ class ChartSlicer:
         Build per-row GCP warp inputs from the v2 columns:
         - pixel corners gcp1..gcp4 (TL, TR, BR, BL)
         - projected GCP coordinates in the row's LCC CRS
-        - cutline (extents/inline-WKT geometry or shapefile path)
+        - cutline (extents/inline-WKT geometry or shapefile path), or the
+          "none" kind (dole_v2.CUTLINE_NONE): the sheet warps whole, unmasked,
+          into the mosaic. A BLANK cutline is undecided and yields no context.
         """
         pixels = dole_v2.row_gcp_pixels(row)
         gcp_geo = dole_v2.row_gcp_lonlat(row)
@@ -321,7 +323,7 @@ class ChartSlicer:
         Reason string when a row's cutline cannot overlap its GCP footprint
         (bounding boxes disjoint in the row's LCC space), else None. Guard
         only - any error while checking returns None so a warp is never
-        blocked by the check itself.
+        blocked by the check itself. A "none" cutline has no ring to check.
         """
         try:
             cutline = context["cutline"]
@@ -1601,7 +1603,8 @@ class ChartSlicer:
         full_sheet=True warps WITHOUT any cutline (collar/legend kept) and
         always writes a real GTiff — the per-chart PMTiles path. The cutline
         context is still resolved (GCP sanity checks, antimeridian windows);
-        it just isn't applied as a mask.
+        it just isn't applied as a mask. A row whose cutline is
+        dole_v2.CUTLINE_NONE warps unmasked into the mosaic as well.
         """
         # Safety net for sources downloaded by earlier runs: a .tif that is really
         # a GeoPDF payload gets rasterized in place before warping.
@@ -1609,6 +1612,7 @@ class ChartSlicer:
             if not self._convert_pdf_payload_to_tif(input_tiff):
                 return False
 
+        no_cutline = record is not None and dole_v2.cutline_is_none(record)
         if record is not None:
             context = self._build_gcp_warp_context(record)
             if context:
@@ -1625,13 +1629,17 @@ class ChartSlicer:
                     return False
                 if shapefile:
                     self.log(f"      ⚠ GCP warp failed for {input_tiff.name}; falling back to shapefile warp")
-            elif not shapefile and not full_sheet:
+            elif not shapefile and not full_sheet and not no_cutline:
                 self.log(f"      ✗ Missing/invalid GCP metadata and no shapefile fallback for {input_tiff.name}")
                 return False
 
         # full_sheet needs no cutline: sources with embedded georef warp as-is,
-        # and georef-less scans fail naturally inside gdal.Warp below.
-        if not shapefile and not full_sheet:
+        # and georef-less scans fail naturally inside gdal.Warp below. A
+        # cutline=none row is the same unmasked warp, into the mosaic
+        # (use_cutline below is already False: it has no shapefile).
+        if no_cutline and not full_sheet:
+            self.log(f"    {input_tiff.name}: cutline={dole_v2.CUTLINE_NONE} - warping the whole sheet unmasked")
+        if not shapefile and not full_sheet and not no_cutline:
             self.log(f"      ✗ No shapefile available for {input_tiff.name}")
             return False
 
@@ -1912,6 +1920,11 @@ class ChartSlicer:
         and the antimeridian-window computation; antimeridian charts keep the
         cutline mask even in full-sheet mode (a windowed full sheet would crop
         the collar anyway, and the split windows derive from the cutline).
+
+        A row whose cutline is dole_v2.CUTLINE_NONE warps unmasked into the
+        mosaic too (whole sheet, collar included) - there is no ring to clip
+        to, so an antimeridian sheet without a cutline is refused rather than
+        warped to world width.
         """
         context = self._build_gcp_warp_context(row)
         if not context:
@@ -1942,10 +1955,12 @@ class ChartSlicer:
             self.log(f"      ✗ {mismatch} for {input_tiff.name} - fix the dole row (cutline ref or GCP lat/lon)")
             return False
 
+        no_cutline = context["cutline"]["kind"] == "none"
+        mask = not full_sheet and not no_cutline  # apply the cutline as a warp mask?
         warp_out = getattr(self, 'warp_output', 'tif').lower()
         to_vrt = warp_out == 'vrt' and not full_sheet
         self.log(f"    Warping {input_tiff.name} from row GCPs to {'VRT' if to_vrt else 'TIFF'}"
-                 f"{' (full sheet)' if full_sheet else ''}...")
+                 f"{' (full sheet)' if full_sheet else ' (whole sheet, cutline=none)' if no_cutline else ''}...")
 
         sanitized_stem = self.sanitize_filename(input_tiff.stem)
         # Temp names keyed to the OUTPUT stem: 10 catalog filenames are
@@ -1978,9 +1993,17 @@ class ChartSlicer:
             ds_vrt = None
 
             # Cutline: shapefile refs (extents/ or sectional/) pass through
-            # directly; inline WKT overrides become a temp GeoJSON.
+            # directly; inline WKT overrides become a temp GeoJSON; "none"
+            # has no dataset at all (no mask, whole sheet).
             cutline = context["cutline"]
-            if cutline["kind"] == "shapefile":
+            cutline_ds = cutline_srs = None
+            if no_cutline:
+                lons = [lon for lon, _lat in (dole_v2.row_gcp_lonlat(row) or [])]
+                if lons and max(lons) - min(lons) > 180:
+                    self.log(f"      ✗ {input_tiff.name}: GCPs straddle the antimeridian and the row has "
+                             f"no cutline to split on - give it a cutline instead of '{dole_v2.CUTLINE_NONE}'")
+                    return False
+            elif cutline["kind"] == "shapefile":
                 cutline_ds = str(cutline["path"])
                 cutline_srs = self.get_shapefile_srs(cutline["path"])
             else:
@@ -2004,7 +2027,7 @@ class ChartSlicer:
             # Antimeridian handling: a cutline straddling +/-180 balloons a
             # single 3857 warp to world width (Western Aleutian Islands). Warp
             # each side into its own clamped window and composite.
-            split_bounds = self._gcp_cutline_split_bounds_3857(cutline_ds, cutline_srs)
+            split_bounds = None if no_cutline else self._gcp_cutline_split_bounds_3857(cutline_ds, cutline_srs)
             if split_bounds and full_sheet:
                 self.log("      ↺ Antimeridian chart: full-sheet not supported, emitting cutline-trimmed")
 
@@ -2056,16 +2079,16 @@ class ChartSlicer:
                 warp_options = gdal.WarpOptions(
                     format="VRT" if to_vrt else "GTiff",
                     dstSRS='EPSG:3857',
-                    cutlineDSName=None if full_sheet else cutline_ds,
-                    cutlineSRS=None if full_sheet else cutline_srs,
-                    cropToCutline=not full_sheet,
+                    cutlineDSName=cutline_ds if mask else None,
+                    cutlineSRS=cutline_srs if mask else None,
+                    cropToCutline=mask,
                     dstAlpha=True,
                     resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
                     polynomialOrder=1,
                     creationOptions=None if to_vrt else INTERMEDIATE_CREATION_OPTS,
                     multithread=getattr(self, 'warp_multithread', True),
                     transformerOptions=transformer_opts or None,
-                    warpOptions=None if full_sheet else ['CUTLINE_ALL_TOUCHED=TRUE']
+                    warpOptions=['CUTLINE_ALL_TOUCHED=TRUE'] if mask else None
                 )
                 return gdal.Warp(str(output_tiff), str(temp_gcp_vrt), options=warp_options)
 
@@ -2664,9 +2687,11 @@ class ChartSlicer:
                     edition = rec.get('edition', '')
                     timestamp = rec.get('wayback_ts')
 
-                    # Row cutline: shapefile ref or inline WKT
+                    # Row cutline: shapefile ref, inline WKT, or none (full sheet)
                     if rec.get('cutline_wkt', '').strip():
                         shapefile_found = "WKT"
+                    elif dole_v2.cutline_is_none(rec):
+                        shapefile_found = "NONE"
                     else:
                         shapefile_found = "YES" if self._row_shapefile(rec) else "NO"
 
@@ -3000,7 +3025,7 @@ class ChartSlicer:
                         shp_path = None
                         if not gcp_context:
                             shp_path = self._row_shapefile(rec)
-                            if not shp_path:
+                            if not shp_path and not dole_v2.cutline_is_none(rec):
                                 # This row cannot warp; try the next alternate
                                 # like every other per-row failure does. Marking
                                 # the whole group done here made the mosaic pass

@@ -439,7 +439,7 @@
       // Single-file metadata bundle: era index + every archive's PMTiles
       // header/directories, so scrubbing needs no per-archive metadata fetches.
       // Rewritten by scripts/build_metadata_bundle.py --update-html; null = CSV only.
-      bundleUrl: 'https://data.archive.aero/sectionals/metadata-ee0d247d.bundle',
+      bundleUrl: 'https://data.archive.aero/sectionals/metadata-1aea6f69.bundle',
       // Vector basemap: a Protomaps (OpenStreetMap) cutout we build and host
       // ourselves — Protomaps' daily planet builds are downloads, not a CDN, and
       // their docs ask you not to hotlink them. Rebuild with
@@ -459,7 +459,7 @@
       // and a from/to validity interval (scripts/airspace_build.py, which
       // rewrites this key with --update-html). Dated and immutable for the
       // same reason as the basemap key. null disables the layer.
-      airspaceUrl: 'https://data.archive.aero/airspace/class-20260916.pmtiles',
+      airspaceUrl: 'https://data.archive.aero/airspace/class-20260916b.pmtiles',
       // The archive is tiled to z11 and overzoomed past that (a z11 tile unit
       // is ~5 m, plenty for airspace lines at the viewer's max zoom of 14).
       airspaceMaxDataZoom: 11,

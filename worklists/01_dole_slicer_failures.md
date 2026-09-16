@@ -97,7 +97,7 @@ Where a georeferenced sibling edition of the same layout exists, try
 | **WASP scans** (Denver eds 6/13, Dallas ed 25) | 6 | 3 | 1972/1975/1981 — rare desert-era content! (L141066–L141144) |
 | Individual ca-files: ca000440r (Boston 1957), ca000719r (Cheyenne 2009), ca000827r (Cincinnati 2011), ca003008r (Portland 1954), ca003126r (Reno 1960), ca000815 (Chicago 1939, non-fatal IFD noise too) | 6 | 5 (+1 silent gap) | |
 | Ungeoreferenced **PDFs**: SF 1978, ESRI SF 2008, realcharts Whitehorse + Bethel | 4 | 4 | ⚠ then ✗ (L141127–L142797) |
-| **No GCPs AND no cutline** (can't even attempt): Key West eds 1/3/7 (ca000001r/2r/3r/4r, 1928–1935!) + GlidePlan Reno_Whites + Mt_Shasta JPGs | 6 rows | 6 | Assign cutline shapefiles first (L281–L4502, L141851–56) |
+| **No GCPs AND no cutline** (can't even attempt): Key West eds 1/3/7 (ca000001r/2r/3r/4r, 1928–1935!) + GlidePlan Reno_Whites + Mt_Shasta JPGs | 6 rows | 6 | Since 2026-09-15 the georef tool offers **No cutline (whole sheet)** (`cutline = none`) — these rotated Navy strips fit no rectangle; GCP them with it. Key West BL/BR lons run −82 (left) / −81 (right). (L281–L4502, L141851–56) |
 
 ## D. Corrupt / unusable sources — need replacement scans
 
@@ -105,6 +105,10 @@ Where a georeferenced sibling edition of the same layout exists, try
   tif is truncated **server-side** (every pull dies at the same byte); rebuilt the local
   file from the complete LOC *service* JP2 derivative (same 12444×6981 grid, row GCPs
   stay valid) and re-pointed the row's download_link at the jp2.
+- [x] **ca000815.tif** (Chicago 1939, ed 1302) — FIXED 2026-09-15, same recipe: LOC
+  master truncated server-side at row 4,548 of 7,069 (the "Bogus StripByteCounts"
+  warning was the symptom, not noise); rebuilt from the complete service JP2
+  (13053×7069), link re-pointed, master in `rawtiffs-quarantine`. Still needs GCPs.
 - [x] **Denver 2025-11-27 row** — FIXED (see §A).
 - [ ] **Seward_93.zip** — unrecoverable online (see §B); needs an alternative scan.
 

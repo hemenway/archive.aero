@@ -337,6 +337,7 @@ date_iso,url
 2011-06-30_to_2012-06-28,https://data.archive.aero/sectionals/2011-06-30_to_2012-06-28.pmtiles
 2011-06-30_to_2012-01-12,https://data.archive.aero/sectionals/2011-06-30_to_2012-01-12.pmtiles
 2011-06-30_to_2011-12-15,https://data.archive.aero/sectionals/2011-06-30_to_2011-12-15.pmtiles
+2011-06-30_to_2011-08-25,https://data.archive.aero/sectionals/2011-06-30_to_2011-08-25.pmtiles
 2011-06-24_to_2012-01-06,https://data.archive.aero/sectionals/2011-06-24_to_2012-01-06.pmtiles
 2011-06-02_to_2011-12-15,https://data.archive.aero/sectionals/2011-06-02_to_2011-12-15.pmtiles
 2011-06-02_to_2011-11-17,https://data.archive.aero/sectionals/2011-06-02_to_2011-11-17.pmtiles
@@ -393,7 +394,10 @@ date_iso,url
 1991-01-10_to_1991-07-25,https://data.archive.aero/sectionals/1991-01-10_to_1991-07-25.pmtiles
 1982-01-21_to_1982-07-08,https://data.archive.aero/sectionals/1982-01-21_to_1982-07-08.pmtiles
 1981-01-22_to_1981-07-09,https://data.archive.aero/sectionals/1981-01-22_to_1981-07-09.pmtiles
+1978-11-02_to_1979-04-19,https://data.archive.aero/sectionals/1978-11-02_to_1979-04-19.pmtiles
+1975-08-14_to_1976-02-26,https://data.archive.aero/sectionals/1975-08-14_to_1976-02-26.pmtiles
 1972-12-07_to_1973-06-21,https://data.archive.aero/sectionals/1972-12-07_to_1973-06-21.pmtiles
+1972-03-02_to_1972-08-17,https://data.archive.aero/sectionals/1972-03-02_to_1972-08-17.pmtiles
 1971-06-24_to_1971-12-09,https://data.archive.aero/sectionals/1971-06-24_to_1971-12-09.pmtiles
 1971-05-27_to_1971-12-09,https://data.archive.aero/sectionals/1971-05-27_to_1971-12-09.pmtiles
 1971-05-27_to_1971-11-11,https://data.archive.aero/sectionals/1971-05-27_to_1971-11-11.pmtiles
@@ -717,6 +721,7 @@ date_iso,url
 1960-09-28_to_1961-09-20,https://data.archive.aero/sectionals/1960-09-28_to_1961-09-20.pmtiles
 1960-09-28_to_1961-03-31,https://data.archive.aero/sectionals/1960-09-28_to_1961-03-31.pmtiles
 1960-09-28_to_1961-03-26,https://data.archive.aero/sectionals/1960-09-28_to_1961-03-26.pmtiles
+1960-09-26_to_1961-06-30,https://data.archive.aero/sectionals/1960-09-26_to_1961-06-30.pmtiles
 1960-09-23_to_1961-09-22,https://data.archive.aero/sectionals/1960-09-23_to_1961-09-22.pmtiles
 1960-09-23_to_1961-03-25,https://data.archive.aero/sectionals/1960-09-23_to_1961-03-25.pmtiles
 1960-09-23_to_1961-03-22,https://data.archive.aero/sectionals/1960-09-23_to_1961-03-22.pmtiles
@@ -1607,6 +1612,7 @@ date_iso,url
 1954-03-28_to_1955-04-01,https://data.archive.aero/sectionals/1954-03-28_to_1955-04-01.pmtiles
 1954-03-28_to_1954-10-12,https://data.archive.aero/sectionals/1954-03-28_to_1954-10-12.pmtiles
 1954-03-25_to_1954-10-02,https://data.archive.aero/sectionals/1954-03-25_to_1954-10-02.pmtiles
+1954-03-23_to_1954-09-29,https://data.archive.aero/sectionals/1954-03-23_to_1954-09-29.pmtiles
 1954-03-21_to_1954-09-30,https://data.archive.aero/sectionals/1954-03-21_to_1954-09-30.pmtiles
 1954-03-19_to_1954-10-05,https://data.archive.aero/sectionals/1954-03-19_to_1954-10-05.pmtiles
 1954-03-19_to_1954-09-24,https://data.archive.aero/sectionals/1954-03-19_to_1954-09-24.pmtiles
@@ -3637,6 +3643,7 @@ date_iso,url
 1935-07-01_to_1935-12-01,https://data.archive.aero/sectionals/1935-07-01_to_1935-12-01.pmtiles
 1935-07-01_to_1935-11-01,https://data.archive.aero/sectionals/1935-07-01_to_1935-11-01.pmtiles
 1935-07-01_to_1935-10-01,https://data.archive.aero/sectionals/1935-07-01_to_1935-10-01.pmtiles
+1935-06-15_to_1935-08-10,https://data.archive.aero/sectionals/1935-06-15_to_1935-08-10.pmtiles
 1935-06-01_to_1937-05-01,https://data.archive.aero/sectionals/1935-06-01_to_1937-05-01.pmtiles
 1935-06-01_to_1936-03-01,https://data.archive.aero/sectionals/1935-06-01_to_1936-03-01.pmtiles
 1935-06-01_to_1936-02-01,https://data.archive.aero/sectionals/1935-06-01_to_1936-02-01.pmtiles
@@ -3735,8 +3742,11 @@ date_iso,url
 1932-06-01_to_1933-08-01,https://data.archive.aero/sectionals/1932-06-01_to_1933-08-01.pmtiles
 1932-06-01_to_1933-01-01,https://data.archive.aero/sectionals/1932-06-01_to_1933-01-01.pmtiles
 1932-05-01_to_1933-10-01,https://data.archive.aero/sectionals/1932-05-01_to_1933-10-01.pmtiles
+1932-03-01_to_1935-06-15,https://data.archive.aero/sectionals/1932-03-01_to_1935-06-15.pmtiles
 1932-03-01_to_1933-01-01,https://data.archive.aero/sectionals/1932-03-01_to_1933-01-01.pmtiles
 1932-02-01_to_1934-09-01,https://data.archive.aero/sectionals/1932-02-01_to_1934-09-01.pmtiles
 1931-06-01_to_1932-01-29,https://data.archive.aero/sectionals/1931-06-01_to_1932-01-29.pmtiles
 1931-06-01_to_1931-12-30,https://data.archive.aero/sectionals/1931-06-01_to_1931-12-30.pmtiles
 1930-12-01_to_1932-08-01,https://data.archive.aero/sectionals/1930-12-01_to_1932-08-01.pmtiles
+1929-11-01_to_1932-03-01,https://data.archive.aero/sectionals/1929-11-01_to_1932-03-01.pmtiles
+1928-04-01_to_1929-11-01,https://data.archive.aero/sectionals/1928-04-01_to_1929-11-01.pmtiles

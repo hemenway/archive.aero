@@ -38,9 +38,49 @@
 > scans are beyond automated reach (terrain shading correlates at 1/8 scale
 > but zero full-res windows survive 40 years of symbology change): hand GCPs.
 > Also confirmed: Hawaiian 1947–66 ca-scans are TWO-PANEL (recto+verso on one
-> image — needs per-panel handling); `ca000815` (Chicago 1939) has a mid-file
-> TIFF read error (re-fetch from LOC); Boston 1957 / Portland 1954 / Reno
+> image — needs per-panel handling); `ca000815` (Chicago 1939) had a mid-file
+> TIFF read error — **fixed 2026-09-15**: the LOC *master* tif is truncated
+> server-side at row 4,548 of 7,069 (same byte count on tile.loc.gov, so a
+> re-fetch cannot help); rebuilt from the complete *service* jp2, link
+> re-pointed, truncated master quarantined — the Fargo ca001479r recipe.
+> `dole_v2.open_raw` now decodes eagerly and falls back to a GDAL partial
+> read (missing rows white) so a truncated file shows its surviving rows in
+> the georef tool instead of a blank 500; Boston 1957 / Portland 1954 / Reno
 > 1960 have no modern donor (discontinued sectionals) — hand GCPs only.
+
+> **2026-09-15 — georef-tool batch sliced + published** (13 hand-GCP'd rows
+> from the tool since the 09-01 publish → 11 eras: Key West 1928/1929/1932/1935
+> Navy strips, Chicago 1939 (same-key rebuild), Portland 1954, Reno 1960,
+> Denver WASP 1972 + 1975 (both faces), SF 1978 north face, Cincinnati 2011
+> north face; +13 chart artifacts). Pre-slice affine-residual test on every
+> row (4 corners, RMS): 31–270 m except where the projection was wrong —
+> **(1)** the Key West strips fit **Mercator** to 30–80 m and LCC 45/33 to
+> 0.8–1.3 km (polyconic/tmerc no better): new optional catalog column
+> `proj` (`merc`; blank = LCC), honoured by `dole_v2.row_lcc_crs`; the tool's
+> LCC-only fit check will warn on those rows — Save anyway.
+> **(2)** Denver 1972/75 WASP: 45/33 → 33°20′/38°40′ (300 m → 80–240 m), the
+> SP warning above was right. **(3)** Cutline refs copied from older sheets:
+> SF 1978 had `extents/san_francisco_ca` (the 1966 sheet, 34–38N — warp
+> refused, no intersection) and Cincinnati 2011 had `extents/cincinnati_oh`
+> (−90..−84 — clipped the modern north face to a 1° sliver, silently);
+> both now `sectional/<modern>`. Check the cutline extent against the GCP
+> box before slicing any hand-GCP'd row. **(4)** Denver WASP `half` was
+> blank → the faces were warp *alternatives* (one face published as the
+> era, bare `chart/denver/<date>` URIs minted — deleted before upload, not
+> live); `half` set from the GCP latitudes, fold cutlines traced by the new
+> `scripts/wasp_fold_cutline.py` (paper edge → blank margin → first inky
+> block, per-column clamped to the face's p20–p50 margin band, ∩ outline).
+> 1972 seam is clean; **1975 keeps a ≤4 km pale band** (its faces' georefs
+> disagree ~1 km at the seam — any deeper cut opens a gap; `--clamp-hi 20`)
+> — re-GCP one 1975 face against the other to close it.
+> **Not published: Boston 1957 ca000440r** — the sheet is 40–44N × 69–72W
+> (corner labels read off the scan), the pre-filled lat/lon and
+> `extents/boston_ma` say 41–44, the scan needs `rotation` 270 (text reads
+> upright only after 90° CCW), and the stored pixel GCPs sit at ~½ scale
+> inside the sheet — redo it in the tool from scratch; nothing of it was
+> uploaded. **Not sliced: Juneau 2013-04-04 Batch19** — it now carries GCPs
+> but B4 says hold; the row's note still says withheld. Decide, then blank
+> the GCPs or drop B4.
 
 > **2026-08-26 — Dallas–Ft Worth WASP 1981/1982 sliced + published** (hand
 > GCPs by Ryan, three of four sides). Three infrastructure fixes rode along:

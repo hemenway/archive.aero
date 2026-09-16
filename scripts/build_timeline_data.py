@@ -153,8 +153,11 @@ def main():
 
     loc_ref = {}
     for loc, lrows in by_loc.items():
+        # cutline="none" (dole_v2.CUTLINE_NONE) is a full-sheet decision, not
+        # a shapefile: it has no ring, so it must not win the majority vote.
         refs = collections.Counter(
-            r["cutline"].strip() for r in lrows if r["cutline"].strip()
+            r["cutline"].strip() for r in lrows
+            if r["cutline"].strip() and r["cutline"].strip() != dole_v2.CUTLINE_NONE
         )
         loc_ref[loc] = refs.most_common(1)[0][0] if refs else None
 

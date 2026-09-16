@@ -111,8 +111,12 @@ history sources are parsed (all three regions have it).
       "current only" caveat in the panel. France (SIA `R`/`D`/`P`/`TRA`/`CBA`
       espaces, per cycle) and Brazil (`eac_r`/`eac_p`/`eac_d`) slot into the
       same layer.
-- [ ] B0. France after 2023-10: the SIA shop cycles (0 EUR, account needed)
-      go in `fr_sia/cycles/<date>/`; the build picks them up unchanged. Brazil
+- [~] B0. France after 2023-10: Ryan downloads each cycle from the SIA shop
+      ("AIM Data" → "Données aéronautiques XML AIRAC mm/yy", 5.6 MB — not the
+      eAIP); the pull files it (zip or the folder Safari expands) under
+      `fr_sia/cycles/<date>/`. 09/26 + 10/26 filed and published 2026-09-16
+      (`class-20260916b`: FR 36 cycles, 1,024 versions; 2023-11-02..2026-09-02
+      stays a hole). Repeat every 28 days — the shop drops old cycles. Brazil
       accumulates a cycle per snapshot the pull script saves.
 - [ ] B0b. Brazil's ICAO classes: not in the WFS; AIP Brasil ENR 2.1 lists
       them per TMA/CTR (a documents source). Until then Brazil is drawn as

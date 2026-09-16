@@ -7,7 +7,11 @@ Schema (one row per map):
     gcps:       gcp1..gcp4 (TL, TR, BR, BL) x (px, py, lat, lon)
                 blank for already-georeferenced maps
     cutline:    cutline      - shapefile ref relative to shapefiles/
-                               ("extents/aberdeen_sd", "sectional/new_york")
+                               ("extents/aberdeen_sd", "sectional/new_york"),
+                               or the sentinel "none" (CUTLINE_NONE): the row
+                               has NO cutline by decision and the whole warped
+                               sheet, collar included, goes into the mosaic.
+                               Blank means "not decided yet" (row incomplete).
                 cutline_wkt  - inline POLYGON((lon lat, ...)), lon/lat NAD83;
                                overrides `cutline` when present
     projection: lcc_lat1, lcc_lat2, lcc_lat0, lcc_lon0
@@ -49,20 +53,40 @@ V2_FIELDS = [
     "gcp4_px", "gcp4_py", "gcp4_lat", "gcp4_lon",
     "cutline", "cutline_wkt",
     "lcc_lat1", "lcc_lat2", "lcc_lat0", "lcc_lon0",
-    "rotation", "src_crs", "half",
+    "rotation", "src_crs", "half", "proj",
 ]
 
 # Columns that may be absent from a CSV on disk (added after the v2 freeze).
 # Writers always emit the full V2_FIELDS header; readers treat these as "".
-V2_OPTIONAL_FIELDS = {"rotation", "src_crs", "half"}
+V2_OPTIONAL_FIELDS = {"rotation", "src_crs", "half", "proj"}
 
 LCC_TEMPLATE = (
     "+proj=lcc +lat_1={lat1} +lat_2={lat2} +lat_0={lat0} "
     "+lon_0={lon0} +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
 )
 
+# `proj` (optional, 2026-09-15): the chart's own projection family, which
+# is what the affine GCP fit must be computed in. Blank = Lambert conformal
+# conic from the lcc_* columns (every FAA sectional). `merc` = Mercator
+# about lcc_lon0 (the 1928-35 Key West Navy strips: their four corners fit
+# Mercator to 30-80 m and LCC 45/33 to ~1 km; lcc_lat1/lat2/lat0 are
+# ignored). The georef tool's fit check still assumes LCC, so it warns on
+# these rows — "Save anyway" is right.
+PROJ_MERCATOR = "merc"
+MERC_TEMPLATE = (
+    "+proj=merc +lon_0={lon0} +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+)
+
 # Cutline geometry is authored in NAD83 lon/lat.
 CUTLINE_SRS = "EPSG:4269"
+
+# `cutline` sentinel: no cutline by decision. The slicer warps the whole
+# sheet (collar included) into the mosaic, exactly like the per-chart
+# full-sheet artifacts, for sheets no rectangle or sectional outline fits
+# (the 1928-35 Key West Navy strip charts, GlidePlan's collar-free mosaics).
+# Distinct from a BLANK cutline, which means "not decided yet" and keeps the
+# row incomplete. Set from the georef tool's Cutline panel.
+CUTLINE_NONE = "none"
 
 
 def _fnum(value) -> Optional[float]:
@@ -116,7 +140,16 @@ def row_gcp_lonlat(row) -> Optional[List[Tuple[float, float]]]:
 
 
 def row_lcc_crs(row) -> str:
-    """Proj4 LCC string synthesized from the lcc_* columns, or ''."""
+    """Proj4 string for the row's chart projection, or ''.
+
+    LCC from the lcc_* columns unless `proj` names another family
+    (PROJ_MERCATOR: Mercator about lcc_lon0)."""
+    proj = str(row.get("proj") or "").strip().lower()
+    if proj == PROJ_MERCATOR:
+        lon0 = str(row.get("lcc_lon0") or "").strip()
+        return MERC_TEMPLATE.format(lon0=lon0) if lon0 else ""
+    if proj:
+        raise ValueError(f"{row.get('filename')}: unknown proj {proj!r}")
     parts = {
         "lat1": str(row.get("lcc_lat1") or "").strip(),
         "lat2": str(row.get("lcc_lat2") or "").strip(),
@@ -133,25 +166,37 @@ def row_cutline(row, shape_dir) -> Optional[Dict[str, object]]:
     Resolve the row's cutline. Returns:
         {"kind": "wkt", "wkt": str}                        - inline override
         {"kind": "shapefile", "path": Path, "ref": str}    - shapefile ref
-        None                                               - no cutline
+        {"kind": "none", "ref": "none"}                    - CUTLINE_NONE:
+                                                             full sheet, no mask
+        None                                               - undecided (blank)
     cutline_wkt wins over cutline when both are present.
     """
     wkt = str(row.get("cutline_wkt") or "").strip()
     if wkt:
         return {"kind": "wkt", "wkt": wkt}
     ref = str(row.get("cutline") or "").strip()
+    if ref == CUTLINE_NONE:
+        return {"kind": "none", "ref": ref}
     if ref:
         path = Path(shape_dir) / f"{ref}.shp"
         return {"kind": "shapefile", "path": path, "ref": ref}
     return None
 
 
+def cutline_is_none(row) -> bool:
+    """True when the row opts out of a cutline (CUTLINE_NONE, no WKT override)."""
+    return (str(row.get("cutline") or "").strip() == CUTLINE_NONE
+            and not str(row.get("cutline_wkt") or "").strip())
+
+
 def cutline_ring(cutline, shape_dir=None) -> Optional[List[Tuple[float, float]]]:
     """
     Outer ring of a cutline as a closed list of (lon, lat). Works for the
     inline-WKT kind and for extent shapefiles (single polygon). Requires GDAL.
+    None for an undecided (blank) cutline and for the "none" kind alike: a
+    full-sheet row has no ring to clip or sanity-check against.
     """
-    if cutline is None:
+    if cutline is None or cutline["kind"] == "none":
         return None
     from osgeo import ogr
 
@@ -306,13 +351,77 @@ def orientation_undo_op(orientation: Optional[int]):
 
 
 def open_raw(path):
-    """Image.open in the RAW pixel frame (TIFF Orientation tag undone)."""
+    """Image.open in the RAW pixel frame (TIFF Orientation tag undone).
+
+    Pixels are decoded here, not lazily, so a file whose strips run past
+    EOF surfaces now instead of inside a resize. Such files fall back to
+    `open_truncated`, which returns the rows that exist over a white sheet
+    (ca000815, Chicago 1939: LOC's own master stops at row 4,548 of 7,069)."""
     Image = _pil_image()
     img = Image.open(path)
-    op = orientation_undo_op(tiff_orientation(img))
+    orientation = tiff_orientation(img)
+    try:
+        img.load()
+    except OSError as exc:
+        img.close()
+        img = open_truncated(path, exc)
+    op = orientation_undo_op(orientation)
     # `is not None`, not truthiness: FLIP_LEFT_RIGHT is enum value 0, and an
     # `if op:` test silently left orientation 2 (mirror) applied.
     return img.transpose(op) if op is not None else img
+
+
+def open_truncated(path, cause=None):
+    """The decodable top of a TIFF whose pixel data ends early, as a PIL
+    image of the full declared size (missing rows white). GDAL reads the
+    strips that exist; the last good row is found by bisection. Raises the
+    original error when not even the first row decodes."""
+    import numpy as np
+    from osgeo import gdal
+    gdal.UseExceptions()
+    Image = _pil_image()
+    ds = gdal.Open(str(path))
+    if ds is None:
+        raise cause or OSError(f"GDAL cannot open {path}")
+    w, h, bands = ds.RasterXSize, ds.RasterYSize, ds.RasterCount
+
+    def readable(y0, n):
+        try:
+            ds.ReadRaster(0, y0, w, n, band_list=[1])
+            return True
+        except RuntimeError:
+            return False
+
+    # Coarse walk down the sheet, then bisect inside the failing chunk.
+    step, good = 512, 0
+    while good < h and readable(good, min(step, h - good)):
+        good += step
+    good = min(good, h)
+    lo, hi = good, min(good + step, h)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if readable(lo, mid - lo):
+            lo = mid
+        else:
+            hi = mid - 1
+    rows = lo
+    if rows <= 0:
+        raise cause or OSError(f"{path}: no decodable rows")
+    data = ds.ReadAsArray(0, 0, w, rows)
+    if bands == 1:
+        arr = data
+    else:
+        arr = np.moveaxis(data, 0, -1)
+    if ds.GetRasterBand(1).GetColorTable() is not None:
+        lut = ds.GetRasterBand(1).GetColorTable()
+        pal = np.array([lut.GetColorEntry(i)[:3] for i in range(256)], dtype=np.uint8)
+        arr = pal[arr]
+    ds = None
+    print(f"[dole_v2] {Path(path).name}: pixel data ends at row {rows} of {h}; "
+          f"padding the rest white ({cause})")
+    sheet = np.full((h, w) + arr.shape[2:], 255, dtype=arr.dtype)
+    sheet[:rows] = arr
+    return Image.fromarray(sheet)
 
 
 def raw_size(path) -> Tuple[int, int]:
