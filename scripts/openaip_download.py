@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Download openAIP country datasets (airports, airspaces, navaids, ...) to an SD card.
+"""Download openAIP datasets (airports, airspaces, navaids, ...) to an SD card.
 
 Uses the openAIP core API (https://api.core.openaip.net/api) with a personal API
-key, pages through every record for each requested country, and writes one file
-per (country, dataset) plus a manifest.
+key, pages through every record, and writes one GeoJSON file per country and
+dataset. GeoJSON is the only output: it is what the API actually serves (every
+openAIP field is kept in the feature's properties) and it opens directly in
+QGIS, Leaflet, gdal/ogr and most EFB import paths.
 
-    Output: <out>/<COUNTRY>/<country>_<dataset>.geojson   (and/or .json)
-            <out>/manifest.jsonl   one line per dataset written (append-only log)
+    Output: <out>/<COUNTRY>/<country>_<dataset>.geojson
+            <out>/manifest.jsonl   one line per dataset (append-only log)
 
 The key never lives in this file. Supply it as, in order of precedence:
     --key <key>
@@ -15,13 +17,15 @@ The key never lives in this file. Supply it as, in order of precedence:
 
 Usage:
     openaip_download.py                           # auto-detect the card, US only
-    openaip_download.py --out /Volumes/EFB/openaip --country US --country CA
-    openaip_download.py --type airports --type airspaces --format both
+    openaip_download.py --all-countries           # every region openAIP serves
+    openaip_download.py --all-countries --all-types --out /Volumes/EFB/openaip
+    openaip_download.py --country US --country CA --type airports
     openaip_download.py --dry-run                 # show the plan, fetch nothing
 
-Re-runs are cheap: a dataset whose file already exists is skipped unless --force.
-Files are written to a .tmp sibling and renamed, so a card yanked mid-download
-never leaves a half-written dataset behind.
+Re-runs are cheap: a dataset whose file already exists is skipped unless --force,
+so an --all-countries run interrupted halfway resumes where it stopped. Files are
+written to a .tmp sibling and renamed, so a card yanked mid-download never leaves
+a half-written dataset behind.
 """
 import argparse
 import json
@@ -137,6 +141,31 @@ def fetch_page(session_url, key, tries=4):
     raise RuntimeError(f'giving up after {tries} tries: {last}')
 
 
+def fetch_countries(key):
+    """Every country code openAIP serves, from /countries."""
+    codes = []
+    page = 1
+    while True:
+        body = fetch_page(f'{API}/countries?' + urlencode({'limit': 1000, 'page': page}), key)
+        items = body.get('items', body if isinstance(body, list) else [])
+        for it in items:
+            if isinstance(it, str):
+                code = it
+            else:
+                code = (it.get('isoCode') or it.get('code') or it.get('alpha2')
+                        or it.get('iso2') or it.get('_id') or '')
+            code = str(code).strip().upper()
+            if len(code) == 2 and code.isalpha():
+                codes.append(code)
+        total_pages = body.get('totalPages')
+        if (total_pages is not None and page >= total_pages) or len(items) < 1000:
+            break
+        page += 1
+    if not codes:
+        raise RuntimeError('/countries returned no usable ISO codes')
+    return sorted(set(codes))
+
+
 def fetch_dataset(dataset, country, key, limit, max_pages=0):
     """All items for one dataset/country, paging until the API runs out."""
     items, page = [], 1
@@ -201,10 +230,11 @@ def main():
     ap.add_argument('--out', help='destination dir (default: the mounted SD card, or $OPENAIP_OUT)')
     ap.add_argument('--country', action='append', default=[],
                     help='ISO 3166-1 alpha-2 code, repeatable (default: US)')
+    ap.add_argument('--all-countries', action='store_true',
+                    help='every region openAIP serves (enumerated from /countries)')
     ap.add_argument('--type', action='append', default=[], dest='types',
                     choices=sorted(DATASETS), help=f'dataset, repeatable (default: {" ".join(DEFAULT_TYPES)})')
     ap.add_argument('--all-types', action='store_true', help='every dataset openAIP publishes')
-    ap.add_argument('--format', choices=['geojson', 'json', 'both'], default='geojson')
     ap.add_argument('--key', help='API key (else $OPENAIP_API_KEY, else ~/.openaip_key)')
     ap.add_argument('--limit', type=int, default=PAGE_LIMIT, help='page size (max 1000)')
     ap.add_argument('--max-pages', type=int, default=0, help='stop after N pages per dataset (testing)')
@@ -212,48 +242,72 @@ def main():
     ap.add_argument('--dry-run', action='store_true', help='print the plan and exit')
     a = ap.parse_args()
 
+    if a.all_countries and a.country:
+        die('--all-countries and --country are mutually exclusive')
     out = a.out or default_out()
-    countries = [c.upper() for c in (a.country or ['US'])]
     types = sorted(DATASETS) if a.all_types else (a.types or DEFAULT_TYPES)
-    exts = ['geojson', 'json'] if a.format == 'both' else [a.format]
+    key = load_key(a.key) if (a.all_countries or not a.dry_run) else None
 
     print(f'openAIP -> {out}')
-    print(f'countries: {", ".join(countries)}')
-    print(f'datasets : {", ".join(types)}  as .{" .".join(exts)}')
+    if a.all_countries:
+        countries = fetch_countries(key)
+        print(f'countries: all {len(countries)} openAIP serves')
+    else:
+        countries = [c.upper() for c in (a.country or ['US'])]
+        print(f'countries: {", ".join(countries)}')
+    print(f'datasets : {", ".join(types)}  ({len(countries) * len(types)} files max)')
     if a.dry_run:
         for c in countries:
             for t in types:
-                for e in exts:
-                    print(f'  would write {os.path.join(out, c, f"{c.lower()}_{DATASETS[t]}.{e}")}')
+                print(f'  would write {os.path.join(out, c, f"{c.lower()}_{DATASETS[t]}.geojson")}')
         return
 
-    key = load_key(a.key)
     os.makedirs(out, exist_ok=True)
-    manifest = open(os.path.join(out, 'manifest.jsonl'), 'a')
-    ok = skipped = failed = total_bytes = 0
+    manifest_path = os.path.join(out, 'manifest.jsonl')
+    known_empty = set()
+    if os.path.exists(manifest_path) and not a.force:
+        with open(manifest_path) as f:
+            for line in f:
+                try:
+                    m = json.loads(line)
+                except ValueError:
+                    continue
+                if m.get('status') == 'empty':
+                    known_empty.add((m.get('country'), m.get('dataset')))
+    manifest = open(manifest_path, 'a')
+    ok = skipped = empty = failed = total_bytes = 0
 
     for country in countries:
         for dataset in types:
             short = DATASETS[dataset]
-            paths = {e: os.path.join(out, country, f'{country.lower()}_{short}.{e}') for e in exts}
-            if not a.force and all(os.path.exists(p) for p in paths.values()):
+            path = os.path.join(out, country, f'{country.lower()}_{short}.geojson')
+            rel = os.path.relpath(path, out)
+            if not a.force and os.path.exists(path):
                 print(f'  {country} {dataset}: already on the card, skipping (--force to refresh)')
                 skipped += 1
+                continue
+            if (country, dataset) in known_empty:
+                # an earlier run already established openAIP has nothing here
+                empty += 1
                 continue
             print(f'  {country} {dataset}:', flush=True)
             rec = {'country': country, 'dataset': dataset,
                    'fetched': time.strftime('%Y-%m-%dT%H:%M:%S')}
             try:
                 items = fetch_dataset(dataset, country, key, a.limit, a.max_pages)
-                written = {}
-                for e, p in paths.items():
-                    payload = to_geojson(items) if e == 'geojson' else items
-                    written[os.path.relpath(p, out)] = write_atomic(p, payload)
-                rec.update(status='ok', count=len(items), files=written)
+                if not items:
+                    # openAIP has nothing here — don't litter the card with empty files
+                    rec.update(status='empty', count=0)
+                    empty += 1
+                    print('    no records, nothing written', flush=True)
+                    manifest.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                    manifest.flush()
+                    continue
+                size = write_atomic(path, to_geojson(items))
+                rec.update(status='ok', count=len(items), file=rel, bytes=size)
                 ok += 1
-                total_bytes += sum(written.values())
-                print(f'    wrote {len(items)} records, '
-                      + ', '.join(f'{n} ({b/1e6:.1f} MB)' for n, b in written.items()), flush=True)
+                total_bytes += size
+                print(f'    wrote {len(items)} records -> {rel} ({size/1e6:.1f} MB)', flush=True)
             except Exception as e:                    # one bad dataset must not sink the run
                 rec.update(status='error', error=str(e)[:300])
                 failed += 1
@@ -262,7 +316,8 @@ def main():
             manifest.flush()
 
     manifest.close()
-    print(f'done: {ok} written, {skipped} skipped, {failed} failed, {total_bytes/1e6:.1f} MB')
+    print(f'done: {ok} written, {skipped} already on card, {empty} empty, '
+          f'{failed} failed, {total_bytes/1e6:.1f} MB')
     sys.exit(1 if failed else 0)
 
 
