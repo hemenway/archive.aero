@@ -1,60 +1,67 @@
 #!/usr/bin/env python3
-"""Download openAIP datasets (airports, airspaces, navaids, ...) to an SD card.
+"""Mirror the openAIP daily data exports to an SD card.
 
-Uses the openAIP core API (https://api.core.openaip.net/api) with a personal API
-key, pages through every record, and writes one GeoJSON file per country and
-dataset. GeoJSON is the only output: it is what the API actually serves (every
-openAIP field is kept in the feature's properties) and it opens directly in
-QGIS, Leaflet, gdal/ogr and most EFB import paths.
+openAIP publishes its complete dataset once a day as flat files in a public S3
+bucket. No API key, no paging, no rate limit — the bucket answers anonymous GET,
+HEAD and ListObjectsV2:
 
-    Output: <out>/<COUNTRY>/<country>_<dataset>.geojson
-            <out>/manifest.jsonl   one line per dataset (append-only log)
+    https://storage.openaip.net/openaip-system-exports/
 
-The key never lives in this file. Supply it as, in order of precedence:
-    --key <key>
-    $OPENAIP_API_KEY
-    ~/.openaip_key            (single line; chmod 600)
+Keys look like <country>_<type>[_<variant>].<ext>, e.g. us_apt.geojson (US
+airports) or de_asp_v2.txt (German airspaces, Naviter OpenAIR v2). This script
+lists the bucket, picks the files you asked for, and copies them to the card.
+
+    Output: <out>/<COUNTRY>/<key>          filenames kept exactly as published
+            <out>/manifest.jsonl           append-only log, one line per file
+
+Formats are whatever the bucket serves (geojson, json, mbtiles, cup, cupx, aip,
+txt for OpenAIR, ...). The default is geojson: it carries every openAIP field in
+the feature properties and opens directly in QGIS, ogr2ogr, Leaflet and most EFB
+import paths. `--list` prints what is actually on the server right now.
 
 Usage:
-    openaip_download.py                           # auto-detect the card, US only
-    openaip_download.py --all-countries           # every region openAIP serves
-    openaip_download.py --all-countries --all-types --out /Volumes/EFB/openaip
-    openaip_download.py --country US --country CA --type airports
-    openaip_download.py --dry-run                 # show the plan, fetch nothing
+    openaip_download.py                            # every country, geojson, to the card
+    openaip_download.py --list                     # what the bucket holds today
+    openaip_download.py --country us --country ca  # just those
+    openaip_download.py --type apt --type asp      # airports + airspaces
+    openaip_download.py --format txt               # OpenAIR v2 airspaces
+    openaip_download.py --format mbtiles --out /Volumes/EFB/openaip
+    openaip_download.py --dry-run                  # show the plan, fetch nothing
 
-Re-runs are cheap: a dataset whose file already exists is skipped unless --force,
-so an --all-countries run interrupted halfway resumes where it stopped. Files are
-written to a .tmp sibling and renamed, so a card yanked mid-download never leaves
-a half-written dataset behind.
+Re-runs only fetch what changed: a file whose size matches the bucket and whose
+mtime is not older than the published object is left alone (the mtime is stamped
+from the object's Last-Modified after each download), so a daily refresh moves
+only the days' worth of edits. Downloads land in a .tmp sibling and are renamed,
+so a card pulled mid-copy never leaves a half-written export behind.
 """
 import argparse
+import calendar
+import email.utils
+import hashlib
 import json
 import os
 import platform
+import queue
 import ssl
 import sys
+import threading
 import time
+import xml.etree.ElementTree as ET
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from urllib.request import Request, urlopen
 
-API = os.environ.get('OPENAIP_API', 'https://api.core.openaip.net/api')  # override for testing
-UA = 'archive.aero openaip-download/1.0'
-PAGE_LIMIT = 1000          # API maximum
-KEY_FILE = os.path.expanduser('~/.openaip_key')
+BUCKET = os.environ.get(
+    'OPENAIP_EXPORTS', 'https://storage.openaip.net/openaip-system-exports/')
+UA = 'archive.aero openaip-download/2.0'
+CHUNK = 1 << 20
 
-# API path -> short name used in filenames
-DATASETS = {
-    'airports': 'apt',
-    'airspaces': 'asp',
-    'navaids': 'nav',
-    'reporting-points': 'rpp',
-    'obstacles': 'obs',
-    'hotspots': 'hot',
-    'rc-airfields': 'rcf',
-    'hang-glidings': 'hgl',
+# Friendly names accepted by --type, mapped to the short code used in the keys.
+TYPE_ALIASES = {
+    'airports': 'apt', 'airspaces': 'asp', 'navaids': 'nav',
+    'reporting-points': 'rpp', 'obstacles': 'obs', 'hotspots': 'hot',
+    'rc-airfields': 'rcf', 'hang-glidings': 'hgl', 'waypoints': 'wpt',
 }
-DEFAULT_TYPES = ['airports', 'airspaces', 'navaids', 'reporting-points', 'obstacles']
 
 
 def die(msg):
@@ -62,18 +69,100 @@ def die(msg):
     sys.exit(1)
 
 
-def load_key(cli_key):
-    if cli_key:
-        return cli_key.strip()
-    env = os.environ.get('OPENAIP_API_KEY', '').strip()
-    if env:
-        return env
-    if os.path.exists(KEY_FILE):
-        with open(KEY_FILE) as f:
-            k = f.read().strip()
-        if k:
-            return k
-    die(f'no API key. Pass --key, set $OPENAIP_API_KEY, or put it in {KEY_FILE}')
+def http(url, tries=4, stream=False):
+    last = None
+    for i in range(tries):
+        try:
+            r = urlopen(Request(url, headers={'User-Agent': UA, 'Accept': '*/*'}),
+                        timeout=180)
+            return r if stream else r.read()
+        except HTTPError as e:
+            if e.code in (403, 404, 410):
+                raise RuntimeError(f'HTTP {e.code} for {url}')
+            last = e
+        except (URLError, ssl.SSLError, TimeoutError) as e:
+            last = e
+        time.sleep(2 * (i + 1))
+    raise RuntimeError(f'giving up after {tries} tries: {last}')
+
+
+def tag(el):
+    """Local tag name, ignoring whatever S3 namespace the server used."""
+    return el.tag.rsplit('}', 1)[-1]
+
+
+def find(el, name):
+    for child in el:
+        if tag(child) == name:
+            return child
+    return None
+
+
+def list_bucket():
+    """Every object in the export bucket, following continuation tokens."""
+    objs, token = [], None
+    while True:
+        q = {'list-type': '2', 'max-keys': '1000'}
+        if token:
+            q['continuation-token'] = token
+        root = ET.fromstring(http(BUCKET + '?' + urlencode(q)))
+        for el in root:
+            if tag(el) != 'Contents':
+                continue
+            key = find(el, 'Key')
+            if key is None or not (key.text or '').strip():
+                continue
+            size = find(el, 'Size')
+            mod = find(el, 'LastModified')
+            etag = find(el, 'ETag')
+            objs.append({
+                'key': key.text.strip(),
+                'size': int(size.text) if size is not None and size.text else None,
+                'modified': (mod.text or '').strip() if mod is not None else '',
+                'etag': (etag.text or '').strip('"') if etag is not None else '',
+            })
+        truncated = find(root, 'IsTruncated')
+        nxt = find(root, 'NextContinuationToken')
+        if (truncated is None or (truncated.text or '').lower() != 'true'
+                or nxt is None or not nxt.text):
+            break
+        token = nxt.text.strip()
+    if not objs:
+        raise RuntimeError(f'{BUCKET} listed no objects')
+    return objs
+
+
+def parse_key(key):
+    """<country>_<type>[_<variant>].<ext> -> dict, or None if it doesn't fit."""
+    name = key.rsplit('/', 1)[-1]
+    if '.' not in name or '_' not in name:
+        return None
+    stem, ext = name.rsplit('.', 1)
+    parts = stem.split('_')
+    if len(parts) < 2 or len(parts[0]) != 2 or not parts[0].isalpha():
+        return None
+    return {
+        'key': key, 'name': name,
+        'country': parts[0].upper(),
+        'type': parts[1].lower(),
+        'variant': parts[2].lower() if len(parts) > 2 else '',
+        'ext': ext.lower(),
+    }
+
+
+def parse_modified(s):
+    """S3 Last-Modified (ISO 8601 or RFC 2822) -> epoch seconds, or None."""
+    if not s:
+        return None
+    try:
+        return calendar.timegm(time.strptime(s.split('.')[0].rstrip('Z'),
+                                             '%Y-%m-%dT%H:%M:%S'))
+    except ValueError:
+        pass
+    try:
+        return calendar.timegm(email.utils.parsedate(s))
+    except (TypeError, ValueError):
+        return None
 
 
 def candidate_volumes():
@@ -107,218 +196,189 @@ def default_out():
         return os.path.join(vols[0], 'openaip')
     if not vols:
         die('no removable volume mounted — insert the SD card or pass --out DIR')
-    listing = '\n  '.join(vols)
-    die('several volumes mounted — pick one with --out:\n  ' + listing)
+    die('several volumes mounted — pick one with --out:\n  ' + '\n  '.join(vols))
 
 
-def fetch_page(session_url, key, tries=4):
-    last = None
-    for i in range(tries):
-        req = Request(session_url, headers={
-            'x-openaip-api-key': key,
-            'User-Agent': UA,
-            'Accept': 'application/json',
-        })
-        try:
-            with urlopen(req, timeout=120) as r:
-                return json.loads(r.read().decode('utf-8'))
-        except HTTPError as e:
-            body = e.read()[:300].decode('utf-8', 'replace')
-            if e.code in (401, 403):
-                die(f'API rejected the key (HTTP {e.code}): {body}')
-            if e.code == 404:
-                raise RuntimeError(f'HTTP 404 — no such dataset: {body}')
-            if e.code == 429:                       # rate limited: back off hard
-                wait = int(e.headers.get('Retry-After') or 0) or 15 * (i + 1)
-                print(f'    rate limited, sleeping {wait}s', flush=True)
-                time.sleep(wait)
-                last = e
-                continue
-            last = e
-        except (URLError, ssl.SSLError, TimeoutError, json.JSONDecodeError) as e:
-            last = e
-        time.sleep(2 * (i + 1))
-    raise RuntimeError(f'giving up after {tries} tries: {last}')
+def is_current(path, obj):
+    """True when the copy on the card already matches the published object."""
+    if not os.path.exists(path):
+        return False
+    st = os.stat(path)
+    if obj['size'] is not None and st.st_size != obj['size']:
+        return False
+    mtime = parse_modified(obj['modified'])
+    if mtime is not None and st.st_mtime + 1 < mtime:
+        return False
+    return True
 
 
-def fetch_countries(key):
-    """Every country code openAIP serves, from /countries."""
-    codes = []
-    page = 1
-    while True:
-        body = fetch_page(f'{API}/countries?' + urlencode({'limit': 1000, 'page': page}), key)
-        items = body.get('items', body if isinstance(body, list) else [])
-        for it in items:
-            if isinstance(it, str):
-                code = it
-            else:
-                code = (it.get('isoCode') or it.get('code') or it.get('alpha2')
-                        or it.get('iso2') or it.get('_id') or '')
-            code = str(code).strip().upper()
-            if len(code) == 2 and code.isalpha():
-                codes.append(code)
-        total_pages = body.get('totalPages')
-        if (total_pages is not None and page >= total_pages) or len(items) < 1000:
-            break
-        page += 1
-    if not codes:
-        raise RuntimeError('/countries returned no usable ISO codes')
-    return sorted(set(codes))
-
-
-def fetch_dataset(dataset, country, key, limit, max_pages=0):
-    """All items for one dataset/country, paging until the API runs out."""
-    items, page = [], 1
-    while True:
-        url = f'{API}/{dataset}?' + urlencode({
-            'country': country.upper(), 'limit': limit, 'page': page})
-        body = fetch_page(url, key)
-        batch = body.get('items', body if isinstance(body, list) else [])
-        items.extend(batch)
-        total_pages = body.get('totalPages')
-        total = body.get('totalCount')
-        print(f'    page {page}'
-              + (f'/{total_pages}' if total_pages else '')
-              + f': {len(batch)} items ({len(items)}'
-              + (f'/{total}' if total is not None else '') + ')', flush=True)
-        if max_pages and page >= max_pages:
-            break
-        if total_pages is not None:
-            if page >= total_pages:
-                break
-        elif len(batch) < limit:
-            break
-        page += 1
-        time.sleep(0.2)                              # be polite to the API
-    return items
-
-
-def to_geojson(items):
-    """FeatureCollection; geometry from the record, everything else a property."""
-    feats = []
-    for it in items:
-        geom = it.get('geometry')
-        if not geom:
-            lat, lon = None, None
-            g = it.get('position') or it.get('coordinates')
-            if isinstance(g, dict):
-                lat, lon = g.get('lat'), g.get('lon')
-            elif isinstance(g, (list, tuple)) and len(g) == 2:
-                lon, lat = g
-            if lat is None or lon is None:
-                continue
-            geom = {'type': 'Point', 'coordinates': [lon, lat]}
-        props = {k: v for k, v in it.items() if k != 'geometry'}
-        feats.append({'type': 'Feature', 'geometry': geom, 'properties': props})
-    return {'type': 'FeatureCollection', 'features': feats}
-
-
-def write_atomic(path, payload):
-    """Write via .tmp + rename + fsync — safe on a card that may be pulled."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    return os.path.getsize(path)
+def download(obj, dest):
+    """Stream one object to dest; returns (bytes, sha256)."""
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + '.tmp'
+    h = hashlib.sha256()
+    total = 0
+    r = http(BUCKET + quote(obj['key']), stream=True)
+    try:
+        with open(tmp, 'wb') as f:
+            while True:
+                chunk = r.read(CHUNK)
+                if not chunk:
+                    break
+                f.write(chunk)
+                h.update(chunk)
+                total += len(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+    finally:
+        r.close()
+    if obj['size'] is not None and total != obj['size']:
+        os.unlink(tmp)
+        raise RuntimeError(f"short read: got {total} bytes, expected {obj['size']}")
+    os.replace(tmp, dest)
+    mtime = parse_modified(obj['modified'])
+    if mtime is not None:
+        os.utime(dest, (mtime, mtime))     # lets the next run see it as current
+    return total, h.hexdigest()
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Download openAIP data to an SD card.')
+    ap = argparse.ArgumentParser(description='Mirror openAIP daily exports to an SD card.')
     ap.add_argument('--out', help='destination dir (default: the mounted SD card, or $OPENAIP_OUT)')
     ap.add_argument('--country', action='append', default=[],
-                    help='ISO 3166-1 alpha-2 code, repeatable (default: US)')
-    ap.add_argument('--all-countries', action='store_true',
-                    help='every region openAIP serves (enumerated from /countries)')
+                    help='ISO 3166-1 alpha-2 code, repeatable (default: every country)')
     ap.add_argument('--type', action='append', default=[], dest='types',
-                    choices=sorted(DATASETS), help=f'dataset, repeatable (default: {" ".join(DEFAULT_TYPES)})')
-    ap.add_argument('--all-types', action='store_true', help='every dataset openAIP publishes')
-    ap.add_argument('--key', help='API key (else $OPENAIP_API_KEY, else ~/.openaip_key)')
-    ap.add_argument('--limit', type=int, default=PAGE_LIMIT, help='page size (max 1000)')
-    ap.add_argument('--max-pages', type=int, default=0, help='stop after N pages per dataset (testing)')
-    ap.add_argument('--force', action='store_true', help='re-download datasets already on the card')
+                    help='apt, asp, nav, rpp, obs, ... or a full name like airports '
+                         '(repeatable; default: every type)')
+    ap.add_argument('--format', default='geojson',
+                    help='file extension as published: geojson (default), json, mbtiles, '
+                         'cup, cupx, aip, txt (OpenAIR), or all')
+    ap.add_argument('--variant', help='OpenAIR flavour: v1 or v2 (default: v2 when --format txt)')
+    ap.add_argument('--workers', type=int, default=4, help='parallel downloads (default 4)')
+    ap.add_argument('--force', action='store_true', help='re-download files already current')
+    ap.add_argument('--list', action='store_true', dest='do_list',
+                    help='print what the bucket holds today, then exit')
     ap.add_argument('--dry-run', action='store_true', help='print the plan and exit')
     a = ap.parse_args()
 
-    if a.all_countries and a.country:
-        die('--all-countries and --country are mutually exclusive')
-    out = a.out or default_out()
-    types = sorted(DATASETS) if a.all_types else (a.types or DEFAULT_TYPES)
-    key = load_key(a.key) if (a.all_countries or not a.dry_run) else None
+    print(f'listing {BUCKET}', flush=True)
+    try:
+        objs = list_bucket()
+    except (RuntimeError, ET.ParseError) as e:
+        die(f'could not list the bucket: {e}')
+    parsed = [{**p, 'size': o['size'], 'modified': o['modified'], 'etag': o['etag']}
+              for o in objs for p in [parse_key(o['key'])] if p]
+    print(f'{len(objs)} objects, {len(parsed)} recognised country files', flush=True)
 
+    if a.do_list:
+        by_ext, by_type, countries = {}, {}, set()
+        for p in parsed:
+            by_ext[p['ext']] = by_ext.get(p['ext'], 0) + 1
+            by_type[p['type']] = by_type.get(p['type'], 0) + 1
+            countries.add(p['country'])
+        newest = max((p['modified'] for p in parsed), default='')
+        print(f'countries: {len(countries)}  ({", ".join(sorted(countries))})')
+        print('formats  : ' + ', '.join(f'{k} ({v})' for k, v in sorted(by_ext.items())))
+        print('types    : ' + ', '.join(f'{k} ({v})' for k, v in sorted(by_type.items())))
+        print(f'newest   : {newest}')
+        return
+
+    out = a.out or default_out()
+    want_countries = {c.upper() for c in a.country}
+    want_types = {TYPE_ALIASES.get(t.lower(), t.lower()) for t in a.types}
+    fmt = a.format.lower()
+    variant = (a.variant or '').lower()
+    if fmt == 'txt' and not variant:
+        variant = 'v2'                     # newest OpenAIR flavour unless told otherwise
+
+    todo = []
+    for p in parsed:
+        if fmt != 'all' and p['ext'] != fmt:
+            continue
+        if want_countries and p['country'] not in want_countries:
+            continue
+        if want_types and p['type'] not in want_types:
+            continue
+        if variant and p['variant'] and p['variant'] != variant:
+            continue
+        todo.append(p)
+    todo.sort(key=lambda p: (p['country'], p['type'], p['name']))
+
+    if not todo:
+        # Say which filter emptied the set, not just that the set is empty.
+        have_ext = sorted({p['ext'] for p in parsed})
+        have_type = sorted({p['type'] for p in parsed})
+        have_country = sorted({p['country'] for p in parsed})
+        why = []
+        if fmt != 'all' and fmt not in have_ext:
+            why.append(f'no --format {fmt} on the server (has: {", ".join(have_ext)})')
+        for miss, label, have in ((want_types - set(have_type), '--type', have_type),
+                                  (want_countries - set(have_country), '--country', have_country)):
+            if miss:
+                why.append(f'no {label} {", ".join(sorted(miss))} '
+                           f'(has: {", ".join(have)})')
+        if not why:
+            why.append('the filters exclude each other')
+        die('nothing matches: ' + '; '.join(why) + '. Try --list')
+
+    total_size = sum(p['size'] or 0 for p in todo)
     print(f'openAIP -> {out}')
-    if a.all_countries:
-        countries = fetch_countries(key)
-        print(f'countries: all {len(countries)} openAIP serves')
-    else:
-        countries = [c.upper() for c in (a.country or ['US'])]
-        print(f'countries: {", ".join(countries)}')
-    print(f'datasets : {", ".join(types)}  ({len(countries) * len(types)} files max)')
+    print(f'{len(todo)} files, {total_size/1e9:.2f} GB published '
+          f'(format {fmt}{", " + variant if variant else ""})')
     if a.dry_run:
-        for c in countries:
-            for t in types:
-                print(f'  would write {os.path.join(out, c, f"{c.lower()}_{DATASETS[t]}.geojson")}')
+        for p in todo:
+            print(f"  {p['country']}/{p['name']}  {(p['size'] or 0)/1e6:.1f} MB  {p['modified']}")
         return
 
     os.makedirs(out, exist_ok=True)
-    manifest_path = os.path.join(out, 'manifest.jsonl')
-    known_empty = set()
-    if os.path.exists(manifest_path) and not a.force:
-        with open(manifest_path) as f:
-            for line in f:
-                try:
-                    m = json.loads(line)
-                except ValueError:
-                    continue
-                if m.get('status') == 'empty':
-                    known_empty.add((m.get('country'), m.get('dataset')))
-    manifest = open(manifest_path, 'a')
-    ok = skipped = empty = failed = total_bytes = 0
+    mf = open(os.path.join(out, 'manifest.jsonl'), 'a')
+    lock = threading.Lock()
+    stats = {'ok': 0, 'current': 0, 'failed': 0, 'bytes': 0}
+    q = queue.Queue()
+    for p in todo:
+        q.put(p)
 
-    for country in countries:
-        for dataset in types:
-            short = DATASETS[dataset]
-            path = os.path.join(out, country, f'{country.lower()}_{short}.geojson')
-            rel = os.path.relpath(path, out)
-            if not a.force and os.path.exists(path):
-                print(f'  {country} {dataset}: already on the card, skipping (--force to refresh)')
-                skipped += 1
-                continue
-            if (country, dataset) in known_empty:
-                # an earlier run already established openAIP has nothing here
-                empty += 1
-                continue
-            print(f'  {country} {dataset}:', flush=True)
-            rec = {'country': country, 'dataset': dataset,
-                   'fetched': time.strftime('%Y-%m-%dT%H:%M:%S')}
+    def worker():
+        while True:
             try:
-                items = fetch_dataset(dataset, country, key, a.limit, a.max_pages)
-                if not items:
-                    # openAIP has nothing here — don't litter the card with empty files
-                    rec.update(status='empty', count=0)
-                    empty += 1
-                    print('    no records, nothing written', flush=True)
-                    manifest.write(json.dumps(rec, ensure_ascii=False) + '\n')
-                    manifest.flush()
-                    continue
-                size = write_atomic(path, to_geojson(items))
-                rec.update(status='ok', count=len(items), file=rel, bytes=size)
-                ok += 1
-                total_bytes += size
-                print(f'    wrote {len(items)} records -> {rel} ({size/1e6:.1f} MB)', flush=True)
-            except Exception as e:                    # one bad dataset must not sink the run
+                p = q.get_nowait()
+            except queue.Empty:
+                return
+            dest = os.path.join(out, p['country'], p['name'])
+            if not a.force and is_current(dest, p):
+                with lock:
+                    stats['current'] += 1
+                continue
+            rec = {k: p[k] for k in ('key', 'country', 'type', 'variant', 'ext', 'modified')}
+            rec['file'] = os.path.relpath(dest, out)
+            try:
+                n, digest = download(p, dest)
+                rec.update(status='ok', bytes=n, sha256=digest)
+                with lock:
+                    stats['ok'] += 1
+                    stats['bytes'] += n
+                    done = stats['ok'] + stats['failed']
+                    print(f"  [{done}/{len(todo)}] {rec['file']} ({n/1e6:.1f} MB)", flush=True)
+            except Exception as e:          # one bad file must not sink the mirror
                 rec.update(status='error', error=str(e)[:300])
-                failed += 1
-                print(f'    FAILED: {e}', file=sys.stderr, flush=True)
-            manifest.write(json.dumps(rec, ensure_ascii=False) + '\n')
-            manifest.flush()
+                with lock:
+                    stats['failed'] += 1
+                    print(f"  FAILED {p['key']}: {e}", file=sys.stderr, flush=True)
+            rec['fetched'] = time.strftime('%Y-%m-%dT%H:%M:%S')
+            with lock:
+                mf.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                mf.flush()
 
-    manifest.close()
-    print(f'done: {ok} written, {skipped} already on card, {empty} empty, '
-          f'{failed} failed, {total_bytes/1e6:.1f} MB')
-    sys.exit(1 if failed else 0)
+    threads = [threading.Thread(target=worker, daemon=True)
+               for _ in range(max(1, a.workers))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    mf.close()
+    print(f"done: {stats['ok']} downloaded, {stats['current']} already current, "
+          f"{stats['failed']} failed, {stats['bytes']/1e6:.1f} MB")
+    sys.exit(1 if stats['failed'] else 0)
 
 
 if __name__ == '__main__':
