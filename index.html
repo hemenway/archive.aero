@@ -57,7 +57,7 @@
 
 <body>
 
-  <h1 class="sr-only">archive.aero — Historical Aeronautical Chart Viewer</h1>
+  <a class="skip-link" href="#main-content">Skip to chart viewer</a>
 
   <!-- Loading Splash Screen -->
   <div class="loading-splash" id="loadingSplash" role="status" aria-live="polite">
@@ -73,8 +73,46 @@
     <div class="loading-status" id="loadingStatus">Initializing...</div>
   </div>
 
+  <!-- Keyboard Shortcuts Overlay -->
+  <div class="shortcuts-overlay" id="shortcutsOverlay" aria-hidden="true">
+    <div class="shortcuts-content" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle">
+      <h2 id="shortcutsTitle">Keyboard Shortcuts</h2>
+      <p>Focus the map to pan with arrow keys, zoom with +/−, or press Enter to inspect its center. Focus the timeline to step through dates.</p>
+      <p>Space, F, S, and ? work while the map or timeline is focused.</p>
+      <div class="shortcut-item">
+        <span class="shortcut-desc">Next timeframe</span>
+        <span class="shortcut-key">→</span>
+      </div>
+      <div class="shortcut-item">
+        <span class="shortcut-desc">Previous timeframe</span>
+        <span class="shortcut-key">←</span>
+      </div>
+      <div class="shortcut-item">
+        <span class="shortcut-desc">Play/Pause animation</span>
+        <span class="shortcut-key">Space</span>
+      </div>
+      <div class="shortcut-item">
+        <span class="shortcut-desc">Toggle fullscreen</span>
+        <span class="shortcut-key">F</span>
+      </div>
+      <div class="shortcut-item">
+        <span class="shortcut-desc">Copy share link</span>
+        <span class="shortcut-key">S</span>
+      </div>
+      <div class="shortcut-item">
+        <span class="shortcut-desc">Show this help</span>
+        <span class="shortcut-key">?</span>
+      </div>
+      <div class="shortcut-item">
+        <span class="shortcut-desc">Close overlay</span>
+        <span class="shortcut-key">Esc</span>
+      </div>
+      <button class="close-shortcuts" id="closeShortcuts" type="button">Close</button>
+    </div>
+  </div>
+
   <!-- Header Bar -->
-  <div class="header-bar">
+  <header class="header-bar">
     <div class="header-content">
       <div class="menu-trigger">
         <button class="menu-toggle site-logo" id="menuToggle" type="button" aria-expanded="false"
@@ -182,7 +220,10 @@
       <a href="https://buymeacoffee.com/ryanhemenway" target="_blank" rel="noopener" class="donate-btn"
         title="Support this project">Support</a>
     </div>
-  </div>
+  </header>
+
+  <main class="map-main" id="main-content" tabindex="-1">
+    <h1 class="sr-only">archive.aero — Historical Aeronautical Chart Viewer</h1>
 
   <!-- Layers dropdown (mounted next to zoom controls; utility rail below zoom) -->
   <div class="tools-control leaflet-control" id="toolsControl">
@@ -196,7 +237,7 @@
       </svg>
       <span class="tools-btn-label">Layers</span>
     </button>
-    <div class="tools-panel" id="toolsPanel" role="dialog" aria-label="Map layers">
+    <div class="tools-panel" id="toolsPanel" role="region" aria-label="Map layers">
       <div class="lp-section">
         <div class="lp-row">
           <span class="lp-name">Sectional charts</span>
@@ -229,6 +270,13 @@
             <span class="af-swatch af-swatch-unknown" aria-hidden="true"></span>Unknown
           </button>
         </div>
+        <details class="af-browser" id="afBrowser">
+          <summary>Browse airfields in view</summary>
+          <label for="afSelect">Airfield at the selected date</label>
+          <select id="afSelect" disabled><option>Loading airfields…</option></select>
+          <button id="afOpen" type="button" disabled>Open airfield details</button>
+          <p id="afCount" role="status" aria-atomic="true"></p>
+        </details>
         <div class="lp-row">
           <span class="lp-name">Airspace</span>
           <button class="lp-switch" id="airspaceBtn" type="button" aria-pressed="false"
@@ -283,44 +331,8 @@
       aria-label="Keyboard shortcuts">?</button>
   </div>
 
-  <!-- Keyboard Shortcuts Overlay -->
-  <div class="shortcuts-overlay" id="shortcutsOverlay">
-    <div class="shortcuts-content" role="dialog" aria-modal="true" aria-labelledby="shortcutsTitle">
-      <h2 id="shortcutsTitle">Keyboard Shortcuts</h2>
-      <div class="shortcut-item">
-        <span class="shortcut-desc">Next timeframe</span>
-        <span class="shortcut-key">→</span>
-      </div>
-      <div class="shortcut-item">
-        <span class="shortcut-desc">Previous timeframe</span>
-        <span class="shortcut-key">←</span>
-      </div>
-      <div class="shortcut-item">
-        <span class="shortcut-desc">Play/Pause animation</span>
-        <span class="shortcut-key">Space</span>
-      </div>
-      <div class="shortcut-item">
-        <span class="shortcut-desc">Toggle fullscreen</span>
-        <span class="shortcut-key">F</span>
-      </div>
-      <div class="shortcut-item">
-        <span class="shortcut-desc">Copy share link</span>
-        <span class="shortcut-key">S</span>
-      </div>
-      <div class="shortcut-item">
-        <span class="shortcut-desc">Show this help</span>
-        <span class="shortcut-key">?</span>
-      </div>
-      <div class="shortcut-item">
-        <span class="shortcut-desc">Close overlay</span>
-        <span class="shortcut-key">Esc</span>
-      </div>
-      <button class="close-shortcuts" id="closeShortcuts">Close</button>
-    </div>
-  </div>
-
   <!-- Warning Banner -->
-  <div class="warning-overlay" id="warningOverlay">
+  <div class="warning-overlay" id="warningOverlay" role="status" aria-live="polite">
     <div class="warning-modal">
       <span class="warning-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -336,17 +348,18 @@
     </div>
   </div>
 
-  <div id="map"></div>
+  <p class="sr-only" id="mapHelp">Use arrow keys to pan and plus or minus to zoom. Press Enter to inspect the chart at the center. Use the Layers panel to browse airfields in view.</p>
+  <div id="map" role="region" aria-label="Historical chart map" aria-describedby="mapHelp"></div>
 
   <!-- Pin inspector: the chart at a clicked point, anchored beside the click
        (see PinInspector) -->
-  <div class="pin-popup" id="pinPanel" role="dialog" aria-label="Chart at this point">
+  <div class="pin-popup" id="pinPanel" role="region" aria-label="Chart at this point" tabindex="-1">
     <div class="pin-chart-head">
       <span class="pin-chart-loc" id="pinLoc"></span>
       <span class="chart-badge sectional" id="pinBadge"></span>
       <button class="pin-close" id="pinClose" type="button" aria-label="Clear pin">&times;</button>
     </div>
-    <div class="pin-chart-dates" id="pinDates"></div>
+    <div class="pin-chart-dates" id="pinDates" aria-live="polite"></div>
     <div class="pin-chart-actions" id="pinActions"></div>
     <div class="pin-as" id="pinAirspace" hidden></div>
     <a href="/sources" class="pin-sources-link">Sources &amp; Attribution</a>
@@ -354,7 +367,7 @@
 
   <!-- Airfield card: name/operating dates/source links for a clicked
        historical-airfield dot (see AirfieldsLayer) -->
-  <div class="pin-popup af-card" id="afPanel" role="dialog" aria-label="Airfield details">
+  <div class="pin-popup af-card" id="afPanel" role="region" aria-label="Airfield details" tabindex="-1">
     <div class="pin-chart-head">
       <span class="pin-chart-loc" id="afName"></span>
       <button class="pin-close" id="afClose" type="button" aria-label="Close airfield card">&times;</button>
@@ -385,23 +398,30 @@
 
       <div class="loader" id="loader" role="status" aria-label="Loading"></div>
 
-      <div class="timeline-track-wrapper" id="trackWrapper">
+      <div class="timeline-track-wrapper" id="trackWrapper" role="slider" tabindex="0"
+        aria-label="Historical chart date" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"
+        aria-valuetext="Loading timeline" aria-describedby="timelineHelp lblRange">
         <div class="timeline-track">
-          <canvas class="heat-canvas" id="heatCanvas"></canvas>
-          <div id="ticksContainer"></div>
-          <div class="handle" id="handle"></div>
+          <canvas class="heat-canvas" id="heatCanvas" aria-hidden="true"></canvas>
+          <div id="ticksContainer" aria-hidden="true"></div>
+          <div class="handle" id="handle" aria-hidden="true"></div>
         </div>
-        <div class="track-tip" id="trackTip"></div>
+        <div class="track-tip" id="trackTip" aria-hidden="true"></div>
       </div>
 
       <div class="info-panel">
-        <input type="date" id="timeSelect" class="time-select" aria-label="Select timeframe">
+        <input type="date" id="timeSelect" class="time-select" aria-label="Select timeframe" aria-describedby="lblRange">
         <div class="label-sub" id="lblRange">Timeline</div>
       </div>
     </div>
 
 
   </div>
+
+  <p class="sr-only" id="timelineHelp">Arrow keys change one edition. Page Up and Page Down jump through the archive. Home selects the oldest edition; End selects the newest. You can also enter a date in the date field.</p>
+  <p class="sr-only" id="timelineStatus" role="status" aria-atomic="true"></p>
+
+  </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin="anonymous"
     integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"></script>
@@ -1231,7 +1251,8 @@
       });
 
       document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') {
+        if (!event.defaultPrevented && event.key === 'Escape' && menuTrigger.classList.contains('open')) {
+          event.preventDefault();
           closeMenu();
         }
       });
@@ -1475,12 +1496,9 @@
       constructor(mapId, initialView = CONFIG.initialView) {
         this.map = L.map(mapId, {
           zoomControl: false,
-          // Leaflet's Keyboard handler focuses the container on mousedown and
-          // stops propagation of arrow keys, so after any map click the
-          // documented ←/→ timeline shortcuts died and the arrows panned the
-          // map instead. Panning is on the mouse/touch; keep the arrows for the
-          // timeline (+/- zoom still comes from the zoom control and wheel).
-          keyboard: false,
+          // The focused map owns arrow keys for panning. Timeline stepping
+          // belongs to its own slider so both interactions work by keyboard.
+          keyboard: true,
           // Floor the zoom-out. Below ~z6 the composite overlay (minNativeZoom 8)
           // renders 4x more 256x256 canvas tiles per level down; by z4 that is
           // ~1,200 canvases (~320MB of backing store), which gets the tab
@@ -1954,21 +1972,24 @@
         }
 
         window.addEventListener('keydown', (e) => {
-          // Escape always works (closes overlays/panels) regardless of focus.
+          if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+          // Each dismissible surface owns Escape; don't also dismiss a card
+          // behind the layers panel or modal.
           if (e.key === 'Escape') {
-            this.hideShortcuts();
-            this.hideAllPanels();
+            if (document.getElementById('toolsControl')?.classList.contains('open')) {
+              e.preventDefault();
+              this.closeToolsPanel();
+            }
             return;
           }
-          // Don't hijack keys a focused control actually consumes: arrows drive a
-          // focused slider/select, text fields swallow everything, the layers panel
-          // owns its own keys. Buttons and links only consume Space/Enter, so the
-          // rest of the shortcuts stay live after a click leaves one focused.
-          if (e.target.closest?.('input, select, textarea, [role="dialog"]')) return;
+          // Leave native controls and panels in charge of their own keys.
+          if (e.target.closest?.('input, select, textarea, [contenteditable="true"], [role="dialog"], #toolsPanel, #pinPanel, #afPanel')) return;
           if ((e.key === ' ' || e.key === 'Enter') && e.target.closest?.('button, a')) return;
 
-          if (e.key === 'ArrowRight') this.step(1);
-          if (e.key === 'ArrowLeft') this.step(-1);
+          // Character shortcuts are active only on the viewer's focused
+          // controls; typing elsewhere never triggers a map action.
+          if (!['map', 'trackWrapper', 'main-content'].includes(e.target.id)) return;
+
           if (e.key === ' ') {
             e.preventDefault();
             this.togglePlay();
@@ -2004,6 +2025,30 @@
           }
         });
 
+        document.getElementById('shortcutsOverlay')?.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            this.hideShortcuts();
+            return;
+          }
+          if (e.key !== 'Tab') return;
+          const dialog = e.currentTarget.querySelector('[role="dialog"]');
+          const focusable = Array.from(dialog?.querySelectorAll(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          ) || []).filter(el => !el.hidden);
+          if (!focusable.length) return;
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        });
+
         // Fullscreen button
         document.getElementById('fullscreenBtn')?.addEventListener('click', () => {
           Utils.toggleFullscreen();
@@ -2035,7 +2080,8 @@
         });
 
         document.addEventListener('keydown', (event) => {
-          if (event.key === 'Escape') {
+          if (!event.defaultPrevented && event.key === 'Escape' && toolsControl?.classList.contains('open')) {
+            event.preventDefault();
             this.closeToolsPanel();
           }
         });
@@ -2095,14 +2141,27 @@
       closeToolsPanel() {
         const toolsControl = document.getElementById('toolsControl');
         const toolsBtn = document.getElementById('toolsBtn');
+        if (document.getElementById('toolsPanel')?.contains(document.activeElement)) toolsBtn?.focus();
         toolsControl?.classList.remove('open');
         toolsBtn?.setAttribute('aria-expanded', 'false');
       }
 
       showShortcuts() {
+        const overlay = document.getElementById('shortcutsOverlay');
+        if (!overlay || overlay.classList.contains('visible')) return;
         this._shortcutsOpener = document.activeElement;
-        document.getElementById('shortcutsOverlay')?.classList.add('visible');
-        this.hideAllPanels(['shortcutsOverlay']);
+        if (this.isPlaying) this.togglePlay();
+        this.hideAllPanels();
+        overlay?.classList.add('visible');
+        overlay?.setAttribute('aria-hidden', 'false');
+        // Keep virtual and keyboard focus inside the modal. Save only elements
+        // changed here so an existing inert state is never accidentally removed.
+        this._shortcutsInerted = [];
+        for (const child of document.body.children) {
+          if (child === overlay || child.tagName === 'SCRIPT' || child.inert) continue;
+          child.inert = true;
+          this._shortcutsInerted.push(child);
+        }
         // Move focus into the dialog so keyboard/AT users land on it (and can Esc).
         document.getElementById('closeShortcuts')?.focus();
       }
@@ -2110,12 +2169,15 @@
       hideShortcuts() {
         const overlay = document.getElementById('shortcutsOverlay');
         if (!overlay?.classList.contains('visible')) return;
-        overlay.classList.remove('visible');
+        for (const child of this._shortcutsInerted || []) child.inert = false;
+        this._shortcutsInerted = [];
         // Restore focus to whatever opened the dialog.
         if (this._shortcutsOpener && typeof this._shortcutsOpener.focus === 'function') {
           this._shortcutsOpener.focus();
         }
         this._shortcutsOpener = null;
+        overlay.classList.remove('visible');
+        overlay.setAttribute('aria-hidden', 'true');
       }
 
       updateShareUrl() {
@@ -2160,8 +2222,12 @@
       togglePlay() {
         this.isPlaying = !this.isPlaying;
         const playBtn = this.ui.playBtn;
+        for (const id of ['pinDates', 'afCount']) {
+          document.getElementById(id)?.setAttribute('aria-live', this.isPlaying ? 'off' : 'polite');
+        }
 
         if (this.isPlaying) {
+          if (document.activeElement === this.ui.track) playBtn.focus({ preventScroll: true });
           playBtn.textContent = '⏸';
           playBtn.title = 'Pause (Space)';
           playBtn.setAttribute('aria-label', 'Pause animation');
@@ -2177,6 +2243,7 @@
             this.playInterval = null;
           }
         }
+        this.updateTimelineAccessibility();
       }
 
       initUI() {
@@ -2191,13 +2258,15 @@
         this.ui.timeSelect.max = lastDate;
         this.ui.timeSelect.value = lastDate; // Default to most recent
         this.selectedDate = lastDate;
+        this.ui.track.setAttribute('aria-valuemax', String(Math.max(0, this.frames.length - 1)));
 
         // Start at most recent frame
         this.currentIndex = this.frames.length - 1;
 
         this.ui.timeSelect.addEventListener('change', () => {
           const selectedDate = this.ui.timeSelect.value;
-          if (!selectedDate) return;
+          if (!selectedDate || !this.ui.timeSelect.validity.valid) return;
+          if (this.isPlaying) this.togglePlay();
           this.updateByDate(selectedDate);
         });
 
@@ -2223,8 +2292,29 @@
         }
 
         // Jog Controls
-        this.ui.prevBtn.onclick = () => this.step(-1);
-        this.ui.nextBtn.onclick = () => this.step(1);
+        const manualStep = dir => { if (this.isPlaying) this.togglePlay(); this.step(dir); };
+        this.ui.prevBtn.onclick = () => manualStep(-1);
+        this.ui.nextBtn.onclick = () => manualStep(1);
+
+        // The visible timeline is also a semantic slider. Arrow keys step one
+        // edition; Page Up/Down move roughly one percent of the archive; Home
+        // and End jump to the oldest/newest edition.
+        this.ui.track.addEventListener('keydown', (e) => {
+          if (e.ctrlKey || e.metaKey || e.altKey) return;
+          let next = this.currentIndex;
+          const page = Math.max(1, Math.round(this.frames.length / 100));
+          if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next += 1;
+          else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next -= 1;
+          else if (e.key === 'PageUp') next += page;
+          else if (e.key === 'PageDown') next -= page;
+          else if (e.key === 'Home') next = 0;
+          else if (e.key === 'End') next = this.frames.length - 1;
+          else return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (this.isPlaying) this.togglePlay();
+          this.update(Math.max(0, Math.min(this.frames.length - 1, next)));
+        });
 
         // drag on the track/handle
         let trackRect = null;
@@ -2257,6 +2347,9 @@
         };
 
         const startDrag = (e) => {
+          if (e.type === 'mousedown' && e.button !== 0) return;
+          if (this.isPlaying) this.togglePlay();
+          this.ui.track.focus({ preventScroll: true });
           isDragging = true;
           updateTrackRect();
           scheduleInput((e.touches?.[0]?.clientX) ?? e.clientX);
@@ -2357,6 +2450,30 @@
         const [count, pct] = this.coverageAt(new Date(this.selectedDate).getTime());
         this.ui.lblRange.textContent = this.coverageText(count, pct);
         this.ui.lblRange.style.color = count === 0 ? '#ff5c5c' : '';
+        this.updateTimelineAccessibility();
+      }
+
+      updateTimelineAccessibility() {
+        const track = this.ui.track;
+        if (!track || !this.frames.length || !this.selectedDate) return;
+        const [y, m, d] = this.selectedDate.split('-').map(Number);
+        const date = new Date(y, (m || 1) - 1, d || 1);
+        const dateText = date.toLocaleDateString('en-US', {
+          year: 'numeric', month: 'long', day: 'numeric'
+        });
+        const coverage = this.coverageSegs && this.ui.lblRange?.textContent
+          ? `. ${this.ui.lblRange.textContent}` : '';
+        track.setAttribute('aria-valuenow', String(this.currentIndex));
+        track.setAttribute('aria-valuetext', `${dateText}${coverage}`);
+        // Don't speak every animation frame or pointer movement. The focused
+        // slider already announces its own value; other controls get one
+        // settled date/coverage update after scrubbing or playback stops.
+        clearTimeout(this._announcementTimer);
+        if (!this.isPlaying && document.activeElement !== track) {
+          this._announcementTimer = setTimeout(() => {
+            document.getElementById('timelineStatus').textContent = `${dateText}${coverage}`;
+          }, 250);
+        }
       }
 
       initCoverageTip() {
@@ -2523,6 +2640,7 @@
 
         this.positionHandle(index);
         this.updateCoverageLabel();
+        this.updateTimelineAccessibility();
 
         const adjacent = [
           this.frames[index - 1]?.date,
@@ -2587,21 +2705,29 @@
           if (Date.now() - afClickGuard < 350) return;
           this.setPin(e.latlng);
         });
+        mapCtrl.map.getContainer().addEventListener('keydown', e => {
+          if (e.target !== mapCtrl.map.getContainer() || e.key !== 'Enter' || e.altKey || e.ctrlKey || e.metaKey) return;
+          e.preventDefault();
+          this.setPin(mapCtrl.map.getCenter(), true);
+        });
         // Keep the popup glued to the pin while panning/zooming.
         mapCtrl.map.on('move zoom viewreset', () => this._updatePosition());
         window.addEventListener('keydown', (e) => {
-          if (e.key !== 'Escape') return;
+          if (e.defaultPrevented || e.key !== 'Escape') return;
+          if (e.target !== mapCtrl.map.getContainer() && !this.els.panel?.contains(e.target)) return;
           // Step out of solo first; a second Escape clears the pin. Coexists
           // with the panel/overlay Escape handlers above.
           if (this.mapCtrl.soloState) {
+            e.preventDefault();
             this.mapCtrl.exitSolo();
           } else if (this.latlng) {
+            e.preventDefault();
             this.clear();
           }
         });
       }
 
-      async setPin(latlng) {
+      async setPin(latlng, focus = false) {
         this.latlng = latlng;
         if (!this.marker) {
           // interactive:false keeps re-taps flowing to the map (move the pin).
@@ -2613,6 +2739,7 @@
           this.marker.setLatLng(latlng);
         }
         this.els.panel?.classList.add('visible');
+        if (focus) this.els.panel?.focus({ preventScroll: true });
         if (!ChartIndex.locations) {
           this._render(null, null, 'Loading chart details…');
           this._updatePosition();
@@ -2628,6 +2755,7 @@
       }
 
       clear() {
+        if (this.els.panel?.contains(document.activeElement)) this.mapCtrl.map.getContainer().focus();
         if (this.marker) {
           this.marker.remove();
           this.marker = null;
@@ -3398,10 +3526,22 @@
           L.DomEvent.disableScrollPropagation(this.els.panel);
         }
         document.getElementById('afClose')?.addEventListener('click', () => this.closeCard());
+        document.getElementById('afBrowser')?.addEventListener('toggle', () => this._updateBrowser());
+        document.getElementById('afOpen')?.addEventListener('click', () => {
+          const f = this.features?.[Number(document.getElementById('afSelect').value)];
+          if (!f?.on) return;
+          this.timelineApp.closeToolsPanel();
+          this.openCard(f, true);
+        });
         this.map.on('move zoom viewreset', () => this._updatePosition());
+        this.map.on('moveend', () => this._updateBrowser());
         this.map.on('zoomend', () => this._applyRadius());
         window.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape' && this.selected) this.closeCard();
+          if (!e.defaultPrevented && e.key === 'Escape' && this.selected &&
+              (e.target === this.map.getContainer() || this.els.panel?.contains(e.target))) {
+            e.preventDefault();
+            this.closeCard();
+          }
         });
       }
 
@@ -3421,6 +3561,7 @@
             for (const f of this.features) if (f.on) { f.marker.remove(); f.on = false; }
           }
         }
+        this._updateBrowser();
       }
 
       _ensureLoaded() {
@@ -3432,6 +3573,8 @@
             console.error('airfields.json failed to load', err);
             this.loadPromise = null; // next toggle retries
             Utils.toast('Airfield data unavailable');
+            this.loadError = true;
+            this._updateBrowser();
           });
         } else {
           this._apply();
@@ -3527,6 +3670,32 @@
             if (this.selected === f) this.closeCard();
           }
         }
+        this._updateBrowser();
+      }
+
+      // Native controls are the keyboard/touch-AT equivalent of canvas dots.
+      // Only rebuild while expanded, retaining the user's selected airfield.
+      _updateBrowser() {
+        if (!document.getElementById('afBrowser')?.open) return;
+        const select = document.getElementById('afSelect');
+        const previous = select.value;
+        const bounds = this.map.getBounds();
+        const entries = this.enabled ? (this.features || []).map((f, i) => ({ f, i }))
+          .filter(({ f }) => f.on && bounds.contains([f.lat, f.lng]))
+          .sort((a, b) => a.f.p.name.localeCompare(b.f.p.name)) : [];
+        select.replaceChildren();
+        for (const { f, i } of entries) {
+          const option = document.createElement('option');
+          option.value = String(i);
+          option.textContent = `${f.p.name}${f.p.state ? ' — ' + f.p.state : ''}`;
+          select.appendChild(option);
+        }
+        if (entries.some(({ i }) => String(i) === previous)) select.value = previous;
+        select.disabled = !entries.length;
+        document.getElementById('afOpen').disabled = !entries.length;
+        document.getElementById('afCount').textContent = !this.enabled ? 'Turn on Airfields to browse.'
+          : !this.features ? (this.loadError ? 'Airfield data unavailable. Toggle Airfields to retry.' : 'Loading airfields…')
+          : entries.length ? `${entries.length} airfields in view.` : 'No airfields match this view, date, and filters.';
       }
 
       _radiusForZoom() {
@@ -3555,7 +3724,7 @@
         return 'Operating dates unknown';
       }
 
-      openCard(f) {
+      openCard(f, focus = false) {
         if (this.selected && this.selected !== f) {
           this.selected.marker._afSelected = false;
           this.selected.marker.redraw();
@@ -3588,9 +3757,13 @@
         if (p.oa) mkLink('OurAirports', `https://ourairports.com/airports/${encodeURIComponent(p.oa)}/`);
         els.panel.classList.add('visible');
         this._updatePosition();
+        if (focus) els.panel.focus({ preventScroll: true });
       }
 
       closeCard() {
+        if (this.els.panel?.contains(document.activeElement)) {
+          document.getElementById('toolsBtn')?.focus();
+        }
         if (this.selected?.marker) {
           this.selected.marker._afSelected = false;
           this.selected.marker.redraw(); // no-op if the marker just left the map

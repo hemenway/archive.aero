@@ -41,6 +41,26 @@
       box-sizing: border-box;
     }
 
+    .skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 10000;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: #fff;
+      color: #0a0e12;
+      font-weight: 700;
+      transform: translateY(-160%);
+      transition: transform 0.15s ease;
+    }
+
+    .skip-link:focus {
+      transform: translateY(0);
+      outline: 3px solid var(--primary);
+      outline-offset: 2px;
+    }
+
     html,
     body {
       margin: 0;
@@ -59,6 +79,9 @@
       color: var(--primary-hover);
       text-decoration: underline;
     }
+
+    p a, li a, footer a { text-decoration: underline; text-underline-offset: 2px; }
+    a:focus-visible { outline: 3px solid #8bc9ff; outline-offset: 3px; }
 
     .wrap {
       max-width: 760px;
@@ -401,6 +424,7 @@
 </head>
 
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <!-- shared-nav: keep identical across about/contribute/sources (URI-POLICY.md).
        The site shell: mirrors the viewer header and worker-atc/src/shell.js. -->
   <div class="site-nav">
@@ -431,7 +455,7 @@
   </div>
   <!-- /shared-nav -->
 
-  <div class="wrap">
+  <main class="wrap" id="main-content" tabindex="-1">
     <header>
       <h1>About archive.aero</h1>
       <p class="tagline">Nearly a century of U.S. aeronautical charts, scrubbable like a time machine.</p>
@@ -566,7 +590,7 @@
       <a href="/">archive.aero</a> · <a href="/contribute">Missing Charts</a> ·
       <a href="/sources">Sources &amp; Attribution</a> · Historical Aviation Charts
     </footer>
-  </div>
+  </main>
 </body>
 
 </html>

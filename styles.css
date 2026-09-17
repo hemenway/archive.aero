@@ -39,6 +39,31 @@ body {
   border: 0;
 }
 
+.skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 10000;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: #fff;
+  color: #0a0e12;
+  font-weight: 700;
+  text-decoration: none;
+  transform: translateY(-160%);
+  transition: transform 0.15s ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+  outline: 3px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.map-main {
+  height: 100%;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -230,10 +255,9 @@ body {
   opacity: 0;
   transform: translateY(-6px);
   pointer-events: none;
-  /* visibility:hidden takes the closed panel's links out of the tab order and
-     the accessibility tree; delayed via the transition so the fade still plays. */
+  /* Expose/hide links immediately; animating visibility races keyboard focus. */
   visibility: hidden;
-  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), visibility 0.2s var(--transition-smooth);
+  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
   z-index: 950;
 }
 
@@ -687,10 +711,9 @@ body.zooming .leaflet-control-attribution {
   opacity: 0;
   transform: translateY(-6px);
   pointer-events: none;
-  /* visibility:hidden takes the closed panel's controls out of the tab order and
-     the accessibility tree; delayed via the transition so the fade still plays. */
+  /* Expose/hide controls immediately; animating visibility races keyboard focus. */
   visibility: hidden;
-  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), visibility 0.2s var(--transition-smooth);
+  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth);
   z-index: 1200;
 }
 
@@ -906,6 +929,12 @@ body.zooming .leaflet-control-attribution {
   align-items: center;
   cursor: pointer;
   touch-action: none;
+}
+
+.timeline-track-wrapper:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: 5px;
+  border-radius: 6px;
 }
 
 .timeline-track {
@@ -1252,10 +1281,9 @@ body.zooming .leaflet-control-attribution {
     display: none;
   }
 
-  /* Fullscreen (no iPhone API) and keyboard shortcuts are pointless on
-     touch: hide those rail buttons on mobile */
-  #fullscreenBtn,
-  #helpBtn {
+  /* iPhone has no fullscreen API. Keep help available for assistive technology
+     and external keyboards, regardless of viewport width. */
+  #fullscreenBtn {
     display: none;
   }
 
@@ -2042,4 +2070,26 @@ body.zooming .leaflet-control-attribution {
   font-size: 11px;
   font-style: italic;
   color: var(--text-muted);
+}
+
+/* Focus must remain visible on both custom and native viewer controls. */
+:where(button, a, input, select, summary, [tabindex]):focus-visible {
+  outline: 3px solid #8bc9ff;
+  outline-offset: 3px;
+}
+.tool-slider:focus-visible { outline: 3px solid #8bc9ff; outline-offset: 4px; }
+#map:focus-visible { outline-offset: -4px; }
+.af-browser { margin: 10px 0 14px; font-size: 12px; }
+.af-browser summary { cursor: pointer; padding: 5px 0; }
+.af-browser label { display: block; margin: 8px 0 5px; }
+.af-browser select, .af-browser button {
+  width: 100%; min-height: 32px; margin-bottom: 6px; padding: 5px 7px;
+  border: 1px solid var(--hairline); border-radius: 6px;
+  background: var(--bg-dark); color: var(--text-light); font: inherit;
+}
+.af-browser select option { background: #10161c; }
+.af-browser p { margin: 3px 0; color: var(--text-muted); }
+.af-browser :disabled { opacity: .65; }
+@media (forced-colors: active) {
+  :where(button, a, input, select, summary, [tabindex]):focus-visible { outline-color: Highlight; }
 }

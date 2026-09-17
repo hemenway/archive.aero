@@ -1,0 +1,16 @@
+{
+  "name": "archive-aero-regression-tests",
+  "private": true,
+  "scripts": {
+    "test": "npm run test:workers && npm run test:browser",
+    "test:workers": "node --test worker/test/*.test.mjs worker-atc/test/*.test.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "leaflet": "1.9.4",
+    "papaparse": "5.4.1",
+    "pmtiles": "3.0.6",
+    "protomaps-leaflet": "5.0.0"
+  }
+}

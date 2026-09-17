@@ -1,3 +1,8 @@
+# Node / browser tests
+node_modules/
+test-results/
+playwright-report/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -49,3 +54,9 @@ historical-data/
 archive.aero-recording.json
 airfields.json
 CLAUDE.md
+worklists/09_growth_and_revenue.md
+worklists/10_cold_archive.md
+worklists/13_sdcard_batch2.md
+worklists/14_geotiff2pmtiles_audit_handoff.md
+worklists/14_geotiff2pmtiles_upstream_drafts.md
+worklists/helper_prompt.md

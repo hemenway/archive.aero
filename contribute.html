@@ -46,6 +46,26 @@
 
     * { box-sizing: border-box; }
 
+    .skip-link {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 10000;
+      padding: 10px 14px;
+      border-radius: 8px;
+      background: #fff;
+      color: #0a0e12;
+      font-weight: 700;
+      transform: translateY(-160%);
+      transition: transform 0.15s ease;
+    }
+
+    .skip-link:focus {
+      transform: translateY(0);
+      outline: 3px solid var(--primary);
+      outline-offset: 2px;
+    }
+
     html, body {
       margin: 0;
       background: var(--bg-dark);
@@ -405,14 +425,30 @@
     }
     .btn-play { border: none; background: var(--primary); }
     .scrub { position: relative; flex: 1; height: 40px; cursor: pointer; touch-action: none; }
-    .scrub-track { position: absolute; top: 17px; left: 0; right: 0; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.16); }
-    .scrub-handle {
-      position: absolute; top: 20px; width: 18px; height: 18px; border-radius: 50%;
-      background: #fff; transform: translate(-50%, -50%);
-      box-shadow: 0 0 0 4px rgba(30, 144, 255, 0.45);
-      pointer-events: none;
-    }
     .scrub .tick { position: absolute; top: 28px; font-size: 9px; color: var(--text-faint); transform: translateX(-50%); font-weight: 600; }
+    .scrub input { width: 100%; margin: 10px 0 0; accent-color: var(--primary); }
+    .atlas-browser { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 0 18px 14px; font-size: 12px; }
+    .atlas-browser select { max-width: 100%; flex: 1; min-width: 180px; }
+    .atlas-browser select, .atlas-browser input, .atlas-browser button {
+      padding: 7px; border: 1px solid var(--hairline); border-radius: 6px;
+      background: #131a21; color: var(--text-light); font: inherit; color-scheme: dark;
+    }
+    .atlas-browser p { flex-basis: 100%; margin: 0; }
+    .atlas-browser button:disabled { opacity: .6; }
+    :where(button, a, input, select, [tabindex]):focus-visible {
+      outline: 3px solid #8bc9ff; outline-offset: 3px;
+    }
+    .shelf-controls :focus-visible { outline: 3px solid #8bc9ff; outline-offset: 3px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    .lane-track:focus-visible { outline-offset: -2px; }
+    .lane-track:focus .seg[aria-selected="true"] { top: 6px; height: 14px; box-shadow: 0 0 0 2px #fff; opacity: 1; z-index: 3; }
+    .edition-detail { padding: 10px 16px; margin: 0; border-top: 1px solid var(--hairline); font-size: 12px; min-height: 38px; }
+    @media (forced-colors: active) {
+      :where(button, a, input, select, [tabindex]):focus-visible { outline-color: Highlight; }
+      .seg { background: CanvasText; }
+      .seg.miss { border: 1px dashed CanvasText; background: Canvas; }
+      .seg[aria-selected="true"] { outline: 2px solid Highlight; }
+    }
 
     /* ============ inventory shelf ============ */
     .shelf-controls {
@@ -522,11 +558,17 @@
       .wrap { padding: 20px 12px 48px; }
       section { padding: 16px; }
       .legend { gap: 12px; }
+      .atlas-hud { position: static; max-width: none; margin: 10px; }
+      .atlas-controls { flex-wrap: wrap; gap: 12px; }
+      .scrub { flex-basis: 100%; }
+      .scrub .tick:nth-of-type(even) { display: none; }
     }
+    p a, li a, footer a { text-decoration: underline; text-underline-offset: 2px; }
   </style>
 </head>
 
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <!-- shared-nav: keep identical across about/contribute/sources (URI-POLICY.md).
        The site shell: mirrors the viewer header and worker-atc/src/shell.js. -->
   <div class="site-nav">
@@ -557,7 +599,7 @@
   </div>
   <!-- /shared-nav -->
 
-  <div class="wrap">
+  <main class="wrap" id="main-content" tabindex="-1">
     <header>
       <h1>Help Fill the Gaps</h1>
       <p class="tagline">
@@ -649,16 +691,24 @@
           <button class="btn-nav" id="atStepB" aria-label="Back one year">←</button>
           <button class="btn-play" id="atPlay" aria-label="Play timeline">▶</button>
           <button class="btn-nav" id="atStepF" aria-label="Forward one year">→</button>
-          <div class="scrub" id="atScrub">
-            <div class="scrub-track"></div>
-            <div class="scrub-handle" id="atHandle"></div>
+          <div class="scrub" id="atTrack">
+            <input type="range" id="atScrub" aria-label="Atlas date" aria-describedby="atlasHelp">
           </div>
         </div>
+        <div class="atlas-browser">
+          <label for="atDate">Date</label><input type="date" id="atDate" min="1928-01-01" max="2026-12-31">
+          <label for="atRegion">Region</label><select id="atRegion" aria-describedby="atRegionInfo"></select>
+          <button id="atOpen" type="button" disabled>Open scan</button>
+          <p id="atRegionInfo" role="status" aria-atomic="true"></p>
+          <p id="atlasHelp" class="muted">Use the date slider or enter a date, then choose a region to read its coverage and open an archived scan. Slider arrows move one day; Page Up and Page Down move one year.</p>
+        </div>
+        <p class="sr-only" id="atlasStatus" role="status" aria-atomic="true"></p>
       </div>
     </section>
 
     <section>
       <h2>The full inventory, chart by chart</h2>
+      <p id="shelfHelp" class="muted">Expand a chart, then Tab to an edition row. Use arrow keys to browse editions, Home or End to jump to either end, or type a year. The selected edition’s details appear below the inventory.</p>
       <p class="muted" style="margin-top:0">
         One row per modern sectional, with every chart that ever covered that area grouped under it —
         old Albany, Boston, and New York charts live under today's <b>New York</b> sectional, matched
@@ -685,11 +735,12 @@
           </select>
           <button id="expandAll">Expand all</button>
           <button id="collapseAll">Collapse all</button>
-          <span id="shelfStats" style="margin-left:auto"></span>
+          <span id="shelfStats" role="status" aria-atomic="true" style="margin-left:auto"></span>
         </div>
         <div class="shelf-scroll">
           <div class="shelf-inner" id="shelf"></div>
         </div>
+        <p class="edition-detail" id="editionDetail">Select an edition to read its date and archive status.</p>
       </div>
       <p class="muted" style="margin-top:12px" id="genNote">
         Missing counts come from edition numbers: every number between two archived editions is an
@@ -703,9 +754,9 @@
       <a href="/">archive.aero</a> · <a href="/about">About &amp; How It Works</a> ·
       <a href="/sources">Sources &amp; Attribution</a> · Historical Aviation Charts
     </footer>
-  </div>
+  </main>
 
-  <div id="tip"></div>
+  <div id="tip" aria-hidden="true"></div>
 
   <script>
     const T0 = Date.UTC(1928, 0, 1), T1 = Date.UTC(2027, 0, 1);
@@ -715,13 +766,15 @@
     const TRACK_W = Math.round((T1 - T0) / YR * PX_PER_YEAR);
     const P = t => (t - T0) / (T1 - T0);           // 0..1
     const X = t => P(t) * TRACK_W;                  // px in shelf tracks
-    const fmt = t => new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+    const fmt = t => new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short', timeZone: 'UTC' });
+    const fullDate = t => new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
     const parse = s => Date.parse(s + 'T00:00:00Z');
     const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
     // old-era rows carry LOC catalog numbers in the edition column — only
     // present plausible edition numbers as "edition N"
-    const edLabel = ed => (ed && /^\d+$/.test(ed) && +ed < 150) ? `edition ${ed}`
-      : (ed && !/^\d+$/.test(ed) && ed !== 'Unknown') ? esc(ed) : 'archived scan';
+    const edText = ed => (ed && /^\d+$/.test(ed) && +ed < 150) ? `edition ${ed}`
+      : (ed && !/^\d+$/.test(ed) && ed !== 'Unknown') ? ed : 'archived scan';
+    const edLabel = ed => esc(edText(ed));
 
     /* ---------- tooltip ---------- */
     const tip = document.getElementById('tip');
@@ -739,6 +792,8 @@
       tip.style.left = x + 'px'; tip.style.top = y + 'px';
     }
     function hideTip() { tip.style.display = 'none'; }
+    addEventListener('keydown', ev => { if (ev.key === 'Escape') hideTip(); });
+    addEventListener('scroll', hideTip, true);
 
     /* ---------- data prep ---------- */
     function prep(data) {
@@ -954,11 +1009,14 @@
     /* ================= inventory shelf ================= */
     function buildShelf(model) {
       const shelf = document.getElementById('shelf');
+      hideTip();
+      document.getElementById('editionDetail').textContent = 'Select an edition to read its date and archive status.';
       shelf.innerHTML = '';
 
       // sticky year axis
       const axis = document.createElement('div');
       axis.className = 'axis-row';
+      axis.setAttribute('aria-hidden', 'true');
       axis.style.width = (LABEL_W + TRACK_W) + 'px';
       for (let y = 1930; y <= 2026; y += 10) {
         const el = document.createElement('div');
@@ -995,6 +1053,7 @@
         head.tabIndex = 0;
         head.setAttribute('role', 'button');
         head.setAttribute('aria-expanded', 'false');
+        head.setAttribute('aria-label', `${g.name}: ${g.nCharts} scans in archive, ${g.nMiss} missing editions.`);
         head.style.width = (LABEL_W + TRACK_W) + 'px';
         const lbl = document.createElement('div');
         lbl.className = 'lane-label';
@@ -1004,6 +1063,7 @@
 
         const tr = document.createElement('div');
         tr.className = 'grp-track';
+        tr.setAttribute('aria-hidden', 'true');
         tr.style.width = TRACK_W + 'px';
         for (const d of decades) {
           const dg = document.createElement('div');
@@ -1030,6 +1090,8 @@
         const toggleGrp = () => {
           const open = grp.classList.toggle('open');
           head.setAttribute('aria-expanded', open ? 'true' : 'false');
+          body.hidden = !open;
+          hideTip();
         };
         head.addEventListener('click', toggleGrp);
         head.addEventListener('keydown', ev => {
@@ -1039,12 +1101,24 @@
 
         const body = document.createElement('div');
         body.className = 'grp-body';
+        body.id = `inventory-group-${model.groups.indexOf(g)}`;
+        body.hidden = true;
+        head.setAttribute('aria-controls', body.id);
+        if (g.holes.length) {
+          const gaps = document.createElement('p');
+          gaps.className = 'sr-only';
+          gaps.id = `${body.id}-gaps`;
+          gaps.textContent = 'Periods with no archived coverage: ' + g.holes.map(([a, b]) => `${fullDate(a)} to ${fullDate(b)}`).join('; ') + '.';
+          body.appendChild(gaps);
+          head.setAttribute('aria-describedby', gaps.id);
+        }
         for (const m of g.members) body.appendChild(laneFor(m, decades));
         grp.appendChild(body);
         shelf.appendChild(grp);
       }
     }
 
+    let laneSequence = 0;
     function laneFor(L, decades) {
       const lane = document.createElement('div');
       lane.className = 'lane ' + L.era;
@@ -1056,14 +1130,66 @@
       lane.appendChild(lbl);
       const tr = document.createElement('div');
       tr.className = 'lane-track';
+      tr.tabIndex = 0;
+      tr.setAttribute('role', 'listbox');
+      tr.setAttribute('aria-label', `${L.name}, ${L.era === 'old' ? 'early' : 'modern'} series editions`);
+      tr.setAttribute('aria-orientation', 'horizontal');
+      tr.setAttribute('aria-describedby', 'shelfHelp');
       tr.style.width = TRACK_W + 'px';
       for (const d of decades) {
         const dg = document.createElement('div');
         dg.className = 'decade-grid'; dg.style.left = d + 'px';
+        dg.setAttribute('aria-hidden', 'true');
         tr.appendChild(dg);
       }
-      for (const sl of L.slots)
-        pill(tr, sl, L, sl.held ? 'seg' + (L.era === 'old' ? ' old' : '') : 'seg miss' + (sl.est ? ' est' : ''));
+      const laneId = ++laneSequence;
+      const options = L.slots.map((sl, i) => {
+        const el = pill(tr, sl, L, sl.held ? 'seg' + (L.era === 'old' ? ' old' : '') : 'seg miss' + (sl.est ? ' est' : ''));
+        const date = new Date(sl.t0);
+        const when = `${date.getUTCFullYear()}, ${date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', timeZone: 'UTC' })}`;
+        const label = `${when}${sl.est ? ' (estimated date)' : ''}: ${sl.ed ? edText(sl.ed) : sl.cycle ? '56-day cycle' : 'edition'} — ${sl.held ? 'in archive' : 'missing from archive'}${sl.seg?.f?.includes('L') ? ', latest in collection' : ''}`;
+        el.id = `edition-${laneId}-${i}`;
+        el.setAttribute('role', 'option');
+        el.setAttribute('aria-label', label);
+        el.setAttribute('aria-selected', 'false');
+        el.addEventListener('click', () => { tr.focus({ preventScroll: true }); select(i); });
+        return el;
+      });
+      let selected = 0, typed = '', typedAt = 0;
+      function select(index, reveal = true) {
+        if (!options.length) return;
+        options[selected].setAttribute('aria-selected', 'false');
+        selected = Math.max(0, Math.min(options.length - 1, index));
+        const el = options[selected];
+        el.setAttribute('aria-selected', 'true');
+        tr.setAttribute('aria-activedescendant', el.id);
+        if (!reveal) return;
+        document.getElementById('editionDetail').textContent = `${L.name}: ${el.getAttribute('aria-label')}`;
+        // Keep the active pill clear of the sticky chart-name column.
+        const scroll = tr.closest('.shelf-scroll');
+        const x = parseFloat(el.style.left);
+        const visibleWidth = Math.max(40, scroll.clientWidth - LABEL_W);
+        if (x < scroll.scrollLeft + 12) scroll.scrollLeft = Math.max(0, x - 12);
+        else if (x > scroll.scrollLeft + visibleWidth - 16) scroll.scrollLeft = x - visibleWidth + 16;
+        const r = el.getBoundingClientRect();
+        showTip(`<b>${esc(L.name)}</b><br>${esc(el.getAttribute('aria-label'))}`, { clientX: r.left, clientY: r.bottom });
+      }
+      tr.addEventListener('focus', () => select(selected));
+      tr.addEventListener('blur', hideTip);
+      tr.addEventListener('keydown', e => {
+        if (e.altKey || e.ctrlKey || e.metaKey || e.isComposing) return;
+        const target = { ArrowLeft: selected - 1, ArrowUp: selected - 1, ArrowRight: selected + 1,
+          ArrowDown: selected + 1, Home: 0, End: options.length - 1, PageUp: selected - 10, PageDown: selected + 10 }[e.key];
+        if (target !== undefined) { e.preventDefault(); select(target); }
+        else if (/^[0-9]$/.test(e.key)) {
+          e.preventDefault();
+          typed = Date.now() - typedAt > 1000 ? e.key : typed + e.key;
+          typedAt = Date.now();
+          const match = options.findIndex(el => el.getAttribute('aria-label').startsWith(typed));
+          if (match !== -1) select(match);
+        }
+      });
+      select(0, false);
       lane.appendChild(tr);
       return lane;
     }
@@ -1127,6 +1253,10 @@
       }
       const hudDate = document.getElementById('hudDate');
       const hudStats = document.getElementById('hudStats');
+      const regionSelect = document.getElementById('atRegion');
+      const regionInfo = document.getElementById('atRegionInfo');
+      const openBtn = document.getElementById('atOpen');
+      const dateInput = document.getElementById('atDate');
       const polys = [];   // {el, L}
       for (const L of Object.values(model.locs)) {
         if (!L.ref || !rings[L.ref]) continue;
@@ -1149,13 +1279,44 @@
           showTip(`<b>${esc(L.name)}</b><br>${body}`, ev);
         });
         el.addEventListener('mouseleave', hideTip);
-        el.addEventListener('click', () => {
+        const openScan = () => {
           const st = stateAt(L, cur);
-          if (st.kind === 'have') location.href = `/?date=${encodeURIComponent(st.seg.d)}`;
-        });
+          if (st.kind !== 'have') return;
+          // Use geographic coordinates, not the atlas's inset positions. Unwrap
+          // Aleutian longitudes before finding the center across the date line.
+          const points = rings[L.ref].flat();
+          const lons = points.map(([lon]) => unwrap(lon));
+          const lats = points.map(([, lat]) => lat);
+          const lat = (Math.min(...lats) + Math.max(...lats)) / 2;
+          const centerLon = (Math.min(...lons) + Math.max(...lons)) / 2;
+          const lng = ((centerLon + 180) % 360 + 360) % 360 - 180;
+          location.href = `/?date=${encodeURIComponent(st.seg.d)}&lat=${lat.toFixed(4)}&lng=${lng.toFixed(4)}&zoom=7`;
+        };
+        el.addEventListener('click', openScan);
         g.appendChild(el);
-        polys.push({ el, L });
+        polys.push({ el, L, openScan });
       }
+      for (const { L } of [...polys].sort((a, b) => a.L.name.localeCompare(b.L.name))) {
+        const option = document.createElement('option');
+        option.value = L.name;
+        option.textContent = L.name;
+        regionSelect.appendChild(option);
+      }
+      function describeRegion() {
+        const item = polys.find(({ L }) => L.name === regionSelect.value);
+        if (!item) { openBtn.disabled = true; regionInfo.textContent = 'No chart regions available.'; return; }
+        const st = stateAt(item.L, cur);
+        openBtn.disabled = st.kind !== 'have';
+        const description = `${item.L.name}: ` + (st.kind === 'have'
+          ? `${edText(st.seg.ed)} in archive, effective ${fullDate(st.seg.t0)}.`
+          : st.kind === 'gap' ? `${st.gap.est} missing edition${st.gap.est === 1 ? '' : 's'}, ${fullDate(st.gap.t0)} to ${fullDate(st.gap.t1)}.`
+          : st.kind === 'hole' ? 'chart existed, but nothing is archived for this date.'
+          : 'no chart archived for this date.');
+        if (regionInfo.textContent !== description) regionInfo.textContent = description;
+      }
+      regionSelect.addEventListener('change', describeRegion);
+      regionSelect.addEventListener('focus', () => { stopPlay(); render(); });
+      openBtn.addEventListener('click', () => polys.find(({ L }) => L.name === regionSelect.value)?.openScan());
 
       const PAD = 3 * YR;   // ghost-outline grace around a chart's lifetime
       function stateAt(L, t) {
@@ -1166,8 +1327,10 @@
         return { kind: 'hidden' };
       }
 
-      let cur = Date.UTC(1946, 5, 1);
+      let cur = Date.UTC(1946, 5, 1), announcementTimer;
       function render() {
+        // T1 is exclusive; apply the same bounds to stepping, scrubbing and play.
+        cur = Math.max(T0, Math.min(T1 - DAY, Math.floor(cur / DAY) * DAY));
         let have = 0, gap = 0, hole = 0;
         for (const { el, L } of polys) {
           const st = stateAt(L, cur);
@@ -1180,41 +1343,57 @@
         hudStats.innerHTML = `<b class="h">${have}</b> charts in archive` +
           (gap ? ` · <b class="g">${gap}</b> missing` : '') +
           (hole ? ` · <b style="color:var(--warn)">${hole}</b> unarchived` : '') +
-          (have ? `<br><span style="color:var(--text-faint)">click a region to open its scan</span>` : '');
-        handle.style.left = (P(cur) * 100) + '%';
+          (have ? `<br><span style="color:var(--text-faint)">choose a region below or click one to open its scan</span>` : '');
+        scrub.value = cur;
+        scrub.setAttribute('aria-valuetext', fullDate(cur));
+        dateInput.value = new Date(cur).toISOString().slice(0, 10);
+        document.getElementById('atStepB').disabled = cur <= T0;
+        document.getElementById('atStepF').disabled = cur >= T1 - DAY;
+        describeRegion();
+        clearTimeout(announcementTimer);
+        if (!timer) announcementTimer = setTimeout(() => {
+          document.getElementById('atlasStatus').textContent = `${fullDate(cur)}: ${have} charts in archive, ${gap} missing editions, ${hole} unarchived charts.`;
+        }, 250);
       }
 
       // scrubber
       const scrub = document.getElementById('atScrub');
-      const handle = document.getElementById('atHandle');
+      scrub.min = T0; scrub.max = T1 - DAY; scrub.step = DAY;
       for (let y = 1930; y <= 2026; y += 10) {
         const el = document.createElement('div');
         el.className = 'tick';
         el.style.left = (P(Date.UTC(y, 0, 1)) * 100) + '%';
         el.textContent = y;
-        scrub.appendChild(el);
+        el.setAttribute('aria-hidden', 'true');
+        document.getElementById('atTrack').appendChild(el);
       }
-      let dragging = false;
-      const setFromEvent = e => {
-        const r = scrub.getBoundingClientRect();
-        const p = Math.max(0, Math.min(1, ((e.touches?.[0]?.clientX ?? e.clientX) - r.left) / r.width));
-        cur = T0 + p * (T1 - T0);
-        stopPlay(); render();
-      };
-      scrub.addEventListener('mousedown', e => { dragging = true; setFromEvent(e); });
-      scrub.addEventListener('touchstart', e => { dragging = true; setFromEvent(e); }, { passive: true });
-      addEventListener('mousemove', e => dragging && setFromEvent(e));
-      addEventListener('touchmove', e => dragging && setFromEvent(e), { passive: true });
-      addEventListener('mouseup', () => dragging = false);
-      addEventListener('touchend', () => dragging = false);
+      scrub.addEventListener('input', () => { stopPlay(); cur = Number(scrub.value); render(); });
+      scrub.addEventListener('keydown', e => {
+        if (e.altKey || e.ctrlKey || e.metaKey) return;
+        if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(e.key)) stopPlay();
+        if (e.key === 'PageUp' || e.key === 'PageDown') {
+          e.preventDefault(); cur += (e.key === 'PageUp' ? 1 : -1) * 365 * DAY; render();
+        }
+      });
+      dateInput.addEventListener('change', () => {
+        if (!dateInput.value || !dateInput.validity.valid) return;
+        stopPlay(); cur = parse(dateInput.value); render();
+      });
 
       // play + step
       let timer = null;
       const playBtn = document.getElementById('atPlay');
-      function stopPlay() { clearInterval(timer); timer = null; playBtn.textContent = '▶'; }
+      function stopPlay() {
+        clearInterval(timer); timer = null; playBtn.textContent = '▶';
+        playBtn.setAttribute('aria-label', 'Play timeline');
+        regionInfo.setAttribute('aria-live', 'polite');
+      }
       playBtn.addEventListener('click', () => {
-        if (timer) { stopPlay(); return; }
+        if (timer) { stopPlay(); render(); return; }
         playBtn.textContent = '⏸';
+        playBtn.setAttribute('aria-label', 'Pause timeline');
+        regionInfo.setAttribute('aria-live', 'off');
+        clearTimeout(announcementTimer);
         if (cur > T1 - YR) cur = T0;
         timer = setInterval(() => {
           cur += YR / 6;                       // 2 months per tick
@@ -1332,6 +1511,7 @@
       const setAllGrps = on => document.querySelectorAll('#shelf .grp').forEach(g => {
         g.classList.toggle('open', on);
         g.querySelector('.grp-header')?.setAttribute('aria-expanded', on ? 'true' : 'false');
+        g.querySelector('.grp-body').hidden = !on;
       });
       document.getElementById('expandAll').addEventListener('click', () => setAllGrps(true));
       document.getElementById('collapseAll').addEventListener('click', () => setAllGrps(false));

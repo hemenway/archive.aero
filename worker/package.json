@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Cloudflare Worker: R2 PMTiles range proxy for archive.aero with sampled Analytics Engine logging",
   "scripts": {
+    "test": "node --test test/*.test.mjs",
     "deploy": "wrangler deploy",
     "dry-run": "wrangler deploy --dry-run",
     "dev": "wrangler dev",
