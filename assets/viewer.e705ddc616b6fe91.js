@@ -1,0 +1,3630 @@
+import { loadPapaParse } from './csv.c9cd7d9db3eb5509.js';
+
+const DeviceInfo = (() => {
+  const ua = navigator.userAgent || '';
+  const isIOS = /iP(ad|hone|od)/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isSafari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|SamsungBrowser/.test(ua);
+  return { isIOS, isMobileSafari: isIOS && isSafari };
+})();
+
+/** CONFIGURATION **/
+const CONFIG = {
+  // Era archives live directly under sectionals/ (the bundle index and every
+  // dates.csv row say so); the old '.../sectionals/pmtiles/' default 404'd
+  // for any CSV row without its own url.
+  baseUrl: 'https://data.archive.aero/sectionals/',
+  csvUrl: 'dates.csv', // Fallback source when the metadata bundle is unavailable
+  // Single-file metadata bundle: era index + every archive's PMTiles
+  // header/directories, so scrubbing needs no per-archive metadata fetches.
+  // Rewritten by scripts/build_metadata_bundle.py --update-html; null = CSV only.
+  bundleUrl: 'https://data.archive.aero/sectionals/metadata-1aea6f69.bundle',
+  // Vector basemap: a Protomaps (OpenStreetMap) cutout we build and host
+  // ourselves — Protomaps' daily planet builds are downloads, not a CDN, and
+  // their docs ask you not to hotlink them. Rebuild with
+  // scripts/basemap_build.py, which prints the key to paste here. The key is
+  // dated and immutable on purpose: replacing a PMTiles file in place moves
+  // every byte offset in it while the Worker's per-range cache entries carry
+  // no version, so viewers would splice new directories onto old tile bodies.
+  basemapUrl: 'https://data.archive.aero/basemap/protomaps-20260826.pmtiles',
+  // The cutout stops at z13. protomaps-leaflet reads the data tile one level
+  // below the map zoom (levelDiff 1), so z13 is native detail at the viewer's
+  // max zoom of 14 — but only if maxDataZoom says so; left at its default of
+  // 15 the layer would request z14/z15 tiles the cutout doesn't contain.
+  basemapMaxDataZoom: 13,
+  // Airspace overlay: one vector PMTiles archive of class airspace from
+  // FAA NASR (US), SIA (France) and DECEA GeoAISWEB (Brazil) — every held
+  // cycle of each, merged into polygon versions that carry a region tag
+  // and a from/to validity interval (scripts/airspace_build.py, which
+  // rewrites this key with --update-html). Dated and immutable for the
+  // same reason as the basemap key. null disables the layer.
+  airspaceUrl: 'https://data.archive.aero/airspace/class-20260916b.pmtiles',
+  // The archive is tiled to z11 and overzoomed past that (a z11 tile unit
+  // is ~5 m, plenty for airspace lines at the viewer's max zoom of 14).
+  airspaceMaxDataZoom: 11,
+  initialView: { center: [32.7767, -96.7970], zoom: 10 },
+  ranges: [], // Full list of PMTiles ranges
+  frames: [], // Unique timeline dates (start dates)
+  dateBounds: { min: null, max: null }
+};
+
+/** UTILITIES **/
+const Utils = {
+  // localStorage access itself throws SecurityError when storage is blocked
+  // (block-all-cookies, third-party iframe). It is a per-viewer convenience
+  // only, so treat it as absent rather than letting the viewer fail to boot.
+  storageGet: (key) => {
+    try { return window.localStorage.getItem(key); } catch (_) { return null; }
+  },
+  storageSet: (key, value) => {
+    try { window.localStorage.setItem(key, value); } catch (_) { /* unavailable */ }
+  },
+  buildPMTilesUrl: (key, customUrl) => {
+    if (customUrl) return customUrl;
+    return `${CONFIG.baseUrl}${key}.pmtiles`;
+  },
+  // Collapses concurrent reads of the same source tile into one network
+  // fetch. Overzoomed views map many screen tiles onto one source tile, and
+  // scrub prefetches fan out per screen tile, so without in-flight dedupe an
+  // identical z/x/y can be requested 100+ times in a single burst — the LRU
+  // cache alone can't prevent that because it only holds resolved data.
+  // getSrc is a thunk so a cache hit (or joining an in-flight fetch) never
+  // instantiates the archive — instances exist only for tiles actually read.
+  fetchTileDeduped: (getSrc, cache, inflight, cacheKey, z, x, y) => {
+    const cached = cache ? cache.get(cacheKey) : null;
+    if (cached) return Promise.resolve(cached);
+    let pending = inflight.get(cacheKey);
+    if (!pending) {
+      pending = getSrc().getZxy(z, x, y)
+        .then(result => {
+          const data = result && result.data ? result.data : null;
+          if (data && cache) cache.set(cacheKey, data);
+          return data;
+        })
+        .finally(() => inflight.delete(cacheKey));
+      inflight.set(cacheKey, pending);
+    }
+    return pending;
+  },
+  toast: (msg, duration = 3000) => {
+    const el = document.getElementById('toast');
+    if (el) {
+      el.textContent = msg;
+      el.classList.add('visible');
+      // Clear any prior toast's timer so overlapping toasts each show for their
+      // full duration instead of an older timer hiding the newer message early.
+      clearTimeout(Utils._toastTimer);
+      Utils._toastTimer = setTimeout(() => el.classList.remove('visible'), duration);
+    }
+  },
+  parseDateRangeKey: (key) => {
+    if (!key) return null;
+    const parts = key.split('_to_');
+    const startStr = parts[0];
+    const endStr = parts[1] || parts[0];
+    const startDate = new Date(startStr);
+    const endDate = new Date(endStr);
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return null;
+    if (endDate < startDate) {
+      return {
+        startStr: endStr,
+        endStr: startStr,
+        startDate: endDate,
+        endDate: startDate
+      };
+    }
+    return { startStr, endStr, startDate, endDate };
+  },
+  toIsoDate: (date) => {
+    // Range dates are parsed as UTC midnight (new Date('YYYY-MM-DD')), so read
+    // them back in UTC — using local getters shifts the date by a day for any
+    // user in a non-zero timezone and breaks the date bounds round-trip.
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  },
+  formatDateId: (dateStr) => {
+    try {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const date = new Date(y, m - 1, d);
+      return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+    } catch (e) {
+      return dateStr;
+    }
+  },
+  toggleFullscreen: () => {
+    const el = document.documentElement;
+    const request = el.requestFullscreen || el.webkitRequestFullscreen;
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    const active = document.fullscreenElement || document.webkitFullscreenElement;
+    // iOS WebKit (every browser on iPhone) has no element-level fullscreen, so
+    // requestFullscreen is undefined and calling it throws synchronously rather
+    // than rejecting — feature-detect and give feedback instead of a silent no-op.
+    if (!request) {
+      Utils.toast('Fullscreen is not supported on this device');
+      return;
+    }
+    try {
+      if (!active) {
+        const result = request.call(el);
+        if (result && typeof result.catch === 'function') {
+          result.catch(err => Utils.toast(`Error entering fullscreen: ${err.message}`));
+        }
+      } else if (exit) {
+        exit.call(document);
+      }
+    } catch (err) {
+      Utils.toast(`Error entering fullscreen: ${err.message}`);
+    }
+  },
+  debounce: (func, wait) => {
+    let timeout;
+    const debounced = function executedFunction(...args) {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => { timeout = null; func(...args); }, wait);
+    };
+    // Expose cancel() so a direct showFrame can drop a stale pending scrub
+    // repaint instead of letting it paint an old date over the newer frame.
+    debounced.cancel = () => { clearTimeout(timeout); timeout = null; };
+    return debounced;
+  },
+  // WGS84 [w, s, e, n] of a slippy tile, used to cull archives whose header
+  // bounds (bundle index "b") can't overlap the tile before any PMTiles
+  // work happens. Archives without bounds are never culled.
+  tileLonLatBounds: (z, x, y) => {
+    const n = Math.pow(2, z);
+    const lat = ty => Math.atan(Math.sinh(Math.PI * (1 - 2 * ty / n))) * 180 / Math.PI;
+    return [x / n * 360 - 180, lat(y + 1), (x + 1) / n * 360 - 180, lat(y)];
+  },
+  boundsIntersect: (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1],
+  // Even-odd ray cast. ring is [[lon, lat], ...]; works closed or open.
+  pointInRing: (lon, lat, ring) => {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const xi = ring[i][0], yi = ring[i][1];
+      const xj = ring[j][0], yj = ring[j][1];
+      if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  },
+  // Min distance from a point to the ring's edges, in degrees with lon
+  // scaled by cos(lat) — a ranking key for "nearest chart", not a geodesic.
+  distToRing: (lon, lat, ring) => {
+    const k = Math.cos(lat * Math.PI / 180);
+    let best = Infinity;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const ax = (ring[j][0] - lon) * k, ay = ring[j][1] - lat;
+      const bx = (ring[i][0] - lon) * k, by = ring[i][1] - lat;
+      const dx = bx - ax, dy = by - ay;
+      const len2 = dx * dx + dy * dy;
+      const t = len2 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / len2)) : 0;
+      const px = ax + t * dx, py = ay + t * dy;
+      best = Math.min(best, px * px + py * py);
+    }
+    return Math.sqrt(best);
+  }
+  // preventDoubleTapZoom removed: styles.css already applies
+  // `touch-action: manipulation` to `button, .leaflet-control-zoom a`, which
+  // suppresses iOS double-tap zoom without synthesizing extra click events.
+};
+
+/** METADATA BUNDLE **/
+// One static file holds the era index plus each archive's PMTiles metadata
+// prefix (header + directories), packed in decade groups. Scrubbing then
+// costs one shared, edge-cached range read per decade instead of 2-3
+// serialized round-trips per archive — a phone recording showed 91% of
+// scrub traffic was those tiny metadata reads. Layout is defined in
+// scripts/build_metadata_bundle.py, which also rewrites CONFIG.bundleUrl.
+const MetaBundle = {
+  ready: false,
+  url: null,
+  baseUrl: null,
+  blobsStart: 0,
+  eras: new Map(),   // key -> {off, len, group} (offsets relative to blobsStart)
+  groups: [],        // decade groups: {name, off, len, i0, i1, state, bytes, lastUse}
+  // Resident groups are whole ArrayBuffers (0.2-4MB each); cap how many
+  // stay in memory so a full-history scrub can't pin ~16MB on iOS.
+  residentLimit: DeviceInfo.isIOS ? 4 : 12,
+  _useSeq: 0,
+
+  async load(url) {
+    // Preamble + gzipped index almost always fit in the first 256KB; one
+    // speculative read avoids a serial preamble-then-index round-trip.
+    const first = await this._fetchRange(url, 0, 262144);
+    const magic = 'AAMBv1\n\0';
+    for (let i = 0; i < magic.length; i++) {
+      if (first[i] !== magic.charCodeAt(i)) throw new Error('bundle: bad magic');
+    }
+    const indexGzLen = new DataView(first.buffer, first.byteOffset).getUint32(8, true);
+    this.blobsStart = 16 + indexGzLen;
+    let gz = first.subarray(16, Math.min(16 + indexGzLen, first.byteLength));
+    if (gz.byteLength < indexGzLen) {
+      const rest = await this._fetchRange(url, first.byteLength, this.blobsStart - first.byteLength);
+      const merged = new Uint8Array(indexGzLen);
+      merged.set(gz, 0);
+      merged.set(rest, gz.byteLength);
+      gz = merged;
+    }
+    const index = JSON.parse(await this._gunzipText(gz));
+    if (index.version !== 1) throw new Error(`bundle: unsupported version ${index.version}`);
+    this.url = url;
+    this.baseUrl = index.baseUrl;
+    this.groups = index.groups.map(g => ({ ...g, state: 'idle', bytes: null, lastUse: 0, failedAt: 0 }));
+    let gi = 0;
+    index.eras.forEach((era, i) => {
+      while (i >= this.groups[gi].i1) gi++;
+      this.eras.set(era.k, { off: era.off, len: era.len, group: this.groups[gi] });
+    });
+    this.ready = true;
+    return index;
+  },
+
+  async _fetchRange(url, offset, length) {
+    const resp = await fetch(url, {
+      headers: { range: `bytes=${offset}-${offset + length - 1}` }
+    });
+    if (resp.status !== 206 && resp.status !== 200) throw new Error(`bundle: HTTP ${resp.status}`);
+    let bytes = new Uint8Array(await resp.arrayBuffer());
+    // A server that ignores Range answers 200 with the whole file; slice
+    // locally so callers still get exactly the span they asked for.
+    if (resp.status === 200 && bytes.byteLength > length) {
+      bytes = bytes.subarray(offset, offset + length);
+    }
+    return bytes;
+  },
+
+  async _gunzipText(bytes) {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Response(stream).text();
+  },
+
+  // Synchronous read for BundleSource: an ArrayBuffer when the span is
+  // resident, else null (caller falls through to the network). A miss on a
+  // not-yet-loaded group starts that group's fetch, so the next archive
+  // touched in the same decade is served locally.
+  getBytesFor(key, offset, length) {
+    if (!this.ready) return null;
+    const era = this.eras.get(key);
+    if (!era) return null;
+    // Reads past the metadata prefix are leaf-directory/tile reads (huge
+    // modern archives); those always belong to the network. The exception
+    // is pmtiles' fixed 16KB header probe at offset 0, which may overrun a
+    // small archive's prefix — serve it truncated, exactly like a server
+    // answering a range that crosses EOF.
+    const servable = offset === 0 || offset + length <= era.len;
+    if (!servable) return null;
+    const g = era.group;
+    if (g.state !== 'ready') {
+      this._loadGroup(g);
+      return null;
+    }
+    g.lastUse = ++this._useSeq;
+    const start = era.off - g.off + offset;
+    const end = Math.min(era.off - g.off + era.len, start + length);
+    return g.bytes.slice(start, end).buffer;
+  },
+
+  _loadGroup(g) {
+    if (g.state !== 'idle') return;
+    if (g.failedAt && Date.now() - g.failedAt < 15000) return;
+    g.state = 'loading';
+    this._fetchRange(this.url, this.blobsStart + g.off, g.len)
+      .then(bytes => {
+        if (bytes.byteLength !== g.len) throw new Error('bundle: short group read');
+        g.bytes = bytes;
+        g.state = 'ready';
+        g.failedAt = 0;
+        g.lastUse = ++this._useSeq;
+        this._evictOverBudget();
+      })
+      .catch(() => {
+        // Transient (offline, edge hiccup): scrub keeps working via the
+        // network path, and a later touch retries after the backoff.
+        g.state = 'idle';
+        g.bytes = null;
+        g.failedAt = Date.now();
+      });
+  },
+
+  _evictOverBudget() {
+    const resident = this.groups.filter(g => g.state === 'ready');
+    if (resident.length <= this.residentLimit) return;
+    resident.sort((a, b) => a.lastUse - b.lastUse);
+    for (const g of resident.slice(0, resident.length - this.residentLimit)) {
+      g.state = 'idle';
+      g.bytes = null;
+    }
+  },
+
+  // Warm the decade group around the scrubbed date plus its neighbours in
+  // the group list (calendar gaps collapse), so the next flick of the
+  // slider finds its metadata already resident.
+  touchDate(dateStr) {
+    if (!this.ready || !dateStr) return;
+    const decade = `${dateStr.slice(0, 3)}0s`;
+    const idx = this.groups.findIndex(g => g.name === decade);
+    if (idx === -1) return;
+    for (const g of [this.groups[idx], this.groups[idx + 1], this.groups[idx - 1]]) {
+      if (g) this._loadGroup(g);
+    }
+  },
+
+  // A 416/etag mismatch proved the bundled copy is stale for this archive:
+  // serve it from the network from now on.
+  dropEra(key) {
+    this.eras.delete(key);
+  }
+};
+
+// pmtiles Source that answers metadata reads from MetaBundle and everything
+// else via the library's own FetchSource, keeping its 416/etag semantics.
+//
+// Network reads are deduplicated per byte range, not per tile: PMTiles
+// content-dedupes identical tiles, so every empty/water tile in a viewport
+// points at the same few-hundred-byte blob. The per-coordinate dedupe in
+// fetchTileDeduped can't see that (different z/x/y, same range), which let
+// one 222-byte range be fetched 165 times in a single session. An in-flight
+// map collapses the concurrent herd; a small LRU covers repaints that
+// re-read the same ranges seconds later.
+class BundleSource {
+  // Dupes are dominated by tiny shared-blob reads; anything bigger than
+  // this is streamed through uncached so the LRU stays a few hundred KB
+  // in practice (worst case entries*64KB, bounded per instance).
+  static RANGE_CACHE_MAX_BYTES = 65536;
+
+  constructor(url, key) {
+    this.url = url;
+    this.key = key;
+    this.net = new pmtiles.FetchSource(url);
+    this.rangeInflight = new Map();
+    this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
+    // ETag of the live archive as seen by this instance's first network
+    // read. pmtiles only arms its own etag check when the HEADER read
+    // returned one, and bundle-served headers carry none — so for every
+    // bundle-backed era a same-key republish went undetected: old bundle
+    // offsets read new bytes and decoded as garbage tiles for as long as
+    // the Worker's cache served them. Tracking the etag here restores the
+    // check (see _netBytes).
+    this.liveEtag = null;
+  }
+
+  getKey() {
+    return this.url;
+  }
+
+  async getBytes(offset, length, signal, etag) {
+    const local = MetaBundle.getBytesFor(this.key, offset, length);
+    if (local) return { data: local };
+    // An abortable read can't share a promise: one caller's abort would
+    // reject every joined caller. No caller passes a signal today, so the
+    // dedupe path is the one actually taken.
+    if (signal) return this._netBytes(offset, length, signal, etag);
+    const rangeKey = `${offset}|${length}`;
+    const cached = this.rangeCache.get(rangeKey);
+    if (cached) return cached;
+    let pending = this.rangeInflight.get(rangeKey);
+    if (!pending) {
+      pending = this._netBytes(offset, length, undefined, etag)
+        .then(resp => {
+          // Only resolved responses enter the cache — caching a failure
+          // here would fan one transient error out to every tile sharing
+          // the blob (the rejection-poisoning trap, one layer down).
+          if (resp && resp.data && resp.data.byteLength <= BundleSource.RANGE_CACHE_MAX_BYTES) {
+            this.rangeCache.set(rangeKey, resp);
+          }
+          return resp;
+        })
+        .finally(() => this.rangeInflight.delete(rangeKey));
+      this.rangeInflight.set(rangeKey, pending);
+    }
+    return pending;
+  }
+
+  async _netBytes(offset, length, signal, etag) {
+    let resp;
+    try {
+      resp = await this.net.getBytes(offset, length, signal, etag || this.liveEtag || undefined);
+    } catch (e) {
+      // A 416 (surfaced by FetchSource as EtagMismatch) means the archive
+      // changed after the bundle was built — its bundled offsets are lies
+      // now, and so is every range this instance has cached. Drop both so
+      // the retry pmtiles performs reads fresh bytes.
+      if (e instanceof pmtiles.EtagMismatch) this._archiveChanged();
+      throw e;
+    }
+    if (resp && resp.etag) {
+      if (this.liveEtag && resp.etag !== this.liveEtag) {
+        // The archive was republished under the same key since this
+        // instance first read it. Every bundled offset and cached range
+        // is now wrong; make pmtiles refetch header + directories with
+        // cache:"reload" (the Worker honours the no-cache it sends).
+        this._archiveChanged();
+        throw new pmtiles.EtagMismatch(this.liveEtag);
+      }
+      this.liveEtag = resp.etag;
+    }
+    return resp;
+  }
+
+  _archiveChanged() {
+    MetaBundle.dropEra(this.key);
+    this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
+    this.net.mustReload = true;
+    this.liveEtag = null;
+  }
+}
+
+class CompositePMTilesLayer extends L.GridLayer {
+  constructor(options = {}) {
+    super(options);
+    this.sources = [];
+    this.sourceVersion = 0;
+    this.maxNativeZoom = options.maxNativeZoom ?? 11;
+    // Per-archive native ceiling (min of the layer's maxNativeZoom and the
+    // archive header's maxZoom), keyed by source key. Archives stop wherever
+    // their source resolution ran out — z8 for the coarsest 1950s-2000s scans,
+    // z10 for the 2004 archive.org set, z11 for 1990s-2010s, z12 only for the
+    // current cycle — and pmtiles returns nothing for a zoom above the header
+    // maxZoom, so a request must be clamped per source, not just per layer.
+    this.maxZoomByKey = options.maxZoomByKey || new Map();
+    this.useImageBitmap = options.useImageBitmap ?? ('createImageBitmap' in window);
+    this.tileDataCache = options.tileDataCache || null;
+    this.tileBitmapCache = options.tileBitmapCache || null;
+    this.tileFetchInflight = options.tileFetchInflight || new Map();
+    // Screen tiles that share one native parent (per-source overzoom below)
+    // decode the same bytes at the same time. Joining them here matters:
+    // each would otherwise make its own ImageBitmap, and the bitmap cache
+    // closes the value it overwrites — so the first tile's bitmap would be
+    // closed just before its drawImage (InvalidStateError, blank tile).
+    this.bitmapInflight = new Map();
+
+    // iOS Safari retains canvas backing stores until a GC pass that lags far
+    // behind pan/zoom churn; zeroing a tile's dimensions on unload frees that
+    // memory immediately and is the standard WebKit canvas-disposal mitigation.
+    this.on('tileunload', (e) => {
+      if (e.tile) {
+        e.tile.width = 0;
+        e.tile.height = 0;
+      }
+    });
+  }
+
+  setSources(sources) {
+    this.sources = sources || [];
+    const version = ++this.sourceVersion;
+    return this._repaintTiles(version);
+  }
+
+  // Re-render the sources onto the tiles already on screen instead of calling
+  // redraw() (which destroys and recreates every tile, briefly exposing the
+  // basemap). Returns a promise that resolves once every visible tile settles.
+  _repaintTiles(version) {
+    if (!this._map) return Promise.resolve();
+    const renders = [];
+    for (const key in this._tiles) {
+      const tileObj = this._tiles[key];
+      if (tileObj && tileObj.el) {
+        // Leaflet hands createTile WRAPPED coords but stores the unwrapped
+        // ones on _tiles; a tile past the antimeridian (x = -1 or 2^z)
+        // repainted with those fails the bounds cull against every
+        // archive and cleared to basemap on each scrub.
+        renders.push(this._renderTile(tileObj.el, this._wrapCoords(tileObj.coords), version));
+      }
+    }
+    return Promise.all(renders);
+  }
+
+  // Maps a screen tile onto the native tile that holds its pixels. Above
+  // maxNativeZoom (the layer default, or one archive's own ceiling) the
+  // parent tile is fetched and the matching sub-square is upscaled.
+  _normalizeCoords(coords, maxNativeZoom = this.maxNativeZoom) {
+    let z = coords.z;
+    let x = coords.x;
+    let y = coords.y;
+    let scale = 1;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (z > maxNativeZoom) {
+      const zoomDiff = z - maxNativeZoom;
+      const divisor = Math.pow(2, zoomDiff);
+      offsetX = ((x % divisor) + divisor) % divisor;
+      offsetY = ((y % divisor) + divisor) % divisor;
+      z = maxNativeZoom;
+      x = Math.floor(x / divisor);
+      y = Math.floor(y / divisor);
+      scale = divisor;
+    }
+    return { z, x, y, scale, offsetX, offsetY };
+  }
+
+  // Resolves one source's native ceiling. The header is bundle-served for
+  // stock archives and cached by pmtiles either way, so after the first
+  // lookup per key this is a synchronous Map hit.
+  async sourceMaxZoom(source) {
+    const key = source.key;
+    if (key) {
+      const known = this.maxZoomByKey.get(key);
+      if (known !== undefined) return known;
+    }
+    const header = await source.getPMTiles().getHeader();
+    const ceiling = Number.isFinite(header.maxZoom)
+      ? Math.min(this.maxNativeZoom, header.maxZoom)
+      : this.maxNativeZoom;
+    if (key) this.maxZoomByKey.set(key, ceiling);
+    return ceiling;
+  }
+
+  _prepareBitmap(data, cacheKey) {
+    if (!cacheKey || !this.tileBitmapCache) return this._decodeBitmap(data, null);
+    const cached = this.tileBitmapCache.get(cacheKey);
+    if (cached) return Promise.resolve(cached);
+    let pending = this.bitmapInflight.get(cacheKey);
+    if (!pending) {
+      pending = this._decodeBitmap(data, cacheKey)
+        .finally(() => this.bitmapInflight.delete(cacheKey));
+      this.bitmapInflight.set(cacheKey, pending);
+    }
+    return pending;
+  }
+
+  async _decodeBitmap(data, cacheKey) {
+    const blob = new Blob([data], { type: 'image/webp' });
+    if (this.useImageBitmap && 'createImageBitmap' in window) {
+      const bitmap = await createImageBitmap(blob);
+      if (cacheKey && this.tileBitmapCache) {
+        this.tileBitmapCache.set(cacheKey, bitmap);
+      }
+      return bitmap;
+    }
+    return await new Promise(resolve => {
+      const img = new Image();
+      const url = URL.createObjectURL(blob);
+      img.onload = () => {
+        img._objectUrl = url;
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      img.src = url;
+    });
+  }
+
+  _releaseObjectUrls(bitmaps) {
+    for (const bitmap of bitmaps) {
+      if (bitmap && bitmap._objectUrl) {
+        URL.revokeObjectURL(bitmap._objectUrl);
+        bitmap._objectUrl = null;
+      }
+    }
+  }
+
+  createTile(coords, done) {
+    const tile = document.createElement('canvas');
+    tile.width = 256;
+    tile.height = 256;
+    // Signal both fulfillment and rejection: if _renderTile throws, Leaflet's
+    // done() must still fire or the tile stays "loading" forever, which blocks
+    // tile pruning and leaks retained backfill tiles under memory pressure.
+    this._renderTile(tile, coords, this.sourceVersion).then(
+      () => done(null, tile),
+      (err) => done(err, tile)
+    );
+    return tile;
+  }
+
+  // Renders the current sources onto an existing canvas tile, keeping the
+  // previously drawn pixels until the new bitmaps are ready. This tile-level
+  // double buffering is what prevents the basemap flicker on a layer swap:
+  // old chart pixels stay put until the exact frame the new ones paint over
+  // them, and a superseded render bails without touching the canvas.
+  async _renderTile(canvas, coords, version) {
+    const ctx = canvas.getContext('2d');
+    // Under iOS canvas-memory pressure getContext can return null; degrade to
+    // an empty tile instead of throwing (which would reject the createTile
+    // promise and wedge the tile in Leaflet's loading state).
+    if (!ctx) return;
+    const layerPlacement = this._normalizeCoords(coords);
+    const { z, x, y } = layerPlacement;
+
+    // Spatial cull: most archives cover one chart's region, so the median
+    // z10 tile overlaps ~1 of the ~80 active archives. Dropping the rest
+    // here skips their directory lookups, leaf fetches, and instance
+    // creation entirely. filter() returns a fresh array, so this keeps the
+    // snapshot semantics (and layer ordering) of the old .slice().
+    const tileBounds = Utils.tileLonLatBounds(z, x, y);
+    const sourcesSnapshot = this.sources.filter(source =>
+      !source.bounds || Utils.boundsIntersect(source.bounds, tileBounds));
+    const fetched = await Promise.all(sourcesSnapshot.map(async source => {
+      // Clamp to this archive's own ceiling: a z11 screen tile over a z10
+      // archive reads the z10 parent and upscales its quarter, instead of
+      // asking for a z11 tile that doesn't exist and painting nothing.
+      let placement = layerPlacement;
+      let cacheKey = '';
+      let tileData = null;
+      try {
+        const ceiling = await this.sourceMaxZoom(source);
+        if (ceiling < z) placement = this._normalizeCoords(coords, ceiling);
+        const p = placement;
+        cacheKey = source.key ? `${source.key}|${p.z}|${p.x}|${p.y}` : '';
+        if (cacheKey) {
+          tileData = await Utils.fetchTileDeduped(
+            source.getPMTiles, this.tileDataCache, this.tileFetchInflight,
+            cacheKey, p.z, p.x, p.y);
+        } else {
+          const result = await source.getPMTiles().getZxy(p.z, p.x, p.y);
+          tileData = result && result.data ? result.data : null;
+        }
+      } catch (e) {
+        // Ignore missing tiles, header failures, or fetch errors.
+      }
+      return { cacheKey, tileData, placement };
+    }));
+
+    // A newer setSources() superseded us (or the layer was removed): leave the
+    // existing pixels untouched so the latest render owns the final paint.
+    if (!this._map || version !== this.sourceVersion) return;
+
+    const bitmaps = await Promise.all(fetched.map(({ cacheKey, tileData }) =>
+      tileData ? this._prepareBitmap(tileData, cacheKey).catch(() => null) : Promise.resolve(null)
+    ));
+    // Superseded after decoding: release any object URLs created on the Image
+    // path (iPhone Safari) so their WebP blobs aren't pinned for the lifetime
+    // of the page. The normal paint path below revokes them after drawImage.
+    if (!this._map || version !== this.sourceVersion) {
+      this._releaseObjectUrls(bitmaps);
+      return;
+    }
+
+    // Single synchronous paint: clear the old frame and stamp the new one in
+    // the same frame, so there is never a visible gap. bitmaps is positionally
+    // parallel to sourcesSnapshot (both derive from the same map()), so index
+    // i pairs each bitmap with its source's optional clipRing.
+    ctx.clearRect(0, 0, 256, 256);
+    let hasChartData = false;
+    for (let i = 0; i < bitmaps.length; i++) {
+      const bitmap = bitmaps[i];
+      if (!bitmap) continue;
+      hasChartData = true;
+      // Each source's sub-square comes from its own placement (its clamped
+      // native zoom), so the clip ring below must use the same one.
+      const placement = fetched[i].placement;
+      const sourceSize = 256 / placement.scale;
+      const sourceX = placement.offsetX * sourceSize;
+      const sourceY = placement.offsetY * sourceSize;
+      // Solo view: restrict this source's paint to its footprint ring, so one
+      // sheet of a multi-chart mosaic shows without its neighbors.
+      const clip = sourcesSnapshot[i].clipRing;
+      if (clip) {
+        ctx.save();
+        this._applyClipRing(ctx, clip, placement, sourceX, sourceY, sourceSize);
+      }
+      ctx.drawImage(bitmap, sourceX, sourceY, sourceSize, sourceSize, 0, 0, 256, 256);
+      if (clip) ctx.restore();
+      if (bitmap._objectUrl) {
+        URL.revokeObjectURL(bitmap._objectUrl);
+        bitmap._objectUrl = null;
+      }
+    }
+    canvas._hasChartData = hasChartData;
+  }
+
+  // Builds a canvas clip path from a lon/lat ring. Vertices are projected
+  // with the same spherical-mercator math tileLonLatBounds inverts, into the
+  // normalized source tile's pixel frame, then through the identical
+  // sourceX/sourceSize transform drawImage uses — so the clip can never
+  // drift from the raster placement at any over/under-zoom or world wrap.
+  _applyClipRing(ctx, ring, placement, sourceX, sourceY, sourceSize) {
+    const worldPx = Math.pow(2, placement.z) * 256;
+    const scale = 256 / sourceSize;
+    ctx.beginPath();
+    for (let i = 0; i < ring.length; i++) {
+      const lon = ring[i][0];
+      const latRad = ring[i][1] * Math.PI / 180;
+      const wx = (lon + 180) / 360 * worldPx;
+      const wy = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * worldPx;
+      const x = (wx - placement.x * 256 - sourceX) * scale;
+      const y = (wy - placement.y * 256 - sourceY) * scale;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.clip();
+  }
+}
+
+class LRUCache {
+  constructor(limit = 500, onEvict = null) {
+    this.limit = Math.max(1, limit);
+    this.map = new Map();
+    this.onEvict = onEvict;
+  }
+
+  get(key) {
+    if (!this.map.has(key)) return null;
+    const value = this.map.get(key);
+    this.map.delete(key);
+    this.map.set(key, value);
+    return value;
+  }
+
+  set(key, value) {
+    if (this.map.has(key)) {
+      const previous = this.map.get(key);
+      this.map.delete(key);
+      // Release the replaced value (e.g. close an ImageBitmap) unless the same
+      // object is being re-set, so overwrites don't leak decoded pixel memory.
+      if (this.onEvict && previous !== value) this.onEvict(key, previous);
+    }
+    this.map.set(key, value);
+    while (this.map.size > this.limit) {
+      const oldestKey = this.map.keys().next().value;
+      if (oldestKey === undefined) break;
+      const evicted = this.map.get(oldestKey);
+      this.map.delete(oldestKey);
+      if (this.onEvict) this.onEvict(oldestKey, evicted);
+    }
+  }
+}
+
+/** MENU **/
+const menuToggle = document.getElementById('menuToggle');
+const menuPanel = document.getElementById('siteMenu');
+const menuTrigger = document.querySelector('.menu-trigger');
+const toolsControl = document.getElementById('toolsControl');
+const toolsBtn = document.getElementById('toolsBtn');
+
+if (menuToggle && menuPanel && menuTrigger) {
+  const closeMenu = () => {
+    // The panel goes visibility:hidden when closed, so focus sitting on a link
+    // inside would be dropped to <body>. Only pull it back when it is actually
+    // in there — outside-click and link-click callers must not steal focus.
+    if (menuPanel.contains(document.activeElement)) menuToggle.focus();
+    menuTrigger.classList.remove('open');
+    menuToggle.setAttribute('aria-expanded', 'false');
+  };
+
+  menuToggle.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (toolsControl?.classList.contains('open')) {
+      toolsControl.classList.remove('open');
+      toolsBtn?.setAttribute('aria-expanded', 'false');
+    }
+    const isOpen = menuTrigger.classList.toggle('open');
+    menuToggle.setAttribute('aria-expanded', String(isOpen));
+  });
+
+  menuPanel.querySelectorAll('a').forEach((item) => {
+    item.addEventListener('click', () => {
+      closeMenu();
+    });
+  });
+
+  document.addEventListener('click', (event) => {
+    if (!menuTrigger.contains(event.target)) {
+      closeMenu();
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (!event.defaultPrevented && event.key === 'Escape' && menuTrigger.classList.contains('open')) {
+      event.preventDefault();
+      closeMenu();
+    }
+  });
+}
+
+/** DATA LOADER **/
+// Shared by the bundle and CSV paths: rows are {key, url|null}.
+function applyLoadedRanges(rows) {
+  const ranges = [];
+  rows.forEach(row => {
+    const key = (row.key || '').trim();
+    if (!key || key === '?') return;
+    // Start-only entries (no `_to_` end date) are data errors to be
+    // corrected upstream; skip them entirely so they're never shown.
+    if (!key.includes('_to_')) return;
+    const parsed = Utils.parseDateRangeKey(key);
+    if (!parsed) return;
+    ranges.push({
+      key,
+      start: parsed.startStr,
+      end: parsed.endStr,
+      startDate: parsed.startDate,
+      endDate: parsed.endDate,
+      startTime: parsed.startDate.getTime(),
+      endTime: parsed.endDate.getTime(),
+      url: row.url || null,
+      // [w, s, e, n] from the bundle index; null (CSV fallback, old bundle,
+      // antimeridian-wrapping header) means the archive is never culled.
+      bounds: row.bounds || null
+    });
+  });
+  CONFIG.ranges = ranges.sort((a, b) => {
+    return a.startTime - b.startTime || a.endTime - b.endTime;
+  });
+
+  const uniqueStartDates = Array.from(new Set(CONFIG.ranges.map(r => r.start)));
+  CONFIG.frames = uniqueStartDates.sort().map(date => ({
+    id: Utils.formatDateId(date),
+    date
+  }));
+
+  if (CONFIG.ranges.length > 0) {
+    let minStart = CONFIG.ranges[0];
+    let maxEnd = CONFIG.ranges[0];
+    CONFIG.ranges.forEach(range => {
+      if (range.startTime < minStart.startTime) minStart = range;
+      if (range.endTime > maxEnd.endTime) maxEnd = range;
+    });
+    CONFIG.dateBounds.min = Utils.toIsoDate(minStart.startDate);
+    // Ranges are end-exclusive ([start, end)), so the last date that
+    // actually has chart coverage is the day before the newest end date.
+    // Using the raw end date would default the picker to a blank frame.
+    CONFIG.dateBounds.max = Utils.toIsoDate(new Date(maxEnd.endTime - 86400000));
+  }
+}
+
+async function loadData() {
+  // Prefer the metadata bundle: one artifact carries the era list AND the
+  // per-archive PMTiles headers/directories that make scrubbing cheap.
+  // Any failure (old browser without DecompressionStream, missing bundle,
+  // corrupt read) falls back to the legacy dates.csv path, where metadata
+  // reads simply go to the network as before.
+  if (CONFIG.bundleUrl && typeof DecompressionStream !== 'undefined') {
+    try {
+      const index = await MetaBundle.load(CONFIG.bundleUrl);
+      // The bundle is authoritative for where the archives live.
+      CONFIG.baseUrl = index.baseUrl;
+      applyLoadedRanges(index.eras.map(era => ({ key: era.k, url: null, bounds: era.b || null })));
+      return;
+    } catch (e) {
+      console.warn('Metadata bundle unavailable, using dates.csv', e);
+    }
+  }
+  const Papa = await loadPapaParse();
+  return new Promise((resolve, reject) => {
+    Papa.parse(CONFIG.csvUrl, {
+      download: true,
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        try {
+          applyLoadedRanges(results.data.map(row => ({
+            key: row.date_iso,
+            url: row.url
+          })));
+          resolve();
+        } catch (e) {
+          console.error("Data processing error", e);
+          Utils.toast("Error processing CSV data");
+          reject(e);
+        }
+      },
+      error: (err) => {
+        console.error("CSV Load Error", err);
+        Utils.toast("Failed to load timeline data");
+        reject(err);
+      }
+    });
+  });
+}
+
+/** CHART INDEX **/
+// Lazily loads the published chart inventory (timeline_data.json — the same
+// file contribute.html reads) and answers "which individual charts are in
+// effect on this date near this point". Fetched on the first map click so
+// it never taxes boot; ~1.3 MB, kept for the session.
+const ChartIndex = {
+  _promise: null,
+  locations: null,        // [{name, era, ref, ringHit, ringClip, bbox, crossesAM, charts}]
+  publishedKeys: null,    // Set<eraKey> — archives that exist in CONFIG.ranges
+  rangeByKey: null,       // Map<eraKey, CONFIG.ranges row>
+  eraMemberCount: null,   // Map<eraKey, member charts> — decides if solo needs a clip
+
+  load() {
+    if (!this._promise) {
+      this._promise = this._fetchAndBuild().catch(err => {
+        // Reset so a later click retries instead of caching the failure.
+        this._promise = null;
+        throw err;
+      });
+    }
+    return this._promise;
+  },
+
+  async _fetchAndBuild() {
+    // Same source list as contribute.html: the inventory lives on the data
+    // domain (deliberately not in the site repo); a local copy takes
+    // precedence only while developing.
+    const sources = ['https://data.archive.aero/sectionals/timeline_data.json'];
+    if (['localhost', '127.0.0.1', ''].includes(location.hostname)) sources.unshift('timeline_data.json');
+    let data = null;
+    for (const src of sources) {
+      try {
+        const resp = await fetch(src);
+        if (resp.ok) { data = await resp.json(); break; }
+      } catch (e) { /* fall through to the next source */ }
+    }
+    if (!data) throw new Error('timeline_data.json unavailable');
+    this._build(data);
+  },
+
+  _build(data) {
+    // Far-Aleutian extents (lon > 150) unwrap across the antimeridian so
+    // hit-testing is continuous; the raw ring is kept for canvas clipping,
+    // which must stay in the same world copy as the archive's tiles.
+    const unwrap = lon => (lon > 150 ? lon - 360 : lon);
+    this.publishedKeys = new Set(CONFIG.ranges.map(r => r.key));
+    this.rangeByKey = new Map(CONFIG.ranges.map(r => [r.key, r]));
+    this.eraMemberCount = new Map();
+    const locations = [];
+    for (const [name, loc] of Object.entries(data.locations || {})) {
+      const rawRings = (loc.ref && data.rings && data.rings[loc.ref]) || null;
+      const ringClip = rawRings && rawRings.length ? rawRings[0] : null;
+      let ringHit = null, bbox = null, crossesAM = false;
+      if (ringClip) {
+        let hasEast = false, hasWest = false;
+        let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+        for (const pt of ringClip) {
+          if (pt[0] > 150) hasEast = true;
+          if (pt[0] < -90) hasWest = true;
+          w = Math.min(w, pt[0]); e = Math.max(e, pt[0]);
+          s = Math.min(s, pt[1]); n = Math.max(n, pt[1]);
+        }
+        crossesAM = hasEast && hasWest;
+        ringHit = ringClip.map(pt => [unwrap(pt[0]), pt[1]]);
+        bbox = [w, s, e, n];
+      }
+      const seen = new Set();
+      const charts = [];
+      for (const c of loc.charts || []) {
+        // Alternate scans of the same chart share (d, e); list one.
+        const dupeKey = `${c.d}|${c.e || ''}`;
+        if (seen.has(dupeKey)) continue;
+        seen.add(dupeKey);
+        const t0 = new Date(c.d).getTime();
+        if (isNaN(t0)) continue;
+        const t1 = c.e ? new Date(c.e).getTime() : NaN;
+        const eraKey = (c.e && c.e !== c.d) ? `${c.d}_to_${c.e}` : c.d;
+        this.eraMemberCount.set(eraKey, (this.eraMemberCount.get(eraKey) || 0) + 1);
+        charts.push({
+          d: c.d,
+          e: c.e || null,
+          t0,
+          // End dates are always present today; the +182d inference matches
+          // contribute.html's guard for a null one.
+          t1: isNaN(t1) ? t0 + 182 * 86400000 : t1,
+          ed: c.ed,
+          f: c.f || '',
+          eraKey,
+          // Per-chart full-sheet PMTiles URI key(s) ("chart/<slug>/<date>",
+          // list for half-sheet pairs) — the preferred "View alone" source.
+          pm: c.pm || null,
+          published: this.publishedKeys.has(eraKey)
+        });
+      }
+      if (charts.length) {
+        locations.push({ name, era: loc.era, ref: loc.ref, ringHit, ringClip, bbox, crossesAM, charts });
+      }
+    }
+    this.locations = locations;
+  },
+
+  // Absolute URL for a per-chart artifact key. Deliberately not
+  // CONFIG.baseUrl: that falls back to a stale default on the CSV path,
+  // while chart URIs are pinned to the data domain like the inventory
+  // fetch above.
+  chartUrl(key) {
+    return 'https://data.archive.aero/sectionals/' + key;
+  },
+
+  // Charts in effect on dateStr, ranked by footprint containment of the
+  // clicked point, then by edge distance. Locations without an extent ring
+  // (Key West) can't be ranked and are omitted.
+  query(lat, lng, dateStr, limit = 6) {
+    if (!this.locations) return [];
+    const t = new Date(dateStr).getTime();
+    if (isNaN(t)) return [];
+    // Clicks on a wrapped world copy report out-of-range lngs; normalize,
+    // then unwrap into ringHit's frame.
+    let qlng = ((lng + 180) % 360 + 360) % 360 - 180;
+    if (qlng > 150) qlng -= 360;
+    const results = [];
+    for (const loc of this.locations) {
+      if (!loc.ringHit) continue;
+      // End-exclusive, matching MapController._rangesForDate.
+      const inEffect = loc.charts.filter(c => t >= c.t0 && t < c.t1);
+      if (!inEffect.length) continue;
+      const contains = Utils.pointInRing(qlng, lat, loc.ringHit);
+      const dist = contains ? 0 : Utils.distToRing(qlng, lat, loc.ringHit);
+      for (const chart of inEffect) results.push({ loc, chart, contains, dist });
+    }
+    results.sort((a, b) => (b.contains - a.contains) || (a.dist - b.dist));
+    return results.slice(0, limit);
+  }
+};
+
+/** MAP CONTROLLER **/
+class MapController {
+  constructor(mapId, initialView = CONFIG.initialView) {
+    this.map = L.map(mapId, {
+      zoomControl: false,
+      // The focused map owns arrow keys for panning. Timeline stepping
+      // belongs to its own slider so both interactions work by keyboard.
+      keyboard: true,
+      // Floor the zoom-out. Below ~z6 the composite overlay (minNativeZoom 8)
+      // renders 4x more 256x256 canvas tiles per level down; by z4 that is
+      // ~1,200 canvases (~320MB of backing store), which gets the tab
+      // jetsam-killed on iOS. z6 caps it at ~100 canvases (~26MB).
+      minZoom: 6,
+      fadeAnimation: false,
+      zoomAnimation: true,
+      attributionControl: true,
+      zoomSnap: 1,
+      zoomDelta: 1,
+      wheelPxPerZoomLevel: 120,
+      wheelDebounceTime: 60
+    }).setView(initialView.center, initialView.zoom);
+
+    // Vector basemap, rendered to canvas from our own PMTiles cutout of the
+    // Protomaps OpenStreetMap planet (CONFIG.basemapUrl). Replaced CARTO's
+    // raster dark_all on 2026-08-26: same origin as the charts, no third-party
+    // tile CDN in the request path, and the labels stay sharp on HiDPI because
+    // they're drawn at devicePixelRatio rather than baked into a 256px PNG.
+    this.basemap = protomapsL.leafletLayer({
+      url: CONFIG.basemapUrl,
+      flavor: 'dark',
+      lang: 'en',
+      maxDataZoom: CONFIG.basemapMaxDataZoom,
+      zIndex: 1,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &middot; <a href="https://protomaps.com">Protomaps</a> &middot; airfields <a href="https://www.airfields-freeman.com/">Freeman</a>'
+    });
+    this.basemap.addTo(this.map);
+
+    L.control.zoom({ position: 'topright' }).addTo(this.map);
+
+    this.pmtilesInstances = {}; // Cache for PMTiles instances
+    this.pmtilesAccess = {};
+    this.pmtilesAccessSeq = 0;
+    this.pmtilesCacheLimit = DeviceInfo.isIOS ? 18 : 96;
+    this.tileDataCache = new LRUCache(DeviceInfo.isIOS ? 350 : 1600);
+    // Shared with the layer and the scrub prefetcher so all tile reads
+    // funnel through one in-flight dedupe map (see Utils.fetchTileDeduped).
+    this.tileFetchInflight = new Map();
+    // Evicted ImageBitmaps hold decoded pixel memory; free it explicitly.
+    this.tileBitmapCache = new LRUCache(DeviceInfo.isIOS ? 200 : 800, (key, bitmap) => {
+      if (bitmap && typeof bitmap.close === 'function') bitmap.close();
+    });
+    this.activeKeys = [];
+    this.overlayOpacity = 1;
+    // Shared loading-spinner bookkeeping so overlapping showFrame calls don't
+    // hide the spinner while another load is still in flight (or flash it after).
+    this.pendingLoads = 0;
+    this.spinnerTimeout = null;
+
+    // DOM refs read on the hot scrub path, cached once.
+    this.els = {
+      loader: document.getElementById('loader'),
+      opacitySlider: document.getElementById('toolOpacitySlider'),
+      chartInfoEffective: document.getElementById('chartInfoEffective')
+    };
+
+    const layerOptions = {
+      minZoom: 0,
+      maxZoom: 14,
+      // Archives hold z8 up to somewhere between z8 and z12 depending on
+      // source resolution. Below z8 Leaflet clamps the request up to z8 and
+      // downscales it; above z12 the layer clamps down and upscales; between,
+      // CompositePMTilesLayer.sourceMaxZoom clamps per archive.
+      minNativeZoom: 8,
+      maxNativeZoom: 12,
+      tileSize: 256,
+      opacity: 0,
+      keepBuffer: DeviceInfo.isIOS ? 1 : 2,
+      updateWhenIdle: true,
+      updateWhenZooming: false,
+      zIndex: 10,
+      useImageBitmap: !DeviceInfo.isIOS,
+      tileDataCache: this.tileDataCache,
+      tileBitmapCache: this.tileBitmapCache,
+      tileFetchInflight: this.tileFetchInflight
+    };
+
+    // A single self-double-buffering layer: each tile keeps the prior frame's
+    // pixels until the new frame is ready, so swaps never expose the basemap.
+    this.compositeLayer = new CompositePMTilesLayer(layerOptions);
+    this.compositeLayer.setOpacity(0);
+    this.compositeLayer.addTo(this.map);
+
+    // How long a scrub must settle before we repaint.
+    this.scrubDebounceDelay = 25;
+    this.showFrameDebounced = Utils.debounce(this.showFrame.bind(this), this.scrubDebounceDelay);
+  }
+
+  getPMTilesInstance(key, customUrl) {
+    let pmtilesSource = this.pmtilesInstances[key];
+    if (!pmtilesSource) {
+      const pmtilesUrl = Utils.buildPMTilesUrl(key, customUrl);
+      // Every instance goes through BundleSource for its range-level
+      // dedupe. Bundle-served metadata reads additionally need the era key
+      // — nulled for custom URLs so bundle bytes for the stock archive can
+      // never answer reads against a different file.
+      const source = new BundleSource(pmtilesUrl, customUrl ? null : key);
+      pmtilesSource = new pmtiles.PMTiles(source);
+      this.pmtilesInstances[key] = pmtilesSource;
+      // pmtiles' SharedPromiseCache also keeps a REJECTED leaf-directory
+      // promise (keyed url|etag|offset|length) for the instance's lifetime,
+      // and only the header path below ever recreated an instance. For the
+      // ~200 eras whose leaf directories are read over the network, one
+      // transient range failure blanked that region for the session with
+      // zero further network. Drop the instance on any read failure so the
+      // next tile request rebuilds it; a bundle-served header costs nothing
+      // to re-read and a network one is 16 KB.
+      const rawGetZxy = pmtilesSource.getZxy.bind(pmtilesSource);
+      pmtilesSource.getZxy = (z, x, y, signal) => rawGetZxy(z, x, y, signal).catch(err => {
+        if (this.pmtilesInstances[key] === pmtilesSource) {
+          delete this.pmtilesInstances[key];
+          delete this.pmtilesAccess[key];
+        }
+        throw err;
+      });
+      // Surface hard archive failures (404 / CORS / corrupt header) once, so a
+      // data outage shows a message instead of a silently bare basemap. pmtiles
+      // caches the header, so this adds no extra network round-trip for getZxy.
+      pmtilesSource.getHeader().then(() => {
+        if (this._headerRetries) delete this._headerRetries[key];
+      }).catch(() => {
+        // pmtiles' SharedPromiseCache stores the rejected header promise and
+        // never evicts it, so one transient failure would wedge this archive
+        // (blank tiles, zero network, no errors) for the page lifetime. Drop
+        // the instance so the next frame recreates it and refetches.
+        if (this.pmtilesInstances[key] === pmtilesSource) {
+          delete this.pmtilesInstances[key];
+          delete this.pmtilesAccess[key];
+        }
+        this._failedKeys = this._failedKeys || new Set();
+        this._failedKeys.add(key);
+        // If the failed archive is on screen, replay the current frame with
+        // backoff (bounded per key) so a blip heals without a manual reload.
+        this._headerRetries = this._headerRetries || {};
+        const attempt = (this._headerRetries[key] || 0) + 1;
+        this._headerRetries[key] = attempt;
+        if (attempt <= 3 && this.activeKeys.includes(key) && this.lastFrameDate) {
+          setTimeout(() => {
+            // Re-check at fire time: the visitor may have entered solo view or
+            // scrubbed to another frame since this retry was armed, and
+            // showFrame would yank them out of it to heal an off-screen archive.
+            if (this.soloState || !this.activeKeys.includes(key)) return;
+            this.activeKeys = [];
+            this.showFrame(this.lastFrameDate).catch(err => console.warn('header retry repaint failed', err));
+          }, 2000 * attempt);
+        }
+        const now = performance.now();
+        if (!this._lastFailToast || now - this._lastFailToast > 4000) {
+          this._lastFailToast = now;
+          Utils.toast('Some chart data failed to load — showing base map only');
+        }
+      });
+    }
+    this.pmtilesAccessSeq += 1;
+    this.pmtilesAccess[key] = this.pmtilesAccessSeq;
+    return pmtilesSource;
+  }
+
+  prunePMTilesInstances(activeKeys = []) {
+    const keys = Object.keys(this.pmtilesInstances);
+    if (keys.length <= this.pmtilesCacheLimit) return;
+
+    const protectedKeys = new Set(activeKeys);
+    const evictable = keys
+      .filter(key => !protectedKeys.has(key))
+      .sort((a, b) => (this.pmtilesAccess[a] || 0) - (this.pmtilesAccess[b] || 0));
+
+    while (Object.keys(this.pmtilesInstances).length > this.pmtilesCacheLimit && evictable.length) {
+      const key = evictable.shift();
+      delete this.pmtilesInstances[key];
+      delete this.pmtilesAccess[key];
+    }
+  }
+
+  _rangesForDate(selectedDateStr) {
+    const selectedDate = new Date(selectedDateStr);
+    const selectedTime = selectedDate.getTime();
+    if (isNaN(selectedTime)) return [];
+    return CONFIG.ranges.filter(range => (
+      selectedTime >= range.startTime && selectedTime < range.endTime
+    ));
+  }
+
+  prefetchDates(dateStrs) {
+    const layer = this.compositeLayer;
+    if (!layer || !layer._tiles) return;
+    const coords = Object.values(layer._tiles)
+      .filter(t => t && t.current && t.coords)
+      .map(t => layer._wrapCoords(t.coords))  // stored coords are unwrapped (see _repaintTiles)
+      .slice(0, DeviceInfo.isIOS ? 12 : 40);
+    if (coords.length === 0) return;
+
+    // Same per-tile bounds cull as _renderTile, and the same laziness: an
+    // adjacent-date archive that overlaps none of the visible tiles costs
+    // no instance and no requests.
+    const placements = coords.map(c => layer._normalizeCoords(c));
+    const tileBounds = placements.map(p => Utils.tileLonLatBounds(p.z, p.x, p.y));
+
+    for (const dateStr of dateStrs) {
+      if (!dateStr) continue;
+      const ranges = this._rangesForDate(dateStr);
+      for (const range of ranges) {
+        const getSrc = () => this.getPMTilesInstance(range.key, range.url);
+        const wanted = coords.filter((c, i) =>
+          !range.bounds || Utils.boundsIntersect(range.bounds, tileBounds[i]));
+        if (wanted.length === 0) continue;
+        // Same per-archive clamp as _renderTile, so the prefetched key is
+        // the one the render will actually ask for.
+        layer.sourceMaxZoom({ key: range.key, getPMTiles: getSrc }).then(ceiling => {
+          const seen = new Set();
+          for (const c of wanted) {
+            const p = layer._normalizeCoords(c, ceiling);
+            const cacheKey = `${range.key}|${p.z}|${p.x}|${p.y}`;
+            if (seen.has(cacheKey)) continue;
+            seen.add(cacheKey);
+            Utils.fetchTileDeduped(
+              getSrc, this.tileDataCache, this.tileFetchInflight,
+              cacheKey, p.z, p.x, p.y
+            ).catch(() => {});
+          }
+        }).catch(() => {});
+      }
+    }
+  }
+
+  async showFrame(selectedDateStr) {
+    const selectedTime = new Date(selectedDateStr).getTime();
+    if (isNaN(selectedTime)) return;
+    // Any frame paint leaves solo view. activeKeys still holds the solo
+    // sentinel at this point, so the sameKeys early-return below can never
+    // skip restoring the composite.
+    if (this.soloState) this._clearSoloState();
+    // Remembered so a failed header fetch can replay this frame (see
+    // getPMTilesInstance's retry path).
+    this.lastFrameDate = selectedDateStr;
+    // Warm the surrounding decades' metadata while the user is here.
+    MetaBundle.touchDate(selectedDateStr);
+
+    // A direct (non-debounced) showFrame supersedes any pending scrub repaint;
+    // cancel it so a stale date can't repaint over this newer frame afterward.
+    this.showFrameDebounced?.cancel?.();
+
+    const opacityValue = this.chartsHidden ? 0 : parseFloat(this.els.opacitySlider?.value || 100) / 100;
+    this.overlayOpacity = opacityValue;
+    this.compositeLayer.setOpacity(opacityValue);
+
+    const rangesInEffect = this._rangesForDate(selectedDateStr);
+    if (rangesInEffect.length === 0) {
+      this.activeKeys = [];
+      this.compositeLayer.setSources([]);
+      if (this.els.chartInfoEffective) this.els.chartInfoEffective.textContent = '0';
+      Utils.toast('No charts available for selected date');
+      return;
+    }
+
+    rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+    const activeKeys = rangesInEffect.map(range => range.key);
+    const sameKeys = this.activeKeys.length === activeKeys.length
+      && this.activeKeys.every((key, idx) => key === activeKeys[idx]);
+    if (sameKeys) return; // Only the opacity changed; already applied above.
+
+    // Lazy sources: instances are created inside _renderTile only for
+    // archives that survive the per-tile bounds cull, so a frame with ~80
+    // active archives no longer builds ~80 PMTiles instances (which blew
+    // the 18-instance iOS cache on every scrub step).
+    const sources = rangesInEffect.map(range => ({
+      key: range.key,
+      bounds: range.bounds,
+      getPMTiles: () => this.getPMTilesInstance(range.key, range.url)
+    }));
+    this.activeKeys = activeKeys;
+
+    const loader = this.els.loader;
+    // Reference-count in-flight loads so overlapping showFrame calls share one
+    // spinner: show it only if something is still loading 100ms in, and hide it
+    // only when the last concurrent load finishes (not when the first returns).
+    this.pendingLoads += 1;
+    if (!this.spinnerTimeout) {
+      this.spinnerTimeout = setTimeout(() => {
+        this.spinnerTimeout = null;
+        if (this.pendingLoads > 0) loader?.classList.add('active');
+      }, 100);
+    }
+    try {
+      // Tiles keep their old pixels until the new ones are painted, so this
+      // await never leaves the basemap exposed even on a slow round-trip.
+      await this.compositeLayer.setSources(sources);
+    } finally {
+      this.pendingLoads = Math.max(0, this.pendingLoads - 1);
+      if (this.pendingLoads === 0) {
+        clearTimeout(this.spinnerTimeout);
+        this.spinnerTimeout = null;
+        loader?.classList.remove('active');
+      }
+    }
+
+    this.prunePMTilesInstances(activeKeys);
+    if (this.els.chartInfoEffective) this.els.chartInfoEffective.textContent = sources.length.toString();
+  }
+
+  _clearSoloState() {
+    this.soloState = null;
+    document.getElementById('soloBar')?.classList.remove('visible');
+  }
+
+  // Shows one chart alone, replacing the composite until the next frame
+  // paint. Preferred source: the chart's own full-sheet PMTiles artifact
+  // (durable URI, collar included; a half-sheet pair paints as two
+  // sources). Fallback while artifacts roll out: the chart's era archive,
+  // clipped to its footprint ring for multi-chart mosaics.
+  async enterSolo(loc, chart) {
+    // "View alone" is an explicit request to see this chart, so flip the layers
+    // switch back on rather than flying to a blank map: nothing on the solo path
+    // re-reads chartsHidden (only showFrame does). A deliberately lowered opacity
+    // slider is preserved — setChartsHidden(false) restores from the slider.
+    if (this.chartsHidden) {
+      this.setChartsHidden(false);
+      document.getElementById('chartsToggleBtn')?.setAttribute('aria-pressed', 'true');
+    }
+    if (chart.pm) {
+      return this._enterSoloChart(loc, chart);
+    }
+    const range = ChartIndex.rangeByKey?.get(chart.eraKey);
+    if (!range) {
+      Utils.toast('This chart is not yet viewable as an overlay');
+      return;
+    }
+    // The antimeridian-crossing ring (Western Aleutians East) can't clip in
+    // one world copy — show that archive unclipped instead.
+    const clipRing = (ChartIndex.eraMemberCount.get(chart.eraKey) > 1 && loc.ringClip && !loc.crossesAM)
+      ? loc.ringClip : null;
+    this.soloState = { key: range.key, locName: loc.name };
+    // Sentinel: guarantees the next showFrame can't match sameKeys, so the
+    // composite always rebuilds on exit.
+    this.activeKeys = ['__solo__' + range.key];
+
+    const label = document.getElementById('soloLabel');
+    if (label) label.textContent = `Viewing ${loc.name} · ${Utils.formatDateId(chart.d)}`;
+    document.getElementById('soloBar')?.classList.add('visible');
+
+    // Sources first, view second: the repaint of the current tiles happens
+    // at the old view, then the fly-to renders new tiles already in solo.
+    await this.compositeLayer.setSources([{
+      key: range.key,
+      bounds: clipRing ? loc.bbox : range.bounds,
+      clipRing,
+      getPMTiles: () => this.getPMTilesInstance(range.key, range.url)
+    }]);
+    if (!this.soloState || this.soloState.key !== range.key) return; // superseded meanwhile
+    // Fit only to the chart's own footprint. An antimeridian-crossing ring
+    // has a degenerate bbox, and a multi-chart era's header bounds span the
+    // whole archive (for modern mosaics, the entire US — fitting that once
+    // flew the view to lon 0), so in both cases stay where the user is:
+    // they clicked inside this chart.
+    if (loc.bbox && !loc.crossesAM) {
+      this.map.fitBounds([[loc.bbox[1], loc.bbox[0]], [loc.bbox[3], loc.bbox[2]]], { padding: [40, 40], maxZoom: 11 });
+    }
+  }
+
+  async _enterSoloChart(loc, chart) {
+    const pmKeys = Array.isArray(chart.pm) ? chart.pm : [chart.pm];
+    const state = { key: 'chart:' + pmKeys[0], locName: loc.name };
+    this.soloState = state;
+    // Sentinel: the next showFrame can never match sameKeys, so the
+    // composite always rebuilds on exit.
+    this.activeKeys = ['__solo__' + pmKeys.join('|')];
+
+    const label = document.getElementById('soloLabel');
+    if (label) label.textContent = `Viewing ${loc.name} · ${Utils.formatDateId(chart.d)}`;
+    document.getElementById('soloBar')?.classList.add('visible');
+
+    // Full-sheet artifacts carry their own extent — no clip ring needed.
+    const instances = pmKeys.map(key =>
+      this.getPMTilesInstance('chart:' + key, ChartIndex.chartUrl(key)));
+    await this.compositeLayer.setSources(pmKeys.map((key, i) => ({
+      key: 'chart:' + key,
+      bounds: null,
+      getPMTiles: () => instances[i]
+    })));
+    if (this.soloState !== state) return; // superseded meanwhile
+
+    // Fit to the union of the artifacts' own header bounds. Skip on any
+    // world-spanning span (antimeridian charts) — stay where the user is.
+    try {
+      const headers = await Promise.all(instances.map(inst => inst.getHeader()));
+      if (this.soloState !== state) return;
+      let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+      for (const h of headers) {
+        w = Math.min(w, h.minLon); s = Math.min(s, h.minLat);
+        e = Math.max(e, h.maxLon); n = Math.max(n, h.maxLat);
+      }
+      if (isFinite(w) && e > w && n > s && (e - w) <= 180) {
+        this.map.fitBounds([[s, w], [n, e]], { padding: [40, 40], maxZoom: 11 });
+      }
+    } catch (err) {
+      // Header failure surfaces through getPMTilesInstance's retry/toast
+      // machinery; the composite is restorable via the solo bar/Escape.
+    }
+  }
+
+  exitSolo() {
+    if (!this.soloState) return;
+    if (this.lastFrameDate) {
+      // showFrame's solo guard clears the state and banner, then the normal
+      // composite path repaints the frame.
+      this.showFrame(this.lastFrameDate).catch(err => console.warn('solo exit repaint failed', err));
+    } else {
+      this._clearSoloState();
+    }
+  }
+
+  setOpacity(opacity) {
+    this.overlayOpacity = opacity;
+    if (this.compositeLayer) this.compositeLayer.setOpacity(opacity);
+  }
+
+  // The layers-panel charts switch. A persistent flag (not a one-shot
+  // opacity write) because showFrame re-reads the slider on every era swap.
+  setChartsHidden(hidden) {
+    this.chartsHidden = hidden;
+    const sliderValue = parseFloat(this.els.opacitySlider?.value || 100) / 100;
+    this.setOpacity(hidden ? 0 : sliderValue);
+  }
+}
+
+/** TIMELINE CONTROLLER **/
+class TimelineApp {
+  constructor(mapController) {
+    this.mapCtrl = mapController;
+    this.frames = CONFIG.frames;
+
+    const dates = this.frames.map(f => new Date(f.date).getTime());
+    const min = Math.min(...dates);
+    const max = Math.max(...dates);
+    this.frames.forEach((f, i) => { const d = dates[i]; f.pct = max === min ? 0 : ((d - min) / (max - min)) * 100; });
+    this.minTime = min;
+    this.maxTime = max;
+    this.coverageSegs = null;
+
+    this.currentIndex = 0;
+    this.selectedDate = null;
+    this.activeTickIndex = null;
+    this.frameTimes = dates;
+    this.trackWidthPx = null;
+    this.isPlaying = false;
+    this.playInterval = null;
+    this.playbackSpeed = 1;
+
+    this.ui = {
+      prevBtn: document.getElementById('prevBtn'),
+      nextBtn: document.getElementById('nextBtn'),
+      playBtn: document.getElementById('playBtn'),
+      heatCanvas: document.getElementById('heatCanvas'),
+      trackTip: document.getElementById('trackTip'),
+      handle: document.getElementById('handle'),
+      track: document.getElementById('trackWrapper'),
+      timeSelect: document.getElementById('timeSelect'),
+      lblRange: document.getElementById('lblRange'),
+      ticks: document.getElementById('ticksContainer')
+    };
+
+    this.tickElements = [];
+
+    this.initUI();
+    this.initControls();
+    this.initCoverage();
+    const initialDate = this.ui.timeSelect?.value || this.frames[this.frames.length - 1]?.date;
+    if (initialDate) {
+      this.updateByDate(initialDate);
+    }
+
+    window.addEventListener('keydown', (e) => {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return;
+      // Each dismissible surface owns Escape; don't also dismiss a card
+      // behind the layers panel or modal.
+      if (e.key === 'Escape') {
+        if (document.getElementById('toolsControl')?.classList.contains('open')) {
+          e.preventDefault();
+          this.closeToolsPanel();
+        }
+        return;
+      }
+      // Leave native controls and panels in charge of their own keys.
+      if (e.target.closest?.('input, select, textarea, [contenteditable="true"], [role="dialog"], #toolsPanel, #pinPanel, #afPanel')) return;
+      if ((e.key === ' ' || e.key === 'Enter') && e.target.closest?.('button, a')) return;
+
+      // Character shortcuts are active only on the viewer's focused
+      // controls; typing elsewhere never triggers a map action.
+      if (!['map', 'trackWrapper', 'main-content'].includes(e.target.id)) return;
+
+      if (e.key === ' ') {
+        e.preventDefault();
+        this.togglePlay();
+      }
+      if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        Utils.toggleFullscreen();
+      }
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        this.copyShareLink();
+      }
+      if (e.key === '?') {
+        e.preventDefault();
+        this.showShortcuts();
+      }
+    });
+  }
+
+  initControls() {
+    // Help button
+    document.getElementById('helpBtn')?.addEventListener('click', () => {
+      this.showShortcuts();
+    });
+
+    document.getElementById('closeShortcuts')?.addEventListener('click', () => {
+      this.hideShortcuts();
+    });
+
+    document.getElementById('shortcutsOverlay')?.addEventListener('click', (e) => {
+      if (e.target.id === 'shortcutsOverlay') {
+        this.hideShortcuts();
+      }
+    });
+
+    document.getElementById('shortcutsOverlay')?.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.hideShortcuts();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+      const dialog = e.currentTarget.querySelector('[role="dialog"]');
+      const focusable = Array.from(dialog?.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      ) || []).filter(el => !el.hidden);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    });
+
+    // Fullscreen button
+    document.getElementById('fullscreenBtn')?.addEventListener('click', () => {
+      Utils.toggleFullscreen();
+    });
+
+    // Tools Dropdown
+    const toolsControl = document.getElementById('toolsControl');
+    const toolsBtn = document.getElementById('toolsBtn');
+    const toolOpacitySlider = document.getElementById('toolOpacitySlider');
+    const toolOpacityValue = document.getElementById('toolOpacityValue');
+
+    toolsBtn?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (toolsControl?.classList.contains('open')) {
+        this.closeToolsPanel();
+      } else {
+        this.openToolsPanel();
+      }
+    });
+
+    toolsControl?.addEventListener('click', (event) => {
+      event.stopPropagation();
+    });
+
+    document.addEventListener('click', (event) => {
+      if (toolsControl && !toolsControl.contains(event.target)) {
+        this.closeToolsPanel();
+      }
+    });
+
+    document.addEventListener('keydown', (event) => {
+      if (!event.defaultPrevented && event.key === 'Escape' && toolsControl?.classList.contains('open')) {
+        event.preventDefault();
+        this.closeToolsPanel();
+      }
+    });
+
+    // Charts visibility switch. Dragging the opacity slider while hidden
+    // flips the switch back on rather than silently fighting it.
+    const chartsToggleBtn = document.getElementById('chartsToggleBtn');
+    const syncChartsToggle = () => {
+      chartsToggleBtn?.setAttribute('aria-pressed', String(!this.mapCtrl.chartsHidden));
+    };
+    chartsToggleBtn?.addEventListener('click', () => {
+      this.mapCtrl.setChartsHidden(!this.mapCtrl.chartsHidden);
+      syncChartsToggle();
+    });
+
+    toolOpacitySlider?.addEventListener('input', (e) => {
+      const value = e.target.value;
+      toolOpacityValue.textContent = value;
+      if (this.mapCtrl.chartsHidden) {
+        this.mapCtrl.chartsHidden = false;
+        syncChartsToggle();
+      }
+      this.mapCtrl.setOpacity(value / 100);
+    });
+
+    document.getElementById('shareBtn')?.addEventListener('click', () => {
+      this.copyShareLink();
+    });
+
+    // Play button
+    this.ui.playBtn?.addEventListener('click', () => {
+      this.togglePlay();
+    });
+
+  }
+
+  hideAllPanels(except = []) {
+    if (!except.includes('toolsPanel')) {
+      this.closeToolsPanel();
+    }
+  }
+
+  openToolsPanel() {
+    const toolsControl = document.getElementById('toolsControl');
+    const toolsBtn = document.getElementById('toolsBtn');
+    if (!toolsControl || !toolsBtn) return;
+    const menuTrigger = document.querySelector('.menu-trigger');
+    const menuToggle = document.getElementById('menuToggle');
+    if (menuTrigger?.classList.contains('open')) {
+      menuTrigger.classList.remove('open');
+      menuToggle?.setAttribute('aria-expanded', 'false');
+    }
+    toolsControl.classList.add('open');
+    toolsBtn.setAttribute('aria-expanded', 'true');
+  }
+
+  closeToolsPanel() {
+    const toolsControl = document.getElementById('toolsControl');
+    const toolsBtn = document.getElementById('toolsBtn');
+    if (document.getElementById('toolsPanel')?.contains(document.activeElement)) toolsBtn?.focus();
+    toolsControl?.classList.remove('open');
+    toolsBtn?.setAttribute('aria-expanded', 'false');
+  }
+
+  showShortcuts() {
+    const overlay = document.getElementById('shortcutsOverlay');
+    if (!overlay || overlay.classList.contains('visible')) return;
+    this._shortcutsOpener = document.activeElement;
+    if (this.isPlaying) this.togglePlay();
+    this.hideAllPanels();
+    overlay?.classList.add('visible');
+    overlay?.setAttribute('aria-hidden', 'false');
+    // Keep virtual and keyboard focus inside the modal. Save only elements
+    // changed here so an existing inert state is never accidentally removed.
+    this._shortcutsInerted = [];
+    for (const child of document.body.children) {
+      if (child === overlay || child.tagName === 'SCRIPT' || child.inert) continue;
+      child.inert = true;
+      this._shortcutsInerted.push(child);
+    }
+    // Move focus into the dialog so keyboard/AT users land on it (and can Esc).
+    document.getElementById('closeShortcuts')?.focus();
+  }
+
+  hideShortcuts() {
+    const overlay = document.getElementById('shortcutsOverlay');
+    if (!overlay?.classList.contains('visible')) return;
+    for (const child of this._shortcutsInerted || []) child.inert = false;
+    this._shortcutsInerted = [];
+    // Restore focus to whatever opened the dialog.
+    if (this._shortcutsOpener && typeof this._shortcutsOpener.focus === 'function') {
+      this._shortcutsOpener.focus();
+    }
+    this._shortcutsOpener = null;
+    overlay.classList.remove('visible');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+
+  updateShareUrl() {
+    const selectedDate = this.selectedDate || this.frames[this.currentIndex]?.date;
+    const center = this.mapCtrl.map.getCenter();
+    const zoom = this.mapCtrl.map.getZoom();
+    let url = `${window.location.origin}${window.location.pathname}?date=${selectedDate}&lat=${center.lat.toFixed(4)}&lng=${center.lng.toFixed(4)}&zoom=${zoom}`;
+    const pin = this.pinInspector?.latlng;
+    if (pin) url += `&pin=${pin.lat.toFixed(4)},${pin.lng.toFixed(4)}`;
+    return url;
+  }
+
+  async copyShareLink() {
+    const url = this.updateShareUrl();
+    try {
+      await navigator.clipboard.writeText(url);
+      Utils.toast('Link copied');
+    } catch (err) {
+      // Clipboard API can be unavailable (insecure context, old browsers).
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ta.setSelectionRange(0, ta.value.length);
+        const ok = document.execCommand('copy');
+        ta.remove();
+        if (ok) {
+          Utils.toast('Link copied');
+        } else {
+          window.prompt('Copy this link:', url);
+        }
+      } catch (fallbackErr) {
+        window.prompt('Copy this link:', url);
+      }
+    }
+  }
+
+  togglePlay() {
+    this.isPlaying = !this.isPlaying;
+    const playBtn = this.ui.playBtn;
+    for (const id of ['pinDates', 'afCount']) {
+      document.getElementById(id)?.setAttribute('aria-live', this.isPlaying ? 'off' : 'polite');
+    }
+
+    if (this.isPlaying) {
+      if (document.activeElement === this.ui.track) playBtn.focus({ preventScroll: true });
+      playBtn.textContent = '⏸';
+      playBtn.title = 'Pause (Space)';
+      playBtn.setAttribute('aria-label', 'Pause animation');
+      this.playInterval = setInterval(() => {
+        this.step(1);
+      }, 2000 / this.playbackSpeed);
+    } else {
+      playBtn.textContent = '▶';
+      playBtn.title = 'Play (Space)';
+      playBtn.setAttribute('aria-label', 'Play animation');
+      if (this.playInterval) {
+        clearInterval(this.playInterval);
+        this.playInterval = null;
+      }
+    }
+    this.updateTimelineAccessibility();
+  }
+
+  initUI() {
+    if (!this.frames.length) return;
+
+    this.ui.lblRange.textContent = `${this.frames[0].id} — ${this.frames[this.frames.length - 1].id}`;
+
+    // Setup date picker with min/max and default to most recent
+    const firstDate = CONFIG.dateBounds.min || this.frames[0].date;
+    const lastDate = CONFIG.dateBounds.max || this.frames[this.frames.length - 1].date;
+    this.ui.timeSelect.min = firstDate;
+    this.ui.timeSelect.max = lastDate;
+    this.ui.timeSelect.value = lastDate; // Default to most recent
+    this.selectedDate = lastDate;
+    this.ui.track.setAttribute('aria-valuemax', String(Math.max(0, this.frames.length - 1)));
+
+    // Start at most recent frame
+    this.currentIndex = this.frames.length - 1;
+
+    this.ui.timeSelect.addEventListener('change', () => {
+      const selectedDate = this.ui.timeSelect.value;
+      if (!selectedDate || !this.ui.timeSelect.validity.valid) return;
+      if (this.isPlaying) this.togglePlay();
+      this.updateByDate(selectedDate);
+    });
+
+    // Decade labels across the full span. Derived from the year range, not
+    // the frames list — frames vanish during multi-decade gaps, which is
+    // exactly where the heat strip needs labels to show how wide a gap is.
+    const timeSpan = this.maxTime - this.minTime;
+    if (timeSpan > 0) {
+      const frag = document.createDocumentFragment();
+      const minYear = new Date(this.minTime).getUTCFullYear();
+      const maxYear = new Date(this.maxTime).getUTCFullYear();
+      for (let y = Math.ceil(minYear / 10) * 10; y <= maxYear; y += 10) {
+        const tick = document.createElement('div');
+        tick.className = 'tick';
+        tick.style.left = `${((Date.UTC(y, 0, 1) - this.minTime) / timeSpan) * 100}%`;
+        const label = document.createElement('div');
+        label.className = 'tick-label';
+        label.textContent = y;
+        tick.appendChild(label);
+        frag.appendChild(tick);
+      }
+      this.ui.ticks.appendChild(frag);
+    }
+
+    // Jog Controls
+    const manualStep = dir => { if (this.isPlaying) this.togglePlay(); this.step(dir); };
+    this.ui.prevBtn.onclick = () => manualStep(-1);
+    this.ui.nextBtn.onclick = () => manualStep(1);
+
+    // The visible timeline is also a semantic slider. Arrow keys step one
+    // edition; Page Up/Down move roughly one percent of the archive; Home
+    // and End jump to the oldest/newest edition.
+    this.ui.track.addEventListener('keydown', (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      let next = this.currentIndex;
+      const page = Math.max(1, Math.round(this.frames.length / 100));
+      if (e.key === 'ArrowRight' || e.key === 'ArrowUp') next += 1;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') next -= 1;
+      else if (e.key === 'PageUp') next += page;
+      else if (e.key === 'PageDown') next -= page;
+      else if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = this.frames.length - 1;
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (this.isPlaying) this.togglePlay();
+      this.update(Math.max(0, Math.min(this.frames.length - 1, next)));
+    });
+
+    // drag on the track/handle
+    let trackRect = null;
+    let rafPending = false;
+    let lastClientX = 0;
+
+    const updateTrackRect = () => {
+      trackRect = this.ui.track.getBoundingClientRect();
+      this.trackWidthPx = trackRect.width;
+    };
+
+    const handleInput = (clientX) => {
+      if (!trackRect) updateTrackRect();
+      const x = Math.max(0, Math.min(clientX - trackRect.left, trackRect.width));
+      const pct = (x / trackRect.width) * 100;
+      const closestIdx = this.findClosestFrameIndexByPct(pct);
+
+      if (closestIdx !== this.currentIndex) this.update(closestIdx, true);
+    };
+
+    let isDragging = false;
+    const scheduleInput = (clientX) => {
+      lastClientX = clientX;
+      if (rafPending) return;
+      rafPending = true;
+      requestAnimationFrame(() => {
+        rafPending = false;
+        handleInput(lastClientX);
+      });
+    };
+
+    const startDrag = (e) => {
+      if (e.type === 'mousedown' && e.button !== 0) return;
+      if (this.isPlaying) this.togglePlay();
+      this.ui.track.focus({ preventScroll: true });
+      isDragging = true;
+      updateTrackRect();
+      scheduleInput((e.touches?.[0]?.clientX) ?? e.clientX);
+    };
+    const moveDrag = (e) => {
+      if (!isDragging) return;
+      // Non-passive specifically so we can stop the page from scrolling while
+      // the timeline handle is being dragged on touch devices.
+      if (e.cancelable) e.preventDefault();
+      scheduleInput((e.touches?.[0]?.clientX) ?? e.clientX);
+    };
+    const endDrag = () => { isDragging = false; rafPending = false; };
+
+    this.ui.track.addEventListener('mousedown', startDrag);
+    this.ui.track.addEventListener('touchstart', startDrag, { passive: false });
+    window.addEventListener('mousemove', moveDrag);
+    window.addEventListener('touchmove', moveDrag, { passive: false });
+    window.addEventListener('mouseup', endDrag);
+    window.addEventListener('touchend', endDrag);
+    // iOS fires touchcancel (not touchend) when the system interrupts a drag
+    // (notification banner, edge-swipe, second finger); without this, isDragging
+    // sticks and the next map pan would scrub the timeline.
+    window.addEventListener('touchcancel', endDrag);
+    window.addEventListener('resize', () => {
+      trackRect = null;
+      this.trackWidthPx = null;
+      // Reposition the handle for the new track width (it uses an absolute px
+      // offset), else it points at the wrong date until the next interaction.
+      // Geometry only: routing this through update() would repaint the frame,
+      // and showFrame clears solo state, so every phone rotation or iOS
+      // URL-bar collapse would silently cancel "View alone".
+      this.positionHandle(this.currentIndex);
+    });
+  }
+
+  /* ---- coverage heat strip ----
+     coverage.json is precomputed by build_coverage.py from the per-chart
+     extent rings in timeline_data.json: for each time segment, the % of the
+     charted lower-48 area covered by the charts in effect. AK/HI/territory
+     extents fall outside the reference bbox, so they never inflate the area
+     (regardless of statehood era); the denominator is the union of every
+     extent ever charted, not the raw bbox (~25% ocean), so a full modern
+     cycle reads ~98%. Chart count is deliberately not the signal — one
+     merged current-cycle mosaic covers 100% while 1961's two charts cover ~5%. */
+  async initCoverage() {
+    try {
+      const resp = await fetch('coverage.json');
+      if (!resp.ok) throw new Error(String(resp.status));
+      const data = await resp.json();
+      // segments: [startISO, endISO, count, pct], sorted, end-exclusive
+      this.coverageSegs = data.segments.map(([a, b, c, p]) => [Date.parse(a), Date.parse(b), c, p]);
+    } catch (e) {
+      // No coverage data: the plain grey track stays as-is
+      console.warn('coverage.json unavailable — heat strip disabled', e);
+      return;
+    }
+    // ResizeObserver rather than a resize listener: the canvas can be 0-wide
+    // when the fetch resolves (splash still up), and the observer also
+    // repaints it when the controls card changes size. Observe the wrapper,
+    // not the canvas — resizing the canvas bitmap inside its own observer
+    // callback could feed back into itself.
+    this.paintHeatStrip();
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => this.paintHeatStrip()).observe(this.ui.track);
+    } else {
+      window.addEventListener('resize', () => this.paintHeatStrip());
+    }
+    this.initCoverageTip();
+    this.updateCoverageLabel();
+  }
+
+  // [count, pct of US covered] at time t
+  coverageAt(t) {
+    const segs = this.coverageSegs;
+    // segments are end-exclusive: clamp so the newest date doesn't read as a gap
+    t = Math.min(t, segs[segs.length - 1][1] - 1);
+    let lo = 0, hi = segs.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (segs[mid][0] <= t) {
+        if (t < segs[mid][1]) return [segs[mid][2], segs[mid][3]];
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return [0, 0];
+  }
+
+  coverageText(count, pct) {
+    if (count === 0) return 'No charts in archive';
+    if (pct >= 95) return 'Full lower-48 coverage';
+    return `${Math.round(pct)}% of the lower 48 covered`;
+  }
+
+  updateCoverageLabel() {
+    if (!this.coverageSegs || !this.ui.lblRange || !this.selectedDate) return;
+    const [count, pct] = this.coverageAt(new Date(this.selectedDate).getTime());
+    this.ui.lblRange.textContent = this.coverageText(count, pct);
+    this.ui.lblRange.style.color = count === 0 ? '#ff5c5c' : '';
+    this.updateTimelineAccessibility();
+  }
+
+  updateTimelineAccessibility() {
+    const track = this.ui.track;
+    if (!track || !this.frames.length || !this.selectedDate) return;
+    const [y, m, d] = this.selectedDate.split('-').map(Number);
+    const date = new Date(y, (m || 1) - 1, d || 1);
+    const dateText = date.toLocaleDateString('en-US', {
+      year: 'numeric', month: 'long', day: 'numeric'
+    });
+    const coverage = this.coverageSegs && this.ui.lblRange?.textContent
+      ? `. ${this.ui.lblRange.textContent}` : '';
+    track.setAttribute('aria-valuenow', String(this.currentIndex));
+    track.setAttribute('aria-valuetext', `${dateText}${coverage}`);
+    // Don't speak every animation frame or pointer movement. The focused
+    // slider already announces its own value; other controls get one
+    // settled date/coverage update after scrubbing or playback stops.
+    clearTimeout(this._announcementTimer);
+    if (!this.isPlaying && document.activeElement !== track) {
+      this._announcementTimer = setTimeout(() => {
+        document.getElementById('timelineStatus').textContent = `${dateText}${coverage}`;
+      }, 250);
+    }
+  }
+
+  initCoverageTip() {
+    const tip = this.ui.trackTip;
+    const wrap = this.ui.track;
+    if (!tip || !wrap) return;
+    wrap.addEventListener('mousemove', (e) => {
+      const r = wrap.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      const t = this.minTime + pct * (this.maxTime - this.minTime);
+      const [count, covPct] = this.coverageAt(t);
+      const label = new Date(t).toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+      tip.style.display = 'block';
+      tip.style.left = `${pct * 100}%`;
+      tip.innerHTML = `<b>${label}</b><br><span class="tip-cov">${this.coverageText(count, covPct)}</span>`;
+    });
+    wrap.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  }
+
+  paintHeatStrip() {
+    const canvas = this.ui.heatCanvas;
+    const segs = this.coverageSegs;
+    if (!canvas || !segs) return;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, w, h);
+    const min = this.minTime, span = this.maxTime - this.minTime;
+    if (span <= 0) return;
+
+    const rounded = () => {
+      const r = 4;
+      ctx.beginPath();
+      ctx.moveTo(r, 0);
+      ctx.arcTo(w, 0, w, h, r);
+      ctx.arcTo(w, h, 0, h, r);
+      ctx.arcTo(0, h, 0, 0, r);
+      ctx.arcTo(0, 0, w, 0, r);
+      ctx.closePath();
+    };
+
+    // base: solid dark = "no data", painted over by covered segments
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+    rounded();
+    ctx.fill();
+    ctx.save();
+    rounded();
+    ctx.clip();
+    // One pixel column at a time, aggregating every segment the column
+    // spans (exact sweep, no point sampling), so a days-long gap inside a
+    // month-wide pixel still shows as dark.
+    let si = 0;
+    for (let px = 0; px < w; px++) {
+      const t0 = min + (px / w) * span;
+      const t1 = min + ((px + 1) / w) * span;
+      while (si < segs.length && segs[si][1] <= t0) si++;
+      let anyGap = false, weighted = 0, covered = 0;
+      for (let j = si; j < segs.length && segs[j][0] < t1; j++) {
+        const [s0, e0, c, p] = segs[j];
+        const overlap = Math.min(e0, t1) - Math.max(s0, t0);
+        if (overlap <= 0) continue;
+        if (c === 0) anyGap = true;
+        weighted += p * overlap;
+        covered += overlap;
+      }
+      if (covered < (t1 - t0) * 0.999) anyGap = true; // time outside all segments
+      if (anyGap || covered === 0) continue; // leave the dark gap showing
+      // Clear the dark base first so it never darkens a translucent
+      // covered column and reads as a gap that isn't there.
+      ctx.clearRect(px, 0, 1, h);
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(px, 0, 1, h);
+      ctx.fillStyle = this.heatColor(weighted / covered);
+      ctx.fillRect(px, 0, 1, h);
+    }
+    ctx.restore();
+  }
+
+  // Monochrome ramp: white, varying only in opacity. Eased so the
+  // 70-90% coverage typical of the pre-1970 years already sits close to
+  // fully opaque, while even a single chart still paints a clearly visible
+  // light bar against the dark no-data gaps.
+  heatColor(pct) {
+    const p = Math.max(0, Math.min(100, pct));
+    const lin = p / 100;
+    const t = 1 - (1 - lin) * (1 - lin);
+    const alpha = 0.45 + 0.55 * t;
+    return `rgba(255, 255, 255, ${alpha.toFixed(3)})`;
+  }
+
+  findClosestFrameIndexByPct(pct) {
+    const n = this.frames.length;
+    if (n === 0) return 0;
+    if (pct <= this.frames[0].pct) return 0;
+    if (pct >= this.frames[n - 1].pct) return n - 1;
+
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.frames[mid].pct < pct) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+
+    const right = lo;
+    const left = Math.max(0, right - 1);
+    return (Math.abs(this.frames[right].pct - pct) < Math.abs(this.frames[left].pct - pct)) ? right : left;
+  }
+
+  findFrameIndexByDate(selectedTime) {
+    let lo = 0;
+    let hi = this.frameTimes.length - 1;
+    let bestIdx = 0;
+
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const frameTime = this.frameTimes[mid];
+      if (frameTime <= selectedTime) {
+        bestIdx = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+
+    return bestIdx;
+  }
+
+  updateByDate(dateStr, lazy = false) {
+    const selectedTime = new Date(dateStr).getTime();
+    if (isNaN(selectedTime)) return;
+
+    const bestIdx = this.findFrameIndexByDate(selectedTime);
+    this.update(bestIdx, lazy, dateStr);
+  }
+
+  // Handle offset is an absolute px value, so it has to be recomputed
+  // whenever the track width changes. Geometry only — never paints a frame.
+  positionHandle(index) {
+    const f = this.frames[index];
+    if (!f || !this.ui.handle) return;
+    const pct = Number.isFinite(f.pct) ? Math.max(0, Math.min(100, f.pct)) : 0;
+    const trackWidth = this.trackWidthPx ?? this.ui.track?.getBoundingClientRect().width ?? 0;
+    this.ui.handle.style.setProperty('--handle-position-px', `${trackWidth * (pct / 100)}px`);
+  }
+
+  update(index, lazy = false, selectedDateOverride = null) {
+    this.currentIndex = index;
+    const f = this.frames[index];
+    const selectedDate = selectedDateOverride || f.date;
+    this.selectedDate = selectedDate;
+
+    // Update date picker to show the selected date
+    if (this.ui.timeSelect && this.ui.timeSelect.value !== selectedDate) {
+      this.ui.timeSelect.value = selectedDate;
+    }
+
+    this.positionHandle(index);
+    this.updateCoverageLabel();
+    this.updateTimelineAccessibility();
+
+    const adjacent = [
+      this.frames[index - 1]?.date,
+      this.frames[index + 1]?.date
+    ].filter(Boolean);
+
+    if (lazy) {
+      this.mapCtrl.showFrameDebounced(selectedDate);
+    } else {
+      const result = this.mapCtrl.showFrame(selectedDate);
+      if (result && typeof result.then === 'function') {
+        result.then(() => {
+          // Skip prefetch during playback — the next frame loads in ~2s anyway,
+          // so prefetching adjacent dates just churns requests and memory.
+          if (this.currentIndex === index && !this.isPlaying) {
+            this.mapCtrl.prefetchDates(adjacent);
+          }
+        }).catch(() => {});
+      }
+    }
+  }
+
+  step(dir) {
+    let next = this.currentIndex + dir;
+    if (next >= this.frames.length) next = 0;
+    if (next < 0) next = this.frames.length - 1;
+    this.update(next);
+  }
+}
+
+/** PIN INSPECTOR **/
+// Map-click pin + a compact popup showing THE chart at that point (the one
+// whose footprint contains the click, else the nearest), anchored beside
+// the click and following the pin as the map moves. Chart data comes from
+// ChartIndex (fetched on the first click); "View alone" hands the chart to
+// MapController.enterSolo. Clicking again moves the pin.
+class PinInspector {
+  constructor(mapCtrl, timelineApp) {
+    this.mapCtrl = mapCtrl;
+    this.timelineApp = timelineApp;
+    this.marker = null;
+    this.latlng = null;
+    this.els = {
+      panel: document.getElementById('pinPanel'),
+      loc: document.getElementById('pinLoc'),
+      badge: document.getElementById('pinBadge'),
+      dates: document.getElementById('pinDates'),
+      actions: document.getElementById('pinActions'),
+      airspace: document.getElementById('pinAirspace')
+    };
+    this.refreshDebounced = Utils.debounce(() => this.refresh(), 150);
+
+    if (this.els.panel && window.L && L.DomEvent) {
+      // Popup clicks must not fall through to the map and move the pin.
+      L.DomEvent.disableClickPropagation(this.els.panel);
+      L.DomEvent.disableScrollPropagation(this.els.panel);
+    }
+    document.getElementById('pinClose')?.addEventListener('click', () => this.clear());
+    document.getElementById('soloExit')?.addEventListener('click', () => this.mapCtrl.exitSolo());
+    mapCtrl.map.on('click', (e) => {
+      // An airfield-dot click opens its own card; don't also move the pin.
+      if (Date.now() - afClickGuard < 350) return;
+      this.setPin(e.latlng);
+    });
+    mapCtrl.map.getContainer().addEventListener('keydown', e => {
+      if (e.target !== mapCtrl.map.getContainer() || e.key !== 'Enter' || e.altKey || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      this.setPin(mapCtrl.map.getCenter(), true);
+    });
+    // Keep the popup glued to the pin while panning/zooming.
+    mapCtrl.map.on('move zoom viewreset', () => this._updatePosition());
+    window.addEventListener('keydown', (e) => {
+      if (e.defaultPrevented || e.key !== 'Escape') return;
+      if (e.target !== mapCtrl.map.getContainer() && !this.els.panel?.contains(e.target)) return;
+      // Step out of solo first; a second Escape clears the pin. Coexists
+      // with the panel/overlay Escape handlers above.
+      if (this.mapCtrl.soloState) {
+        e.preventDefault();
+        this.mapCtrl.exitSolo();
+      } else if (this.latlng) {
+        e.preventDefault();
+        this.clear();
+      }
+    });
+  }
+
+  async setPin(latlng, focus = false) {
+    this.latlng = latlng;
+    if (!this.marker) {
+      // interactive:false keeps re-taps flowing to the map (move the pin).
+      this.marker = L.circleMarker(latlng, {
+        radius: 7, color: '#1e90ff', weight: 2,
+        fillColor: '#1e90ff', fillOpacity: 0.3, interactive: false
+      }).addTo(this.mapCtrl.map);
+    } else {
+      this.marker.setLatLng(latlng);
+    }
+    this.els.panel?.classList.add('visible');
+    if (focus) this.els.panel?.focus({ preventScroll: true });
+    if (!ChartIndex.locations) {
+      this._render(null, null, 'Loading chart details…');
+      this._updatePosition();
+    }
+    try {
+      await ChartIndex.load();
+    } catch (e) {
+      this._render(null, null, 'Chart details unavailable — click again to retry.');
+      this._updatePosition();
+      return;
+    }
+    if (this.latlng === latlng) this.refresh();
+  }
+
+  clear() {
+    if (this.els.panel?.contains(document.activeElement)) this.mapCtrl.map.getContainer().focus();
+    if (this.marker) {
+      this.marker.remove();
+      this.marker = null;
+    }
+    this.latlng = null;
+    this.els.panel?.classList.remove('visible');
+    // Deliberately does NOT exit solo: closing the card is the natural way
+    // to see the solo chart unobstructed, and the solo bar keeps its own
+    // "Show all charts" exit (as do Escape and any timeline change).
+  }
+
+  // Re-resolve the chart at the pin for the selected date. Also runs
+  // (debounced) when the timeline moves while pinned.
+  refresh() {
+    if (!this.latlng || !ChartIndex.locations) return;
+    const dateStr = this.timelineApp.selectedDate
+      || this.timelineApp.frames[this.timelineApp.currentIndex]?.date;
+    if (!dateStr) return;
+    const results = ChartIndex.query(this.latlng.lat, this.latlng.lng, dateStr, 1);
+    this._render(results[0] || null, dateStr);
+    this._updatePosition();
+  }
+
+  // Fill the popup with one chart (or a message when result is null).
+  // No per-chart source links: exposing the chart -> source-scan mapping
+  // invites scraping the catalog; the footer links sources.html instead.
+  _render(result, dateStr, message) {
+    const els = this.els;
+    if (!els.panel) return;
+    els.actions.textContent = '';
+    this._renderAirspace();
+    if (!result) {
+      els.loc.textContent = message || 'No chart here';
+      els.badge.style.display = 'none';
+      els.dates.textContent = (!message && dateStr)
+        ? `No charts in effect on ${Utils.formatDateId(dateStr)}` : '';
+      return;
+    }
+    const { loc, chart, contains } = result;
+    els.loc.textContent = loc.name;
+    els.badge.style.display = '';
+    els.badge.textContent = PinInspector.edLabel(chart.ed);
+    els.dates.textContent = chart.e
+      ? `${Utils.formatDateId(chart.d)} – ${Utils.formatDateId(chart.e)}`
+      : Utils.formatDateId(chart.d);
+    if (!contains) {
+      const chip = document.createElement('span');
+      chip.className = 'pin-near-chip';
+      chip.textContent = 'nearby';
+      els.dates.appendChild(chip);
+    }
+    if (chart.pm || chart.published) {
+      const btn = document.createElement('button');
+      btn.className = 'pin-view-alone';
+      btn.type = 'button';
+      btn.textContent = 'View alone';
+      btn.addEventListener('click', () => this.mapCtrl.enterSolo(loc, chart));
+      els.actions.appendChild(btn);
+    } else {
+      const note = document.createElement('span');
+      note.className = 'pin-unavailable';
+      note.textContent = 'not yet tiled';
+      els.actions.appendChild(note);
+    }
+  }
+
+  // "Airspace here": the class-airspace stack under the pin on the selected
+  // date, read from the airspace overlay's cached tiles — so only while
+  // that layer is on, since it is the source of the polygons.
+  _renderAirspace() {
+    const el = this.els.airspace;
+    if (!el) return;
+    const layer = this.timelineApp.airspaceLayer;
+    if (layer) layer.renderStack(el, this.latlng);
+    else el.hidden = true;
+  }
+
+  // Anchor the popup beside the pin, flipping to stay inside the viewport
+  // and below the header bar. Runs on every render and map move/zoom.
+  _updatePosition() {
+    const panel = this.els.panel;
+    if (!this.latlng || !panel?.classList.contains('visible')) return;
+    const map = this.mapCtrl.map;
+    const rect = map.getContainer().getBoundingClientRect();
+    const pt = map.latLngToContainerPoint(this.latlng);
+    const w = panel.offsetWidth, h = panel.offsetHeight;
+    let x = rect.left + pt.x + 18;
+    let y = rect.top + pt.y - 12;
+    if (x + w > window.innerWidth - 8) x = rect.left + pt.x - w - 18;
+    if (x < 8) x = 8;
+    if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+    if (y < 78) y = 78; // clear the header bar
+    panel.style.left = x + 'px';
+    panel.style.top = y + 'px';
+  }
+
+  // Old-era rows carry LOC catalog numbers in the edition column — only
+  // present plausible edition numbers as an edition (same rule as
+  // contribute.html's shelf labels).
+  static edLabel(ed) {
+    if (ed && /^\d+$/.test(ed) && +ed < 150) return `ed. ${ed}`;
+    if (ed && !/^\d+$/.test(ed) && ed !== 'Unknown') return ed;
+    return 'scan';
+  }
+}
+
+/** AIRSPACE LAYER **/
+// Class airspace from three national AIS sources — FAA NASR (US, every
+// 28-day cycle since 2020-03-26), SIA (France, AIRAC cycles 2019–2023 with
+// holes) and DECEA GeoAISWEB (Brazil, current snapshots) — in one vector
+// PMTiles archive (CONFIG.airspaceUrl, built by scripts/airspace_build.py)
+// as polygon *versions*, each tagged with its region and a from/to
+// validity interval. A second protomaps-leaflet layer paints it with the
+// sectional legend's symbology keyed on the ICAO class; the timeline date
+// is applied inside the paint-rule filters, so a date change repaints the
+// cached tiles and fetches nothing. A region draws only while one of its
+// held cycles is in effect on the date (each is good for 28 days): before
+// its first cycle, inside a hole of its series, or past its newest cycle
+// nothing is drawn and the panel's status line says why — the overlay
+// shows only dates the data actually covers. Off by default and
+// remembered once chosen; a load that fails (archive missing, host
+// unreachable) turns it back off and the status line says why.
+
+// Sectional-style vignette along a Class E floor edge: a band on the
+// controlled side fading away from the line. The build (tile layer
+// "efloor") emits only the edges where the floor really changes — a 700 ft
+// area's boundary, a 1,200 ft area's boundary only where Class G lies
+// beyond it — each walking with the controlled side on its left. A wide
+// stroke clipped to a ribbon offset to that side leaves the band on that
+// side only; three strokes of shrinking width stack into the fade. Screen
+// coordinates have y down, so "left of (dx, dy)" is (dy, -dx). Ribbon
+// corners are mitred from the two adjacent normals and capped; the ribbon
+// is only a clip, so a self-overlap at a sharp concave corner shows
+// nothing. The stroke's round joins fill the corners; its butt caps stop
+// at the tile buffer, out of sight.
+class RibbonSymbolizer {
+  constructor(opts) {
+    this.color = opts.color;      // css color, or (zoom, feature) => color
+    this.band = opts.band;        // px, or (zoom) => px
+    this.opacity = opts.opacity ?? 0.5;
+  }
+
+  static offset(line, i, w) {
+    const p = line[i];
+    let nx = 0, ny = 0, sides = 0;
+    if (i > 0) {
+      const a = line[i - 1];
+      const dx = p.x - a.x, dy = p.y - a.y, len = Math.hypot(dx, dy);
+      if (len > 0) { nx += dy / len; ny -= dx / len; sides++; }
+    }
+    if (i < line.length - 1) {
+      const b = line[i + 1];
+      const dx = b.x - p.x, dy = b.y - p.y, len = Math.hypot(dx, dy);
+      if (len > 0) { nx += dy / len; ny -= dx / len; sides++; }
+    }
+    const len = Math.hypot(nx, ny);
+    if (!len) return [p.x, p.y];
+    // |n1 + n2| = 2cos(θ/2), so the mitre length w / cos(θ/2) is 2w / len.
+    const k = sides === 2 ? Math.min(2 * w / len, 2.5 * w) : w;
+    return [p.x + nx / len * k, p.y + ny / len * k];
+  }
+
+  draw(ctx, geom, z, f) {
+    const band = typeof this.band === 'function' ? this.band(z) : this.band;
+    const color = typeof this.color === 'function' ? this.color(z, f) : this.color;
+    const w = band + 1.5;
+    for (const line of geom) {
+      const n = line.length;
+      if (n < 2) continue;
+      const path = new Path2D();
+      const ribbon = new Path2D();
+      path.moveTo(line[0].x, line[0].y);
+      ribbon.moveTo(line[0].x, line[0].y);
+      for (let i = 1; i < n; i++) {
+        path.lineTo(line[i].x, line[i].y);
+        ribbon.lineTo(line[i].x, line[i].y);
+      }
+      for (let i = n - 1; i >= 0; i--) {
+        const [ox, oy] = RibbonSymbolizer.offset(line, i, w);
+        ribbon.lineTo(ox, oy);
+      }
+      ribbon.closePath();
+      ctx.save();
+      ctx.clip(ribbon);
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'butt';
+      ctx.strokeStyle = color;
+      const steps = 3;
+      for (let s = steps; s >= 1; s--) {
+        ctx.lineWidth = 2 * band * s / steps;
+        ctx.globalAlpha = this.opacity / steps;
+        ctx.stroke(path);
+      }
+      ctx.restore();
+    }
+  }
+}
+
+class AirspaceLayer {
+  static BLUE = '#4f8cf5';
+  static MAGENTA = '#ee52b2';
+  static CASING = 'rgba(8, 12, 18, 0.6)';
+  static E_LABEL = { E2: 'surface area', E3: 'extension', E4: 'extension', E6: 'en route', E7: 'en route' };
+  // FAA Class E floor areas: never drawn as a line, only as the vignette
+  // along their "efloor" edges.
+  static E_FLOOR = { E5: true, E6: true, E7: true };
+  // Regions a build can carry, in the order the panel lists them.
+  static REGION_ORDER = ['us', 'fr', 'br'];
+  // Pin-card order on equal floors: classes first, then the type badges
+  // of regions whose source publishes no class.
+  static BADGE_ORDER = ['A', 'B', 'C', 'D', 'E', 'TMA', 'CTA', 'CTR', 'ATZ'];
+
+  constructor(mapCtrl, timelineApp) {
+    this.map = mapCtrl.map;
+    this.timelineApp = timelineApp;
+    this.enabled = !!CONFIG.airspaceUrl && Utils.storageGet('airspaceShown') === '1';
+    // Chip filters: Class A–D together (the solid/dashed line classes, plus
+    // controlled airspace whose source publishes no class), E on its own.
+    this.filter = { bcd: true, e: true };
+    try {
+      const saved = JSON.parse(Utils.storageGet('airspaceFilter') || '{}');
+      for (const k of Object.keys(this.filter)) {
+        if (typeof saved[k] === 'boolean') this.filter[k] = saved[k];
+      }
+    } catch (e) { /* keep defaults */ }
+    this.layer = null;        // protomaps-leaflet GridLayer, created on first enable
+    this.loadPromise = null;
+    this.url = null;          // archive URL actually tried (local mirror or data host)
+    this.loadError = null;    // why the last load failed, shown until the next attempt
+    this.meta = null;         // archive_aero block from the PMTiles metadata
+    this.regions = {};        // rg -> { name, source, cycles, boxes, note } from that block
+    this.dateStr = null;
+    this.dateInt = null;      // selected timeline date as YYYYMMDD
+    this.cyc = {};            // rg -> cycle in effect on that date (absent: no data for it)
+    this.cycKey = '';         // this.cyc serialised, to spot a change
+    this.rerenderDebounced = Utils.debounce(() => this.layer?.rerenderTiles(), 120);
+    this.els = { status: document.getElementById('asStatus') };
+    // The status line speaks for the region(s) under view, so it follows the map.
+    this.map.on('moveend', () => this._renderStatus());
+  }
+
+  init(dateStr) {
+    this._setDate(dateStr);
+    this._renderStatus();
+    if (this.enabled) this._ensureLoaded();
+  }
+
+  setEnabled(on) {
+    if (!CONFIG.airspaceUrl) return;
+    this.enabled = on;
+    Utils.storageSet('airspaceShown', on ? '1' : '0');
+    if (on) { this.loadError = null; this._ensureLoaded(); }
+    else if (this.layer) this.layer.remove();
+    this._renderStatus();
+    this.timelineApp.pinInspector?.refresh();
+  }
+
+  setFilter(key, on) {
+    if (!(key in this.filter)) return;
+    this.filter[key] = on;
+    Utils.storageSet('airspaceFilter', JSON.stringify(this.filter));
+    if (this.enabled && this.layer) this.layer.rerenderTiles();
+    this.timelineApp.pinInspector?.refresh();
+  }
+
+  onDateChanged(dateStr) {
+    const before = this.cycKey;
+    if (!this._setDate(dateStr)) return;
+    this._renderStatus();
+    // Versions only change at cycle boundaries, so a repaint is needed
+    // only when some region's cycle in effect changes — never while
+    // scrubbing through decades outside every window, where nothing is drawn.
+    if (this.cycKey !== before && this.enabled && this.layer) this.rerenderDebounced();
+  }
+
+  // Returns true when the date changed. Also resolves, per region, the
+  // held cycle in effect on it.
+  _setDate(dateStr) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(dateStr || '');
+    const d = m ? +(m[1] + m[2] + m[3]) : null;
+    const changed = d !== this.dateInt;
+    this.dateStr = dateStr || null;
+    this.dateInt = d;
+    this.cyc = {};
+    for (const rg of Object.keys(this.regions)) {
+      const c = this._cycleFor(rg, d);
+      if (c) this.cyc[rg] = c;
+    }
+    this.cycKey = JSON.stringify(this.cyc);
+    return changed;
+  }
+
+  // The region's newest held cycle on or before day d — provided d falls
+  // within that cycle's 28 days. A hole in the series, or a date past the
+  // newest cycle, resolves to null: nothing is known about those dates,
+  // so nothing is drawn and the status line says why.
+  _cycleFor(rg, d) {
+    const r = this.regions[rg];
+    if (d == null || !r?.cycles?.length) return null;
+    let best = null;
+    for (const c of r.cycles) {
+      if (AirspaceLayer.ymd(c) <= d) best = c;
+      else break;
+    }
+    if (best == null || d >= AirspaceLayer.plusDays(best, this._cycleDays())) return null;
+    return best;
+  }
+
+  _cycleDays() { return this.meta?.cycle_days || 28; }
+
+  _ensureLoaded() {
+    if (!this.loadPromise) {
+      this.loadPromise = this._load().then(() => {
+        if (this.enabled) this._attach();
+      }).catch((err) => {
+        console.error('airspace archive failed to load', err);
+        this.loadPromise = null; // next toggle retries
+        this.enabled = false;
+        // The switch goes back off; without the reason beside it, an
+        // unpublished archive read as a switch that would not stay on.
+        this.loadError = AirspaceLayer.failureReason(err, this.url);
+        Utils.storageSet('airspaceShown', '0');
+        document.getElementById('airspaceBtn')?.setAttribute('aria-pressed', 'false');
+        this._renderStatus();
+        Utils.toast(`Airspace data unavailable: ${this.loadError}`, 6000);
+      });
+    } else if (this.layer) {
+      this._attach();
+    }
+  }
+
+  _attach() {
+    if (this.layer && !this.map.hasLayer(this.layer)) this.layer.addTo(this.map);
+    this._renderStatus();
+  }
+
+  async _load() {
+    const url = await this._resolveUrl();
+    this.url = url;
+    // Header + JSON metadata: per region, the cycle list the build stamped
+    // in (which names the cycle in effect) and the extent boxes (which say
+    // whose data is under view). It doubles as the availability probe —
+    // protomaps-leaflet itself fails silently.
+    const meta = await new pmtiles.PMTiles(url).getMetadata();
+    this.meta = meta.archive_aero || {};
+    this.regions = this.meta.regions || {};
+    this._setDate(this.dateStr);
+    const credits = AirspaceLayer.REGION_ORDER.filter((rg) => this.regions[rg]).map((rg) => {
+      const r = this.regions[rg];
+      return r.source_url ? `<a href="${r.source_url}">${r.source}</a>` : r.source;
+    });
+    this.layer = protomapsL.leafletLayer({
+      url,
+      paintRules: this._paintRules(),
+      labelRules: [],
+      maxDataZoom: CONFIG.airspaceMaxDataZoom,
+      zIndex: 20, // above the chart GridLayer (10), below the airfield canvas
+      attribution: 'airspace ' + (credits.join(', ') || 'archive.aero')
+    });
+  }
+
+  // Same localhost fallback as airfields.json: a local mirror copy at
+  // airspace/<name>.pmtiles wins when the page is served from localhost
+  // (scripts/dev_server.py mounts the mirror there and answers Range).
+  async _resolveUrl() {
+    const url = CONFIG.airspaceUrl;
+    if (['localhost', '127.0.0.1', ''].includes(location.hostname)) {
+      const local = 'airspace/' + url.split('/').pop();
+      try {
+        const resp = await fetch(local, { method: 'HEAD' });
+        if (resp.ok) return new URL(local, location.href).href;
+      } catch (e) { /* fall through to the data host */ }
+    }
+    return url;
+  }
+
+  // Sectional legend, keyed on the ICAO class so every region reads the
+  // same: Class A and B solid blue (A heaviest; sectionals chart no A),
+  // C solid magenta, D dashed blue, E dashed magenta (surface areas and
+  // extensions; the FAA's E floors are a vignette along the "efloor"
+  // edges instead — magenta for 700 ft AGL, blue for 1,200 ft and higher,
+  // shaded on the controlled side). Controlled airspace whose source
+  // publishes no class (Brazil) is a plain solid blue line. Every line
+  // sits on a dark casing so it reads on pale terrain and dense chart ink
+  // alike; widths grow with zoom so a state-level view isn't swamped.
+  _paintRules() {
+    const P = protomapsL;
+    const { BLUE, MAGENTA, CASING } = AirspaceLayer;
+    const show = (pick) => (z, f) => {
+      const p = f.props;
+      return pick(p) && this._typeOn(p) && this._inEffect(p);
+    };
+    const w = (base) => (z) => z >= 10 ? base : z >= 8 ? base * 0.8 : base * 0.65;
+    const casing = (width) => (z) => width(z) + 2.2;
+    const solid = (color, width) => new P.LineSymbolizer({ color, width, lineCap: 'round', lineJoin: 'round' });
+    const dashed = (color, width, dash) => new P.LineSymbolizer({
+      color, width, dash, dashColor: color, dashWidth: width, lineCap: 'butt', lineJoin: 'round'
+    });
+    const isA = (p) => p.cls === 'A';
+    const isB = (p) => p.cls === 'B';
+    const isC = (p) => p.cls === 'C';
+    const isD = (p) => p.cls === 'D';
+    const isE = (p) => p.cls === 'E' && !AirspaceLayer.E_FLOOR[p.lt];
+    const unclassed = (p) => !p.cls;
+    const rules = [];
+    const add = (pick, symbolizer, minzoom) => rules.push({ dataLayer: 'class', symbolizer, filter: show(pick), minzoom });
+    rules.push({
+      dataLayer: 'efloor',
+      symbolizer: new RibbonSymbolizer({
+        color: (z, f) => f.props.k === '700' ? MAGENTA : BLUE,
+        band: (z) => z >= 10 ? 11 : z >= 9 ? 9 : z >= 8 ? 7 : 5,
+        opacity: 0.5
+      }),
+      filter: (z, f) => this.filter.e && this._inEffect(f.props),
+      minzoom: 7
+    });
+    add(isA, solid(CASING, casing(w(2.8))));
+    add(isB, solid(CASING, casing(w(2.6))));
+    add(isC, solid(CASING, casing(w(2.4))));
+    add(isD, dashed(CASING, casing(w(1.8)), [7, 4]));
+    add(isE, dashed(CASING, casing(w(1.6)), [5, 4]));
+    add(unclassed, solid(CASING, casing(w(2))));
+    add(isA, solid(BLUE, w(2.8)));
+    add(isB, solid(BLUE, w(2.6)));
+    add(isC, solid(MAGENTA, w(2.4)));
+    add(isD, dashed(BLUE, w(1.8), [7, 4]));
+    add(isE, dashed(MAGENTA, w(1.6), [5, 4]));
+    add(unclassed, solid(BLUE, w(2)));
+    return rules;
+  }
+
+  _typeOn(p) {
+    return p.cls === 'E' ? this.filter.e : this.filter.bcd;
+  }
+
+  // A version is in effect from its first cycle up to (not including) the
+  // first later held cycle without it; no `to` means "still current". And
+  // only while its region has a cycle in effect on the date at all.
+  _inEffect(p) {
+    return this.cyc[p.rg] != null && p.from <= this.dateInt && (p.to == null || this.dateInt < p.to);
+  }
+
+  // Regions whose extent boxes meet the current view. Leaflet bounds run
+  // past ±180 when the map is panned around the world, so each box is
+  // also tried shifted by a full turn.
+  _regionsInView() {
+    const b = this.map.getBounds();
+    const s = b.getSouth(), n = b.getNorth(), wv = b.getWest(), ev = b.getEast();
+    const hit = ([w0, s0, e0, n0]) => n0 >= s && s0 <= n
+      && [0, 360, -360].some((k) => e0 + k >= wv && w0 + k <= ev);
+    return AirspaceLayer.REGION_ORDER.filter((rg) => (this.regions[rg]?.boxes || []).some(hit));
+  }
+
+  _regionsAt(latlng) {
+    const { lat, lng } = latlng;
+    const hit = ([w0, s0, e0, n0]) => lat >= s0 && lat <= n0
+      && [0, 360, -360].some((k) => lng + k >= w0 && lng + k <= e0);
+    return AirspaceLayer.REGION_ORDER.filter((rg) => (this.regions[rg]?.boxes || []).some(hit));
+  }
+
+  _renderStatus() {
+    const el = this.els.status;
+    if (!el) return;
+    el.textContent = '';
+    if (!CONFIG.airspaceUrl) { el.textContent = 'Airspace data not configured'; return; }
+    if (!this.enabled) {
+      el.textContent = this.loadError
+        ? `Airspace data unavailable: ${this.loadError}`
+        : 'US (FAA NASR), France (SIA), Brazil (DECEA)';
+      return;
+    }
+    if (!this.meta) { el.textContent = 'Loading airspace…'; return; }
+    const inView = this._regionsInView();
+    if (!inView.length) { el.textContent = 'No airspace data for this area'; return; }
+    for (const rg of inView) {
+      const line = document.createElement('div');
+      line.textContent = this._regionStatus(rg);
+      el.appendChild(line);
+    }
+  }
+
+  // "France · SIA cycle Oct 5, 2023", or why the region draws nothing on
+  // the selected date: before its first cycle, inside a hole of the
+  // series, or past its newest cycle.
+  _regionStatus(rg) {
+    const r = this.regions[rg];
+    const F = AirspaceLayer.fmtCycle;
+    const cyc = this.cyc[rg];
+    if (cyc) return `${r.name} · ${r.source} cycle ${F(cyc)}`;
+    const d = this.dateInt;
+    const first = r.cycles?.[0];
+    if (d == null || !first) return `${r.name} · ${r.source}`;
+    if (d < AirspaceLayer.ymd(first)) return `${r.name} · no ${r.source} data before ${F(first)}`;
+    let prev = null, next = null;
+    for (const c of r.cycles) {
+      if (AirspaceLayer.ymd(c) <= d) prev = c;
+      else { next = c; break; }
+    }
+    const gapFrom = AirspaceLayer.isoOf(AirspaceLayer.plusDays(prev, this._cycleDays()));
+    if (next) return `${r.name} · no ${r.source} data ${F(gapFrom)} to ${F(AirspaceLayer.isoOf(AirspaceLayer.plusDays(next, -1)))}`;
+    return `${r.name} · no ${r.source} data after ${F(AirspaceLayer.isoOf(AirspaceLayer.plusDays(prev, this._cycleDays() - 1)))} yet`;
+  }
+
+  // The airspace stack under a point on the selected date, into `el`
+  // (the pin card's section). Reads the layer's decoded tiles, so it only
+  // knows what is on screen: the FAA's Class E floors enter the tiles at z7.
+  renderStack(el, latlng) {
+    el.textContent = '';
+    el.hidden = true;
+    if (!this.enabled || !this.layer || !latlng) return;
+    // Only regions with a cycle in effect under the pin have anything to
+    // say; for the others the panel's status line already explains.
+    const here = this._regionsAt(latlng).filter((rg) => this.cyc[rg]);
+    if (!here.length) return;
+    const seen = new Set();
+    const rows = [];
+    let hits;
+    try {
+      hits = this.layer.queryTileFeaturesDebug(latlng.lng, latlng.lat, 2);
+    } catch (e) {
+      return;
+    }
+    for (const list of hits.values()) {
+      for (const h of list) {
+        const p = h.feature?.props;
+        if (!p || h.layerName !== 'class') continue;
+        // Exclusion polygons mark notches cut out of a shelf; they are
+        // drawn (their edges are real boundaries) but not listed.
+        if (p.ex || seen.has(p.v) || !this._typeOn(p) || !this._inEffect(p)) continue;
+        seen.add(p.v);
+        rows.push(p);
+      }
+    }
+    const order = (p) => AirspaceLayer.BADGE_ORDER.indexOf(AirspaceLayer.badge(p));
+    rows.sort((a, b) => AirspaceLayer.floorFt(a) - AirspaceLayer.floorFt(b) || order(a) - order(b));
+    // Shelves overlap (DFW's outer 4,000 ft shelf is the whole footprint,
+    // with the core drawn on top; TMA Paris stacks nine parts), and a
+    // 700 ft area sits inside the state 1,200 ft blanket. At one point the
+    // lowest floor of a class governs, so one row per class — per type
+    // where the source publishes no class — lowest first.
+    const perBadge = new Set();
+    const governing = rows.filter((p) => {
+      const key = AirspaceLayer.badge(p);
+      if (perBadge.has(key)) return false;
+      perBadge.add(key);
+      return true;
+    });
+    const rg = governing[0]?.rg || here[0];
+    const region = this.regions[rg] || {};
+    const title = document.createElement('div');
+    title.className = 'pin-as-title';
+    title.textContent = `Airspace · ${region.source || rg} ${AirspaceLayer.fmtCycle(this.cyc[rg])}`;
+    el.appendChild(title);
+    for (const p of governing) {
+      const row = document.createElement('div');
+      row.className = 'pin-as-row';
+      const cls = document.createElement('span');
+      cls.className = `pin-as-cls pin-as-cls-${p.cls || 'type'}`;
+      cls.textContent = AirspaceLayer.badge(p);
+      const alt = document.createElement('span');
+      alt.className = 'pin-as-alt';
+      alt.textContent = AirspaceLayer.altSpan(p);
+      const name = document.createElement('span');
+      name.className = 'pin-as-name';
+      const bits = [AirspaceLayer.shortName(p)];
+      if (p.rg === 'us') {
+        if (AirspaceLayer.E_LABEL[p.lt]) bits.push(AirspaceLayer.E_LABEL[p.lt]);
+      } else if (p.cls && p.lt) {
+        bits.push(p.lt); // the badge shows the class; say which kind of area it is
+      }
+      if (p.hrs === 'NOTAM') bits.push('by NOTAM');
+      else if (p.hrs === 'RMK' && p.rmk) bits.push(p.rmk);
+      else if (p.hrs && p.hrs !== 'H24') bits.push(p.hrs); // AIP hours codes: HJ, HX, HO, HN, TS (H24 is the default)
+      name.textContent = bits.filter(Boolean).join(' · ');
+      name.title = [p.name, p.rmk].filter(Boolean).join(' — ');
+      row.append(cls, alt, name);
+      el.appendChild(row);
+    }
+    const note = document.createElement('div');
+    note.className = 'pin-as-note';
+    if (rg === 'us' && this.map.getZoom() < 7) {
+      note.textContent = governing.length ? 'Zoom in to include Class E floors' : 'Zoom in for Class E; none of B, C or D here';
+    } else if (!governing.length) {
+      note.textContent = 'No class airspace here';
+    } else if (region.note) {
+      note.textContent = region.note;
+    }
+    if (note.textContent) el.appendChild(note);
+    el.hidden = false;
+  }
+
+  // What the pin card's badge says: the ICAO class, or the area type
+  // where the source publishes no class.
+  static badge(p) { return p.cls || p.lt || '?'; }
+
+  static ymd(s) { return +String(s).replace(/-/g, '').slice(0, 8); }
+
+  // One line on why the archive could not be read. pmtiles.js reports a
+  // refused read as "Bad response code: N" (404: the dated key is not in
+  // R2 — publish it with scripts/airspace_build.py --upload), a server
+  // that answered a Range request with the whole file by its Byte Serving
+  // message (plain `python -m http.server`; use scripts/dev_server.py),
+  // and a network or CORS failure as fetch's TypeError. The host says
+  // which copy was tried: the local mirror or the data host.
+  static failureReason(err, url) {
+    let host = '';
+    try { host = new URL(url || CONFIG.airspaceUrl, location.href).host; } catch (e) { /* leave blank */ }
+    const at = host ? ` on ${host}` : '';
+    const msg = String((err && err.message) || err || '');
+    const code = /Bad response code: (\d+)/.exec(msg);
+    if (code) return code[1] === '404' ? `archive not found${at} (HTTP 404)` : `HTTP ${code[1]}${at}`;
+    if (/Byte Serving/i.test(msg)) return `server${at} ignored the byte-range request`;
+    if (/magic number/i.test(msg)) return `file${at} is not a PMTiles archive`;
+    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) return `network or CORS error${at}`;
+    if (err instanceof pmtiles.EtagMismatch) return `archive${at} changed while it was being read; reload the page`;
+    if (!msg) return 'unknown error';
+    return msg.length > 80 ? msg.slice(0, 79) + '…' : msg;
+  }
+
+  // YYYYMMDD int -> 'YYYY-MM-DD'.
+  static isoOf(n) {
+    const s = String(n).padStart(8, '0');
+    return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  }
+
+  // 'YYYY-MM-DD' + n days -> YYYYMMDD int (UTC arithmetic, no DST drift).
+  static plusDays(s, n) {
+    const [y, m, d] = String(s).split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1, d) + n * 86400000);
+    return t.getUTCFullYear() * 10000 + (t.getUTCMonth() + 1) * 100 + t.getUTCDate();
+  }
+
+  static fmtCycle(s) {
+    const [y, m, d] = String(s).split('-').map(Number);
+    if (!y || !m || !d) return String(s);
+    return new Date(y, m - 1, d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  // Sort key in feet: SFC 0, AGL/MSL as given, flight levels x100.
+  static floorFt(p) {
+    if (p.lo == null) return 0;
+    return p.loc === 'STD' ? p.lo * 100 : p.lo;
+  }
+
+  static fmtAlt(val, code) {
+    if (code === 'UNLTD') return 'unlimited';
+    if (val == null) return null;
+    if (code === 'SFC') return val ? `${val.toLocaleString()} AGL` : 'SFC';
+    if (code === 'STD') return `FL${val}`;
+    return `${val.toLocaleString()} ${code || 'MSL'}`;
+  }
+
+  static altSpan(p) {
+    const lo = AirspaceLayer.fmtAlt(p.lo, p.loc);
+    const hi = AirspaceLayer.fmtAlt(p.hi, p.hic);
+    if (lo && hi) {
+      if (p.loc === 'MSL' && p.hic === 'MSL') return `${p.lo.toLocaleString()} – ${hi}`;
+      return `${lo} – ${hi}`;
+    }
+    if (lo) return `from ${lo}`;
+    if (hi) return `to ${hi}`;
+    return '';
+  }
+
+  // "ADDISON CLASS D" -> "ADDISON": the class badge already says it.
+  static shortName(p) {
+    return (p.name || p.id || '').replace(/\s+CLASS\s+[A-G]\d?\s*$/i, '').trim() || p.name || '';
+  }
+}
+
+/** AIRFIELDS LAYER **/
+// Historical-airfield dots (index built offline from Paul Freeman's
+// airfields-freeman.com: coords, operating years, source links). Dots
+// follow the timeline — a field shows while the selected year falls in
+// its operating span; undated fields always show, fainter. Hover shows
+// the name (mouse only); click opens a card (#afPanel) with dates and
+// source links. Data: airfields.json on the data host (same
+// localhost-fallback pattern as ChartIndex).
+let afClickGuard = 0; // stamped on dot clicks so PinInspector skips that map click
+
+// Cased airfield dot: solid status fill, crisp white ring, thin dark
+// contour outside it (road-casing contrast, so the marker reads as UI on
+// both pale terrain and dense red/magenta chart ink), plus a blue halo on
+// the selected dot. Drawn straight on the shared canvas renderer —
+// CircleMarker geometry and hit-testing (radius + weight/2 + tolerance)
+// are inherited unchanged.
+const AfCanvas = L.Canvas.extend({
+  _updateAfDot(layer) {
+    if (!this._drawing || layer._empty()) return;
+    const p = layer._point;
+    const r = Math.max(Math.round(layer._radius * 10) / 10, 1);
+    const o = layer.options;
+    const ctx = this._ctx;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    ctx.globalAlpha = o.fillOpacity;
+    ctx.fillStyle = o.fillColor;
+    ctx.fill();
+    ctx.globalAlpha = o.opacity;
+    ctx.lineWidth = o.weight;
+    ctx.strokeStyle = o.color;
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, r + 1.7, 0, Math.PI * 2);
+    ctx.globalAlpha = 0.5 * o.opacity;
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = '#0a0e12';
+    ctx.stroke();
+    if (layer._afSelected) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r + 3.8, 0, Math.PI * 2);
+      ctx.globalAlpha = 0.95;
+      ctx.lineWidth = 2.2;
+      ctx.strokeStyle = '#1e90ff';
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+});
+const AfDot = L.CircleMarker.extend({
+  _updatePath() { this._renderer._updateAfDot(this); }
+});
+
+class AirfieldsLayer {
+  static STATUS_COLORS = {
+    open: '#36a35d',    // still operating today
+    gone: '#c23b2a',    // closure evidence
+    unknown: '#8b8274'  // no closure evidence / undated
+  };
+
+  constructor(mapCtrl, timelineApp) {
+    this.map = mapCtrl.map;
+    this.timelineApp = timelineApp;
+    // Canvas hit-testing is exact: a dot's tap target is radius + weight/2
+    // + renderer tolerance, so without tolerance it's ~4-6px and finger
+    // taps fall through to the map (moving the chart pin instead of
+    // opening the airfield card). Generous slop for coarse pointers, a
+    // little for mouse.
+    this.touchUI = !!(window.matchMedia && matchMedia('(pointer: coarse)').matches);
+    this.renderer = new AfCanvas({ padding: 0.5, tolerance: this.touchUI ? 14 : 4 });
+    this.features = null;
+    this.loadPromise = null;
+    this.year = null;
+    this.enabled = Utils.storageGet('airfieldsShown') !== '0';
+    // Status buckets are exhaustive: open (still operating) / gone
+    // (closure evidence) / unknown (no closure evidence).
+    this.statusFilter = { open: true, gone: true, unknown: true };
+    try {
+      const saved = JSON.parse(Utils.storageGet('airfieldsStatus') || '{}');
+      for (const k of Object.keys(this.statusFilter)) {
+        if (typeof saved[k] === 'boolean') this.statusFilter[k] = saved[k];
+      }
+    } catch (e) { /* keep defaults */ }
+    this.hoverOk = !!(window.matchMedia && matchMedia('(hover: hover) and (pointer: fine)').matches);
+    this.selected = null;
+    this._lastRadius = null;
+    this.applyDebounced = Utils.debounce(() => this._apply(), 120);
+    this.els = {
+      panel: document.getElementById('afPanel'),
+      name: document.getElementById('afName'),
+      dates: document.getElementById('afDates'),
+      loc: document.getElementById('afLoc'),
+      links: document.getElementById('afLinks')
+    };
+    if (this.els.panel && window.L && L.DomEvent) {
+      L.DomEvent.disableClickPropagation(this.els.panel);
+      L.DomEvent.disableScrollPropagation(this.els.panel);
+    }
+    document.getElementById('afClose')?.addEventListener('click', () => this.closeCard());
+    document.getElementById('afBrowser')?.addEventListener('toggle', () => this._updateBrowser());
+    document.getElementById('afOpen')?.addEventListener('click', () => {
+      const f = this.features?.[Number(document.getElementById('afSelect').value)];
+      if (!f?.on) return;
+      this.timelineApp.closeToolsPanel();
+      this.openCard(f, true);
+    });
+    this.map.on('move zoom viewreset', () => this._updatePosition());
+    this.map.on('moveend', () => this._updateBrowser());
+    this.map.on('zoomend', () => this._applyRadius());
+    window.addEventListener('keydown', (e) => {
+      if (!e.defaultPrevented && e.key === 'Escape' && this.selected &&
+          (e.target === this.map.getContainer() || this.els.panel?.contains(e.target))) {
+        e.preventDefault();
+        this.closeCard();
+      }
+    });
+  }
+
+  init(dateStr) {
+    if (dateStr) this.year = parseInt(dateStr.slice(0, 4), 10) || null;
+    if (this.enabled) this._ensureLoaded();
+  }
+
+  setEnabled(on) {
+    this.enabled = on;
+    Utils.storageSet('airfieldsShown', on ? '1' : '0');
+    if (on) {
+      this._ensureLoaded();
+    } else {
+      this.closeCard();
+      if (this.features) {
+        for (const f of this.features) if (f.on) { f.marker.remove(); f.on = false; }
+      }
+    }
+    this._updateBrowser();
+  }
+
+  _ensureLoaded() {
+    if (!this.loadPromise) {
+      this.loadPromise = this._fetch().then((geo) => {
+        this._build(geo);
+        this._apply();
+      }).catch((err) => {
+        console.error('airfields.json failed to load', err);
+        this.loadPromise = null; // next toggle retries
+        Utils.toast('Airfield data unavailable');
+        this.loadError = true;
+        this._updateBrowser();
+      });
+    } else {
+      this._apply();
+    }
+  }
+
+  async _fetch() {
+    const sources = ['https://data.archive.aero/sectionals/airfields.json'];
+    if (['localhost', '127.0.0.1', ''].includes(location.hostname)) sources.unshift('airfields.json');
+    for (const src of sources) {
+      try {
+        const resp = await fetch(src);
+        if (resp.ok) return await resp.json();
+      } catch (e) { /* try next source */ }
+    }
+    throw new Error('airfields.json unavailable');
+  }
+
+  _build(geo) {
+    this.features = (geo.features || []).map((feat) => {
+      const [lng, lat] = feat.geometry.coordinates;
+      const p = feat.properties;
+      p.start_year = p.start_year ? +p.start_year : null;
+      p.end_year = p.end_year ? +p.end_year : null;
+      // "Still listed in the 1988 FAA data" is a last-known-alive year,
+      // not a closure: it never hides or reddens a field.
+      p.last_known_year = p.last_known_year ? +p.last_known_year : null;
+      const undated = !p.start_year && !p.end_year;
+      const marker = new AfDot([lat, lng], {
+        renderer: this.renderer,
+        radius: this._radiusForZoom(),
+        weight: 2,
+        color: '#ffffff',
+        opacity: undated ? 0.55 : 0.9,
+        fillColor: AirfieldsLayer.STATUS_COLORS[p.status] || AirfieldsLayer.STATUS_COLORS.unknown,
+        fillOpacity: undated ? 0.45 : 1
+      });
+      const f = { p, lat, lng, marker, on: false };
+      if (this.hoverOk) {
+        // TextNode content so names render as text, never as HTML.
+        marker.bindTooltip(() => document.createTextNode(f.p.name),
+          { direction: 'top', offset: [0, -8], className: 'af-tip' });
+      }
+      marker.on('click', (e) => {
+        afClickGuard = Date.now();
+        if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+        this.openCard(f);
+      });
+      return f;
+    });
+    this._lastRadius = this._radiusForZoom();
+  }
+
+  onDateChanged(dateStr) {
+    const y = parseInt((dateStr || '').slice(0, 4), 10);
+    if (!y || y === this.year) return;
+    this.year = y;
+    if (this.enabled && this.features) this.applyDebounced();
+  }
+
+  setStatusFilter(key, on) {
+    if (!(key in this.statusFilter)) return;
+    this.statusFilter[key] = on;
+    Utils.storageSet('airfieldsStatus', JSON.stringify(this.statusFilter));
+    this._apply();
+  }
+
+  // A field shows when its status bucket is enabled AND the selected year
+  // falls inside its operating span. Missing bounds fail open: undated
+  // fields always show (faint), a field with only a start shows from then
+  // on, only an end shows until then.
+  _visible(p) {
+    if (!(this.statusFilter[p.status] ?? true)) return false;
+    const y = this.year;
+    if (y == null) return true;
+    if (!p.start_year && !p.end_year) return true;
+    if (p.start_year && y < p.start_year) return false;
+    if (p.status === 'open') return true;
+    if (p.end_year && y > p.end_year) return false;
+    return true;
+  }
+
+  _apply() {
+    if (!this.enabled || !this.features) return;
+    for (const f of this.features) {
+      const v = this._visible(f.p);
+      if (v && !f.on) {
+        f.marker.addTo(this.map);
+        f.on = true;
+      } else if (!v && f.on) {
+        f.marker.remove();
+        f.on = false;
+        if (this.selected === f) this.closeCard();
+      }
+    }
+    this._updateBrowser();
+  }
+
+  // Native controls are the keyboard/touch-AT equivalent of canvas dots.
+  // Only rebuild while expanded, retaining the user's selected airfield.
+  _updateBrowser() {
+    if (!document.getElementById('afBrowser')?.open) return;
+    const select = document.getElementById('afSelect');
+    const previous = select.value;
+    const bounds = this.map.getBounds();
+    const entries = this.enabled ? (this.features || []).map((f, i) => ({ f, i }))
+      .filter(({ f }) => f.on && bounds.contains([f.lat, f.lng]))
+      .sort((a, b) => a.f.p.name.localeCompare(b.f.p.name)) : [];
+    select.replaceChildren();
+    for (const { f, i } of entries) {
+      const option = document.createElement('option');
+      option.value = String(i);
+      option.textContent = `${f.p.name}${f.p.state ? ' — ' + f.p.state : ''}`;
+      select.appendChild(option);
+    }
+    if (entries.some(({ i }) => String(i) === previous)) select.value = previous;
+    select.disabled = !entries.length;
+    document.getElementById('afOpen').disabled = !entries.length;
+    document.getElementById('afCount').textContent = !this.enabled ? 'Turn on Airfields to browse.'
+      : !this.features ? (this.loadError ? 'Airfield data unavailable. Toggle Airfields to retry.' : 'Loading airfields…')
+      : entries.length ? `${entries.length} airfields in view.` : 'No airfields match this view, date, and filters.';
+  }
+
+  _radiusForZoom() {
+    const z = this.map.getZoom() ?? 4;
+    const r = z >= 11 ? 8 : z >= 9 ? 7 : z >= 7 ? 5.5 : 4;
+    // Slightly larger dots where the pointer is a finger.
+    return this.touchUI ? r + 1 : r;
+  }
+
+  _applyRadius() {
+    if (!this.features) return;
+    const r = this._radiusForZoom();
+    if (r === this._lastRadius) return;
+    this._lastRadius = r;
+    for (const f of this.features) f.marker.setRadius(r);
+  }
+
+  static fmtSpan(p) {
+    const s = p.start_year, e = p.end_year, k = p.last_known_year;
+    if (p.status === 'open') return s ? `In operation ${s} – present` : 'Open today';
+    if (s && e) return `In operation ~${s} – ${e}`;
+    if (s && k) return `In operation ~${s} – at least ${k}`;
+    if (s) return `In operation from ~${s}`;
+    if (e) return `In operation until ~${e}`;
+    if (k) return `Still listed in ${k}; closure date unknown`;
+    return 'Operating dates unknown';
+  }
+
+  openCard(f, focus = false) {
+    if (this.selected && this.selected !== f) {
+      this.selected.marker._afSelected = false;
+      this.selected.marker.redraw();
+    }
+    this.selected = f;
+    f.marker._afSelected = true;
+    f.marker.redraw();
+    const els = this.els;
+    if (!els.panel) return;
+    const p = f.p;
+    els.name.textContent = p.name;
+    els.dates.textContent = AirfieldsLayer.fmtSpan(p);
+    if (p.status === 'open') {
+      const chip = document.createElement('span');
+      chip.className = 'pin-near-chip af-open-chip';
+      chip.textContent = 'open';
+      els.dates.appendChild(chip);
+    }
+    els.loc.textContent = p.rel_location || p.state || '';
+    els.links.textContent = '';
+    const mkLink = (label, href) => {
+      const a = document.createElement('a');
+      a.href = href;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = label;
+      els.links.appendChild(a);
+    };
+    if (p.url) mkLink('Airfields-Freeman', p.url);
+    if (p.oa) mkLink('OurAirports', `https://ourairports.com/airports/${encodeURIComponent(p.oa)}/`);
+    els.panel.classList.add('visible');
+    this._updatePosition();
+    if (focus) els.panel.focus({ preventScroll: true });
+  }
+
+  closeCard() {
+    if (this.els.panel?.contains(document.activeElement)) {
+      document.getElementById('toolsBtn')?.focus();
+    }
+    if (this.selected?.marker) {
+      this.selected.marker._afSelected = false;
+      this.selected.marker.redraw(); // no-op if the marker just left the map
+    }
+    this.selected = null;
+    this.els.panel?.classList.remove('visible');
+  }
+
+  // Same anchoring rules as PinInspector: beside the dot, flipping at
+  // viewport edges, clear of the header bar; follows map moves.
+  _updatePosition() {
+    const panel = this.els.panel;
+    if (!this.selected || !panel?.classList.contains('visible')) return;
+    const rect = this.map.getContainer().getBoundingClientRect();
+    const pt = this.map.latLngToContainerPoint([this.selected.lat, this.selected.lng]);
+    const w = panel.offsetWidth, h = panel.offsetHeight;
+    let x = rect.left + pt.x + 18;
+    let y = rect.top + pt.y - 12;
+    if (x + w > window.innerWidth - 8) x = rect.left + pt.x - w - 18;
+    if (x < 8) x = 8;
+    if (y + h > window.innerHeight - 8) y = window.innerHeight - h - 8;
+    if (y < 78) y = 78; // clear the header bar
+    panel.style.left = x + 'px';
+    panel.style.top = y + 'px';
+  }
+}
+
+// Initialize Application
+export async function initApp() {
+  // Loading progress elements
+  const loadingSplash = document.getElementById('loadingSplash');
+  const loadingProgressBar = document.getElementById('loadingProgressBar');
+  const loadingStatus = document.getElementById('loadingStatus');
+
+  const updateLoading = (percent, status) => {
+    loadingProgressBar.style.width = `${percent}%`;
+    loadingStatus.textContent = status;
+  };
+
+  updateLoading(10, 'Loading timeline data...');
+
+  // Show warning banner temporarily
+  const warningOverlay = document.getElementById('warningOverlay');
+  setTimeout(() => warningOverlay.classList.add('visible'), 1500);
+  setTimeout(() => warningOverlay.classList.remove('visible'), 8000);
+
+  const urlParams = new URLSearchParams(window.location.search);
+  const dateParam = urlParams.get('date');
+  const latParam = urlParams.get('lat');
+  const lngParam = urlParams.get('lng');
+  const zoomParam = urlParams.get('zoom');
+
+  // Kick off IP geolocation in parallel with data load so we can set the
+  // map view correctly before the first tile round-trip fires.
+  const ipGeoPromise = (!latParam || !lngParam)
+    ? Promise.race([
+        fetch('https://get.geojs.io/v1/ip/geo.json').then(r => r.json()),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('ipgeo-timeout')), 1200))
+      ]).catch(() => null)
+    : Promise.resolve(null);
+
+  await loadData(); // Fetch and parse CSV first
+  updateLoading(40, 'Initializing map...');
+
+  if (CONFIG.frames.length === 0) {
+    Utils.toast("No valid frames found in CSV");
+    loadingSplash.classList.add('hidden');
+    return;
+  }
+
+  // Resolve the initial view BEFORE creating the map so we fetch basemap tiles
+  // for the user's real location once, instead of rendering Dallas and then
+  // discarding it. lat/lng are honored even when zoom is missing or invalid.
+  let initialView = CONFIG.initialView;
+  const urlLat = parseFloat(latParam);
+  const urlLng = parseFloat(lngParam);
+  const urlZoom = parseInt(zoomParam, 10);
+  if (!isNaN(urlLat) && !isNaN(urlLng)) {
+    initialView = { center: [urlLat, urlLng], zoom: Number.isFinite(urlZoom) ? urlZoom : 10 };
+  } else {
+    const ipGeo = await ipGeoPromise;
+    if (ipGeo) {
+      const lat = parseFloat(ipGeo.latitude);
+      const lng = parseFloat(ipGeo.longitude);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        initialView = { center: [lat, lng], zoom: 10 };
+      }
+    }
+  }
+
+  const mapCtrl = new MapController('map', initialView);
+  const zoomState = { count: 0, timeout: null };
+  const setZooming = (isZooming) => {
+    if (isZooming) {
+      zoomState.count += 1;
+      if (zoomState.timeout) {
+        clearTimeout(zoomState.timeout);
+        zoomState.timeout = null;
+      }
+      document.body.classList.add('zooming');
+      return;
+    }
+    zoomState.count = Math.max(0, zoomState.count - 1);
+    if (zoomState.count === 0) {
+      zoomState.timeout = setTimeout(() => {
+        document.body.classList.remove('zooming');
+        zoomState.timeout = null;
+      }, 120);
+    }
+  };
+  const attachZoomListeners = (map) => {
+    map.on('zoomstart', () => setZooming(true));
+    map.on('zoomend', () => setZooming(false));
+  };
+  attachZoomListeners(mapCtrl.map);
+  const toolsControl = document.getElementById('toolsControl');
+  const mapControls = mapCtrl.map.getContainer().querySelector('.leaflet-top.leaflet-right');
+  if (toolsControl && mapControls) {
+    mapControls.prepend(toolsControl);
+    if (window.L && L.DomEvent) {
+      L.DomEvent.disableClickPropagation(toolsControl);
+      L.DomEvent.disableScrollPropagation(toolsControl);
+    }
+  }
+  // The utility rail stacks under the zoom control: wrap both in a column
+  // so the top-right row stays [Layers | zoom-over-rail].
+  const utilRail = document.getElementById('utilRail');
+  const zoomCtl = mapControls?.querySelector('.leaflet-control-zoom');
+  if (utilRail && zoomCtl) {
+    const col = document.createElement('div');
+    col.className = 'ctl-col';
+    zoomCtl.parentNode.insertBefore(col, zoomCtl);
+    col.appendChild(zoomCtl);
+    col.appendChild(utilRail);
+    if (window.L && L.DomEvent) {
+      L.DomEvent.disableClickPropagation(utilRail);
+      L.DomEvent.disableScrollPropagation(utilRail);
+    }
+  }
+  updateLoading(70, 'Loading controls...');
+
+  const timelineApp = new TimelineApp(mapCtrl);
+  const pinInspector = new PinInspector(mapCtrl, timelineApp);
+  // Exposed so updateShareUrl can encode the pin.
+  timelineApp.pinInspector = pinInspector;
+
+  const airfieldsLayer = new AirfieldsLayer(mapCtrl, timelineApp);
+  timelineApp.airfieldsLayer = airfieldsLayer;
+  const airfieldsBtn = document.getElementById('airfieldsBtn');
+  const syncAirfieldsBtn = () => {
+    airfieldsBtn?.setAttribute('aria-pressed', String(airfieldsLayer.enabled));
+  };
+  airfieldsBtn?.addEventListener('click', () => {
+    airfieldsLayer.setEnabled(!airfieldsLayer.enabled);
+    syncAirfieldsBtn();
+  });
+  syncAirfieldsBtn();
+  const afChips = document.querySelectorAll('#afFilterRow .af-chip');
+  const syncAfChips = () => {
+    afChips.forEach((chip) => {
+      const k = chip.dataset.afStatus;
+      chip.setAttribute('aria-pressed', String(!!airfieldsLayer.statusFilter[k]));
+    });
+  };
+  afChips.forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const k = chip.dataset.afStatus;
+      airfieldsLayer.setStatusFilter(k, !airfieldsLayer.statusFilter[k]);
+      syncAfChips();
+    });
+  });
+  syncAfChips();
+
+  const airspaceLayer = new AirspaceLayer(mapCtrl, timelineApp);
+  timelineApp.airspaceLayer = airspaceLayer;
+  const airspaceBtn = document.getElementById('airspaceBtn');
+  const syncAirspaceBtn = () => {
+    airspaceBtn?.setAttribute('aria-pressed', String(airspaceLayer.enabled));
+  };
+  airspaceBtn?.addEventListener('click', () => {
+    airspaceLayer.setEnabled(!airspaceLayer.enabled);
+    syncAirspaceBtn();
+  });
+  syncAirspaceBtn();
+  const asChips = document.querySelectorAll('#asFilterRow .af-chip');
+  const syncAsChips = () => {
+    asChips.forEach((chip) => {
+      chip.setAttribute('aria-pressed', String(!!airspaceLayer.filter[chip.dataset.asKey]));
+    });
+  };
+  asChips.forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const k = chip.dataset.asKey;
+      airspaceLayer.setFilter(k, !airspaceLayer.filter[k]);
+      syncAsChips();
+    });
+  });
+  syncAsChips();
+  updateLoading(90, 'Almost ready...');
+
+  // Set timeframe from URL if available (view was already applied before
+  // TimelineApp created the first tile request).
+  if (dateParam) {
+    // Clamp an out-of-range ?date= into the covered window so a stale/typo'd
+    // date opens to the nearest real frame instead of a blank overlay.
+    let d = dateParam;
+    const t = new Date(dateParam).getTime();
+    if (!isNaN(t)) {
+      const minT = CONFIG.dateBounds.min ? new Date(CONFIG.dateBounds.min).getTime() : -Infinity;
+      const maxT = CONFIG.dateBounds.max ? new Date(CONFIG.dateBounds.max).getTime() : Infinity;
+      if (t < minT) d = CONFIG.dateBounds.min;
+      else if (t > maxT) d = CONFIG.dateBounds.max;
+      timelineApp.updateByDate(d);
+    }
+  }
+
+  // Restore a shared pin (the one case where the chart inventory loads at
+  // boot rather than on a click).
+  const pinParam = urlParams.get('pin');
+  if (pinParam) {
+    const [pinLat, pinLng] = pinParam.split(',').map(parseFloat);
+    if (!isNaN(pinLat) && !isNaN(pinLng) && Math.abs(pinLat) <= 90) {
+      pinInspector.setPin(L.latLng(pinLat, pinLng));
+    }
+  }
+
+  // Location Crosshair Button - Request User's Geolocation
+  const locateBtn = document.getElementById('locateBtn');
+  locateBtn?.addEventListener('click', () => {
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
+          Utils.toast('Centered on your location (GPS)');
+        },
+        (error) => {
+          console.log('GPS failed, trying IP geolocation...');
+          // Fallback to IP Geolocation, capped so a stalled service doesn't
+          // leave the button looking dead with no feedback.
+          Promise.race([
+            fetch('https://get.geojs.io/v1/ip/geo.json').then(response => response.json()),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('ipgeo-timeout')), 4000))
+          ])
+            .then(data => {
+              const lat = parseFloat(data.latitude);
+              const lng = parseFloat(data.longitude);
+              if (isNaN(lat) || isNaN(lng)) throw new Error('bad-ipgeo');
+              mapCtrl.map.flyTo([lat, lng], 10, { duration: 1.5 });
+              Utils.toast('Centered on your approximate location (IP)');
+            })
+            .catch(err => {
+              console.error('IP Geolocation error:', err);
+              Utils.toast('Unable to determine location');
+            });
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        }
+      );
+    } else {
+      Utils.toast('Geolocation not supported by your browser');
+    }
+  });
+
+  // Layers-panel stats footer: era count is static; zoom and charts-in-view
+  // update live (the latter from showFrame via #chartInfoEffective).
+  const chartInfoTotal = document.getElementById('chartInfoTotal');
+  const chartInfoZoom = document.getElementById('chartInfoZoom');
+  if (chartInfoTotal) chartInfoTotal.textContent = CONFIG.ranges.length.toLocaleString('en-US');
+
+  // Update zoom level display
+  const updateZoomDisplay = () => {
+    if (chartInfoZoom) {
+      // Trimmed of trailing zeros: "8", "8.25" — not "8.00".
+      chartInfoZoom.textContent = parseFloat(mapCtrl.map.getZoom().toFixed(2)).toString();
+    }
+  };
+  mapCtrl.map.on('zoomend', updateZoomDisplay);
+  updateZoomDisplay(); // Initial value
+
+  // Follow frame changes: pin list and airfield dots track the timeline.
+  const originalUpdate = timelineApp.update.bind(timelineApp);
+  timelineApp.update = function (index, lazy, selectedDateOverride) {
+    originalUpdate(index, lazy, selectedDateOverride);
+    const displayDate = this.selectedDate || this.frames[index]?.date;
+    // A pinned list ranks charts in effect on the selected date, so it
+    // follows the timeline (debounced for scrubbing).
+    pinInspector.refreshDebounced();
+    // Airfield dots follow the same timeline (debounced internally).
+    if (displayDate) airfieldsLayer.onDateChanged(displayDate);
+    // Airspace repaints its cached tiles for the new date (debounced too).
+    if (displayDate) airspaceLayer.onDateChanged(displayDate);
+  };
+  const initialDisplayDate = timelineApp.selectedDate || timelineApp.frames[timelineApp.currentIndex]?.date;
+  airfieldsLayer.init(initialDisplayDate);
+  airspaceLayer.init(initialDisplayDate);
+
+  // Hide loading splash
+  updateLoading(100, 'Ready!');
+  setTimeout(() => {
+    loadingSplash.classList.add('hidden');
+  }, 300);
+
+}

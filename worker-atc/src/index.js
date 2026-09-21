@@ -11,8 +11,10 @@
 // routes.js (W3C "Cool URIs don't change" — see that file's header).
 
 import P_MAP from "./p_map.json" with { type: "json" };
-import { PREFIX, keyCandidates, routeOldPath } from "./routes.js";
+import { PREFIX, keyCandidates, routeOldPath, slashedOnlyCandidates, wantsDirectorySlash }
+  from "./routes.js";
 import { injectShell, shellBody, shellHead } from "./shell.js";
+import { FACILITIES_VERSION, facilityVariant, restoreFacilities } from "./facilities.js";
 
 const NEW_ORIGIN = "https://archive.aero";
 const OLD_HOSTS = new Set(["atchistory.org", "www.atchistory.org"]);
@@ -156,18 +158,20 @@ async function serveKey(env, key, request, headers, shell = null) {
   h.set("etag", obj.httpEtag);
   h.set("accept-ranges", "bytes");
   const isHtml = /\.(html?|shtml)$/i.test(key);
+  const requestUrl = new URL(request.url);
+  const withFacilities = isHtml && key !== "feed/index.html" && obj.size <= 2 * 1024 * 1024;
+  const wantsShell = shell && isHtml && key !== "feed/index.html" && (shell.all || key === "index.html");
   // Conditional GET: the ETag was emitted but never honoured, so every
-  // revalidating browser got a full 200 body. The shell-spliced HTML carries
-  // a distinct validator (see below); both are accepted here.
+  // revalidating browser got a full 200 body. Transformed HTML has a versioned,
+  // selection-specific validator: the old unfiltered body must not yield 304.
   const inm = request.headers.get("if-none-match");
-  const shellEtag = obj.httpEtag.replace(/"$/, '-shell"');
+  const renderedEtag = obj.httpEtag.replace(/"$/, `${wantsShell ? "-shell" : ""}${withFacilities ? `-${FACILITIES_VERSION}-${facilityVariant(requestUrl)}` : ""}"`);
   if (inm && !range && inm.split(",").some((t) => {
         t = t.trim().replace(/^W\//, "");
-        return t === "*" || t === obj.httpEtag || t === shellEtag;
+        return t === "*" || t === renderedEtag;
       })) {
     const cc = isHtml ? "public, max-age=3600" : "public, max-age=86400";
-    const etagOut = shell && isHtml && (shell.all || key === "index.html") ? shellEtag : obj.httpEtag;
-    return new Response(null, { status: 304, headers: { ...headers, etag: etagOut, "cache-control": cc } });
+    return new Response(null, { status: 304, headers: { ...headers, etag: renderedEtag, "cache-control": cc } });
   }
   // FrontPage-era .htm pages are windows-1252 with meta tags. rclone stored
   // "text/html; charset=utf-8" (Go's mime table), and a header charset beats
@@ -184,16 +188,16 @@ async function serveKey(env, key, request, headers, shell = null) {
     h.set("content-range", `bytes ${off}-${off + len - 1}/${obj.size}`);
     h.set("content-length", String(len));
   }
-  const withShell =
-    shell && isHtml && status === 200 && key !== "feed/index.html" &&
-    (shell.all || key === "index.html");
-  if (withShell) {
-    const raw = new Uint8Array(await obj.arrayBuffer());
-    const spliced = injectShell(raw, shell); // null: no <body> to hang it on
-    const bytes = spliced ?? raw;
+  if (!range && (wantsShell || withFacilities)) {
+    let bytes = new Uint8Array(await obj.arrayBuffer());
+    if (withFacilities) {
+      const prefix = requestUrl.hostname === "archive.aero" ? PREFIX : "";
+      bytes = restoreFacilities(bytes, requestUrl, prefix) ?? bytes;
+    }
+    if (wantsShell) bytes = injectShell(bytes, shell) ?? bytes;
     // a different representation than the stored object: give caches a
     // distinct validator and the real length
-    if (spliced) h.set("etag", shellEtag);
+    h.set("etag", renderedEtag);
     h.set("content-length", String(bytes.length));
     return new Response(request.method === "HEAD" ? null : bytes, { status, headers: h });
   }
@@ -207,12 +211,18 @@ async function serveKey(env, key, request, headers, shell = null) {
 }
 
 // Serve a canonical URI ("/atc/lewiston", "/atc/history/checklst") from R2 by
-// probing its key candidates.
+// probing its key candidates. DIRECTORY_SLASH: the path names a directory
+// whose index file answered (or would answer the slashed spelling) -- the
+// caller 301s to path + "/" so the page's relative links resolve inside the
+// directory (routes.js, wantsDirectorySlash).
+const DIRECTORY_SLASH = Symbol("directory-slash");
 async function serveCanonical(env, canon, request, extraHeaders, shell) {
   for (const k of keyCandidates(canon)) {
     const r = await serveKey(env, k, request, extraHeaders, shell);
-    if (r) return r;
+    if (r) return wantsDirectorySlash(canon, k) ? DIRECTORY_SLASH : r;
   }
+  for (const k of slashedOnlyCandidates(canon))
+    if (await env.BUCKET.head(k)) return DIRECTORY_SLASH;
   return null;
 }
 
@@ -249,17 +259,28 @@ async function redirectOldHost(env, url, request) {
   if (p && P_MAP[p]) {
     const r = routeOldPath(P_MAP[p]);
     if (r?.status === 410) return html(PAGE_410, 410);
-    return Response.redirect(NEW_ORIGIN + (r?.to ?? PREFIX + P_MAP[p]), 301);
+    const to = r?.to ?? PREFIX + P_MAP[p];
+    return Response.redirect(NEW_ORIGIN + to + facilityQuery(url, to), 301);
   }
   if (url.searchParams.has("s")) return Response.redirect(NEW_ORIGIN + PREFIX + "/", 301);
 
   const route = routeOldPath(path);
   if (route?.status === 410) return html(PAGE_410, 410);
-  if (route?.to) return Response.redirect(NEW_ORIGIN + route.to, 301);
+  if (route?.to) return Response.redirect(NEW_ORIGIN + route.to + facilityQuery(url, route.to), 301);
 
   // Unknown path: prefix it unchanged (original encoding preserved) and let the
   // serving side 404 honestly.
-  return Response.redirect(NEW_ORIGIN + PREFIX + rawPath, 301);
+  return Response.redirect(NEW_ORIGIN + PREFIX + rawPath + facilityQuery(url, PREFIX + rawPath), 301);
+}
+
+// These queries used to be interpreted by WordPress; retain them across the
+// old-host and trailing-slash redirects so bookmarked locations still work.
+function facilityQuery(url, target) {
+  if (target !== PREFIX + "/facility-photos") return "";
+  const params = new URLSearchParams();
+  for (const key of ["state", "city"])
+    if (url.searchParams.has(key)) params.set(key, url.searchParams.get(key));
+  return params.size ? "?" + params : "";
 }
 
 const PAGE_500 = pageShell(
@@ -278,7 +299,10 @@ please try again in a moment.</p>
 async function cachedServe(request, url, ctx, produce) {
   const cacheable = request.method === "GET" && !request.headers.get("range");
   const cache = caches.default;
-  const cacheKey = new Request(url.toString(), { method: "GET" });
+  const versionedUrl = new URL(url);
+  // Bypass pre-fix HTML still in the edge cache after a Worker deployment.
+  versionedUrl.searchParams.set("__aa_render", FACILITIES_VERSION);
+  const cacheKey = new Request(versionedUrl.toString(), { method: "GET" });
   if (cacheable) {
     const hit = await cache.match(cacheKey);
     if (hit) {
@@ -354,7 +378,7 @@ async function handle(request, env, ctx, url, host) {
         if (r?.status === 410) return html(PAGE_410, 410);
         const to = r?.to ?? PREFIX + P_MAP[pid];
         return Response.redirect(
-          to.startsWith(PREFIX) && staging ? url.origin + to.slice(PREFIX.length) : NEW_ORIGIN + to, 301);
+          (to.startsWith(PREFIX) && staging ? url.origin + to.slice(PREFIX.length) : NEW_ORIGIN + to) + facilityQuery(url, to), 301);
       }
       // `staging` above means "serve the bare site root, no /atc/ prefix" — a
       // shape the old hostnames share with atc-staging once the cutover 09:00
@@ -379,13 +403,16 @@ async function handle(request, env, ctx, url, host) {
       else if (route?.to)
         response = Response.redirect(
           route.to.startsWith(PREFIX)
-            ? selfOrigin + selfPrefix + route.to.slice(PREFIX.length)
+            ? selfOrigin + selfPrefix + route.to.slice(PREFIX.length) + facilityQuery(url, route.to)
             : NEW_ORIGIN + route.to,
           301);
       else
-        response = await cachedServe(request, url, ctx, async () =>
-          (await serveCanonical(env, PREFIX + path, request, extra, shell)) ??
-          html(PAGE_404, 404, extra));
+        response = await cachedServe(request, url, ctx, async () => {
+          const served = await serveCanonical(env, PREFIX + path, request, extra, shell);
+          if (served === DIRECTORY_SLASH) // same host, same spelling, one more slash
+            return Response.redirect(url.origin + url.pathname + "/" + url.search, 301);
+          return served ?? html(PAGE_404, 404, extra);
+        });
     }
     return response;
 }

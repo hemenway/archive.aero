@@ -527,3 +527,20 @@ from the attic set — re-run a boundary check after.
   Wall Planning, 14 Grand Canyon, and a 2013 `Heli/` set with older Front/West/East
   sheet naming.
 - The targeted **imgcv2 resume** (218 blocks / 3.66 GB) is still not run.
+
+
+## 2026-09-19 — selective website-source archive completed
+
+The new website-useful loose sources were checksum-verified into
+`rawtiffs/acasis_website_2026-09-19/` and `aisdata/us_faa/`; 597 loose source
+files were then removed from ACASIS. The chart comparison included rawtiffs,
+rawtiffs_attic, and ZIP members. Original map PDFs were preferred to redundant
+Ghostscript TIFF renders. The new AIS holdings include historical NASR, DOF,
+and CIFP packages. All 299 named NASR/DOF/CIFP archives in the HDD index matched
+the loose inventory by basename and size; no additional named candidate emerged
+(the image copies were not all rehashed). The raw HDD image and recovery tooling
+remain on ACASIS. This was a selective website-source import, not a complete
+forensic preservation of the machine.
+
+See [the completed import report](data/acasis_import/2026-09-19/REPORT.md) and
+the collection READMEs/manifests on projects for exact scope and verification.

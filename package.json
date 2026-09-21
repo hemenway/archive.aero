@@ -2,7 +2,11 @@
   "name": "archive-aero-regression-tests",
   "private": true,
   "scripts": {
-    "test": "npm run test:workers && npm run test:browser",
+    "test": "npm run check:frontend && npm run test:frontend && npm run test:workers && npm run test:browser",
+    "test:frontend": "python3 -m unittest discover -s tests -p 'test_viewer_config.py'",
+    "build:frontend": "node scripts/build_frontend.mjs",
+    "vendor:frontend": "node scripts/vendor_frontend.mjs",
+    "check:frontend": "node scripts/vendor_frontend.mjs --check && node scripts/build_frontend.mjs --check",
     "test:workers": "node --test worker/test/*.test.mjs worker-atc/test/*.test.mjs",
     "test:browser": "playwright test"
   },

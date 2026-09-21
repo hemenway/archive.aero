@@ -2,7 +2,7 @@
 <!--
   REGRESSION GUARD: CompositePMTilesLayer self-double-buffering flicker fix.
 
-  What must not regress (index.html, class CompositePMTilesLayer):
+  What must not regress (src/viewer.js, class CompositePMTilesLayer):
     - setSources() repaints EXISTING tile canvases in place via _renderTile()
       instead of GridLayer.redraw() (redraw destroys/recreates tiles and briefly
       exposes the basemap -> flicker).
@@ -12,7 +12,7 @@
     - A render whose version !== this.sourceVersion returns early WITHOUT touching
       the canvas (a newer setSources supersedes it).
 
-  This file loads the SHIPPED classes from ../index.html at test time (Utils,
+  This file loads the SHIPPED classes from ../src/viewer.js at test time (Utils,
   LRUCache, DeviceInfo, CompositePMTilesLayer are cut out of the page source and
   evaluated here), so the guard always exercises the code that is deployed.
   An inlined copy went stale once (2026-09-08 audit: the copy predated the
@@ -22,7 +22,7 @@
   sampled DURING a swap to prove the old frame's pixels persist.
 
   Serve the repo over HTTP and open tests/flicker-regression-guard.html (the
-  page fetches ../index.html, which file:// blocks):
+  page fetches ../src/viewer.js, which file:// blocks):
       python3 -m http.server 8000   ->   http://localhost:8000/tests/flicker-regression-guard.html
   A big PASS/FAIL banner renders in the DOM; details go to the console.
   Runnable headless via Puppeteer/Playwright by reading window.__RESULT__.
@@ -31,9 +31,9 @@
 <head>
   <meta charset="utf-8" />
   <title>Flicker Regression Guard - CompositePMTilesLayer</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js"></script>
+  <link rel="stylesheet" href="/vendor/leaflet/1.9.4/leaflet.css" />
+  <script src="/vendor/leaflet/1.9.4/leaflet.js"></script>
+  <script src="/vendor/pmtiles/3.0.6/pmtiles.js"></script>
   <style>
     html, body { margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #111; color: #eee; }
     #banner {
@@ -87,13 +87,13 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // ---------------------------------------------------------------------------
-  // Load the SHIPPED classes from ../index.html. Each block is cut out of the
+  // Load the SHIPPED classes from ../src/viewer.js. Each block is cut out of the
   // page source by brace matching and evaluated in this page's global scope, so
   // the object under test is the deployed implementation, never a copy.
   // ---------------------------------------------------------------------------
   function cutBlock(src, marker, closer) {
     const at = src.indexOf(marker);
-    if (at < 0) throw new Error(`index.html: cannot find "${marker}"`);
+    if (at < 0) throw new Error(`src/viewer.js: cannot find "${marker}"`);
     const open = src.indexOf('{', at);
     let depth = 0, i = open, inStr = null, inTpl = 0;
     for (; i < src.length; i++) {
@@ -111,8 +111,8 @@
 
   let Utils, LRUCache, DeviceInfo, CompositePMTilesLayer, ShippedLayer;
   async function loadShipped() {
-    const res = await fetch('../index.html', { cache: 'no-store' });
-    if (!res.ok) throw new Error(`fetch ../index.html -> HTTP ${res.status}`);
+    const res = await fetch('../src/viewer.js', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`fetch ../src/viewer.js -> HTTP ${res.status}`);
     const html = await res.text();
     const blocks = [
       cutBlock(html, 'const DeviceInfo = (() => {', ')();'),
@@ -131,7 +131,7 @@
       constructor(options) { super(options); this._redrawCalls = 0; }
       redraw() { this._redrawCalls++; return super.redraw(); }
     };
-    log(`loaded shipped classes from ../index.html (${html.length} bytes)`, 'info');
+    log(`loaded shipped classes from ../src/viewer.js (${html.length} bytes)`, 'info');
   }
 
   // ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@
     try {
       await loadShipped();
     } catch (e) {
-      assert('shipped classes load from ../index.html (serve over HTTP, not file://)', false, String(e));
+      assert('shipped classes load from ../src/viewer.js (serve over HTTP, not file://)', false, String(e));
       return finish();
     }
     log('Booting Leaflet map + shipped CompositePMTilesLayer', 'info');

@@ -12,6 +12,7 @@ metadata bundle index.html points at, so only tile bodies hit the network.
 import gzip, io, json, math, re, struct, sys, datetime as dt, urllib.request
 from PIL import Image, ImageDraw
 import pmtiles.reader as pr
+from viewer_config import viewer_config_source
 
 lat, lon, z = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
 d0, d1 = (dt.date.fromisoformat(s) for s in sys.argv[4:6])
@@ -22,7 +23,7 @@ def http(url, off=None, n=None):
     if off is not None: h["Range"] = f"bytes={off}-{off+n-1}"
     return urllib.request.urlopen(urllib.request.Request(url, headers=h)).read()
 
-bundle_url = re.search(r"bundleUrl:\s*'([^']+)'", open("index.html").read()).group(1)
+bundle_url = re.search(r"bundleUrl:\s*'([^']+)'", viewer_config_source("index.html").read_text()).group(1)
 bundle = http(bundle_url)
 glen = struct.unpack("<I", bundle[8:12])[0]
 index = json.loads(gzip.decompress(bundle[16:16 + glen]))

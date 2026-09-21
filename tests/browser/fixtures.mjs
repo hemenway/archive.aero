@@ -1,14 +1,5 @@
-import { readFile } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
 
-const root = new URL('../../', import.meta.url);
-const libraries = new Map([
-  ['https://unpkg.com/leaflet@1.9.4/dist/leaflet.js', 'leaflet/dist/leaflet.js'],
-  ['https://unpkg.com/leaflet@1.9.4/dist/leaflet.css', 'leaflet/dist/leaflet.css'],
-  ['https://unpkg.com/papaparse@5.4.1/papaparse.min.js', 'papaparse/papaparse.min.js'],
-  ['https://unpkg.com/pmtiles@3.0.6/dist/pmtiles.js', 'pmtiles/dist/pmtiles.js'],
-  ['https://unpkg.com/protomaps-leaflet@5.0.0/dist/protomaps-leaflet.js', 'protomaps-leaflet/dist/protomaps-leaflet.js'],
-]);
 export const dates = ['1950-01-01', '1960-01-01', '1970-01-01', '1980-01-01'];
 const keys = dates.slice(0, -1).map((date, i) => `${date}_to_${dates[i + 1]}`);
 const csv = 'date_iso,url\n' + keys.map(key => key + ',').join('\n');
@@ -73,10 +64,6 @@ export async function installFixtures(page, { bundleFails = false, csvFails = fa
     const url = new URL(route.request().url());
     // WebKit routes local image blobs through this hook; they are not network IO.
     if (url.protocol === 'blob:' && url.origin === 'http://127.0.0.1:4173') return route.continue();
-    if (libraries.has(url.href)) {
-      return route.fulfill({ body: await readFile(new URL('node_modules/' + libraries.get(url.href), root)),
-        contentType: url.pathname.endsWith('.css') ? 'text/css' : 'application/javascript', headers: { 'access-control-allow-origin': '*' } });
-    }
     if (url.pathname.endsWith('.bundle')) return bundleFails ? route.fulfill({ status: 503, body: '' }) : rangeResponse(route, bundle);
     if (url.pathname.endsWith('.pmtiles')) return rangeResponse(route, url.pathname.includes('/basemap/') ? vector : raster);
     if (url.pathname.endsWith('/dates.csv')) return route.fulfill({ status: csvFails ? 503 : 200, contentType: 'text/csv', body: csv });
@@ -85,7 +72,9 @@ export async function installFixtures(page, { bundleFails = false, csvFails = fa
     if (url.pathname.endsWith('/coverage.json')) return route.fulfill({ json: { segments: keys.map((_, i) => [dates[i], dates[i + 1], 1, 100]) } });
     if (url.hostname === 'get.geojs.io') return route.fulfill({ json: { latitude: '32.7767', longitude: '-96.7970' } });
     if (['fonts.googleapis.com', 'fonts.gstatic.com', 'plausible.io'].includes(url.hostname)) return route.fulfill({ body: '', contentType: url.hostname === 'plausible.io' ? 'application/javascript' : 'text/css' });
-    if (url.origin === 'http://127.0.0.1:4173' && ['/', '/index.html', '/styles.css', '/tests/flicker-regression-guard.html'].includes(url.pathname)) return route.continue();
+    if (url.origin === 'http://127.0.0.1:4173' && (
+      ['/', '/index.html', '/styles.css', '/src/viewer.js', '/tests/flicker-regression-guard.html'].includes(url.pathname)
+      || url.pathname.startsWith('/vendor/') || url.pathname.startsWith('/assets/'))) return route.continue();
     unexpected.push(url.href);
     return route.abort();
   });

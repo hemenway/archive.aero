@@ -135,8 +135,12 @@ def _canon_bytes(raw, sep, prefix):
     # replacement covers the whole match, "/atc" prefix included.
     if canon.startswith("/atc"):
         out, head = canon[len("/atc"):], prefix
-        if out == path:
-            return None                      # already canonical, leave bytes be
+        # Already canonical: leave the bytes be -- including a percent-encoded
+        # spelling of a rule-derived name (the generated listings link
+        # /atc/history/photos/Omaha%20Antenna.jpg); rewriting it would only
+        # un-encode the space.
+        if out == path or out == unquote(path.replace("&amp;", "&")):
+            return None
     else:
         out, head = canon, b""
     # Canonical paths are ASCII with no spaces (slugify/despace guarantee it),

@@ -57,6 +57,7 @@ INTERMEDIATE_CREATION_OPTS = ['TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE', 'Z
 # ---------------------------------------------------------------------------
 
 import dole_v2
+from install_geotiff2pmtiles import DEFAULT_BINARY, ensure_geotiff2pmtiles
 
 
 def _get_memory_snapshot_mb(
@@ -180,7 +181,7 @@ class ChartSlicer:
         self.chart_manifest_path: Optional[Path] = None
         self.keep_chart_temp = False
         self.charts_only = False
-        self.geotiff2pmtiles_bin = Path(__file__).resolve().parent.parent / "geotiff2pmtiles" / "geotiff2pmtiles"
+        self.geotiff2pmtiles_bin = DEFAULT_BINARY.resolve()
         self._chart_manifest_lock = threading.Lock()
         self._chart_manifest_index: Optional[Dict[str, str]] = None  # key -> source filename
         # (date_key, location, uri_name, file) for every group refused because
@@ -1981,10 +1982,25 @@ class ChartSlicer:
                 mx, my = context["projected"][idx]
                 gcps.append(gdal.GCP(float(mx), float(my), 0.0, float(px), float(py)))
 
+            # Keep restored LOC masters at their original precision in rawtiffs.
+            # Scale only this rendering VRT so mixed-era mosaics remain Byte;
+            # passing UInt16 through would make output depend on source order.
+            src_ds = gdal.Open(str(input_tiff))
+            if src_ds is None:
+                self.log(f"      ✗ Could not open {input_tiff.name}")
+                return False
+            render_options = {}
+            if src_ds.GetRasterBand(1).DataType == gdal.GDT_UInt16:
+                render_options = {
+                    'outputType': gdal.GDT_Byte,
+                    'scaleParams': [[0, 65535, 0, 255]],
+                }
+            src_ds = None
             translate_options = gdal.TranslateOptions(
                 format="VRT",
                 GCPs=gcps,
-                outputSRS=str(context["source_crs"])
+                outputSRS=str(context["source_crs"]),
+                **render_options,
             )
             ds_vrt = gdal.Translate(str(temp_gcp_vrt), str(input_tiff), options=translate_options)
             if not ds_vrt:
@@ -3433,6 +3449,15 @@ Examples:
     )
 
     parser.add_argument(
+        "--geotiff2pmtiles-bin",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Use this g2p executable without updating (offline/reproducible runs). "
+             "Default with --chart-pmtiles: fetch upstream main once at startup and build with native WebP."
+    )
+
+    parser.add_argument(
         "--chart-temp",
         type=Path,
         default=None,
@@ -3537,9 +3562,18 @@ Examples:
             sys.exit(1)
         except ValueError:
             pass
-        if not slicer.geotiff2pmtiles_bin.exists():
+        try:
+            slicer.geotiff2pmtiles_bin = (
+                args.geotiff2pmtiles_bin.expanduser().resolve()
+                if args.geotiff2pmtiles_bin else ensure_geotiff2pmtiles()
+            )
+        except (RuntimeError, OSError) as exc:
+            print(f"ERROR: Could not prepare geotiff2pmtiles: {exc}")
+            sys.exit(1)
+        if (not slicer.geotiff2pmtiles_bin.is_file()
+                or not os.access(slicer.geotiff2pmtiles_bin, os.X_OK)):
             print(f"ERROR: geotiff2pmtiles binary not found at {slicer.geotiff2pmtiles_bin} "
-                  "(required for --chart-pmtiles).")
+                  "or is not executable (required for --chart-pmtiles).")
             sys.exit(1)
         args.chart_pmtiles.mkdir(parents=True, exist_ok=True)
         chart_temp.mkdir(parents=True, exist_ok=True)

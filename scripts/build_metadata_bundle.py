@@ -60,6 +60,7 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from viewer_config import update_viewer_config
 
 try:
     from pmtiles.tile import deserialize_header
@@ -293,12 +294,7 @@ def emit_dates_csv(records, base_url, path):
 
 
 def update_html(path, bundle_url):
-    html = Path(path).read_text()
-    pattern = r"(bundleUrl:\s*)(null|'[^']*')"
-    if not re.search(pattern, html):
-        sys.exit(f"{path}: no bundleUrl config entry found — wire the client first")
-    html = re.sub(pattern, rf"\g<1>'{bundle_url}'", html, count=1)
-    Path(path).write_text(html)
+    update_viewer_config(path, "bundleUrl", bundle_url)
 
 
 # ---------------------------------------------------------------- verify
@@ -351,7 +347,7 @@ def main():
     ap.add_argument("--emit-dates-csv", metavar="PATH",
                     help="also regenerate dates.csv at PATH")
     ap.add_argument("--update-html", metavar="PATH",
-                    help="rewrite bundleUrl in the given index.html")
+                    help="rewrite bundleUrl via index.html or src/viewer.js and rebuild frontend modules")
     ap.add_argument("--limit", type=int, help="only first N eras (testing)")
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--verify", metavar="BUNDLE",

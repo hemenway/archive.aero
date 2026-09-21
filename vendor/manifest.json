@@ -1,0 +1,92 @@
+{
+  "/vendor/leaflet/1.9.4/leaflet.js": {
+    "package": "leaflet@1.9.4",
+    "source": "dist/leaflet.js",
+    "bytes": 147552,
+    "integrity": "sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
+  },
+  "/vendor/leaflet/1.9.4/leaflet.js.map": {
+    "package": "leaflet@1.9.4",
+    "source": "dist/leaflet.js.map",
+    "bytes": 225544,
+    "integrity": "sha384-8AZbXeugSR5F4uWvxxWGvW6BYWnBAEOopuac3e8objsjcfFSM2UDCPXnfOK3yjKM"
+  },
+  "/vendor/leaflet/1.9.4/leaflet.css": {
+    "package": "leaflet@1.9.4",
+    "source": "dist/leaflet.css",
+    "bytes": 14806,
+    "integrity": "sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
+  },
+  "/vendor/leaflet/1.9.4/images/layers.png": {
+    "package": "leaflet@1.9.4",
+    "source": "dist/images/layers.png",
+    "bytes": 696,
+    "integrity": "sha384-80x85ZS+G189o0xL8E8D7BnfhuNss6EwUPHzG7e+qByRD2xnpxikZ6UQU4Re5nNy"
+  },
+  "/vendor/leaflet/1.9.4/images/layers-2x.png": {
+    "package": "leaflet@1.9.4",
+    "source": "dist/images/layers-2x.png",
+    "bytes": 1259,
+    "integrity": "sha384-+F2ZWK/HTpkV9kN2HnMGCQOTM/cnQJLs770FLOeHznwVWRfDESI8z4JwcGYmy2Au"
+  },
+  "/vendor/leaflet/1.9.4/images/marker-icon.png": {
+    "package": "leaflet@1.9.4",
+    "source": "dist/images/marker-icon.png",
+    "bytes": 1466,
+    "integrity": "sha384-wg83fCOXjBtqzFAWhTL9Sd9vmLUNhfEEzfmNUX9zwv2igKlz/YQbdapF4ObdxF+R"
+  },
+  "/vendor/leaflet/1.9.4/images/marker-icon-2x.png": {
+    "package": "leaflet@1.9.4",
+    "source": "dist/images/marker-icon-2x.png",
+    "bytes": 2464,
+    "integrity": "sha384-bDEa1RhAAKIr/VQnMZ7gUhhXwmKYB4V0g8AsxOvCEPwGxfHCUEzAEMAEEzkjuxiA"
+  },
+  "/vendor/leaflet/1.9.4/images/marker-shadow.png": {
+    "package": "leaflet@1.9.4",
+    "source": "dist/images/marker-shadow.png",
+    "bytes": 618,
+    "integrity": "sha384-dB8ivfvPGb1MSIzX8oWTakCxmq+VwqP/QL1TX4jT4INR3pM5T4FgF3Gx4mN3NTMq"
+  },
+  "/vendor/leaflet/1.9.4/LICENSE": {
+    "package": "leaflet@1.9.4",
+    "source": "LICENSE",
+    "bytes": 1395,
+    "integrity": "sha384-CXYK4I2izUBQWizu8sKhYyBLtabBOMnWJhiEcYE2hnY+ov3P+/NGnAkucH4hN0hK"
+  },
+  "/vendor/pmtiles/3.0.6/pmtiles.js": {
+    "package": "pmtiles@3.0.6",
+    "source": "dist/pmtiles.js",
+    "bytes": 48555,
+    "integrity": "sha384-4sbA4B4Oqxkzs6apu8HaZcGrL3BySmt0tO/LQf6al3hkgq8ijZFxkTkvxxZZ/3PU"
+  },
+  "/vendor/papaparse/5.4.1/papaparse.min.js": {
+    "package": "papaparse@5.4.1",
+    "source": "papaparse.min.js",
+    "bytes": 19469,
+    "integrity": "sha384-D/t0ZMqQW31H3az8ktEiNb39wyKnS82iFY52QPACM+IjKW3jDUhyIgh2PApRqJZs"
+  },
+  "/vendor/papaparse/5.4.1/LICENSE": {
+    "package": "papaparse@5.4.1",
+    "source": "LICENSE",
+    "bytes": 1079,
+    "integrity": "sha384-qvJPH57yfAommd+FRcuSUge2kRTSGI3IuG/cTVKmBpXmpNrpbnAlMeGlNdVWrGdu"
+  },
+  "/vendor/protomaps-leaflet/5.0.0/protomaps-leaflet.js": {
+    "package": "protomaps-leaflet@5.0.0",
+    "source": "dist/protomaps-leaflet.js",
+    "bytes": 127298,
+    "integrity": "sha384-KeIb4wv6BGhSkhTNhLPQI2jcmQmZxMVQNxqM7UUEF5Zbmy+j2KSKRwba0gvAxLRE"
+  },
+  "/vendor/protomaps-leaflet/5.0.0/protomaps-leaflet.js.map": {
+    "package": "protomaps-leaflet@5.0.0",
+    "source": "dist/protomaps-leaflet.js.map",
+    "bytes": 507586,
+    "integrity": "sha384-QY/j3IHJ42Bmc9OIFS1kGYHOpOU3Q/h9tpEKZo9N00Z2yLUjhqs83GFH71EFkEia"
+  },
+  "/vendor/protomaps-leaflet/5.0.0/LICENSE": {
+    "package": "protomaps-leaflet@5.0.0",
+    "source": "LICENSE",
+    "bytes": 1462,
+    "integrity": "sha384-GINF1szbkLFm0OvPLOokyiFIam0zyEvHQcHWcddR5h7ejBsf77LqRxupEU34n6hh"
+  }
+}

@@ -1039,12 +1039,9 @@ def sha256_file(p: Path) -> str:
 
 
 def update_html(path: Path, url: str) -> None:
-    html = path.read_text()
-    pattern = r"(airspaceUrl:\s*)(null|'[^']*')"
-    if not re.search(pattern, html):
-        sys.exit(f"{path}: no airspaceUrl config entry found - wire the client first")
-    path.write_text(re.sub(pattern, rf"\g<1>'{url}'", html, count=1))
-    log(f"updated airspaceUrl in {path}")
+    from viewer_config import update_viewer_config
+    target = update_viewer_config(path, "airspaceUrl", url)
+    log(f"updated airspaceUrl in {target}")
 
 
 # ---------------------------------------------------------------- report
@@ -1081,7 +1078,7 @@ def main() -> int:
     ap.add_argument("--upload", action="store_true", help="rclone copyto the result into R2")
     ap.add_argument("--publish-only", action="store_true",
                     help="skip parse/merge/tile: upload the already built <stamp> archive (after a local check)")
-    ap.add_argument("--update-html", metavar="PATH", help="rewrite airspaceUrl in the given index.html")
+    ap.add_argument("--update-html", metavar="PATH", help="rewrite airspaceUrl via index.html or src/viewer.js and rebuild frontend modules")
     ap.add_argument("--keep-geojson", action="store_true", help="keep the merged GeoJSONSeq beside the output")
     ap.add_argument("--dry-run", action="store_true", help="print the tippecanoe/upload commands, run nothing")
     args = ap.parse_args()

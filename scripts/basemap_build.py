@@ -254,7 +254,7 @@ def main() -> int:
         print(f"\npublished https://data.archive.aero/{key}")
     else:
         print("\nto publish:\n  " + " ".join(upload))
-    print("then point CONFIG.basemapUrl in index.html at "
+    print("then point CONFIG.basemapUrl in src/viewer.js at (and run npm run build:frontend) "
           f"https://data.archive.aero/{key}")
     return 0
 

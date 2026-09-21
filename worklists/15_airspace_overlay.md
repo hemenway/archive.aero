@@ -129,3 +129,17 @@ history sources are parsed (all three regions have it).
 - [ ] B4. Airspace_Boundary set (TRSA, ADIZ, SFRA, ARTCC) — current-only.
 - [ ] B5. Share-link state for the layer toggle (URI-POLICY rule 8: a new
       query parameter is permanent API — decide the name once).
+
+
+## 2026-09-19 — additional local FAA source cycles
+
+The selective ACASIS import added 30 compatible NASR cycles to
+`/Volumes/projects/aisdata/us_faa/nasr/`, extending the locally held series to
+2017-10-12 (116 cycles through 2026-10-01, with gaps). Every feature in the
+30 new Class_Airspace layers passed the existing `UsNasr.normalize` parser.
+The published airspace tiles were not rebuilt or changed in this import.
+Older subscription packages beginning 2013-10-17 and packages without the
+expected Class_Airspace layer live in `nasr_legacy/`, outside the current
+builder's normal scan. Historical DOF/CIFP packages were also archived.
+See `aisdata/us_faa/README_ACASIS_2026-09-19.txt` and
+[the completed import report](data/acasis_import/2026-09-19/REPORT.md).

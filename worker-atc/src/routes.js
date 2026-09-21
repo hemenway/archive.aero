@@ -71,6 +71,33 @@ function oldShapeOf(path) {
   return null;
 }
 
+// Apache's DirectorySlash, for the rule-derived trees: a directory answered
+// by its index file is served at the slashed URI only, so the page's relative
+// links resolve inside it. /atc/history/FacilityPhotos used to serve the
+// listing whose "ak/" then resolved to /atc/history/ak/ -- a 404 (Search
+// Console, 2026-09-20). Map canonicals such as /atc/History are permanent and
+// exempt; their listings carry absolute links instead (atc_gen_indexes.py).
+export function isDirIndexKey(key) {
+  return INDEX_NAMES.some((n) => key.endsWith("/" + n));
+}
+
+export function wantsDirectorySlash(canon, key) {
+  return !canon.endsWith("/") && !CANON.has(canon) && isDirIndexKey(key);
+}
+
+// Keys that would answer the slashed form and were not already probed for the
+// slashless one. Non-empty only when a rule changes the directory's own
+// spelling (/atc/images -> Images/index.html): the bare probe, which maps
+// rules by "/atc/images/" prefix, never finds those. Files (extension) and
+// map canonicals never qualify.
+export function slashedOnlyCandidates(canon) {
+  if (canon.endsWith("/") || CANON.has(canon)) return [];
+  const tried = keyCandidates(canon);
+  if (!tried.some(isDirIndexKey)) return [];
+  const seen = new Set(tried);
+  return keyCandidates(canon + "/").filter((k) => !seen.has(k));
+}
+
 // Where does an old site path belong? Returns {status} for a tombstone, {to}
 // for a 301 target, or null to fall through to serving. Shared by both
 // hostnames so atchistory.org/X and archive.aero/atc/X agree, and so a stale

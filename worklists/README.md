@@ -28,6 +28,7 @@ but they track a piece of work start-to-finish instead of a backlog of rows:
 | [11_acasis_img_recovery.md](11_acasis_img_recovery.md) | ACASIS `.imgcv2` recovery | 891 charts not in the catalog carved off the iFly build machine's disk image; 868 extracted to the attic, 9 promoted 2026-08-29 |
 | [12_sdcard_batch.md](12_sdcard_batch.md) | 2026-08 SD-card batch | Five iFly EFB cards mined; 18 only-copy 2014-15 rows published |
 | [13_sdcard_batch2.md](13_sdcard_batch2.md) | 2026-08/09 second SD-card batch + ACASIS pre2015 | 17 TAC + Grand Canyon ed 3 to the attic, zero new sectionals; edition numbers are per chart type |
+| [16_jev_typesafe.md](16_jev_typesafe.md) | Jev (TypeSafe) typed judgments over the site's free-text sources | Plan 2026-09-18: Freeman airfield dates (304 blank end years), ATC post metadata for F1–F3/B1, airport-page entity alignment, viewer "Find" box, UA labeling; pilot verified, key in `.env` |
 
 `helper_prompt.md` is the standing brief for a helper session (read `CLAUDE.md` first). Docs 09, 10, 13 and `helper_prompt.md` are not yet tracked in git — add them when their contents settle.
 

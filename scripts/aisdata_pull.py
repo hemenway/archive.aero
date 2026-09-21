@@ -44,12 +44,26 @@ Sources (all free; see the README each writes):
                 a GeoJSON download: airports, runways, NAVAIDs, ILS, designated
                 points, ATS routes, class/special-use/route airspace, MTRs,
                 obstacles, plus the "Pending" next-cycle previews.
+  openaip   World, openAIP community database - the daily system-export bucket
+            (storage.openaip.net/openaip-system-exports, anonymous S3 listing):
+            one file per <country>_<type> - apt airports, asp airspace, nav
+            navaids, obs obstacles, rpp reporting points, hgl hang-gliding
+            sites, hot hotspots, rca/raa - in the native openAIP JSON plus
+            GeoJSON (the cup/cupx/xml/txt/ndgeojson copies are re-encodings of
+            the same data; --openaip-formats all takes them too).  The bucket is
+            re-uploaded nightly and keeps no history, so this is the only time
+            series of it.  CC BY-NC 4.0 - a *secondary* community source, no
+            AIRAC effective dates; never a substitute for the official series.
 
 Usage:
-  ~/venv/bin/python scripts/aisdata_pull.py [--only fr,ch,br,us] [--dry-run]
+  ~/venv/bin/python scripts/aisdata_pull.py [--only fr,ch,br,us,openaip] [--dry-run]
       [--root /Volumes/projects/aisdata] [--sia-drop DIR] [--sia-ip 95.143.78.56]
+      [--openaip-formats json,geojson|all]
 """
-import argparse, hashlib, html, json, os, re, shutil, subprocess, sys, time, zipfile
+import argparse, hashlib, html, json, os, random, re, shutil, subprocess, sys, time, zipfile
+import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from http.client import IncompleteRead
 from urllib.parse import quote, urljoin, unquote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -703,11 +717,260 @@ adds/<modified>/<Dataset>.geojson
 ''')
 
 
+# ------------------------------------------------------------- openAIP
+OPENAIP = 'https://storage.openaip.net/openaip-system-exports/'
+OPENAIP_NS = '{http://s3.amazonaws.com/doc/2006-03-01/}'
+OPENAIP_FORMATS = 'json,geojson'   # native export + interchange copy; the rest re-encode the same data
+# 403 is retryable here on purpose: the envoy front end answers AccessDenied with an
+# empty <Message> as a transient blip on objects that are public (a missing key is 404).
+OPENAIP_RETRY = (403, 408, 429, 500, 502, 503, 504)
+
+
+def openaip_key(key):
+    """us_apt.json -> ('us', 'apt', 'json'); anything else files under _other."""
+    m = re.match(r'^([A-Za-z0-9]{2})_(.+)\.([^./]+)$', key)
+    if m:
+        return m.group(1).lower(), m.group(2).lower(), m.group(3).lower()
+    return '_other', '_other', key.rsplit('.', 1)[-1].lower() if '.' in key else ''
+
+
+def openaip_listing(srcdir, snap):
+    """ListObjectsV2 over the bucket, every page.  The raw XML pages are kept in
+    the snapshot so the day's bucket state (key, size, ETag, LastModified) is on
+    record even on a day when no file changed.  Returns [(key, size, etag, lastmod)]."""
+    rows, token, page = [], None, 0
+    while True:
+        page += 1
+        url = OPENAIP + '?list-type=2&max-keys=1000' + (f'&continuation-token={quote(token, safe="")}' if token else '')
+        for attempt in range(1, 7):
+            try:
+                data = get(url, timeout=60); break
+            except HTTPError as e:
+                if e.code not in OPENAIP_RETRY:
+                    raise
+                log(f'  listing page {page}: HTTP {e.code}, retry {attempt}'); time.sleep(min(2 ** attempt, 60))
+        else:
+            raise RuntimeError('bucket listing failed')
+        if not STATE['dry']:
+            os.makedirs(os.path.join(srcdir, snap), exist_ok=True)
+            open(os.path.join(srcdir, snap, f'listing-{page}.xml'), 'wb').write(data)
+        root = ET.fromstring(data)
+        for c in root.findall(OPENAIP_NS + 'Contents'):
+            rows.append((c.findtext(OPENAIP_NS + 'Key'), int(c.findtext(OPENAIP_NS + 'Size')),
+                         (c.findtext(OPENAIP_NS + 'ETag') or '').strip('"'), c.findtext(OPENAIP_NS + 'LastModified')))
+        if (root.findtext(OPENAIP_NS + 'IsTruncated') or '').lower() != 'true':
+            return rows
+        token = root.findtext(OPENAIP_NS + 'NextContinuationToken')
+
+
+def openaip_fetch(url, tmp, expected, attempts=6):
+    """Stream url -> tmp and guarantee every byte landed.  The bucket has been seen
+    to answer 200 and stop mid-stream (a 41 MB us_apt.json cut at 35 MB, exit 0,
+    nothing flagged), so the byte count is checked against the listed Size and a
+    short read is resumed with Range (206) rather than restarted.  If the object
+    changed underneath (nightly re-upload) the transfer restarts from zero.
+    Returns (bytes, etag as served)."""
+    have, etag, expected_now = 0, None, expected
+    for attempt in range(1, attempts + 1):
+        try:
+            hdrs = {'User-Agent': UA, 'Accept': '*/*'}
+            if have:
+                hdrs['Range'] = f'bytes={have}-'
+            r = urlopen(Request(url, headers=hdrs), timeout=120)
+            served = (r.headers.get('ETag') or '').strip('"')
+            if have and (r.status != 206 or served != etag):
+                log(f'  {os.path.basename(url)}: object changed or Range ignored, restarting'); have = 0
+            if not have:
+                etag = served
+                expected_now = int(r.headers.get('Content-Length') or expected)
+            with open(tmp, 'ab' if have else 'wb') as f:
+                try:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk); have += len(chunk)
+                except IncompleteRead as e:
+                    f.write(e.partial); have += len(e.partial)
+            if have == expected_now:
+                return have, etag
+            if have > expected_now:
+                log(f'  {os.path.basename(url)}: {have:,} B > listed {expected_now:,}, restarting'); have = 0
+            else:
+                log(f'  short read {have:,}/{expected_now:,} B on {os.path.basename(url)}, resuming')
+                continue                       # resume straight away, no backoff
+        except HTTPError as e:
+            if e.code not in OPENAIP_RETRY:
+                raise
+            log(f'  HTTP {e.code} on {os.path.basename(url)} (attempt {attempt}/{attempts})')
+        except (URLError, OSError) as e:
+            log(f'  {os.path.basename(url)}: {str(e)[:80]} (attempt {attempt}/{attempts})')
+        time.sleep(min(2 ** attempt, 60) + random.random() * 3)
+    raise RuntimeError(f'incomplete after {attempts} attempts: {have:,}/{expected_now:,} B')
+
+
+def openaip_check(path, fmt):
+    """Structural check per format; returns the record/feature count for JSON kinds."""
+    if fmt in ('json', 'geojson'):
+        d = json.load(open(path, 'rb'))            # raises on a truncated file
+        return len(d) if isinstance(d, list) else len(d.get('features', []))
+    head = open(path, 'rb').read(4)
+    if fmt == 'cupx' and head[:2] != b'PK':
+        raise ValueError('not a zip')
+    if fmt == 'xml' and not head.lstrip().startswith(b'<'):
+        raise ValueError('not xml')
+    return None
+
+
+def pull_openaip(root, args):
+    srcdir, man = prep(root, 'openaip')
+    snap = os.path.join('snapshots', TODAY)
+    fmts = None if args.openaip_formats == 'all' else {f.strip() for f in args.openaip_formats.split(',')}
+    log('openaip: listing', OPENAIP)
+    rows = openaip_listing(srcdir, snap)
+    log(f'  bucket holds {len(rows):,} objects, {sum(r[1] for r in rows)/1e6:,.0f} MB')
+    wanted = [r for r in rows if fmts is None or openaip_key(r[0])[2] in fmts]
+    latest = {}                                    # key -> last good manifest record with its file still here
+    for m in man:
+        if m.get('key') and m.get('status') == 200 and m.get('file') and os.path.exists(os.path.join(srcdir, m['file'])):
+            latest[m['key']] = m
+    todo, unchanged = [], 0
+    for key, size, etag, lm in wanted:
+        prev = latest.get(key)
+        if prev and prev.get('etag') == etag:
+            unchanged += 1; continue
+        todo.append((key, size, etag, lm, prev))
+    log(f'  selected {len(wanted):,} ({sum(r[1] for r in wanted)/1e6:,.0f} MB): {unchanged:,} unchanged, {len(todo):,} to fetch')
+    if STATE['dry']:
+        for key, size, etag, lm, prev in todo[:20]:
+            log(f'  [dry] would fetch {key} ({size:,} B)')
+        if len(todo) > 20:
+            log(f'  [dry] ... and {len(todo) - 20:,} more')
+        return
+    os.makedirs(os.path.join(srcdir, snap), exist_ok=True)
+    work = os.path.join(srcdir, '.work')
+    os.makedirs(work, exist_ok=True)
+
+    def one(key, size, etag, lm, prev):
+        cc, typ, fmt = openaip_key(key)
+        rel = os.path.join(snap, cc, key)
+        tmp = os.path.join(work, key.replace('/', '_'))
+        rec = {'url': OPENAIP + quote(key), 'key': key, 'country': cc, 'type': typ, 'format': fmt,
+               'last_modified': lm, 'snapshot': TODAY, 'source': 'openAIP system exports (storage.openaip.net)'}
+        try:
+            n, served = openaip_fetch(rec['url'], tmp, size)
+            count = openaip_check(tmp, fmt)
+            h = hashlib.sha256(open(tmp, 'rb').read()).hexdigest()
+        except Exception as e:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return {**rec, 'file': rel, 'status': None, 'error': str(e)[:200]}, 'failed'
+        rec.update(status=200, bytes=n, sha256=h, etag=served)
+        if count is not None:
+            rec['records'] = count
+        if prev and prev.get('sha256') == h:
+            # same bytes under a new ETag (multipart re-chunking): keep the copy we have
+            os.remove(tmp)
+            return {**rec, 'file': prev['file'], 'note': 'etag changed, content identical to existing file'}, 'same'
+        os.makedirs(os.path.dirname(os.path.join(srcdir, rel)), exist_ok=True)
+        shutil.move(tmp, os.path.join(srcdir, rel))
+        return {**rec, 'file': rel}, 'fetched'
+
+    tally, nbytes, failed = {'fetched': 0, 'same': 0, 'failed': 0}, 0, []
+    # a few streams only: the envoy front end throttles beyond that
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = [ex.submit(one, *t) for t in todo]
+        for i, fut in enumerate(as_completed(futs), 1):
+            rec, outcome = fut.result()
+            record(srcdir, rec)                    # manifest writes stay on this thread
+            tally[outcome] += 1
+            if outcome == 'fetched':
+                nbytes += rec['bytes']
+                log(f'  [{i}/{len(todo)}] {rec["key"]} ({rec["bytes"]:,} B' + (f', {rec["records"]:,} records)' if 'records' in rec else ')'))
+            elif outcome == 'failed':
+                failed.append(rec['key']); log(f'  [{i}/{len(todo)}] FAILED {rec["key"]}: {rec["error"]}')
+    shutil.rmtree(work, ignore_errors=True)
+    log(f'  fetched {tally["fetched"]:,} ({nbytes/1e6:,.0f} MB), {tally["same"]:,} same-content, {unchanged:,} unchanged, {tally["failed"]:,} failed')
+    # inventory for the README: what the bucket offers, what is held, per format
+    by_fmt = {}
+    for key, size, etag, lm in rows:
+        f = openaip_key(key)[2]
+        by_fmt.setdefault(f, [0, 0]); by_fmt[f][0] += 1; by_fmt[f][1] += size
+    man = load_manifest(srcdir)
+    held_keys = {m['key'] for m in man if m.get('status') == 200 and m.get('key')}
+    held_fmt = {}
+    for k in held_keys:
+        held_fmt[openaip_key(k)[2]] = held_fmt.get(openaip_key(k)[2], 0) + 1
+    fmt_lines = [f'  {f:<10} {n:>5} files {b/1e6:>8,.0f} MB   held: {held_fmt.get(f, 0)}'
+                 for f, (n, b) in sorted(by_fmt.items(), key=lambda x: -x[1][1])]
+    countries = sorted({openaip_key(k)[0] for k in held_keys} - {'_other'})
+    snaps = sorted(d for d in os.listdir(os.path.join(srcdir, 'snapshots')) if re.match(r'\d{4}-\d{2}-\d{2}$', d))
+    write_readme(srcdir, 'openaip - World, openAIP community aeronautical database (daily system exports)', f'''
+What: openAIP (openaip.net, Swiss non-profit) is a crowd-edited worldwide
+aeronautical database - airports, airspace, navaids, obstacles, reporting points,
+hang-gliding sites, hotspots.  Its "system exports" bucket
+{OPENAIP}  (S3 ListObjectsV2, anonymous, no key)
+holds one file per <country>_<type>.<format>, re-uploaded nightly around
+01:00-03:30 UTC.  openAIP keeps no history of these exports, so this directory
+is the time series: a file is stored only when its content changed (ETag from
+the listing = content MD5, confirmed by sha256 after download), and the raw
+listing pages are kept every day so the day's bucket state is on record even
+when nothing moved.
+
+This is a SECONDARY source.  It is community-maintained, carries no AIRAC
+effective dates (only per-record createdAt/updatedAt), and for the countries
+whose official AIS exports are held here (us_faa, fr_sia, br_geoaisweb) it is
+a lossy copy of those.  A snapshot means "what the openAIP database held that
+day", not "what the airspace was that day".  Use it for countries with no
+official vector series (Switzerland: ch_bazl carries no airspace vectors), and
+say so in anything it feeds.
+
+Licence: Creative Commons Attribution-NonCommercial 4.0 (CC BY-NC 4.0), as
+stated on the openAIP export page (read 2026-09-17; their /terms URL 404s -
+this is not a licence agreement).  Attribution required; NC rules out any
+commercial use.  Confirm with openAIP before it feeds anything public.
+
+Layout: snapshots/<date>/<cc>/<country>_<type>.<format>  (original key names)
+        snapshots/<date>/listing-<n>.xml   the bucket listing pages as served
+        manifest.jsonl                     one line per fetched file: url, key,
+            file, bytes, sha256, etag, last_modified (bucket), records (JSON
+            kinds), snapshot, fetched.  An unchanged file is not re-recorded, so
+            "the bucket on date D" = listing-*.xml of D joined on ETag to the
+            latest manifest line per key at or before D.
+Formats pulled: {args.openaip_formats}  (json = native openAIP schema, geojson =
+        interchange copy; ndgeojson/cup/cupx/xml/txt are further re-encodings of
+        the same data - --openaip-formats all takes them).
+Types: apt airports, asp airspace (asp_v1/asp_v2 = OpenAIR dialects), nav
+        navaids, obs obstacles, rpp reporting points, hgl hang-gliding, hot
+        hotspots, rca, raa.
+
+Integrity: the bucket has been seen to return HTTP 200 and stop mid-stream
+(41 MB us_apt.json cut at 35 MB, exit 0, nothing flagged), and to answer a
+transient 403 (empty <Message>) on public objects.  Every download is checked
+against the listed size, resumed with HTTP Range on a short read, parsed
+(JSON kinds) before it is kept, and 403 is retried with backoff.  A file that
+fails stays absent from the snapshot and is logged with status null.
+
+Bucket this run: {len(rows):,} objects, {sum(r[1] for r in rows)/1e6:,.0f} MB
+{chr(10).join(fmt_lines)}
+Countries held: {len(countries)} ({", ".join(countries[:12])}{", ..." if len(countries) > 12 else ""})
+Snapshots: {len(snaps)} ({snaps[0] if snaps else "-"} .. {snaps[-1] if snaps else "-"})
+This run: fetched {tally["fetched"]:,} files ({nbytes/1e6:,.0f} MB), {tally["same"]:,} same content
+under a new ETag, {unchanged:,} unchanged, {tally["failed"]:,} failed{": " + ", ".join(failed[:20]) if failed else ""}.
+
+Related: openaip-mirror/ in the repo is the Windows/SD-card variant of this
+same mirror (PowerShell, content-addressed store); the traps above were found
+there.
+''')
+
+
 # ---------------------------------------------------------------- main
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--root', default='/Volumes/projects/aisdata')
-    ap.add_argument('--only', default='fr,ch,br,us', help='comma list of fr,ch,br,us')
+    ap.add_argument('--only', default='fr,ch,br,us,openaip', help='comma list of fr,ch,br,us,openaip')
+    ap.add_argument('--openaip-formats', default=OPENAIP_FORMATS,
+                    help=f'openAIP export formats to keep (default {OPENAIP_FORMATS}; "all" for every encoding)')
     ap.add_argument('--nasr-max-cycles', type=int, default=400, help='how many 28-day cycles back to probe at most')
     ap.add_argument('--nasr-miss', type=int, default=6, help='stop the NASR back-fill after this many consecutive missing cycles')
     ap.add_argument('--dry-run', action='store_true')
@@ -741,6 +1004,8 @@ url, bytes, sha256, fetched, source date).  Pulled by scripts/aisdata_pull.py.
         pull_br_decea(a.root, a)
     if 'us' in only:
         pull_us(a.root, a)
+    if 'openaip' in only:
+        pull_openaip(a.root, a)
     log('done')
 
 

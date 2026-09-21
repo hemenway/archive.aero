@@ -1250,3 +1250,52 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   hop, 4 → 410, 14 stay 404 by design (8 Thumbs.db, 2 photo-less class dirs,
   Life Stories, plugin dir, cdn-cgi, data domain), 8 wildcards unprobeable.
   Search Console: Validate Fix on both the noindex and 404 rows next.
+
+- 2026-09-20: **Search Console 404 validation failed (285 pages, 09-18) —
+  one bug of ours, found via the sweep.** `atc_404_sweep.py --since 09-05
+  --no-probe` (the origin is gone: HostMonster now answers with a
+  `*.hostmonster.com` cert and 302s everything to `/404.html`, so
+  `parity_live_cache.jsonl` is the only oracle for "did the old site serve
+  this?"). 2,679 actionable paths; the family that appeared on **09-16** and
+  drove the count from ~125 to 285: **bare slugs `/atc/7711/`, `/atc/82014/`,
+  `/atc/FacilityPhotos/`, `/atc/photos/` … (267 + 49 paths, 1,329 hits)**.
+  Cause: the generated listings linked their children RELATIVELY (`7711/`),
+  and the map made the three tree roots slashless canonicals (`/classphotos/`
+  → `/atc/classphotos`, `/History/` → `/atc/History`, `/pdf/` → `/atc/pdf`), so
+  at `/atc/classphotos` every child resolved one level up. The 09-14 pass
+  exposed it: `photo-home` now links the listings, whose breadcrumb links the
+  slashless root. Rule-derived directories were inconsistent too —
+  `/atc/history/FacilityPhotos` served the listing slashless (relative links
+  broken there as well), `/atc/images` 404'd slashless, `/atc/library` 301'd.
+  Fix, three parts:
+  - **`atc_gen_indexes.py` emits absolute canonical hrefs** (children,
+    parent, crumbs) via the flatten's own `canonical_of` — `/atc/class-photos/
+    7711/`, `/atc/history/photos/Omaha%20Antenna.jpg` — and the canonical
+    pass now leaves a ref alone when it is canonical modulo percent-encoding
+    (it used to un-encode the space).
+  - **Worker `DirectorySlash`** (`routes.js` `wantsDirectorySlash` /
+    `slashedOnlyCandidates`, wired in `serveCanonical`): a slashless path
+    answered by a directory index 301s to the slashed spelling, same host,
+    query kept; map canonicals (`/atc/History` …) stay served — permanent.
+    `/atc/images` → `/atc/images/` now finds `Images/index.html` through a
+    slashed re-probe; scanner paths (`/atc/wp`) cost no extra R2 op. Tests
+    27/27 (three new DirectorySlash suites, one through the real fetch
+    handler with a fake bucket). Inventory holds 0 slashless directory rows,
+    so parity cannot flip.
+  - **546 listings re-published straight from R2** — `/Volumes/projects`
+    (SMB, 192.168.1.203) mounts EMPTY tonight (only `.DS_Store`, 341 GiB
+    used), so `static/` could not be regenerated. Patched the R2 copies
+    (hrefs only; the 1,402 rows the relative pass had already absolutized
+    agree with `canonical_href` — 1,372 identical, 30 differ by `&`→`%26`),
+    verified every one of the 4,467 distinct links answers 200 in zero hops,
+    `rclone copy --files-from` (546 up, 0 deletions), `rclone check` 0
+    differences. **The next `static/` rebuild converges** (generator fixed);
+    until then a `sync` from a stale `static/` would revert these — regenerate
+    first. Worker `080087ea`. Edge cache holds the pre-fix 200s for slashless
+    dirs ≤1 h (`x-cache: HIT`); fresh requests 301.
+  Not fixed, by decision: the 8 remaining FrontPage class links on
+  `photo-home` (dirs with no photo — 5 have WP posts `/atc/class-<id>` that
+  would beat an honest 404: 03007, 82023, 84013, 98002, 99001), the 14
+  `Thumbs.db` (Google's memory of Apache autoindexes; 0 in R2, linked from
+  nowhere), the inherited dead links (Life Stories etc., §5). Search
+  Console: Validate Fix on the 404 row again.

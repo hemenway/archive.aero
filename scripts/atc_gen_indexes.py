@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from atc_flatten_rewrite import canonical_of  # noqa: E402  (same route map)
+
 STATIC = Path("/Volumes/projects/atchistory_build/static")
 TREES = ["History", "Images", "Masters", "classphotos", "pdf", "video"]
 # Apache DirectoryIndex names only — curated pages like classphotos/PhotoHome.htm
@@ -63,11 +66,21 @@ def fmt_size(n):
         n /= 1024
 
 
+# Every href is ABSOLUTE and already canonical. Relative ones ("7711/") broke
+# wherever a listing is served without a trailing slash -- the map's own
+# slashless canonicals /atc/History, /atc/classphotos, /atc/pdf -- resolving
+# to /atc/7711/ and the like: 267 Search Console 404s (2026-09-20). The flatten's
+# canonical pass finds these canonical already and leaves the bytes be.
+def canonical_href(old_path):
+    canon = canonical_of(old_path) or ("/atc" + old_path)
+    return quote(canon, safe="/")
+
+
 def crumb_links(rel):
     parts = rel.parts
     out = ['<a href="/atc/">atc</a>']
     for i, p in enumerate(parts):
-        href = "/atc/" + quote("/".join(parts[: i + 1])) + "/"
+        href = canonical_href("/" + "/".join(parts[: i + 1]) + "/")
         out.append(f'<a href="{href}">{html.escape(p)}</a>')
     return " / ".join(out)
 
@@ -90,14 +103,16 @@ def main():
             rel = d.relative_to(STATIC)
             entries = sorted(d.iterdir(),
                              key=lambda p: (p.is_file(), p.name.lower()))
-            rows = ['<tr><td><a href="../">[parent directory]</a></td>'
-                    "<td></td><td></td></tr>"]
+            parent = ("/" + rel.parent.as_posix() + "/"
+                      if rel.parent != Path(".") else "/")
+            rows = [f'<tr><td><a href="{canonical_href(parent)}">'
+                    "[parent directory]</a></td><td></td><td></td></tr>"]
             for e in entries:
                 if (e.name == "index.html" or e.name.startswith(".")
                         or e.name.lower() in JUNK_NAMES):
                     continue
                 name = e.name + ("/" if e.is_dir() else "")
-                href = quote(e.name) + ("/" if e.is_dir() else "")
+                href = canonical_href("/" + rel.as_posix() + "/" + name)
                 size = "&mdash;" if e.is_dir() else fmt_size(e.stat().st_size)
                 mtime = datetime.fromtimestamp(e.stat().st_mtime,
                                                tz=timezone.utc)

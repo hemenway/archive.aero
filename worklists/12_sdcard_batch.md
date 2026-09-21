@@ -147,3 +147,15 @@ not uploaded (content unchanged).
 1. Import the nine FAA-original sectionals from the attic (separate import,
    full-res beats the cards).
 2. Worklist 07 unchanged.
+
+
+## 2026-09-19 — enroute survey expanded
+
+The ACASIS website-source import expanded the live chart-directory survey to
+all 13 nonempty SD images, including the previously unexamined enroute sets.
+Distinct recoverable chart bundles are now archived in
+`rawtiffs/acasis_website_2026-09-19/sd_sources/`, with FAT-chain/ddrescue coverage,
+SHA-256 verification, header dates, and source clusters in its manifest. Whole
+images were not copied or deleted. Packaged airport charts/diagrams and
+unallocated/deleted space were outside the selected import scope.
+See [the completed import report](data/acasis_import/2026-09-19/REPORT.md).

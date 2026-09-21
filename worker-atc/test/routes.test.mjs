@@ -10,7 +10,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { PREFIX, canonicalOf, keyCandidates, routeOldPath } from "../src/routes.js";
+import { PREFIX, canonicalOf, keyCandidates, routeOldPath, slashedOnlyCandidates,
+         wantsDirectorySlash } from "../src/routes.js";
 
 const MAP = JSON.parse(readFileSync(new URL("../src/route_map.json", import.meta.url)));
 
@@ -159,4 +160,35 @@ test("every ?p= shortlink slug resolves in one hop", () => {
       `?p= slug ${slug} -> ${target} -> ${onward?.to ?? onward?.status}`);
   }
   assert.equal(routeOldPath("/home/")?.to, "/atc/");
+});
+
+test("DirectorySlash: a directory answered by its index lives at the slashed URI", () => {
+  // rule-derived directory, slashless: the listing's "ak/" would resolve to
+  // /atc/history/ak/ (the 2026-09-20 Search Console 404s) — redirect instead
+  assert.ok(wantsDirectorySlash("/atc/history/FacilityPhotos",
+                                "History/FacilityPhotos/index.html"));
+  assert.ok(wantsDirectorySlash("/atc/class-photos/7711",
+                                "classphotos/7711/index.html"));
+  // already slashed: serve
+  assert.ok(!wantsDirectorySlash("/atc/history/FacilityPhotos/",
+                                 "History/FacilityPhotos/index.html"));
+  // a file answered (extension dropped in the canonical space): serve
+  assert.ok(!wantsDirectorySlash("/atc/history/checklst2", "History/checklst2.htm"));
+  // map canonicals are permanent even when slashless — their listings carry
+  // absolute links instead
+  for (const canon of ["/atc/History", "/atc/classphotos", "/atc/pdf", "/atc/facility-photos"])
+    assert.ok(!wantsDirectorySlash(canon, keyCandidates(canon)[0]), canon);
+});
+
+test("DirectorySlash: the slashed probe only adds keys a rule respells", () => {
+  // /atc/images -> Images/ (case change): the slashless probe never sees it
+  assert.deepEqual(slashedOnlyCandidates("/atc/images"),
+    ["Images/index.html", "Images/index.htm", "Images/Default.htm"]);
+  // same spelling both ways: nothing new to probe (scanner /atc/wp stays cheap)
+  assert.deepEqual(slashedOnlyCandidates("/atc/wp"), []);
+  assert.deepEqual(slashedOnlyCandidates("/atc/history/FacilityPhotos"), []);
+  // files, slashed paths and map canonicals never qualify
+  assert.deepEqual(slashedOnlyCandidates("/atc/history/Pubs/early_communications.pdf"), []);
+  assert.deepEqual(slashedOnlyCandidates("/atc/images/"), []);
+  assert.deepEqual(slashedOnlyCandidates("/atc/classphotos"), []);
 });

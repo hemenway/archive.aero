@@ -13,17 +13,23 @@ On Linux, install browser system dependencies with
 
 ## Suites
 
+- `npm run check:frontend`: verifies vendor versions/SRI and generated module fingerprints.
+- `npm run test:frontend`: checks legacy publishing-script compatibility and module regeneration.
 - `npm run test:workers`: tile Worker HTTP contracts (exact range bytes, boundaries,
   suffix/open ranges, GET/HEAD, ETags, cache hits, republished objects, CORS and
-  failure recovery), plus the existing ATC route and shell tests.
+  failure recovery), plus ATC routing, shell, facility filters, old location
+  links, and selection-specific cache validators.
 - `npm run test:browser`: desktop Chromium and mobile WebKit exercise the shipped
   viewer: metadata boot, CSV fallback, outage messaging, date/keyboard navigation,
   playback, pin/solo view and share-link restoration. It also runs the existing
-  pixel-level flicker/stale-render guard against code extracted from `index.html`.
+  pixel-level flicker/stale-render guard against code extracted from `src/viewer.js`.
+  Loading tests cover local/deferred dependencies, on-demand PapaParse, missing or
+  slow scripts, the no-DecompressionStream fallback, and conditional asset requests.
 
-Browser tests serve the actual page and styles on `127.0.0.1:4173`. Third-party
-library requests are fulfilled with pinned npm packages, preserving the page's
-integrity checks. Tiny valid PMTiles archives and metadata replace production
+Browser tests serve the actual page, fingerprinted modules, styles and vendored
+libraries on `127.0.0.1:4173`, preserving the page's integrity checks. The local
+server emulates cache headers/ETags; it does not establish production cache policy.
+Tiny valid PMTiles archives and metadata replace production
 data; unexpected network requests fail the tests. No production archive,
 credentials or deployment is needed. Clipboard writes are recorded in-page.
 
@@ -34,6 +40,16 @@ real chart imagery, CDN availability, or performance. Keep staging smoke checks 
 those integration boundaries.
 
 ## Debugging and CI
+
+The g2p dependency updater has a Python suite (standard library only), also run in CI:
+
+```sh
+python3 -m unittest discover -s tests -p 'test_geotiff2pmtiles_dependency.py' -v
+```
+
+It checks commit caching, switching to a new upstream revision while preserving
+the binary used by an existing batch, and failure handling without stale fallback.
+It does not download Go dependencies or convert production chart data.
 
 ```sh
 npm run test:browser -- --project=chromium --headed
