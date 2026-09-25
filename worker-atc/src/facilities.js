@@ -2,7 +2,7 @@
 // Generated metadata only; original photographs and articles stay in R2.
 import FACILITIES from "./facilities.json" with { type: "json" };
 
-export const FACILITIES_VERSION = "facilities-v1";
+export const FACILITIES_VERSION = "facilities-v2";
 const STATES = Object.keys(FACILITIES);
 const encoder = new TextEncoder();
 const WIDGET = /<div class="facility_locations">[\s\S]*?<\/div>(?=<\/aside>)/g;
