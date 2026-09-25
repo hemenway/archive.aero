@@ -110,6 +110,12 @@ class LocalSource:
 class RemoteSource:
     """Range-reads era files from the CDN."""
 
+    # no-cache makes the tiles Worker bypass (and refresh) its version-less
+    # per-block edge cache, so a bundle built right after a same-key republish
+    # embeds the new archive's prefix, not the block cached from the old one.
+    HEADERS = {"User-Agent": "aamb-builder", "Cache-Control": "no-cache",
+               "Pragma": "no-cache"}
+
     def __init__(self, base_url):
         self.base_url = base_url
 
@@ -118,15 +124,14 @@ class RemoteSource:
 
     def size(self, key):
         req = urllib.request.Request(self._url(key), method="HEAD",
-                                     headers={"User-Agent": "aamb-builder"})
+                                     headers=self.HEADERS)
         with urllib.request.urlopen(req, timeout=60) as r:
             return int(r.headers["Content-Length"])
 
     def read(self, key, length):
         req = urllib.request.Request(
             self._url(key),
-            headers={"Range": f"bytes=0-{length - 1}",
-                     "User-Agent": "aamb-builder"})
+            headers={"Range": f"bytes=0-{length - 1}", **self.HEADERS})
         with urllib.request.urlopen(req, timeout=120) as r:
             data = r.read()
         if len(data) < length:
@@ -139,8 +144,7 @@ class RemoteSource:
         Returns (first min(HEADER_READ, size) bytes, total file size)."""
         req = urllib.request.Request(
             self._url(key),
-            headers={"Range": f"bytes=0-{HEADER_READ - 1}",
-                     "User-Agent": "aamb-builder"})
+            headers={"Range": f"bytes=0-{HEADER_READ - 1}", **self.HEADERS})
         with urllib.request.urlopen(req, timeout=120) as r:
             data = r.read()
             content_range = r.headers.get("Content-Range")
