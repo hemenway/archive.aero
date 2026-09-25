@@ -94,3 +94,43 @@ test('real canvas flicker and stale-render guard', async ({ page }) => {
   expect(result.total).toBeGreaterThan(5);
   expect(diagnostics).toEqual({ errors: [], unexpected: [] });
 });
+
+test('a loading pill shows above the timeline while chart tiles are in flight', async ({ page }) => {
+  // CSV fallback mode reads each era from its own archive. Header reads
+  // (range 0-) go through so boot completes; tile reads are held, so the
+  // first frame is in flight when the splash lifts. (Stepping eras later
+  // would not do: the scrub prefetcher has already warmed the neighbours.)
+  const diagnostics = await installFixtures(page, { bundleFails: true });
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  await page.route('**/sectionals/*.pmtiles', async route => {
+    if (!/^bytes=0-/.test(route.request().headers().range || '')) await held;
+    await route.fallback();
+  });
+  await page.goto(view);
+  await expect(page.locator('#loadingSplash')).toBeHidden();
+  await expect(page.locator('#loader')).toBeVisible();
+  await expect(page.locator('#loader')).toHaveText('Loading charts');
+  release();
+  await expect(page.locator('#loader')).toBeHidden();
+  await expect(page.locator('#timeSelect')).toHaveValue('1960-01-01');
+  expect(diagnostics).toEqual({ errors: [], unexpected: [] });
+});
+
+test('without a share link the map opens on the lower 48 and never geolocates', async ({ page }) => {
+  const diagnostics = await installFixtures(page);
+  const hosts = [];
+  page.on('request', request => hosts.push(new URL(request.url()).hostname));
+  await page.goto('/?date=1960-01-01');
+  await expect(page.locator('#loadingSplash')).toBeHidden();
+  await page.locator('#shareBtn').click();
+  await expect.poll(() => page.evaluate(() => window.__copied)).toContain('zoom=');
+  const link = new URL(await page.evaluate(() => window.__copied));
+  // The lower-48 box is fitted, then clamped to the map's zoom floor: its
+  // projected midpoint (about 38.0N 95.95W) at z6, on any viewport.
+  expect(link.searchParams.get('zoom')).toBe('6');
+  expect(Math.abs(parseFloat(link.searchParams.get('lat')) - 38.0)).toBeLessThan(0.6);
+  expect(Math.abs(parseFloat(link.searchParams.get('lng')) + 95.95)).toBeLessThan(0.6);
+  expect(hosts).not.toContain('get.geojs.io');
+  expect(diagnostics).toEqual({ errors: [], unexpected: [] });
+});

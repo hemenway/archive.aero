@@ -21,8 +21,10 @@ On Linux, install browser system dependencies with
   links, and selection-specific cache validators.
 - `npm run test:browser`: desktop Chromium and mobile WebKit exercise the shipped
   viewer: metadata boot, CSV fallback, outage messaging, date/keyboard navigation,
-  playback, pin/solo view and share-link restoration. It also runs the existing
-  pixel-level flicker/stale-render guard against code extracted from `src/viewer.js`.
+  playback, pin/solo view, share-link restoration, the loading pill while chart
+  tiles are in flight, and the lower-48 default view (no geolocation on load). It
+  also runs the existing pixel-level flicker/stale-render guard against code
+  extracted from `src/viewer.js`.
   Loading tests cover local/deferred dependencies, on-demand PapaParse, missing or
   slow scripts, the no-DecompressionStream fallback, and conditional asset requests.
 

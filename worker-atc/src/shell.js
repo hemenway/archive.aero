@@ -34,7 +34,7 @@ export const SHELL_CSS = `#aa-shell{display:flex;align-items:center;justify-cont
 #aa-shell .aa-brand{display:inline-flex;align-items:center;gap:8px;font-family:Barlow,system-ui,sans-serif;font-weight:700;font-size:19px;letter-spacing:-.2px;color:#fff;white-space:nowrap}
 #aa-shell .aa-brand:hover{color:#4da6ff}
 #aa-shell .aa-brand svg{width:18px;height:18px;display:block;fill:#1e90ff}
-#aa-shell .aa-coll{display:none;align-items:center;gap:18px;margin-left:4px;padding-left:20px;border-left:1px solid rgba(255,255,255,.14)}
+#aa-shell .aa-coll{display:none;align-items:stretch;gap:18px;margin-left:4px;padding-left:20px;border-left:1px solid rgba(255,255,255,.14)}
 #aa-shell .aa-coll-label{display:none;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:rgba(255,255,255,.6)}
 #aa-shell .aa-c{display:flex;flex-direction:column;gap:1px;padding:3px 0;color:rgba(255,255,255,.6);border-bottom:2px solid transparent}
 #aa-shell .aa-c:hover{color:#fff}
@@ -78,8 +78,7 @@ export function shellBody({ atcHome = "/atc/" } = {}) {
     `<span class="aa-c-name">Sectional Charts</span>` +
     `<span class="aa-c-desc">U.S. aeronautical charts, 1930 to today</span></a>` +
     `<a class="aa-c" href="${atcHome}" aria-current="page">` +
-    `<span class="aa-c-name">ATC History</span>` +
-    `<span class="aa-c-desc">atchistory.org, preserved here</span></a>` +
+    `<span class="aa-c-name">ATC History</span></a>` +
     `</nav></div>` +
     `<div class="aa-right">` +
     `<a class="aa-btn aa-pill" href="${MAIN}/" title="Sectional Charts: the historical chart viewer">` +

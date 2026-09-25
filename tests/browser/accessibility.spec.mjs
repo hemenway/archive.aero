@@ -89,6 +89,10 @@ test('keyboard users can inspect map center and browse canvas airfields', async 
   await expect(page.locator('#pinPanel')).toBeHidden();
 
   await page.locator('#toolsBtn').click();
+  // Airfields start off (since 2026-09-25); the switch turns them on.
+  await expect(page.locator('#airfieldsBtn')).toHaveAttribute('aria-pressed', 'false');
+  await page.locator('#airfieldsBtn').click();
+  await expect(page.locator('#airfieldsBtn')).toHaveAttribute('aria-pressed', 'true');
   await page.locator('#afBrowser summary').focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('#afSelect')).toBeEnabled();

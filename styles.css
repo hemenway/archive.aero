@@ -341,7 +341,9 @@ body {
    carries the ATC link there); label + descriptors need >=1100px. */
 .collections {
   display: none;
-  align-items: center;
+  /* stretch, not center: an entry without a description keeps its name on
+     the top line and its active underline level with a two-line neighbour */
+  align-items: stretch;
   gap: 18px;
   margin-left: 4px;
   padding-left: 20px;
@@ -504,6 +506,7 @@ button,
 body.zooming .header-bar,
 body.zooming .menu-panel,
 body.zooming .controls-card,
+body.zooming .loader,
 body.zooming .tools-panel,
 body.zooming .leaflet-control-zoom a,
 body.zooming .leaflet-control-attribution {
@@ -512,6 +515,7 @@ body.zooming .leaflet-control-attribution {
 }
 
 body.zooming .controls-card,
+body.zooming .loader,
 body.zooming .menu-panel,
 body.zooming .tools-panel,
 body.zooming .leaflet-control-zoom,
@@ -1073,21 +1077,56 @@ body.zooming .leaflet-control-attribution {
   visibility: hidden;
 }
 
-/* Loader */
+/* Loading indicator: a pill floating above the timeline card while chart
+   tiles are in flight (frame swaps, pans and zooms into unpainted tiles).
+   Always in the DOM; .active fades it in (MapController._syncLoader). */
 .loader {
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255, 255, 255, 0.1);
-  border-top-color: var(--primary);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  margin-bottom: 12px;
+  transform: translateX(-50%) translateY(4px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px 8px 12px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  color: var(--text-light);
+  white-space: nowrap;
   opacity: 0;
-  transition: opacity 0.2s;
-  margin-right: 10px;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), visibility 0s linear 0.2s;
 }
 
 .loader.active {
   opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%);
+  transition: opacity 0.2s var(--transition-smooth), transform 0.2s var(--transition-smooth), visibility 0s;
+}
+
+.loader-ring {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.loader:not(.active) .loader-ring {
+  animation-play-state: paused;
 }
 
 @keyframes spin {
@@ -1369,11 +1408,9 @@ body.zooming .leaflet-control-attribution {
   }
 
   .loader {
-    position: absolute;
-    top: 10px;
-    right: 12px;
-    left: auto;
-    margin-right: 0;
+    margin-bottom: 8px;
+    padding: 7px 14px 7px 10px;
+    font-size: 12px;
   }
 
   .time-select {
@@ -1425,6 +1462,9 @@ body.zooming .leaflet-control-attribution {
   left: 50%;
   transform: translateX(-50%);
   width: auto;
+  /* Side gutters wide enough for the Layers + zoom cluster at top-right (and
+     its mirror on the left), so the banner wraps instead of covering it. */
+  max-width: calc(100vw - 340px);
   height: auto;
   z-index: 2000;
   pointer-events: none;
@@ -1448,7 +1488,7 @@ body.zooming .leaflet-control-attribution {
   align-items: center;
   gap: 12px;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
-  max-width: 90vw;
+  max-width: 100%;
   width: auto;
   text-align: left;
 }
@@ -1481,6 +1521,32 @@ body.zooming .leaflet-control-attribution {
 .warning-btn {
   display: none;
   /* Auto-dismiss or small x? User said temporary banner. Let's hide button and auto-hide. */
+}
+
+@media (max-width: 640px) {
+  /* A phone's top-right cluster (Layers pill + zoom) takes the rightmost
+     ~125px at the banner's height; keep the banner in the free band to
+     its left rather than centring it underneath. */
+  .warning-overlay {
+    left: max(8px, env(safe-area-inset-left));
+    right: 136px;
+    max-width: none;
+    transform: none;
+    justify-content: flex-start;
+  }
+
+  .warning-overlay.visible {
+    transform: translateY(10px);
+  }
+
+  .warning-modal {
+    padding: 10px 14px;
+    gap: 10px;
+  }
+
+  .warning-text {
+    font-size: 12.5px;
+  }
 }
 
 /* Location Search */

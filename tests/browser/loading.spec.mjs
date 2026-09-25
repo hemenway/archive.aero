@@ -11,6 +11,7 @@ test('normal boot uses local deferred libraries and never fetches PapaParse or C
   await page.goto(view);
   await expect(page.locator('#loadingSplash')).toBeHidden();
   expect(requests.some(u => u.hostname === 'unpkg.com')).toBe(false);
+  expect(requests.some(u => u.hostname === 'get.geojs.io')).toBe(false);
   expect(requests.some(u => u.pathname === parser || u.pathname === '/dates.csv')).toBe(false);
   expect(await page.evaluate(() => typeof window.Papa)).toBe('undefined');
   const vendors = await page.locator('script[src^="/vendor/"]').evaluateAll(scripts =>

@@ -30,7 +30,6 @@
   <!-- Carries the chart archives, the metadata bundle, and (since 2026-08-26) the
        vector basemap, so this one origin is worth the early handshake. -->
   <link rel="preconnect" href="https://data.archive.aero" crossorigin>
-  <link rel="preconnect" href="https://get.geojs.io" crossorigin>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <!-- Non-blocking: nothing in the design needs Barlow (--font-display falls back to
@@ -45,7 +44,7 @@
     integrity="sha384-4sbA4B4Oqxkzs6apu8HaZcGrL3BySmt0tO/LQf6al3hkgq8ijZFxkTkvxxZZ/3PU"></script>
   <script defer src="/vendor/protomaps-leaflet/5.0.0/protomaps-leaflet.js" crossorigin="anonymous"
     integrity="sha384-KeIb4wv6BGhSkhTNhLPQI2jcmQmZxMVQNxqM7UUEF5Zbmy+j2KSKRwba0gvAxLRE"></script>
-  <link rel="modulepreload" data-viewer-preload href="/assets/viewer.e705ddc616b6fe91.js">
+  <link rel="modulepreload" data-viewer-preload href="/assets/viewer.4ac7c3d4abfc0cb5.js">
 
   <link rel="stylesheet" href="/vendor/leaflet/1.9.4/leaflet.css" crossorigin="anonymous"
     integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" />
@@ -197,12 +196,11 @@
         </a>
         <a href="/atc/" class="collection">
           <span class="collection-name">ATC History</span>
-          <span class="collection-desc">atchistory.org, preserved here</span>
         </a>
       </nav>
     </div>
     <div class="header-right">
-      <a href="/atc/" class="about-btn atc-btn" title="ATC History: the atchistory.org collection, preserved here">
+      <a href="/atc/" class="about-btn atc-btn" title="ATC History collection">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
           stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="2" />
@@ -254,7 +252,7 @@
         <div class="lp-group-label">Overlays</div>
         <div class="lp-row">
           <span class="lp-name">Airfields</span>
-          <button class="lp-switch" id="airfieldsBtn" type="button" aria-pressed="true"
+          <button class="lp-switch" id="airfieldsBtn" type="button" aria-pressed="false"
             aria-label="Show airfields"></button>
         </div>
         <div class="af-filter-row" id="afFilterRow">
@@ -387,14 +385,18 @@
   <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <div class="ui-layer">
+    <!-- Loading indicator: floats above the timeline card while chart tiles
+         are in flight (MapController._syncLoader toggles .active) -->
+    <div class="loader" id="loader" role="status">
+      <span class="loader-ring" aria-hidden="true"></span>
+      <span class="loader-text">Loading charts</span>
+    </div>
     <div class="controls-card">
       <div class="jog-controls">
         <button class="btn-nav" id="prevBtn" title="Previous Timeframe (←)" aria-label="Previous timeframe">←</button>
         <button class="btn-play" id="playBtn" title="Play/Pause (Space)" aria-label="Play or pause animation">▶</button>
         <button class="btn-nav" id="nextBtn" title="Next Timeframe (→)" aria-label="Next timeframe">→</button>
       </div>
-
-      <div class="loader" id="loader" role="status" aria-label="Loading"></div>
 
       <div class="timeline-track-wrapper" id="trackWrapper" role="slider" tabindex="0"
         aria-label="Historical chart date" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"
@@ -421,7 +423,7 @@
 
   </main>
 
-  <script type="module" data-viewer-entry src="/assets/boot.59e95ad69b2e34d5.js"
+  <script type="module" data-viewer-entry src="/assets/boot.1c816cae71f190e6.js"
     onerror="document.getElementById('loadingStatus').textContent = 'Failed to load the chart viewer. Check your connection and reload.'"></script>
 
 
