@@ -7,6 +7,9 @@ export default defineConfig({
   retries: 0,
   workers: 2,
   reporter: [['list'], ['html', { open: 'never' }]],
+  // The first webkit-mobile tests boot the viewer on a cold browser on the
+  // CI runner, where the splash lifts only after the default 5 s window.
+  expect: { timeout: 15000 },
   use: {
     baseURL: 'http://127.0.0.1:4173',
     trace: 'retain-on-failure',
