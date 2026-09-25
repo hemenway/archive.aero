@@ -114,6 +114,11 @@ body {
   pointer-events: none;
 }
 
+/* Set by initApp once the fade has run (or its fallback timer has fired). */
+.loading-splash[hidden] {
+  display: none;
+}
+
 .loading-logo {
   animation: loadingPulse 2s ease-in-out infinite;
 }
