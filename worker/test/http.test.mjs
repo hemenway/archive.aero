@@ -10,8 +10,8 @@ const data = Uint8Array.from({ length: BLOCK * 2 + 17 }, (_, i) => i % 251);
 function harness(t) {
   const entries = new Map();
   const reads = [];
-  const pending = [];
-  const state = { etag: '"v1"', fail: false, missing: false, cacheFail: false, heads: 0 };
+  const waited = [];
+  const state = { etag: '"v1"', fail: false, missing: false, cacheFail: false, heads: 0, hold: null };
   const metadata = () => ({
     size: data.length, httpEtag: state.etag,
     writeHttpMetadata(h) { h.set('content-type', 'application/octet-stream'); },
@@ -20,6 +20,12 @@ function harness(t) {
     async head() { state.heads++; if (state.fail) throw Error('storage offline'); return state.missing ? null : metadata(); },
     async get(key, { range } = {}) {
       reads.push({ key, range });
+      // hold: a one-shot gate on the next read. A gate that never settles is a
+      // leader whose request was cancelled mid-read (its I/O never completes);
+      // one that resolves to 'fail' is a read that errors while joiners wait.
+      const gate = state.hold;
+      state.hold = null;
+      if (gate && (await gate) === 'fail') throw Error('storage offline');
       if (state.fail) throw Error('storage offline');
       if (state.missing) return null;
       const offset = range?.offset ?? 0;
@@ -40,14 +46,15 @@ function harness(t) {
   } };
   t.after(() => { globalThis.caches = previous; });
   async function request(headers = {}, method = 'GET', path = '/chart.pmtiles') {
+    const pending = []; // waitUntil is per invocation
     const response = await worker.fetch(new Request('https://tiles.test' + path, { method, headers }), env,
-      { waitUntil(p) { pending.push(p); } });
+      { waitUntil(p) { pending.push(p); waited.push(p); } });
     const body = new Uint8Array(await response.arrayBuffer());
-    await Promise.all(pending.splice(0));
+    await Promise.all(pending);
     assert.equal(response.headers.get('access-control-allow-origin'), '*');
     return { response, body };
   }
-  return { request, reads, entries, state, env };
+  return { request, reads, entries, state, env, waited };
 }
 
 for (const [name, range, start, end] of [
@@ -96,6 +103,79 @@ test('concurrent cold ranges in the same block share one R2 read', async t => {
     assert.deepEqual(result.body, data.slice(10 + i * 30, 26 + i * 30));
   }
   assert.equal(h.reads.length, 1);
+});
+
+// Shared flights live in module scope, so each test below uses its own path.
+// A stalled leader never settles; its request is started and abandoned.
+const FLIGHT_MS = 3000; // worker/src/index.js
+const flush = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
+
+test('a stalled leader cannot hang later reads of its block', { timeout: 5000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+  const h = harness(t);
+  const path = '/stalled-leader.pmtiles';
+  h.state.hold = new Promise(() => {});
+  h.request({ range: 'bytes=10-25' }, 'GET', path);
+  await flush();
+  // The leader's read is held open past a client disconnect.
+  assert.equal(h.waited.length, 1);
+  const joiner = h.request({ range: 'bytes=40-55' }, 'GET', path);
+  await flush();
+  assert.equal(h.reads.length, 1, 'joiner waits on the flight first');
+  t.mock.timers.tick(FLIGHT_MS);
+  const { response, body } = await joiner;
+  assert.equal(response.status, 206);
+  assert.deepEqual(body, data.slice(40, 56));
+  assert.equal(response.headers.get('x-cache'), 'MISS');
+  assert.equal(h.reads.length, 2);
+  // The joiner's own read filled the cache, so the block is unwedged.
+  const after = await h.request({ range: 'bytes=70-85' }, 'GET', path);
+  assert.equal(after.response.headers.get('x-cache'), 'HIT');
+});
+
+test('an expired flight is replaced, not joined', { timeout: 5000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+  const h = harness(t);
+  const path = '/expired-flight.pmtiles';
+  h.state.hold = new Promise(() => {});
+  h.request({ range: 'bytes=10-25' }, 'GET', path);
+  await flush();
+  t.mock.timers.tick(FLIGHT_MS);
+  // No further timer advance: a request that joined the dead flight would hang.
+  const { response, body } = await h.request({ range: 'bytes=40-55' }, 'GET', path);
+  assert.equal(response.status, 206);
+  assert.deepEqual(body, data.slice(40, 56));
+  assert.equal(h.reads.length, 2);
+});
+
+test('no-cache never joins a flight', { timeout: 5000 }, async t => {
+  const h = harness(t);
+  const path = '/no-cache-join.pmtiles';
+  h.state.hold = new Promise(() => {});
+  h.request({ range: 'bytes=10-25' }, 'GET', path);
+  await flush();
+  const { response, body } = await h.request({ range: 'bytes=40-55', 'cache-control': 'no-cache' }, 'GET', path);
+  assert.equal(response.status, 206);
+  assert.deepEqual(body, data.slice(40, 56));
+  assert.equal(response.headers.get('x-cache'), 'MISS');
+  assert.equal(h.reads.length, 2);
+});
+
+test('a failed leader does not fail the requests that joined it', { timeout: 5000 }, async t => {
+  const h = harness(t);
+  const path = '/failed-leader.pmtiles';
+  let release;
+  h.state.hold = new Promise(r => { release = r; });
+  const leader = h.request({ range: 'bytes=10-25' }, 'GET', path);
+  await flush();
+  const joiner = h.request({ range: 'bytes=40-55' }, 'GET', path);
+  await flush();
+  release('fail');
+  assert.equal((await leader).response.status, 503);
+  const { response, body } = await joiner;
+  assert.equal(response.status, 206);
+  assert.deepEqual(body, data.slice(40, 56));
+  assert.equal(h.reads.length, 2);
 });
 
 for (const range of ['bytes=20-10', 'bytes=-0', 'bytes=0-1,4-5', 'not-a-range', `bytes=${data.length}-`, 'bytes=9007199254740992-']) {

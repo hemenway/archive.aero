@@ -91,15 +91,62 @@ async function rangeNotSatisfiable(env, key, origin) {
 // order, so a 30-tile viewport spans 2-5 blocks and a one-column pan almost
 // never leaves them: caching per block turns most reads into edge hits, where
 // caching per exact range (every viewport is a fresh set of ranges) hit ~6%.
-// Each block is fetched from R2 once per colo per TTL, shared by every
-// concurrent request in the isolate, and stored in the Cache API as a plain
-// 200 keyed on the block index. Reads longer than a block, open-ended reads
-// and whole-file reads stream straight through (see below).
+// Each block is fetched from R2 once per colo per TTL, shared by concurrent
+// requests in the isolate (see FLIGHT_MS), and stored in the Cache API as a
+// plain 200 keyed on the block index. Reads longer than a block, open-ended
+// reads and whole-file reads stream straight through (see below).
 const BLOCK_BYTES = 1 << 20;
-const inflightBlocks = new Map();
+
+// Concurrent misses on one block share a single R2 read (a "flight") across
+// requests. A promise owned by another request is not safe to wait on: when
+// that request is cancelled (client aborts, e.g. a timeline scrub) its I/O is
+// torn down and the promise never settles. Until 2026-09-30 the flight was
+// joinable until it settled, so one cancelled leader wedged its block for the
+// life of the isolate (1956-08-03 era: every read hung 150 s, no-cache too).
+// Now a flight
+//   - is held open by the leader's ctx.waitUntil, so a leader disconnect no
+//     longer cancels the read (up to the 30 s waitUntil limit),
+//   - is joinable for FLIGHT_MS after it starts; the next request after that
+//     replaces it with a read of its own, and
+//   - is never waited on past that deadline: a joiner that runs out of time,
+//     or whose leader failed, reads R2 itself.
+// A joined flight can save a joiner an R2 read but cannot decide its outcome.
+// A 1 MiB block read takes ~0.1-0.3 s, so 3 s only expires stalled flights.
+const FLIGHT_MS = 3000;
+const inflightBlocks = new Map(); // cache key URL -> { promise, deadline }
+const FLIGHT_TIMEOUT = Symbol("flight timeout");
 
 function blockCacheKey(url, index) {
   return new Request(`${url.origin}${url.pathname}?b=${index}&bs=${BLOCK_BYTES}`);
+}
+
+async function readBlock(env, key, index) {
+  const object = await env.BUCKET.get(key, {
+    range: { offset: index * BLOCK_BYTES, length: BLOCK_BYTES },
+  });
+  if (!object) return null;
+  const buffer = await object.arrayBuffer();
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  return {
+    buffer,
+    etag: object.httpEtag,
+    total: object.size,
+    contentType: headers.get("content-type") || "application/octet-stream",
+  };
+}
+
+// Resolves to the flight's result, or FLIGHT_TIMEOUT if it is still pending
+// after ms or rejected. The timer belongs to the calling request, so this
+// settles even when the flight's own request is gone.
+function joinFlight(promise, ms) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms, FLIGHT_TIMEOUT);
+  });
+  return Promise.race([promise.catch(() => FLIGHT_TIMEOUT), timeout]).finally(() =>
+    clearTimeout(timer)
+  );
 }
 
 // Fetch one block, from the edge cache or R2. Resolves to
@@ -124,52 +171,45 @@ async function getBlock(env, ctx, url, key, index, bypass = false) {
     };
   }
 
+  // A bypass request wants bytes newer than anything cached, so it does not
+  // join a flight that may have started before the republish it is chasing.
   const inflightKey = cacheKey.url;
-  let flight = inflightBlocks.get(inflightKey);
-  const isLeader = !flight;
-  if (!flight) {
-    flight = (async () => {
-      const object = await env.BUCKET.get(key, {
-        range: { offset: index * BLOCK_BYTES, length: BLOCK_BYTES },
-      });
-      if (!object) return null;
-      const buffer = await object.arrayBuffer();
-      const headers = new Headers();
-      object.writeHttpMetadata(headers);
-      return {
-        buffer,
-        etag: object.httpEtag,
-        total: object.size,
-        contentType: headers.get("content-type") || "application/octet-stream",
-      };
-    })();
-    inflightBlocks.set(inflightKey, flight);
-    // Evict on settlement, success or failure — a rejected flight must never
-    // be joinable later, or one transient error would fan out.
-    flight.then(
-      () => inflightBlocks.delete(inflightKey),
-      () => inflightBlocks.delete(inflightKey)
-    );
+  const existing = bypass ? undefined : inflightBlocks.get(inflightKey);
+  const now = Date.now();
+  if (existing && now < existing.deadline) {
+    const joined = await joinFlight(existing.promise, existing.deadline - now);
+    if (joined !== FLIGHT_TIMEOUT) return joined && { ...joined, source: "COALESCE" };
+    // The leader stalled, was cancelled or failed: read for ourselves.
   }
-  const result = await flight;
+
+  const promise = readBlock(env, key, index);
+  const flight = { promise, deadline: Date.now() + FLIGHT_MS };
+  inflightBlocks.set(inflightKey, flight);
+  // Evict on settlement, success or failure (a rejected flight must not be
+  // joinable later), but only if a newer flight has not replaced this one.
+  const evict = () => {
+    if (inflightBlocks.get(inflightKey) === flight) inflightBlocks.delete(inflightKey);
+  };
+  const settled = promise.then(evict, evict);
+  // Keep the read alive if this request is cancelled while joiners wait on it.
+  ctx.waitUntil(settled);
+  const result = await promise;
   if (!result) return null;
 
   // Only the leader fills the edge cache; N joiners doing N puts is waste.
-  if (isLeader) {
-    const headers = new Headers({
-      "content-type": result.contentType,
-      "content-length": String(result.buffer.byteLength),
-      etag: result.etag,
-      "x-object-size": String(result.total),
-      "cache-control": CACHE_CONTROL,
-    });
-    ctx.waitUntil(
-      cache
-        .put(cacheKey, new Response(result.buffer, { status: 200, headers }))
-        .catch(() => {})
-    );
-  }
-  return { ...result, source: isLeader ? "MISS" : "COALESCE" };
+  const headers = new Headers({
+    "content-type": result.contentType,
+    "content-length": String(result.buffer.byteLength),
+    etag: result.etag,
+    "x-object-size": String(result.total),
+    "cache-control": CACHE_CONTROL,
+  });
+  ctx.waitUntil(
+    cache
+      .put(cacheKey, new Response(result.buffer, { status: 200, headers }))
+      .catch(() => {})
+  );
+  return { ...result, source: "MISS" };
 }
 
 // Edge entries for streamed (non-block) reads are stored as 200 surrogates
