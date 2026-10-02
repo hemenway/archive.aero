@@ -1,34 +1,28 @@
 # Worklist 06 — Publication state and reconciliation
 
-## Current status — 2026-09-21
+## Current status — 2026-10-01
 
-The **July 14 → July 21 sync is complete**. Subsequent publication batches have
-superseded its 3,658-era count and repaired its partial late-2025/early-2026 ranges.
-The current checked-in `dates.csv` has **3,751 entries** (unchanged by the
-2026-09-25 Boston republish, which rewrote 26 existing keys in place); the viewer
-config source `src/viewer.js` points to **`metadata-83ed9b48.bundle`**
-(2026-09-25; the generated `assets/viewer.*.js` follows it).
-The latest publication is the 2026-09-25 Boston 1953–70 bottom-latitude fix
-(26 eras + 26 chart artifacts, same keys, see [04](04_georef_backlog.md)); the
-latest `dates.csv`-changing commit is `d1034df` (2026-09-15).
+**[October 1 georef batch](georef_publish_2026-10-01.md) complete:** 17 era
+artifacts and 30 full-sheet chart artifacts uploaded, R2 size-checked and
+read back through every CDN block. All 23 donated sectional faces are published.
+`dates.csv` now has **3,761 references**; viewer metadata is
+**`metadata-1c04feec.bundle`**. Inventory and coverage were regenerated after merging
+the verified chart upload events. Permanent old object keys are retained.
 
-Local `data/chart_pmtiles/uploads.jsonl` has **7,475 upload events / 7,342 unique
-chart keys**, latest event `2026-09-15T22:07:25`. Events include overwrites;
-unique keys are not a count of currently selected editions. These are repository
-and ledger observations, **not a fresh R2/reachability audit**.
+The separate September 29 modern-era reslice/republish job continues; its logs
+under `/Volumes/projects/2026-09-29 g2p yshift reslice/` are the evidence for that
+queue. It may supersede the bundle above while preserving this batch's keys.
 
-- [ ] Reconcile the **nine August 29 ACASIS additions**: recovery/build evidence
-  exists, but the available upload ledger and September 15 timeline do not prove
-  publication. See [11](11_acasis_img_recovery.md) and [12](12_sdcard_batch.md).
-- [ ] Resolve the remaining candidate/georef issues before publishing their
-  affected eras (04): Boston 1957 (`ca000440r`, the one 1953–70 Boston row not
-  covered by the 2026-09-25 fix), SF 1971 half grouping, Juneau 2013 hold
-  conflict, Dallas 1981 north and the Denver 1975 seam. Stored GCPs alone do
-  not close them.
-- [ ] Reconcile source availability from [02](02_disk_vs_dole.md) before rebuilds;
-  142 resolver misses do not by themselves imply a live-site outage.
-- [ ] For the next batch, identify the current output/mirror location. The July
-  report's `/Volumes/drive/pmtiles` is **not present** on this machine at this audit.
+- [ ] Reconcile the **nine August 29 ACASIS additions** against current remote
+  objects and upload evidence (11/12); this batch does not close that audit.
+- [ ] Resolve remaining georef/candidate issues in 04: Boston 1957, SF 1971,
+  Juneau's hold, Dallas 1981 north and Denver 1975, plus the remaining GCP lanes.
+- [ ] Reconcile the September 21 source audit from 02 separately. All sources
+  required by this batch were present; that does not prove every catalog source.
+
+Current batch output: `/Volumes/drive/georef_publish_2026-10-01/`; row-level,
+upload and read-back evidence: `worklists/data/georef_publish_2026-10-01/`.
+The former `/Volumes/drive/pmtiles` mirror remains absent; use actual run paths.
 
 ## Publication procedure
 
@@ -53,6 +47,7 @@ and ledger observations, **not a fresh R2/reachability audit**.
 
 | Date | Recorded result |
 |---|---|
+| 2026-10-01 | 17 georef-tool/donation eras + 30 chart artifacts verified and published; see the completed batch report. |
 | 2026-07-21 (`f08a5fb`) | Full July-run publish: 3,658 eras (3,656 new-run keys + 2 retained fallbacks), first metadata bundle; 7 empty sparse mosaics skipped; 23 UInt16 mosaics rescaled. |
 | 2026-07-23 (`5719624`) | 14 broken ranges repaired and republished after sibling-georef and empty-mosaic fixes. |
 | 2026-07-29 (`bfa31e5`) | July 26 full run published: 3,698 eras, including 2004–05 additions. |

@@ -1,19 +1,19 @@
 # Worklist 04 — Georeferencing and candidate-selection backlog
 
-## Current status — 2026-09-21
+## Current status — 2026-10-01
 
-Read-only catalog review through `scripts/dole_v2.py`: **7,672 rows**, **3,484
-without complete GCPs**, including **117 dated before 2011**. These are metadata
+Read-only catalog review through `scripts/dole_v2.py`: **7,695 rows**, **3,482
+without complete GCPs**, including **115 dated before 2011**. These are metadata
 counts, not the number needing hand work: native GeoTIFFs and world-file JPGs can
 warp without row GCPs, while incorrect saved GCPs can still need repair. Only the
 **two GlidePlan rows** have neither a cutline reference nor inline WKT; the four
 Key West strips now explicitly use `cutline=none` and `proj=merc`.
 
 Source availability is a separate prerequisite: [02](02_disk_vs_dole.md) found
-142 catalog resolution misses in the current mounted tree, including several
-lanes below. Locate/verify each source before editing GCPs. This review did not
-render charts or run the slicer; publication claims below are from dated commits
-and `data/chart_pmtiles/uploads.jsonl`, not a fresh live check.
+142 catalog resolution misses in the September 21 mounted-tree audit, including several
+lanes below. Locate/verify each source before editing GCPs. The October 1 batch verified all of its source files, rendered its warps, and
+read back all published bytes. The 142 misses remain a separate dated audit.
+See [October 1 publication](georef_publish_2026-10-01.md) for the completed batch.
 
 | Remaining item | Evidence and next action |
 |---|---|
@@ -25,12 +25,12 @@ and `data/chart_pmtiles/uploads.jsonl`, not a fresh live check.
 | **simviation 2010–11** | 55 rows still lack GCPs. Since September 12 they point to chart TIFFs extracted losslessly from embedded JPEGs; the old manual page-assembly instruction is superseded. |
 | **Dutch Harbor 2004 south** | Row still lacks GCPs; review/apply the August 20 full-resolution fit after locating the source. |
 | **Hawaiian 2004 archive.org JPG** | Still lacks GCPs. The separate AVSIM JPG has `src_crs=EPSG:4269` and provenance for its JGW; first verify that world-file path before assuming hand GCPs are needed. |
-| **SF 1966 + ESRI SF 2008** | Still lack GCPs. SF 1978 north was published September 15 and is no longer in this queue. |
+| **ESRI SF 2008** | Still lacks GCPs. SF 1966 was verified and published October 1; SF 1978 north was published September 15. |
 | **GlidePlan Mt. Shasta + Reno Whites** | Still lack GCPs and a cutline decision; consider explicit whole-sheet `none` for these collar-free mosaics, then verify the warp. |
-| **Wichita 1972 WASP 418 pair** | `_01` lacks GCPs; `_02` has them, but both `half` fields are blank and SP is 45/33. Review the pair together to avoid the known half-collapse bug. |
+| ~~**Wichita 1972 WASP 418 pair**~~ | **Published October 1**: both hand GCPs ready, sides explicit, modern SP verified by residuals, fold cutlines traced; era plus north/south chart artifacts read back. |
 | **Dallas 1981 north (419_01)** | Now has GCPs, `half=north`, corrected SP; no traced `cutline_wkt` and no north artifact in the upload ledger. Verify edges/fold and publication status before treating it as complete. |
 | **Denver 1975 seam** | Both halves published September 15; a ≤4 km pale band was recorded. Reconcile their GCPs at the fold before republishing improved same-key artifacts. |
-| **Tool status/sidebar** | `row_status()` still equates a GCP-less `sectional/` cutline with embedded georef. Correct that heuristic and refresh the stale A2/A4/B1 and B4 descriptions (01). |
+| **Tool status/sidebar** | `row_status()` still equates a GCP-less `sectional/` cutline with embedded georef. The completed A2/A3/A4/A7/B1 entries were reconciled October 1. Correct the status heuristic and resolve the separate B4 Juneau hold conflict (01). |
 
 **Completed since the original list:** most 2004 JPGs, Juneau 1994–2010, Cheyenne
 2009, Dallas 1981 south/1982 both halves, Key West 1928–35, Chicago 1939,
@@ -212,6 +212,12 @@ catalog's GCP count. Seward 93 is a replacement-source problem in 01.
 > feature-continuous. 419_01 (1981 north) is still unreadied: its GCP
 > prefill (-94 east edge, 45/33 SP) predates all of this — re-derive when
 > hand-GCP'd, and give it its own traced fold cutline.
+
+## October 1 completed batch
+
+[17 eras + 30 chart artifacts](georef_publish_2026-10-01.md) were verified and
+published, including all donated sectional faces, SF 1966, Denver 1972 and
+Wichita 1972. These are closed; the remaining table above stays actionable.
 
 ## Interpreting the historical counts
 
