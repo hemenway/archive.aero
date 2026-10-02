@@ -61,3 +61,6 @@ worklists/14_geotiff2pmtiles_audit_handoff.md
 worklists/14_geotiff2pmtiles_upstream_drafts.md
 worklists/helper_prompt.md
 /.agents
+
+# GitHub Pages publication artifact
+/_site/

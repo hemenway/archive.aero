@@ -5,7 +5,7 @@ Adopted 2026-08-21. Framework: W3C **"Cool URIs don't change"**
 ATC collection's canonical space (worklist 08 §A3) and to the per-chart PMTiles
 keys, promoted here to site law.
 
-**A URI, once published, works forever.** Improvements overwrite content at the
+**An intentionally published public URI works forever.** Improvements overwrite content at the
 same address; they never move it. Every workstream that mints URLs — generated
 pages, new collections, redirects — follows this file.
 
@@ -112,8 +112,17 @@ Redirects, so `http://www.archive.aero/x` would become a two-hop chain
 
 ## Exceptions log
 
-Covenants 6 and 7 are absolute for anything a reader could have reached. The
-entries below are the only departures, each recorded here before it was made.
+Covenants 6 and 7 apply to intentionally published public resources. Accidental
+publication of credentials, private personal information, or internal operational
+files can be removed to protect privacy and security; record the removal here.
+The entries below are the only departures, each recorded here before it was made.
+
+- **2026-10-01 — repository internals excluded from Pages.** Branch-root Pages
+  exposed internal worklists and processing scripts. Switch to an allowlisted
+  Actions artifact and withdraw those accidental site URLs (including generated
+  Markdown pages and operational CSVs). No redirects preserve private content.
+  Public viewer assets, data used by the viewer, collection URLs, and their aliases
+  remain in service. This changes website publication, not public GitHub history.
 
 - **2026-09-01 — `/contact/` retargeted out of the collection.** The alias
   `/contact/` (and `/atc/contact`) now 301s to `/contribute` instead of serving

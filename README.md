@@ -18,6 +18,30 @@
 - **Shareable views** — URLs encode date, position, and zoom
 - **Mobile-aware** — touch controls, geolocation, and iOS Safari memory management tuned for tablets in the cockpit (for history browsing, not navigation!)
 
+## Site publication
+
+GitHub Pages uses the `Deploy site to GitHub Pages` Actions workflow. It publishes
+only `_site/`, staged by `python3 scripts/build_pages.py` from `site-files.json`
+and committed, fingerprinted `assets/{boot,viewer,csv}.*.js` modules. Old module
+hashes stay available for cached HTML. `dates.csv` is the viewer's public fallback
+inventory (date and chart URL); operational CSVs are excluded.
+
+Worklists, scripts, source trees, local catalogs, credentials, and repository
+documentation are excluded from the site artifact. The GitHub repository is
+public: tracked files and history remain accessible there. Adding a new published
+file requires reviewing and updating the allowlist. Pages must use **GitHub
+Actions** as its publishing source, not a branch root.
+
+## License
+
+Original archive.aero software and associated documentation are licensed under
+the [MIT License](LICENSE), including the frontend, Workers, and processing
+scripts. Archived charts, scans, photographs, source datasets, and other
+third-party content are not relicensed by this grant; their rights and source
+terms remain applicable. See [Sources & Attribution](https://archive.aero/sources).
+Vendored libraries retain their own licenses and
+[third-party notices](vendor/THIRD_PARTY_LICENSES.txt).
+
 ## Architecture
 
 The system is three independent pieces: a **data pipeline** that turns archival scans into tile archives, **edge storage/delivery**, and a **static frontend**.
