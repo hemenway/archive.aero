@@ -56,6 +56,38 @@ The former `/Volumes/drive/pmtiles` mirror remains absent; use actual run paths.
 | 2026-09-01 (`bb598f6`) | Sarangan donation published: Cincinnati 1991 and Detroit 1971. |
 | 2026-09-15 (`d1034df`) | 11 georef-tool eras, 13 chart artifacts; current `dates.csv` count 3,751. |
 | 2026-09-25 | Boston 1953-12 → 1970 bottom-latitude fix: 26 era keys and 26 `chart/boston_ma/<date>` artifacts republished in place (0.99 → 1.19 GB eras, 364 MB charts), bundle `metadata-83ed9b48`; `dates.csv` unchanged. Same-key republish, so the Worker's per-block edge cache can serve stale blocks for ≤24 h at colos other than the one refreshed by the post-upload no-cache pass. |
+| 2026-09-30 → 10-02 (`92dbb36` … `8238d0e`) | 18 modern eras `2022-05-19` → `2024-12-26` republished in place, one commit + bundle each (last `metadata-c0dd24c1`). See the y-shift section below. |
+
+## 2026-09-30 modern-era y-shift republish (closed)
+
+The 18 era objects still in R2 from the 2026-07-14 run (uploaded 07-18 → 07-21)
+had been converted by a geotiff2pmtiles older than upstream `aa74aa0`, which
+read rows with the X pixel size. The slicer's mosaic takes the finest x-res and
+y-res independently, so modern mosaics were slightly non-square
+(2022-05-19: y/x − 1 = 8.17e-5) and those archives drew the charts north by up
+to ~17 px at z12 (~500 m in the southern US; ~1 px on 2024-09-05 → 12-26). The
+07-28 republish had kept them because their *mosaics* matched — the converted
+tiles were never compared. Proof: same mosaic strip, pre-fix g2p +16.88 px,
+fixed g2p +0.14 px.
+
+Re-sliced with the 2026-09-30 slicer (lanczos, square z12 tile-grid mosaic) and
+converted with **b300c9e + a half-pixel sampling fix**: stock g2p puts source
+pixel k's centre at k instead of k + 0.5 (0.5 px NW offset plus a half-pixel
+blur; DFW z12 PSNR vs mosaic 21.6 → 29.2 dB). Patch, binary and sha256 live in
+`/Volumes/projects/2026-09-29 g2p yshift reslice/bin/`; the binary runs from
+`~/Library/Caches/archive.aero/geotiff2pmtiles/b300c9e-halfpx/` (the SMB share
+is noexec). Not upstream yet. Every era: tiles vs mosaic ≤ 0.03 px over 12
+probes; the live bundle byte-matches R2 for all 18; 2022-12-29 and 2023-02-23
+went out once on stock b300c9e first and were republished on the patched build.
+
+Each era was published as soon as it passed (bundle built from the local file
+before upload → bundle → era → commit `index.html`/`src/viewer.js`/`assets` →
+push), so the new-bytes/old-bundle window was the push plus the Pages deploy.
+Run dir keeps `mosaics/` (592 GB), `pmtiles/` (60 GB, = live), and two
+superseded sets (old-slicer, stock-converter) for rollback.
+
+Still open: the other ~3,740 eras carry the stock half-pixel offset
+(≈0.2–0.3 z12 px on 22.7 m mosaics) until reconverted; upstream the g2p fix.
 
 ## Historical July 16 comparison (closed)
 
