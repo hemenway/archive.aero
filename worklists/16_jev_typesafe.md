@@ -28,7 +28,7 @@ Vanderbilt Seaplane Base: opened 1936, closed 1947 — the heuristic had picked
 
 | Rule | Why |
 |---|---|
-| **Key lives in `.env` as `TYPESAFE_API_KEY`** (gitignored; the Python SDK reads that name) and, for any live endpoint, in a Worker secret via `wrangler secret put`. Never in a script, never in `index.html`/`src/`. | Public repo. The key was pasted into a chat transcript on 09-18 — rotate it in the TypeSafe dashboard when convenient. |
+| **Key lives in `.env` as `TYPESAFE_API_KEY`** (gitignored; the Python SDK reads that name) and, for any live endpoint, in a Worker secret via `wrangler secret put`. Never in a script, never in `index.html`/`src/`. | Public repo. The key pasted into a chat transcript on 09-18 was deactivated by the owner on 2026-10-01; its API request now returns HTTP 403. Replacement in the local `.env` is pending. Never paste credentials into chat. |
 | **Pin `jev-1.13.0`** in batch scripts; log the `model` field from every response. | Thresholds tuned on one version don't carry to the next; `jev-latest` moves. |
 | **Code finds candidates, Jev selects.** Years/dates/idents/place names are regex- or gazetteer-extracted first; Jev picks among them (Choice) with an explicit `not_stated` option. | Jev doesn't generate or count; a Choice over real spans gives a verbatim value code can normalize. |
 | **One narrow question each; independent questions batched in one request.** | Parallel evaluation is ~10× cheaper/faster than serial calls; questions can't see each other's answers, so state each premise explicitly. |
