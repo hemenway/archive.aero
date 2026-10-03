@@ -180,6 +180,15 @@ class NextDataTests(unittest.TestCase):
             self.assertEqual(Archive(self.dir/'stubs'/r['new']).h,Archive(era).h)
             again=plan(listing=listing,read_remote=True,stubs=self.dir/'stubs',journal=journal)
         self.assertEqual(again,[r]);self.assertEqual(len(client.gets),2)  # the journal answered; nothing was streamed again
+    def test_select_live_drops_stale_eras_keeps_charts_and_overlays(self):
+        from next_select_live import live_eras, select
+        dates=self.dir/'dates.csv';dates.write_text('date_iso,url\n1950-01-01_to_1950-07-01,https://data.archive.aero/sectionals/1950-01-01_to_1950-07-01.pmtiles\n')
+        rec=lambda old:{'old':old,'new':old+'.x','size':1}
+        records=[rec('sectionals/1950-01-01_to_1950-07-01.pmtiles'),rec('sectionals/1950-01-01.pmtiles'),rec('sectionals/1949-01-01_to_1950-01-01.pmtiles'),rec('sectionals/chart/a/1950-01-01'),rec('airspace/class-x.pmtiles')]
+        kept,dropped=select(records,live_eras(dates))
+        self.assertEqual([r['old'] for r in kept],['sectionals/1950-01-01_to_1950-07-01.pmtiles','sectionals/chart/a/1950-01-01','airspace/class-x.pmtiles'])
+        self.assertEqual(dropped,['sectionals/1950-01-01.pmtiles','sectionals/1949-01-01_to_1950-01-01.pmtiles'])
+        self.assertRaises(ValueError,select,records[1:],live_eras(dates))  # a live era with no plan record is an error
     def test_coverage_from_directory_runs_matches_per_tile_walk(self):
         rng=random.Random(7);same=webp((9,9,9,255));tiles=[]
         # Long runs of identical tiles (including one crossing a zoom boundary) and scattered singles, z4..z9.

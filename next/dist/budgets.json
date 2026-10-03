@@ -3,6 +3,8 @@
   "manifestUrl": "./manifest.ecfc3cc3efa7.json",
   "base": "/next/",
   "allowOverBudget": false,
+  "analytics": true,
+  "linksOrigin": null,
   "manifestGzip": 361,
   "bytes": {
     "criticalJS": 13835,

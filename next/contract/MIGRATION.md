@@ -100,6 +100,24 @@ archive. The stub directory must be on a local APFS disk (sparse files; the
 apparent size equals the archives'). Plans from `--read-remote` carry the
 object's `size` and `md5`, so the same `.sh` and `--execute` guards apply.
 
+### Stale archives
+
+R2 keeps era archives the timeline no longer lists: on 2026-10-02, 229 of 3,990
+(207 start-only keys from before the `{start}_to_{end}` rename and 22 ranges
+superseded by a republish, 3.8 GiB). The manifest builder includes every era
+archive it is given, and an old range overlapping its replacement would draw the
+wrong chart, so restrict the plan and the stubs to the live inventory first:
+
+```sh
+"$NEXT_BUILD/venv/bin/python" scripts/next_select_live.py --plan "$NEXT_BUILD/plans/sectionals/plan.json" --plan "$NEXT_BUILD/plans/airspace/plan.json" \
+  --dates dates.csv --out-plan "$NEXT_BUILD/plans/final.json" --stubs "$HOME/archive-next-build/stubs" --out-stubs "$HOME/archive-next-build/live" \
+  --shards 12 --shard-dir "$NEXT_BUILD/plans/execute"
+scripts/next_execute_plan.sh "$NEXT_BUILD/plans/execute" 12
+```
+
+`final.json` is then the `--plan` for `next_build_overlays.py`, and the `live`
+directory is the `--dir` for `next_build_manifest.py`.
+
 **Owner-only storage operation:** configure the rclone `r2:` remote, inspect
 `originals.json.sh`, and execute the reviewed copy commands:
 

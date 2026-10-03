@@ -13,6 +13,10 @@ const outdir = value('--outdir') ? path.resolve(value('--outdir')) : path.join(d
 const previousBuild = check ? JSON.parse(await readFile(path.join(outdir, 'budgets.json'), 'utf8').catch(() => 'null')) : null;
 // The 80 KB C2 budget is a contract target; the owner may ship an over-budget manifest while the shard format is decided (2026-10-02).
 const allowOverBudget = args.includes('--allow-over-budget') || !!previousBuild?.allowOverBudget;
+// A preview host: no page analytics, and site links (/about, /atc/...) point at the origin that has those pages.
+const analyticsOn = !(args.includes('--no-analytics') || previousBuild?.analytics === false);
+const linksOrigin = value('--links-origin') || previousBuild?.linksOrigin || null;
+if (linksOrigin && !/^https:\/\/[\w.-]+$/.test(linksOrigin)) throw new Error(`--links-origin must be an https origin, got ${linksOrigin}`);
 const modulesExist = await Promise.all(['renderer/index.js', 'dataplane/index.js'].map(name => access(path.join(directory, name)).then(() => true, () => false)));
 const stubs = args.includes('--stubs') || (!args.includes('--manifest') && (previousBuild?.mode === 'stubs' || !modulesExist.every(Boolean)));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex').slice(0, 12);
@@ -52,8 +56,9 @@ const json = JSON.stringify(manifestUrl).replaceAll('<', '\\u003c');
 const escape = text => text.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
 const chunks = result.outputFiles.filter(f => f.path.endsWith('.js')).map(f => path.relative(outdir, f.path));
 const head = `<style>${critical}</style><link rel="preload" as="fetch" href="${escape(manifestUrl)}" crossorigin><script id=bootData type=application/json>${bootData}</script><script>${early}</script>${chunks.map(name => `<link rel="modulepreload" href="./${name}">`).join('')}<link rel="stylesheet" href="./${cssName}">`;
-const analytics = '<script async src="https://plausible.io/js/pa-m9DzDEgB7Ebb2zKdbBaMF.js"></script><script>window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)};plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()</script>';
-const html = (await readFile(path.join(directory, 'shell/template.html'), 'utf8')).replace('<!--HEAD-->', head).replace('<!--APP-->', `<script type="module" src="./${app}"></script>${analytics}`).replace(/\s+/g, ' ').replace(/> </g, '><').replace(/="([a-zA-Z0-9_:.\/-]+)"/g, '=$1').trim() + '\n';
+const analytics = !analyticsOn ? '' : '<script async src="https://plausible.io/js/pa-m9DzDEgB7Ebb2zKdbBaMF.js"></script><script>window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)};plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()</script>';
+const template = (await readFile(path.join(directory, 'shell/template.html'), 'utf8')).replace(/href="\/(atc\/|about|sources|contribute)"/g, linksOrigin ? `href="${linksOrigin}/$1"` : '$&');
+const html = template.replace('<!--HEAD-->', head).replace('<!--APP-->', `<script type="module" src="./${app}"></script>${analytics}`).replace(/\s+/g, ' ').replace(/> </g, '><').replace(/="([a-zA-Z0-9_:.\/-]+)"/g, '=$1').trim() + '\n';
 outputs.set('index.html', html);
 const shellAssets = ['./index.html', ...[...outputs.keys()].filter(name => /\.(js|css)$/.test(name)).map(name => `./${name}`), manifestUrl];
 const version = hash([...outputs].map(([name, data]) => `${name}:${hash(data)}`).join('|'));
@@ -62,7 +67,8 @@ outputs.set('sw.js', sw);
 const scriptHashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`).join(' ');
 // Data origins named by this build's manifest join connect-src (a preview or fixture host); production's stays listed.
 const dataOrigins = [...new Set([manifestUrl, source.tileBase, source.fileBase].map(u => new URL(u, 'https://archive.aero/next/').origin))].filter(o => !['https://archive.aero', 'https://data.archive.aero'].includes(o));
-const csp = `default-src 'self'; script-src 'self' ${scriptHashes} https://plausible.io; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero ${dataOrigins.map(o => o + ' ').join('')}https://get.geojs.io https://plausible.io; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
+const plausible = analyticsOn ? ' https://plausible.io' : '';
+const csp = `default-src 'self'; script-src 'self' ${scriptHashes}${plausible}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero ${dataOrigins.map(o => o + ' ').join('')}https://get.geojs.io${plausible}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
 const immutableHeaders = [...outputs.keys()].filter(name => name !== 'sw.js' && /\.(js|css)$/.test(name)).map(name => `${deployBase}${name}\n  Cache-Control: public, max-age=31536000, immutable\n`).join('');
 // Cloudflare reads _headers only from the asset root, so this file is published there with rules already prefixed by the base.
 outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
@@ -72,7 +78,7 @@ const js = externalJS + inlineJS + gzipSync(worker.outputFiles.find(f => f.path.
 const sizes = { criticalJS: js, css: gzipSync(css).length, html: Buffer.byteLength(html), htmlGzip: gzipSync(html).length, worker: gzipSync(worker.outputFiles.find(f => f.path.endsWith('.js')).contents).length, inlineBoot: Buffer.byteLength(early) };
 // HTML carries the newest frame's era metadata inline; 12 KiB leaves room for several overlapping eras (gzip stays near 4 KB).
 if (sizes.criticalJS > 50 * 1024 || sizes.css > 12 * 1024 || sizes.html > 12 * 1024) throw new Error(`Build budgets exceeded: ${JSON.stringify(sizes)}`);
-outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, allowOverBudget, manifestGzip, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 12288 }, assets: shellAssets }, null, 2) + '\n');
+outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, allowOverBudget, analytics: analyticsOn, linksOrigin, manifestGzip, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 12288 }, assets: shellAssets }, null, 2) + '\n');
 const expected = new Set(outputs.keys());
 const existing = await readdir(outdir).catch(e => { if (e.code !== 'ENOENT') throw e; return []; });
 for (const [name, bytes] of outputs) {
