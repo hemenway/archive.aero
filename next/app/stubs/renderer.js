@@ -3,8 +3,8 @@ export class RendererUnsupportedError extends Error {}
 export function createRenderer(canvas, { minZoom = 4, maxZoom = 14 } = {}) {
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new RendererUnsupportedError('Canvas unavailable');
-  const events = new Map(), textures = new Map(), completed = new Map();
-  let camera = { x: 0.5, y: 0.5, zoom: minZoom }, plan = { tiles: [] }, base = [], style = { opacity: 1 }, fields, fieldFilter = {}, spaceFilter = {}, spaceTiles = new Map(), pin, queued = false, dead = false, drag, calls = 0;
+  const events = new Map(), textures = new Map(), completed = new Map(), rings = new Map();
+  let camera = { x: 0.5, y: 0.5, zoom: minZoom }, plan = { tiles: [] }, base = [], style = { opacity: 1 }, fields, fieldFilter = {}, spaceFilter = {}, spaceTiles = new Map(), pin, queued = false, dead = false, drag, calls = 0, selected = null;
   const emit = (type, value) => { for (const cb of events.get(type) || []) cb(value); };
   const geographic = () => ({ ...unproject(camera.x * 256, camera.y * 256, 0), zoom: camera.zoom });
   const point = p => { const [x, y] = project(p.lat, p.lng, camera.zoom), n = 256 * 2 ** camera.zoom; return { x: x - camera.x * n + canvas.clientWidth / 2, y: y - camera.y * n + canvas.clientHeight / 2 }; };
@@ -34,7 +34,7 @@ export function createRenderer(canvas, { minZoom = 4, maxZoom = 14 } = {}) {
     ctx.globalAlpha = 1;
     if (fields) for (let i = 0; i < fields.mx.length; i++) if (fieldVisible(i)) {
       const pos = point(unproject(fields.mx[i] * 256, fields.my[i] * 256, 0));
-      ctx.beginPath(); ctx.arc(pos.x, pos.y, 7, 0, 7); ctx.fillStyle = fields.status[i] === 0 ? '#36a35d' : '#c23b2a'; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.stroke();
+      ctx.beginPath(); ctx.arc(pos.x, pos.y, 7, 0, 7); ctx.fillStyle = fields.status[i] === 0 ? '#36a35d' : '#c23b2a'; ctx.fill(); ctx.strokeStyle = i === selected ? '#1e90ff' : '#fff'; ctx.stroke();
     }
     for (const batch of spaceTiles.values()) for (let i = 0; i < batch.from.length; i++) {
       const code = batch.style[i], isE = [4, 6, 7].includes(code);
@@ -72,11 +72,11 @@ export function createRenderer(canvas, { minZoom = 4, maxZoom = 14 } = {}) {
     setChartPlan(value) { plan = value; const wanted = new Set(plan.tiles.map(t => `${t.dst.z}/${t.dst.x}/${t.dst.y}`)); for (const k of completed.keys()) if (!wanted.has(k)) completed.delete(k); schedule(); },
     setBasemapPlan(value) { base = value; schedule(); },
     setChartStyle(value) { style = value; schedule(); },
-    setClipRing() {}, setAirfields(value) { fields = value; schedule(); },
+    setClipRing(id, ring) { if (ring) rings.set(id, ring); else rings.delete(id); }, setAirfields(value) { fields = value; schedule(); }, setAirfieldSelected(index) { selected = index; schedule(); },
     setAirfieldFilter(value) { fieldFilter = value; schedule(); }, setAirspaceTile(tileId, batch) { if (batch) spaceTiles.set(tileId, batch); else spaceTiles.delete(tileId); schedule(); }, setAirspaceFilter(value) { spaceFilter = value; schedule(); }, setPin(value) { pin = value; schedule(); },
     pick(clientX, clientY) { if (!fields) return null; const rect = canvas.getBoundingClientRect(); for (let i = 0; i < fields.mx.length; i++) if (fieldVisible(i)) { const p = point(unproject(fields.mx[i] * 256, fields.my[i] * 256, 0)); if (Math.hypot(p.x + rect.left - clientX, p.y + rect.top - clientY) < 14) return { kind: 'airfield', index: i }; } return null; },
     on(type, cb) { if (!events.has(type)) events.set(type, new Set()); events.get(type).add(cb); }, off(type, cb) { events.get(type)?.delete(cb); },
-    stats() { return { textures: textures.size, textureBytes: textures.size * 262144, drawCalls: calls, frameMs: 0 }; }, resize: schedule,
+    stats() { return { textures: textures.size, textureBytes: textures.size * 262144, drawCalls: calls, frameMs: 0, clipRings: rings.size }; }, resize: schedule,
     destroy() { dead = true; observer.disconnect(); textures.clear(); completed.clear(); events.clear(); for (const [type, handler] of Object.entries(handlers)) canvas.removeEventListener(type, handler); }
   };
   schedule(); return api;

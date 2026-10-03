@@ -17,6 +17,7 @@
     "test:next:real": "playwright test --config next/tests-real/playwright.config.mjs"
   },
   "devDependencies": {
+    "@fontsource/barlow": "5.3.0",
     "@playwright/test": "1.58.2",
     "esbuild": "0.28.2",
     "leaflet": "1.9.4",

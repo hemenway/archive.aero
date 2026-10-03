@@ -13,7 +13,7 @@ async function boot(page, url = view) {
   await page.goto(url);
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('body')).toHaveClass(/painted/);
-  await expect(page.locator('#fatalError')).toBeHidden();
+  await expect(page.locator('#loadingSplash')).toBeHidden();
   return { problems, responses };
 }
 // The WebGL canvas does not preserve its drawing buffer, so pixels are read from a screenshot.
@@ -54,12 +54,17 @@ test('airspace, airfields and pins come through the real data plane', async ({ p
   await page.locator('#toolsBtn').click(); await page.locator('#airspaceBtn').click();
   await expect(page.locator('#asStatus')).toContainText('United States · FAA NASR cycle');
   await expect.poll(() => responses.some(r => r.url.includes('/t/airspace/') && r.url.endsWith('/metadata') && r.status === 200)).toBe(true);
+  await expect(page.locator('#mapAttribution')).toContainText('airspace FAA NASR');
   await page.locator('#airfieldsBtn').click(); await page.locator('#afBrowser summary').click();
   await expect(page.locator('#afCount')).toContainText('airfields in view');
-  await page.locator('#toolsBtn').click();
+  // The browser's first entry opens the production airfield card (and closes the layers panel).
+  await page.locator('#afOpen').click(); await expect(page.locator('#afPanel')).toBeVisible();
+  await expect(page.locator('#afName')).toContainText('Fixture field'); await expect(page.locator('#afDates')).not.toBeEmpty();
+  await page.keyboard.press('Escape'); await expect(page.locator('#afPanel')).toBeHidden();
   await page.locator('#map').focus(); await page.keyboard.press('Enter');
-  await expect(page.locator('#pinLoc')).toHaveText('Fixture 391');
+  await expect(page.locator('#pinLoc')).toHaveText('Fixture 391'); await expect(page.locator('#pinBadge')).toHaveText('ed. 1');
   await page.getByRole('button', { name: 'View alone', exact: true }).click(); await expect(page.locator('#soloBar')).toBeVisible();
+  await expect(page.locator('#soloLabel')).toHaveText('Viewing Fixture 391 · Jan 1950');
   await expect.poll(() => responses.some(r => r.url.includes('/t/sectionals/chart/fixture/1950-01-01.') && r.status === 200)).toBe(true);
   await page.locator('#soloExit').click(); await expect(page.locator('#soloBar')).toBeHidden();
   expect(problems).toEqual([]);

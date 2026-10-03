@@ -1,30 +1,47 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect, ready, view } from './fixtures.mjs';
-test('boot requests are bounded, early requests adopted, no third party fonts, size budgets', async ({ page, guard }) => {
+test('boot requests are bounded, early requests adopted, fonts self-hosted, size budgets', async ({ page, guard }) => {
   await page.addInitScript(() => { window.addEventListener('first-chart-paint', () => { window.__paintResources = performance.getEntriesByType('resource').map(r => r.name); }); });
   await ready(page, './');
   const resources = await page.evaluate(() => window.__paintResources);
   expect(resources.length).toBeLessThanOrEqual(50);
   const tiles = guard.requests.filter(u => u.includes('/t/')); expect(new Set(tiles).size).toBe(tiles.length);
-  expect(guard.requests.some(u => /fonts\.(googleapis|gstatic)\.com/.test(u))).toBe(false);
+  expect(guard.requests.some(u => /fonts\.(googleapis|gstatic)\.com|unpkg|cdnjs/.test(u))).toBe(false);
   await expect(page.locator('link[rel=preload][as=fetch]')).toHaveAttribute('crossorigin', '');
-  await expect(page.locator('link[rel=modulepreload]')).toHaveCount(1);
+  expect(await page.locator('link[rel=modulepreload]').count()).toBeGreaterThanOrEqual(1);
   const budget = JSON.parse(await readFile(new URL('../dist/budgets.json', import.meta.url)));
   for (const [name, max] of Object.entries(budget.limits)) expect(budget.bytes[name]).toBeLessThanOrEqual(max);
   expect(budget.bytes.inlineBoot).toBeLessThanOrEqual(1536);
 });
-test('manifest failure exposes an actionable error with static chrome available', async ({ page }) => {
+test('the splash shows progress, then leaves; the page is the production page', async ({ page }) => {
+  await ready(page);
+  await expect(page.locator('#loadingStatus')).toHaveText('Ready!');
+  await expect(page.locator('.header-bar .site-logo')).toContainText('archive.aero');
+  await expect(page.locator('#toolsBtn .tools-btn-label')).toHaveText('Layers');
+  await expect(page.locator('.leaflet-top.leaflet-right #toolsControl')).toHaveCount(1);
+  await expect(page.locator('.ctl-col .leaflet-control-zoom + #utilRail')).toHaveCount(1);
+  expect(await page.locator('svg').count()).toBeGreaterThanOrEqual(12);
+  // Barlow is served by this origin, not a font CDN.
+  expect(await page.evaluate(async () => { await document.fonts.ready; return getComputedStyle(document.querySelector('.site-logo')).fontFamily; })).toContain('Barlow');
+});
+test('manifest failure leaves the splash up with an actionable message', async ({ page }) => {
   await page.route('**/manifest.*.json', route => route.fulfill({ status: 503, body: '' }));
-  await page.goto(view); await expect(page.locator('#fatalError')).toContainText('Manifest failed to load'); await expect(page.locator('#loader')).toBeHidden();
-  await page.locator('#helpBtn').click(); await expect(page.getByRole('dialog')).toBeVisible();
+  await page.goto(view); await expect(page.locator('#loadingStatus')).toHaveText('Failed to load chart data. Check your connection and reload.');
+  await expect(page.locator('#loadingSplash')).toBeVisible(); await expect(page.locator('#loader')).toBeHidden();
 });
 test('renderer unsupported error links to the current viewer', async ({ page }) => {
   await page.addInitScript(() => { const get = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function(type, ...args) { return this.id === 'mapCanvas' ? null : get.call(this, type, ...args); }; });
-  await page.goto(view); await expect(page.locator('#fatalError')).toContainText('cannot run the new chart renderer'); await expect(page.locator('#fatalError a')).toHaveAttribute('href', '/');
+  await page.goto(view); await expect(page.locator('#loadingStatus')).toContainText('cannot run the new chart renderer'); await expect(page.locator('#loadingStatus a')).toHaveAttribute('href', '/');
+  await expect(page.locator('#loadingSplash')).toBeVisible();
 });
-test('worker failure leaves a visible error and stops playback', async ({ page }) => {
-  await page.addInitScript(() => { const Original = window.Worker; window.Worker = class extends Original { constructor(...args) { super(...args); setTimeout(() => { this.dispatchEvent(new ErrorEvent('error', { message: 'fixture worker failed', cancelable: true })); }, 150); } }; });
-  await page.goto(view); await expect(page.locator('#fatalError')).toContainText('Data worker failed'); await expect(page.locator('#loader')).toBeHidden();
+test('worker failure brings the splash back with the reason and stops playback', async ({ page }) => {
+  await page.addInitScript(() => { const Original = window.Worker; window.Worker = class extends Original { constructor(...args) { super(...args); window.__failWorker = () => this.dispatchEvent(new ErrorEvent('error', { message: 'fixture worker failed', cancelable: true })); } }; });
+  await page.goto(view); await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  await page.locator('#playBtn').click(); await expect(page.locator('#playBtn')).toHaveAttribute('aria-label', 'Pause animation');
+  await page.evaluate(() => window.__failWorker());
+  await expect(page.locator('#loadingStatus')).toHaveText('The chart viewer stopped working. Reload the page to continue.');
+  await expect(page.locator('#loadingSplash')).toBeVisible(); await expect(page.locator('#loader')).toBeHidden();
+  await expect(page.locator('#playBtn')).toHaveAttribute('aria-label', 'Play animation');
 });
 test('100 ms loading grace and playback readiness gate', async ({ page }) => {
   await page.clock.install(); await page.clock.pauseAt(new Date());
@@ -38,20 +55,21 @@ test('100 ms loading grace and playback readiness gate', async ({ page }) => {
 });
 test('warning banner follows its 1.5 to 8 second window', async ({ page }) => {
   await page.clock.install(); await ready(page);
-  await expect(page.locator('#warningOverlay')).toBeHidden(); await page.clock.runFor(1500); await expect(page.locator('#warningOverlay')).toBeVisible();
-  await page.clock.runFor(6500); await expect(page.locator('#warningOverlay')).toBeHidden();
+  await expect(page.locator('#warningOverlay')).not.toHaveClass(/visible/); await page.clock.runFor(1500); await expect(page.locator('#warningOverlay')).toHaveClass(/visible/);
+  await page.clock.runFor(6500); await expect(page.locator('#warningOverlay')).not.toHaveClass(/visible/);
 });
-test('URL replaceState is throttled to four per second during scrubbing', async ({ page }) => {
-  await ready(page); await page.addInitScript(() => {});
-  await page.evaluate(() => { const original = history.replaceState.bind(history); window.__replacements = []; history.replaceState = (...args) => { window.__replacements.push(performance.now()); original(...args); }; });
-  for (let i = 0; i < 10; i++) { await page.locator('#timeSelect').fill(i % 2 ? '1960-01-01' : '1970-01-01'); await page.locator('#timeSelect').dispatchEvent('change'); }
-  await page.waitForTimeout(350); const times = await page.evaluate(() => window.__replacements); for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBeGreaterThanOrEqual(245);
+test('the address bar is left alone while scrubbing; a share link carries the state', async ({ page }) => {
+  await ready(page); const before = page.url();
+  for (let i = 0; i < 6; i++) { await page.locator('#timeSelect').fill(i % 2 ? '1960-01-01' : '1970-01-01'); await page.locator('#timeSelect').dispatchEvent('change'); }
+  expect(page.url()).toBe(before);
+  await page.locator('#shareBtn').click(); await expect.poll(() => page.evaluate(() => window.__copied)).toContain('date=1960-01-01');
+  await expect(page.locator('#toast')).toHaveText('Link copied'); await expect(page.locator('#toast')).toHaveClass(/visible/);
 });
 test('a failing tile degrades the view instead of ending it', async ({ page }) => {
   const warnings = []; page.on('console', message => { if (message.type() === 'warning') warnings.push(message.text()); });
   let failed = false;
   await page.route('**/t/sectionals/**', route => { if (failed) return route.fallback(); failed = true; return route.fulfill({ status: 404, body: '' }); });
-  await ready(page); await expect(page.locator('#fatalError')).toBeHidden();
+  await ready(page); await expect(page.locator('#toast')).toHaveText('Some chart data failed to load — showing base map only');
   expect(warnings.some(text => /Tile unavailable/.test(text))).toBe(true);
 });
 test('header rules are scoped to the deployed base, never the whole origin', async () => {
@@ -65,5 +83,5 @@ test('the map is revealed when no chart can paint: outside coverage, or every ti
   await expect(page.locator('body')).toHaveClass(/painted/); await expect(page.locator('#mapCanvas')).toHaveCSS('opacity', '1');
   await page.route('**/t/sectionals/**', route => route.fulfill({ status: 404, body: '' }));
   await page.goto(view); await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
-  await expect(page.locator('body')).toHaveClass(/painted/); await expect(page.locator('#fatalError')).toBeHidden();
+  await expect(page.locator('body')).toHaveClass(/painted/); await expect(page.locator('#loadingSplash')).toBeHidden();
 });

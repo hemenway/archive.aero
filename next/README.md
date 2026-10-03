@@ -3,6 +3,13 @@
 `CONTRACT.md` is the frozen contract, copied verbatim from the shared prompt.
 The shell uses C7 directly. No production viewer file is replaced.
 
+The shell wears the production interface. `build.mjs` derives its page from the
+repository-root `index.html` and its stylesheet from the root `styles.css`, so an
+interface change is made once, in those two files. After editing either, run
+`npm run build:next` and commit `next/dist/`; `check:next` fails until then. The
+build stops, naming the edit, when `index.html` changes in a way it cannot place
+(see `shell/NOTES.md`).
+
 ## Standalone development
 
 From the repository root:
@@ -95,7 +102,8 @@ alongside esbuild, `build:next`, and `test:next`.
       swap, airspace status, airfield browser, pin, solo — see
       `tests-real/real.spec.mjs`; the full keyboard/a11y matrix stays on stubs).
 - [ ] Recheck end-to-end budgets including Worker and inline JS, actual request
-      counts before first chart paint, manifest gzip ≤80 KB, and no font requests.
+      counts before first chart paint, manifest gzip ≤80 KB, and no third-party
+      font requests (Barlow is served from the shell's own `fonts/`).
 - [ ] Measure WebKit mobile memory during repeated full-archive scrubs, playback,
       zoom and rotation; ensure texture eviction and decoded/encoded data caches
       stay bounded. Stub WebKit tests are behavioral coverage, not GPU-memory
@@ -110,6 +118,8 @@ alongside esbuild, `build:next`, and `test:next`.
 - `app/main.js`: state projection, C7 orchestration, controls and accessibility.
 - `app/store.js`: sub-1 KB store; shallow updates and batched notifications.
 - `app/stubs/`: exact C7-shaped fixture implementations; approximate 2D drawing.
-- `shell/template.html`, `shell/styles.css`, `shell/early.js`: static chrome and boot.
-- `build.mjs`: esbuild, hashes, sourcemaps, HTML/CSP/preload generation and budgets.
+- `shell/next.css`, `shell/early.js`: what the production stylesheet assumed from
+  Leaflet plus the map canvas (appended to `styles.css`), and the boot script.
+- `build.mjs`: esbuild, hashes, sourcemaps, the page and stylesheet derived from
+  the production viewer, self-hosted Barlow, CSP/preload generation and budgets.
 - `sw.js`: shell-only offline caching; never duplicates the HTTP tile cache.

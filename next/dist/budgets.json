@@ -7,23 +7,28 @@
   "linksOrigin": null,
   "manifestGzip": 361,
   "bytes": {
-    "criticalJS": 13845,
-    "css": 2224,
-    "html": 10220,
-    "htmlGzip": 3902,
+    "criticalJS": 17368,
+    "css": 7377,
+    "cssRaw": 35241,
+    "html": 19005,
+    "htmlGzip": 5768,
     "worker": 345,
-    "inlineBoot": 1369
+    "inlineBoot": 1366,
+    "lazyJS": 5505,
+    "fonts": 67568
   },
   "limits": {
     "criticalJS": 51200,
     "css": 12288,
-    "html": 12288
+    "html": 24576
   },
   "assets": [
     "./index.html",
     "./worker.PSVLAI42.js",
-    "./app.32TZCRJM.js",
-    "./styles.c27ebb9c6381.css",
+    "./app.DAK3I34T.js",
+    "./chunk.V6KBJ7CT.js",
+    "./chunk.D6MR6EBD.js",
+    "./styles.c6a9f6a656ab.css",
     "./manifest.ecfc3cc3efa7.json"
   ]
 }

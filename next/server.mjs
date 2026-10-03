@@ -10,6 +10,6 @@ http.createServer(async (request, response) => {
   if (url.searchParams.has('__testOffline')) { response.writeHead(503); response.end('Injected navigation failure'); return; }
   if (filename !== root && !filename.startsWith(root + path.sep)) { response.writeHead(403); response.end(); return; }
   if (url.pathname.includes('/t/')) { response.writeHead(200, { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=31536000, immutable' }); response.end(Buffer.from('stub worker synthesizes pixels')); return; }
-  try { const data = await readFile(filename); response.writeHead(200, { 'Content-Type': ({ '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css', '.map': 'application/json' })[path.extname(filename)] || 'application/octet-stream', 'Cache-Control': 'no-cache' }); response.end(data); }
+  try { const data = await readFile(filename); response.writeHead(200, { 'Content-Type': ({ '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css', '.map': 'application/json', '.woff2': 'font/woff2' })[path.extname(filename)] || 'application/octet-stream', 'Cache-Control': 'no-cache' }); response.end(data); }
   catch { response.writeHead(404); response.end('Not found'); }
 }).listen(4183, '127.0.0.1', () => console.log('Stub shell: http://127.0.0.1:4183/next/'));

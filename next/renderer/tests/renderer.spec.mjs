@@ -379,3 +379,27 @@ test('translucent tiles composite with premultiplied alpha', async ({ page }) =>
   // Clear colour (9,12,16) under 50 % red: 0.5*255 + 0.5*9 = 132, 0.5*12 = 6, 0.5*16 = 8.
   expect(Math.abs(result[0] - 132)).toBeLessThanOrEqual(3); expect(result[1]).toBeLessThanOrEqual(8); expect(result[2]).toBeLessThanOrEqual(10);
 });
+
+test('airfield dots are ringed like production; the selected dot gains a blue halo; the pin is a ringed translucent disc',async({page})=>{
+  const result=await page.evaluate(async()=>{
+    r.setAirfields({mx:new Float32Array([.625]),my:new Float32Array([.625]),start:new Uint16Array([1960]),end:new Uint16Array([0]),status:new Uint8Array([0])});
+    r.setAirfieldFilter({year:1970,statusMask:7});await tick();
+    const radius=r._radius(),at=d=>pixel(128+d,128).slice(0,3);
+    const plain={fill:at(0),ring:at(radius),outside:at(radius+3.8)};
+    r.setAirfieldSelected(0);await tick();const selected={fill:at(0),halo:at(radius+3.8),picked:r.pick(128,128)};
+    r.setAirfieldSelected(null);await tick();const cleared=at(radius+3.8);
+    r.setAirfieldSelected(0);r.setAirfields(null);r.setPin({lng:45,lat:-40.97989806962013});await tick();
+    const pin={centre:at(0),ring:at(7),outside:at(11)};
+    r.setPin(null);await tick();
+    return {plain,selected,cleared,pin,gone:at(0),error:r.gl.getError()};
+  });
+  const background=[9,12,16];
+  expect(result.plain.fill).toEqual([54,163,93]);for(const channel of result.plain.ring)expect(channel).toBeGreaterThan(200);
+  expect(result.plain.outside).toEqual(background);expect(result.cleared).toEqual(background);
+  expect(result.selected.fill).toEqual([54,163,93]);expect(result.selected.picked).toEqual({kind:'airfield',index:0});
+  expect(result.selected.halo[2]).toBeGreaterThan(180);expect(result.selected.halo[0]).toBeLessThan(50);
+  // #1e90ff: a solid 2px ring around the same blue at 30%.
+  for(const [i,channel] of [30,144,255].entries())expect(Math.abs(result.pin.ring[i]-channel)).toBeLessThanOrEqual(8);
+  expect(result.pin.centre[2]).toBeGreaterThan(70);expect(result.pin.centre[2]).toBeLessThan(110);expect(result.pin.centre[0]).toBeLessThan(40);
+  expect(result.pin.outside).toEqual(background);expect(result.gone).toEqual(background);expect(result.error).toBe(0);
+});

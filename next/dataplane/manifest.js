@@ -41,7 +41,9 @@ export function parseManifest(raw) {
   const frames = Array.from(new Set(starts)).sort((a,b)=>a-b);
   // Demand planning looks eras up by path on every camera move; a Map keeps that O(1).
   const pathIndex = new Map(paths.map((p, i) => [p, i]));
-  return { raw, starts, ends, minZoom, maxZoom, bounds, coverage, paths, keys, order, sortedStarts, prefixEnd, pathIndex,
+  // Era key ("1960-01-01_to_1960-07-01") to index: the pin card and solo view name eras by key.
+  const keyIndex = new Map(keys.map((k, i) => [k, i]));
+  return { raw, starts, ends, minZoom, maxZoom, bounds, coverage, paths, keys, order, sortedStarts, prefixEnd, pathIndex, keyIndex,
     frames: frames.map(isoDay), frameDays: Int32Array.from(frames), dateBounds: count ? {min: isoDay(frames[0]), max: isoDay(Math.max(...ends)-1)} : {min:null,max:null} };
 }
 export function erasAt(manifest, date) {

@@ -201,9 +201,35 @@ They query currently demanded decoded tiles, as renderStack did; there is no hid
 query-only geometry fetch. Additive `airspaceStatus(day, bounds, options)` returns
 panel text lines for availability, held cycle, series gaps and expiry.
 
+### Additions for the ported interface (2026-10-03)
+
+The shell now runs the production viewer's interface classes (`next/app/`), which
+ask a few things C7 did not name. All are additive; nothing in C7 changed.
+
+- `airspaceStack(lng, lat, day)` → `Promise<{ here, rows }>`: `here` lists the
+  regions under the point with a cycle in effect (`{ rg, name, source, note, cycle }`),
+  `rows` is `queryAirspace`'s governing stack. One call gives the pin card's
+  "Airspace here" section its title, rows and note. Metadata loads under the same
+  backoff as a demand; with none loaded there are no regions to report.
+- `airspaceCredits()` → `[{ source, url }]`, synchronous, from the main-thread copy
+  of the metadata (empty until it has loaded): the map credits while the layer is on.
+- `eraCountAt(date)` → the number of era archives in effect (the Layers panel's
+  "under view" count and the "No charts available" toast). Synchronous.
+- `eraSource(eraKey)` → `{ path, zoom: [min, max] } | null`: where an era archive
+  lives, for "View alone" on a chart with no artifact of its own. Synchronous.
+- `queryPin` rows carry `members`: how many charts share the row's era archive,
+  which decides whether the solo fallback clips to the chart's ring. A shard only
+  holds the locations near its cell, so its own count can miss an era's far
+  members; an era whose manifest bounds reach more than 2° past the chart's own
+  ring in either axis is counted as shared.
+- `airfieldDetailsAll()` → the whole details array (index-aligned with the C4
+  binary), one transfer instead of one call per field: the airfield browser lists
+  every field in view by name.
+- `manifest.hasBasemap` joins the summary's other `has…` flags.
+
 ## Verification and mocks
 
-46 Node tests pass: interval/order/bounds, planning/clamping/coverage/solo/wrap,
+56 Node tests pass: interval/order/bounds, planning/clamping/coverage/solo/wrap,
 heap priority/centre order, cancellation/dedupe/retries/failure recovery, byte LRU,
 C4 views/visibility, lazy selected-shard retry, legacy ChartIndex VM parity,
 hand-built MVT, cycle/status rules, polygon holes/antimeridian, fallback ownership,

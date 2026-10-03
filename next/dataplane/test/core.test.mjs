@@ -67,3 +67,16 @@ test('decodes are bounded by decodeConcurrency and superseded queue entries are 
  while(decodes.length){decodes.shift()({close(){}});await settle();}
  assert.equal(peak,3);assert.equal(started,8);assert.equal(events.filter(e=>e==='tile').length,5);core.destroy();
 });
+test('interface lookups: eras in effect, an era archive by key, era member counts on pin rows, the airspace stack and credits',async()=>{
+ const raw={...manifest,eras:[era,{k:'1955-01-01_to_1960-01-01',h:'123456789abc',z:[6,10],b:[-110,25,-80,45],c:null}],airspace:{p:'airspace/mock.0123456789ab',z:[0,11]}};
+ const inventory={locations:{Dallas:{ref:'d',charts:[{d:'1950-01-01',e:'1960-01-01'},{d:'1955-01-01',e:'1960-01-01'}]}},rings:{d:[[[-98,31],[-95,31],[-95,34],[-98,34]]]}};
+ const meta={archive_aero:{regions:{us:{name:'US',source:'FAA NASR',source_url:'https://faa.example/',cycles:['1951-01-01'],boxes:[[-130,20,-60,50]]}}}};
+ const dp=await createDataPlane({worker:false,manifestUrl:'http://fixture/manifest',fetch:async url=>{const u=String(url);return u.endsWith('manifest')?Response.json(raw):u.endsWith('metadata')?Response.json(meta):u.endsWith('.json')?Response.json(inventory):new Response(null,{status:204});}});
+ assert.equal(dp.manifest.hasBasemap,false);assert.equal(dp.eraCountAt('1951-01-01'),1);assert.equal(dp.eraCountAt('1956-01-01'),2);assert.equal(dp.eraCountAt('1970-01-01'),0);
+ assert.deepEqual(dp.eraSource('1955-01-01_to_1960-01-01'),{path:'sectionals/1955-01-01_to_1960-01-01.123456789abc',zoom:[6,10]});assert.equal(dp.eraSource('1900-01-01_to_1901-01-01'),null);
+ // One chart per era in this shard. The second era's extent reaches far past the chart's own ring: it has members the shard cannot see.
+ const rows=await dp.queryPin(-96.7,32.7,'1956-01-01');assert.deepEqual(rows.map(r=>[r.chart.eraKey,r.members]),[['1950-01-01_to_1960-01-01',1],['1955-01-01_to_1960-01-01',2]]);
+ assert.deepEqual(dp.airspaceCredits(),[]);
+ assert.deepEqual(await dp.airspaceStack(-96.7,32.7,Math.floor(Date.UTC(1951,0,5)/86400000)),{here:[{rg:'us',name:'US',source:'FAA NASR',note:null,cycle:'1951-01-01'}],rows:[]});
+ await wait(()=>dp.airspaceCredits().length===1);assert.deepEqual(dp.airspaceCredits(),[{source:'FAA NASR',url:'https://faa.example/'}]);dp.destroy();
+});

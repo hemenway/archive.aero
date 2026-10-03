@@ -1,5 +1,5 @@
 import {createCore,manifestSummary} from './core.js';
-import {parseManifest} from './manifest.js';
+import {parseManifest,erasAt} from './manifest.js';
 import {planCharts,planBasemap,planKeys} from './plan.js';
 import {buildDemand} from './demand.js';
 import {decodeRaster} from './decode.js';
@@ -81,10 +81,14 @@ export async function createDataPlane(options={}) {
     off(event,fn) {listeners.get(event)?.delete(fn);},
     markEvicted(key) {ready.delete(key);void call('markEvicted',key).catch(reportError);},
     readiness(date,tiles) {const items=planCharts(manifest,date,tiles).flatMap(t=>t.items);if(!items.length)return 1;let n=0;for(const {key} of items)if(ready.has(key)||absent.has(key))n++;return n/items.length;},
-    loadAirfields:()=>call('loadAirfields'),airfieldDetails:i=>call('airfieldDetails',i),
+    loadAirfields:()=>call('loadAirfields'),airfieldDetails:i=>call('airfieldDetails',i),airfieldDetailsAll:()=>call('airfieldDetailsAll'),
     // A failed metadata load reports as unavailable even when the caller says the layer is enabled.
     airspaceRegionMask:d=>airspace.regionMask(d),airspaceStatus:(d,b,o={})=>airspace.status(d,b,{configured:!!manifest.raw.airspace,loaded:metadataLoaded,loadError:metadataError,...o,enabled:(o.enabled??true)&&!metadataError}),
     queryPin:(lng,lat,date)=>call('queryPin',lng,lat,date),queryAirspace:(lng,lat,d)=>call('queryAirspace',lng,lat,d),
+    airspaceStack:(lng,lat,d)=>call('airspaceStack',lng,lat,d),airspaceCredits:()=>airspace.credits(),
+    // Synchronous manifest lookups for the interface: how many era archives are in effect on a date, and where one lives.
+    eraCountAt:date=>erasAt(manifest,date).length,
+    eraSource(key) {const i=manifest.keyIndex.get(key);return i==null?null:{path:manifest.paths[i],zoom:[manifest.minZoom[i],manifest.maxZoom[i]]};},
     // Worker sends stats snapshots after demand/result. stats() is always synchronous.
     stats:()=>backend?backend.stats():({...workerStats}),
     destroy() {if(destroyed)return;if(backend)backend.destroy();else thread?.terminate();destroyed=true;for(const p of pending.values())p.reject(new Error('Data plane destroyed'));pending.clear();listeners.clear();ready.clear();},

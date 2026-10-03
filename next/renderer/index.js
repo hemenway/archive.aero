@@ -22,7 +22,7 @@ class Renderer {
     this.camera = new Camera({ minZoom: options.minZoom ?? 4, maxZoom: options.maxZoom ?? 14, center: [0, 0], zoom: options.minZoom ?? 4 });
     this.events = new Map(); this.chart = new Map(); this.base = new Map(); this.rings = new Map(); this.airspace = new Map(); this.airspaceDraws = [];
     this.queue = []; this.queued = new Map(); this.style = { opacity: 1, hidden: false };
-    this.fieldFilter = { year: 0, statusMask: 7 }; this.spaceFilter = { day: 0, classMask: 3, regionMask: 7 };
+    this.fieldFilter = { year: 0, statusMask: 7 }; this.fieldSelected = -1; this.spaceFilter = { day: 0, classMask: 3, regionMask: 7 };
     this.frame = 0; this.animation = null; this.lost = false; this.dead = false; this.drawCalls = 0; this.frameMs = 0; this.renderEvent = { frameMs: 0 }; this.planSeq = 0;
     this.chartsVisible = []; this.baseVisible = []; this.chartDraws = []; this.baseDraws = []; this.viewDirty = true; this.planDirty = true;
     this._drawBound = t => this._frame(t); this._emitBound = (e, p) => this._emit(e, p); this._resizeBound = () => this.resize();
@@ -141,7 +141,7 @@ class Renderer {
   }
   setAirfields(arrays) {
     if (this.fieldVAO && !this.lost) { this.gl.deleteVertexArray(this.fieldVAO); this.gl.deleteBuffer(this.fieldBuffer); }
-    this.fields = arrays; this.grid = new Map(); this.fieldVAO = null;
+    this.fields = arrays; this.grid = new Map(); this.fieldVAO = null; this.fieldSelected = -1;
     if (arrays) {
       const n = arrays.mx.length, data = new Float32Array(n * 5);
       for (let i = 0; i < n; i++) {
@@ -156,6 +156,8 @@ class Renderer {
   setAirfieldFilter({ year = this.fieldFilter.year, statusMask = this.fieldFilter.statusMask }) {
     this.fieldFilter.year = year ?? 0; this.fieldFilter.statusMask = statusMask; this._invalidate();
   }
+  // The dot whose card is open wears a halo; null clears it.
+  setAirfieldSelected(index) { this.fieldSelected = Number.isInteger(index) ? index : -1; this._invalidate(); }
   setAirspaceTile(tileId, batch) {
     const old = this.airspace.get(tileId);
     if (old && !this.lost) for (const group of old.groups) { this.gl.deleteBuffer(group.buffer); this.gl.deleteVertexArray(group.vao); }
@@ -393,10 +395,11 @@ class Renderer {
     }
     if (this.fields) {
       const u = this._use('field'); gl.bindVertexArray(this.fieldVAO); gl.uniform1f(u.radius, this._radius()); gl.uniform1f(u.year, this.fieldFilter.year); gl.uniform1ui(u.statusMask, this.fieldFilter.statusMask);
+      gl.uniform1f(u.selected, this.fieldSelected); gl.uniform1f(u.dpr, this.dpr);
       for (let w = this.firstWorld; w <= this.lastWorld; w++) { gl.uniform1f(u.wrap, w); gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, this.fields.mx.length); this.drawCalls++; }
     }
     if (this.pin) {
-      const u = this._use('pin'); gl.bindVertexArray(this.emptyVAO); gl.uniform2f(u.position, this.pin[0] + Math.round(this.camera.x - this.pin[0]), this.pin[1]);
+      const u = this._use('pin'); gl.bindVertexArray(this.emptyVAO); gl.uniform1f(u.dpr, this.dpr); gl.uniform2f(u.position, this.pin[0] + Math.round(this.camera.x - this.pin[0]), this.pin[1]);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4); this.drawCalls++;
     }
   }

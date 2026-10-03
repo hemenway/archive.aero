@@ -26,7 +26,7 @@ if (built.status !== 0) { await cleanup(); process.exit(1); }
 
 // The first rule of the generated _headers file is the base-wide policy.
 const csp = (await readFile(path.join(dist, '_headers'), 'utf8')).match(/Content-Security-Policy: (.*)/)[1];
-const types = { '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css', '.map': 'application/json' };
+const types = { '.html': 'text/html', '.js': 'application/javascript', '.json': 'application/json', '.css': 'text/css', '.map': 'application/json', '.woff2': 'font/woff2' };
 http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://127.0.0.1:${SHELL}`);
   if (!url.pathname.startsWith('/next/')) { response.writeHead(404); response.end(); return; }

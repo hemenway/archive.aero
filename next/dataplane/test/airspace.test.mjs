@@ -116,3 +116,18 @@ test('status explains before-first, missing cycles and latest expiry with calend
   assert.equal(altSpan({ lo: 0, loc: 'SFC', hi: 100, hic: 'STD' }), 'SFC – FL100');
   assert.equal(altSpan({ lo: 2000, loc: 'MSL', hi: 3000, hic: 'MSL' }), '2,000 – 3,000 MSL');
 });
+
+test('stack reports the regions with a cycle in effect under a point plus their governing rows; credits list every region', () => {
+  const index = new AirspaceIndex({ archive_aero: { regions: {
+    us: { name: 'US', source: 'FAA NASR', source_url: 'https://faa.example/', cycles: ['2020-01-02'], boxes: [[-180, -85, 180, 85]] },
+    br: { name: 'Brazil', source: 'DECEA', note: 'current snapshots only', cycles: ['2020-01-02'], boxes: [[-80, -85, -20, 85]] }
+  } } });
+  index.setTile('tile', { z: 0, x: 0, y: 0 }, tile([{ name: 'class', features: [feature(props({ v: 'b', lo: 2000, loc: 'MSL', name: 'CITY CLASS B' }))] }]));
+  const day = sourceDay('2020-01-10'), here = index.stack(0, 0, day);
+  assert.deepEqual(here.here, [{ rg: 'us', name: 'US', source: 'FAA NASR', note: null, cycle: '2020-01-02' }]);
+  assert.deepEqual(here.rows.map(r => [r.badge, r.shortName, r.altSpan]), [['B', 'CITY', '2,000 – 10,000 MSL']]);
+  assert.deepEqual(index.stack(-50, 0, day).here.map(h => [h.rg, h.note]), [['us', null], ['br', 'current snapshots only']]);
+  assert.deepEqual(index.stack(0, 0, sourceDay('2021-01-01')), { here: [], rows: [] });
+  assert.deepEqual(index.stack(NaN, 0, day), { here: [], rows: [] });
+  assert.deepEqual(index.credits(), [{ source: 'FAA NASR', url: 'https://faa.example/' }, { source: 'DECEA', url: null }]);
+});

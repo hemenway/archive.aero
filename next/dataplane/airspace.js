@@ -224,4 +224,18 @@ export class AirspaceIndex {
       .map(p => ({ ...p, badge: badge(p), floorFt: floorFt(p), altSpan: altSpan(p), shortName: shortName(p),
         cycle: iso(this.cycleFor(p.rg, day)), source: this.regions[p.rg]?.source }));
   }
+  // Sources to credit on the map while the layer is drawn.
+  credits() {
+    return REGION_ORDER.filter(rg => this.regions[rg]).map(rg => ({ source: this.regions[rg].source, url: this.regions[rg].source_url ?? null }));
+  }
+  // What the pin card's "Airspace here" section needs in one call: the
+  // regions under the point with a cycle in effect, and their governing rows.
+  stack(lng, lat, day) {
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) return { here: [], rows: [] };
+    const here = this.regionsAt(lng, lat).filter(rg => this.cycleFor(rg, day) != null).map(rg => {
+      const r = this.regions[rg];
+      return { rg, name: r.name, source: r.source, note: r.note ?? null, cycle: iso(this.cycleFor(rg, day)) };
+    });
+    return { here, rows: here.length ? this.query(lng, lat, day) : [] };
+  }
 }
