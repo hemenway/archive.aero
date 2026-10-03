@@ -41,8 +41,10 @@ test('real fetch AbortController cancels server response and superseded demand d
  await expect.poll(async()=>(await(await request.get('/metrics')).json()).cancelled).toBeGreaterThan(0);
  expect(await page.evaluate(()=>{window.dp.destroy();return window.received;})).toEqual([]);
 });
-test('airfields arrays retain backing buffer through transfer and details stay lazy',async({page})=>{
+test('airfields arrays retain backing buffer through transfer and details stay lazy; airspace metadata arrives with the first airspace demand',async({page})=>{
  await page.goto('/');await page.waitForFunction(()=>window.booted);
- const result=await page.evaluate(async()=>{const dp=await window.createDataPlane({manifestUrl:location.origin+'/next/manifest.json'});const a=await dp.loadAirfields(),b=await dp.loadAirfields(),d=await dp.airfieldDetails(0);const r={same:a.mx.buffer===a.status.buffer,mx:a.mx[0],again:b.mx[0],name:d.name,mask:dp.airspaceRegionMask(Math.floor(Date.parse('1950-01-10')/86400000))};dp.destroy();return r;});
- expect(result).toEqual({same:true,mx:.25,again:.25,name:'Mock Field',mask:1});
+ const result=await page.evaluate(async()=>{const dp=await window.createDataPlane({manifestUrl:location.origin+'/next/manifest.json'});const a=await dp.loadAirfields(),b=await dp.loadAirfields(),d=await dp.airfieldDetails(0);const day=Math.floor(Date.parse('1950-01-10')/86400000);
+  const before=dp.airspaceRegionMask(day);await new Promise(resolve=>{dp.on('metadata',resolve);dp.setDemand({date:'1950-01-10',chartTiles:[],airspaceTiles:[{z:10,x:238,y:410}],scrub:{direction:0}});});
+  const r={same:a.mx.buffer===a.status.buffer,mx:a.mx[0],again:b.mx[0],name:d.name,before,mask:dp.airspaceRegionMask(day)};dp.destroy();return r;});
+ expect(result).toEqual({same:true,mx:.25,again:.25,name:'Mock Field',before:0,mask:1});
 });

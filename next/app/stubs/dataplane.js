@@ -13,7 +13,7 @@ export async function createDataPlane({ manifestUrl, fetch: fetcher = globalThis
   let engine, failed = false, generation = 0;
   if (worker) {
     engine = new Worker(__WORKER_URL__, { type: 'module' });
-    engine.onerror = event => { event.preventDefault(); failed = true; pending.clear(); emit('error', { error: new Error('Data worker failed. Reload to retry.') }); };
+    engine.onerror = event => { event.preventDefault(); failed = true; pending.clear(); emit('error', { key: 'worker', error: new Error('Data worker failed. Reload to retry.') }); };
     engine.onmessage = ({ data }) => {
       const wanted = pending.get(data.key);
       if (!wanted) { data.bitmap.close(); return; }

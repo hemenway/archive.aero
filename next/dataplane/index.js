@@ -17,7 +17,7 @@ export async function createDataPlane(options={}) {
   const receive=async(event,payload)=>{
     if(destroyed) {payload.bitmap?.close?.();return;}
     if(event==='stats'){workerStats=payload;return;}
-    if(event==='metadata') {metadataLoaded=true;metadataError=null;airspace.setMetadata(payload.metadata);return;}
+    if(event==='metadata') {metadataLoaded=true;metadataError=null;airspace.setMetadata(payload.metadata);emit('metadata',{});return;}
     if(event==='encoded') {
       if(decoding.has(payload.key))return;decoding.add(payload.key);
       const gen=generation;
@@ -36,23 +36,42 @@ export async function createDataPlane(options={}) {
     if(event==='error'&&payload.key==='airspace/metadata')metadataError=payload.error.message;
     emit(event,payload);
   };
-  const call=(method,...args)=>{
+  const send=(method,args,transfer=[])=>{
     if(destroyed)return Promise.reject(new Error('Data plane destroyed'));
     if(threadFailure&&!backend)return Promise.reject(threadFailure);
     if(backend)return Promise.resolve(backend[method](...args));
-    const id=sequence++;return new Promise((resolve,reject)=>{pending.set(id,{resolve,reject});thread.postMessage({id,method,args});});
+    const id=sequence++;return new Promise((resolve,reject)=>{pending.set(id,{resolve,reject});thread.postMessage({id,method,args},transfer);});
   };
+  const call=(method,...args)=>send(method,args);
   let manifest;
   if(options.worker!==false && !options.fetch && typeof Worker!=='undefined') {
     try {
       thread=new Worker(new URL('./worker.js',import.meta.url),{type:'module'});
       thread.onmessage=({data})=>{if(data.event){void receive(data.event,data.payload);return;}const p=pending.get(data.id);if(p){pending.delete(data.id);data.error?p.reject(Object.assign(new Error(data.error.message),{name:data.error.name})):p.resolve(data.result);}};
       thread.onerror=error=>{threadFailure=new Error(error.message??'Worker failed');for(const p of pending.values())p.reject(threadFailure);pending.clear();emit('error',{key:'worker',error:new Error(error.message??'Worker failed')});};
-      const {fetch:_,worker:__,...serializable}=options;
+      // Promises cannot cross postMessage; earlyFetches is adopted below instead.
+      const {fetch:_,worker:__,earlyFetches:___,...serializable}=options;
       manifest=parseManifest(await call('init',serializable));
     } catch(error) {thread?.terminate();thread=null;threadFailure=null;pending.clear();backend=await createCore(options,(...args)=>void receive(...args));manifest=backend.m;}
   } else {backend=await createCore(options,(...args)=>void receive(...args));manifest=backend.m;}
   const reportError=error=>emit('error',{key:'demand',error});
+  // Tile responses the boot script already requested are handed to the
+  // scheduler, which consumes them instead of fetching the same URL twice. On
+  // the Worker path the bytes are read here and transferred; the Worker holds a
+  // placeholder for each key until they arrive.
+  const early=options.earlyFetches instanceof Map ? options.earlyFetches : null;
+  if(early?.size) {
+    const base=manifest.raw.tileBase,entries=[];
+    for(const [url,promise] of early) if(typeof url==='string' && url.startsWith(base)) {entries.push([url.slice(base.length),promise]);early.delete(url);}
+    if(backend) backend.adopt(entries);
+    else if(entries.length) {
+      void call('adopt',entries.map(([key])=>[key])).catch(reportError);
+      for(const [key,promise] of entries) Promise.resolve(promise).then(async response=>{
+        const bytes=response.status===200 ? await response.arrayBuffer() : null;
+        return send('prime',[{key,status:response.status,contentType:response.headers.get('content-type'),bytes}],bytes?[bytes]:[]);
+      },error=>call('prime',{key,error:{message:String(error?.message??error)}})).catch(reportError);
+    }
+  }
   return {
     manifest:manifestSummary(manifest),
     planCharts(date,tiles,{solo}={}) {return {id:String(date)+(solo?`:${solo.paths.join(',')}:${solo.clip?.id??''}`:''),tiles:planCharts(manifest,date,tiles,solo)};},
@@ -63,7 +82,8 @@ export async function createDataPlane(options={}) {
     markEvicted(key) {ready.delete(key);void call('markEvicted',key).catch(reportError);},
     readiness(date,tiles) {const items=planCharts(manifest,date,tiles).flatMap(t=>t.items);if(!items.length)return 1;let n=0;for(const {key} of items)if(ready.has(key)||absent.has(key))n++;return n/items.length;},
     loadAirfields:()=>call('loadAirfields'),airfieldDetails:i=>call('airfieldDetails',i),
-    airspaceRegionMask:d=>airspace.regionMask(d),airspaceStatus:(d,b,o)=>airspace.status(d,b,{configured:!!manifest.raw.airspace,loaded:metadataLoaded,enabled:!metadataError,loadError:metadataError,...o}),
+    // A failed metadata load reports as unavailable even when the caller says the layer is enabled.
+    airspaceRegionMask:d=>airspace.regionMask(d),airspaceStatus:(d,b,o={})=>airspace.status(d,b,{configured:!!manifest.raw.airspace,loaded:metadataLoaded,loadError:metadataError,...o,enabled:(o.enabled??true)&&!metadataError}),
     queryPin:(lng,lat,date)=>call('queryPin',lng,lat,date),queryAirspace:(lng,lat,d)=>call('queryAirspace',lng,lat,d),
     // Worker sends stats snapshots after demand/result. stats() is always synchronous.
     stats:()=>backend?backend.stats():({...workerStats}),

@@ -1,9 +1,9 @@
-/*
+/next/*
   Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-gG3miYARPUDHAJGRUklgq+unqAC6fDKAekbiVnnwv8U=' 'sha256-9s4ckG2sCap52/rixjGym0Rod1pIwaA7/5HYcYAgE+g=' https://plausible.io; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero https://get.geojs.io https://plausible.io; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
 /next/worker.PSVLAI42.js
   Cache-Control: public, max-age=31536000, immutable
-/next/app.KLX7CSEF.js
+/next/app.SZCQ737C.js
   Cache-Control: public, max-age=31536000, immutable
 /next/styles.c27ebb9c6381.css
   Cache-Control: public, max-age=31536000, immutable

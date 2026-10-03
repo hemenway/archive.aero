@@ -13,31 +13,56 @@ export function manifestSummary(m) {
 export async function createCore(options,emit) {
   const fetcher=options.fetch??globalThis.fetch.bind(globalThis);
   const m=await loadManifest(options.manifestUrl,fetcher);
-  const core=new DataCore(m,fetcher,options,emit);await core.metadataReady;return core;
+  return new DataCore(m,fetcher,options,emit);
 }
 export class DataCore {
   constructor(manifest,fetcher,options={},emit=()=>{}) {
     this.m=manifest;this.fetch=fetcher;this.emit=emit;this.options=options;this.delivered=new Set();this.decoding=new Map();this.paths=new Set();this.wanted=new Set();this.shards=new Map();this.jsonLoads=new Map();this.airspace=new AirspaceIndex({});this.dead=false;
     this.scheduler=new Scheduler({...options,fetch:fetcher,cacheBytes:options.cacheBytes??(options.mobile?12:32)*1024*1024,
-      onStats:s=>this.emit('stats',s),onResult:(r,b)=>{void this.accept(r,b);},onError:e=>this.emit('error',e)});
-    this.metadataReady=this.m.raw.airspace ? this.loadAirspaceMetadata().catch(error=>{this.emit('error',{key:'airspace/metadata',error});}) : Promise.resolve();
+      onStats:s=>this.emit('stats',s),onResult:(r,b)=>{this.accept(r,b);},onError:e=>this.emit('error',e)});
+    // Decodes are bounded so a burst of cache hits after eviction cannot start hundreds of createImageBitmap calls at once.
+    this.decodeQueue=[];this.decodesActive=0;this.decodeLimit=options.decodeConcurrency??4;this.earlyDeferred=new Map();
+    // Airspace metadata loads lazily (first airspace demand or query) with backoff; it never blocks boot.
+    this.metadataLoading=null;this.metadataFailures=0;this.metadataRetryAt=0;
+  }
+  // Early responses: [key, promise] pairs on this thread; bare [key] entries wait for prime() from the facade.
+  adopt(entries) {
+    for(const [key,promise] of entries) {
+      if(promise) {this.scheduler.adopt(key,Promise.resolve(promise));continue;}
+      const d={};d.promise=new Promise((resolve,reject)=>{d.resolve=resolve;d.reject=reject;});this.earlyDeferred.set(key,d);this.scheduler.adopt(key,d.promise);
+    }
+  }
+  prime({key,status,contentType,bytes,error}) {
+    const d=this.earlyDeferred.get(key);if(!d)return;this.earlyDeferred.delete(key);
+    if(error) d.reject(new Error(error.message??'early fetch failed'));
+    else d.resolve(new Response(status===204||bytes==null?null:bytes,{status,headers:contentType?{'content-type':contentType}:{}}));
   }
   planCharts(date,tiles,{solo}={}) { return {id:String(date)+(solo?`:${solo.paths.join(',')}:${solo.clip?.id??''}`:''),tiles:planCharts(this.m,date,tiles,solo)}; }
   planBasemap(tiles) { return planBasemap(this.m.raw.basemap,tiles); }
   setDemand(state) {
-    const {requests,paths}=buildDemand(this.m,state,this.paths);this.paths=paths;this.wanted=new Set(requests.map(r=>r.key));
+    const {requests,paths}=buildDemand(this.m,state,this.paths);this.paths=paths;this.wanted=new Set(requests.map(r=>r.key));const airspaceTiles=state.airspaceTiles??[];
     // Decoded vector geometry is bounded by current spatial/temporal demand.
     for(const key of this.airspace.tiles?.keys()??[]) if(!this.wanted.has(key)) {const coord=this.airspace.tiles.get(key).tile;this.airspace.deleteTile(key);this.delivered.delete(key);this.emit('airspace',{tileId:`${coord.z}/${coord.x}/${coord.y}`,batch:null});}
     for(const key of this.decoding.keys())if(!this.wanted.has(key))this.decoding.delete(key);
     this.scheduler.setDemand(requests.filter(r=>!this.delivered.has(r.key)));
-    if(this.m.raw.airspace && !this.airspaceLoaded) void this.loadAirspaceMetadata().catch(error=>this.emit('error',{key:'airspace/metadata',error}));
+    if(this.m.raw.airspace && airspaceTiles.length && !this.airspaceLoaded) this.ensureAirspaceMetadata();
   }
-  async accept(request,bytes) {
+  accept(request,bytes) {
     const {key}=request;
     if(this.dead || !this.wanted.has(key) || this.delivered.has(key) || this.decoding.has(key)) return;
-    const token={};this.decoding.set(key,token);
+    if(bytes==null) {this.delivered.add(key);this.emit('absent',{key});return;}
+    this.decodeQueue.push({request,bytes});this.pumpDecodes();
+  }
+  pumpDecodes() {
+    while(this.decodesActive<this.decodeLimit && this.decodeQueue.length) {
+      const {request,bytes}=this.decodeQueue.shift(),{key}=request;
+      if(this.dead || !this.wanted.has(key) || this.delivered.has(key) || this.decoding.has(key)) continue;
+      this.decodesActive++;void this.decode(request,bytes).finally(()=>{this.decodesActive--;this.pumpDecodes();});
+    }
+  }
+  async decode(request,bytes) {
+    const {key}=request,token={};this.decoding.set(key,token);
     try {
-      if(bytes==null) {this.delivered.add(key);this.emit('absent',{key});return;}
       if(request.kind==='airspace') {
         const decoded=decodeAirspaceTile(bytes,request.src);
         if(!this.wanted.has(key)||this.dead) return;
@@ -61,9 +86,17 @@ export class DataCore {
     return this.jsonLoads.get(url);
   }
   async loadAirspaceMetadata() {
-    const as=this.m.raw.airspace;if(!as)return;
+    const as=this.m.raw.airspace;if(!as||this.airspaceLoaded)return;
     const metadata=await this.json(new URL(`${as.p}/metadata`,this.m.raw.tileBase).href);
-    if(!this.dead) {this.airspace.setMetadata(metadata);this.airspaceLoaded=true;this.emit('metadata',{metadata});}
+    if(!this.dead) {this.airspace.setMetadata(metadata);this.airspaceLoaded=true;this.metadataFailures=0;this.emit('metadata',{metadata});}
+  }
+  ensureAirspaceMetadata() {
+    if(this.metadataLoading || this.airspaceLoaded || this.scheduler.clock.now()<this.metadataRetryAt) return this.metadataLoading;
+    this.metadataLoading=this.loadAirspaceMetadata().catch(error=>{
+      this.metadataRetryAt=this.scheduler.clock.now()+Math.min(60000,1000*2**this.metadataFailures++);
+      if(!this.dead) this.emit('error',{key:'airspace/metadata',error});
+    }).finally(()=>{this.metadataLoading=null;});
+    return this.metadataLoading;
   }
   async loadAirfields() {
     const af=this.m.raw.airfields;if(!af)return null;
@@ -84,5 +117,5 @@ export class DataCore {
     return queryPins(this.shards.get(i),lat,lng,date);
   }
   stats() {return this.scheduler.stats();}
-  destroy() {this.dead=true;this.wanted.clear();this.scheduler.destroy();this.delivered.clear();this.jsonLoads.clear();this.shards.clear();this.decoding.clear();this.airspace.clear();}
+  destroy() {this.dead=true;this.wanted.clear();this.scheduler.destroy();this.delivered.clear();this.jsonLoads.clear();this.shards.clear();this.decoding.clear();this.decodeQueue.length=0;this.earlyDeferred.clear();this.airspace.clear();}
 }

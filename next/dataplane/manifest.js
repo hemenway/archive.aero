@@ -39,8 +39,10 @@ export function parseManifest(raw) {
   const prefixEnd = new Int32Array(count);
   order.forEach((i, j) => { prefixEnd[j] = j ? Math.max(prefixEnd[j-1], ends[i]) : ends[i]; });
   const frames = Array.from(new Set(starts)).sort((a,b)=>a-b);
-  return { raw, starts, ends, minZoom, maxZoom, bounds, coverage, paths, keys, order, sortedStarts, prefixEnd,
-    frames: frames.map(isoDay), dateBounds: count ? {min: isoDay(frames[0]), max: isoDay(Math.max(...ends)-1)} : {min:null,max:null} };
+  // Demand planning looks eras up by path on every camera move; a Map keeps that O(1).
+  const pathIndex = new Map(paths.map((p, i) => [p, i]));
+  return { raw, starts, ends, minZoom, maxZoom, bounds, coverage, paths, keys, order, sortedStarts, prefixEnd, pathIndex,
+    frames: frames.map(isoDay), frameDays: Int32Array.from(frames), dateBounds: count ? {min: isoDay(frames[0]), max: isoDay(Math.max(...ends)-1)} : {min:null,max:null} };
 }
 export function erasAt(manifest, date) {
   const d = day(date), out = [];
@@ -52,5 +54,12 @@ export function erasAt(manifest, date) {
 export async function loadManifest(url, fetcher = fetch, signal) {
   const response = await fetcher(url, {signal});
   if (!response.ok) throw new Error(`Manifest HTTP ${response.status}`);
-  return parseManifest(await response.json());
+  const raw = await response.json();
+  // Production manifests carry absolute bases; fixtures may use relative ones.
+  // Resolve them once, against the manifest URL, so every consumer can build URLs.
+  if (raw && typeof raw === 'object') {
+    const origin = new URL(String(url), globalThis.location?.href ?? 'http://localhost/').href;
+    for (const base of ['tileBase', 'fileBase']) if (typeof raw[base] === 'string') raw[base] = new URL(raw[base], origin).href;
+  }
+  return parseManifest(raw);
 }

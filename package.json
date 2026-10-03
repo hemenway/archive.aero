@@ -2,7 +2,7 @@
   "name": "archive-aero-regression-tests",
   "private": true,
   "scripts": {
-    "test": "npm run check:frontend && npm run test:frontend && npm run test:workers && npm run test:browser",
+    "test": "npm run check:frontend && npm run check:next && npm run test:frontend && npm run test:workers && npm run test:dataplane && npm run test:browser && npm run test:next",
     "test:frontend": "python3 -m unittest discover -s tests -p 'test_viewer_config.py'",
     "build:frontend": "node scripts/build_frontend.mjs",
     "vendor:frontend": "node scripts/vendor_frontend.mjs",
@@ -10,7 +10,10 @@
     "test:workers": "node --test worker/test/*.test.mjs worker-atc/test/*.test.mjs",
     "test:browser": "playwright test",
     "build:next": "node next/build.mjs --stubs",
-    "test:next": "npm run build:next && playwright test --config next/playwright.config.mjs"
+    "check:next": "node next/build.mjs --check",
+    "test:next": "npm run build:next && playwright test --config next/playwright.config.mjs",
+    "test:dataplane": "node --test next/dataplane/test/*.test.mjs",
+    "test:renderer": "playwright test --config next/renderer/playwright.config.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

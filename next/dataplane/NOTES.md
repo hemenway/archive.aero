@@ -74,12 +74,27 @@ An empty plan is ready. The core retains no GPU bitmaps: shell texture evictions
 must call markEvicted, then setDemand again. Context restoration must mark all
 lost texture keys evicted before re-requesting.
 
-Options in addition to C7 are `concurrency` (8), `cacheBytes`, `mobile`, and
-`decodeBitmap`. The encoded cache defaults to 32 MiB desktop / 12 MiB mobile;
-iOS/iPadOS/Android detection supplies mobile automatically. Explicit options win.
-`stats()` is synchronous; in Worker mode it uses the newest posted snapshot. It
-adds requests, cancelled, bytes and retries to C7's three required counters.
-`off(event, fn)` is additive.
+Options in addition to C7 are `concurrency` (8), `cacheBytes`, `mobile`,
+`decodeBitmap`, `decodeConcurrency` (4), `timeout` (20 s per fetch attempt) and
+the shell's `earlyFetches` (a Map of absolute tile URL → Promise<Response>). The
+encoded cache defaults to 32 MiB desktop / 12 MiB mobile; iOS/iPadOS/Android
+detection supplies mobile automatically. Explicit options win. `stats()` is
+synchronous; in Worker mode it uses the newest posted snapshot. It adds requests,
+cancelled, bytes and retries to C7's three required counters. `off(event, fn)` and
+the `metadata` event (airspace metadata loaded) are additive.
+
+`earlyFetches` is stripped from the options posted to the Worker (Promises cannot
+be cloned). Each URL under `tileBase` becomes a scheduler placeholder for its tile
+key; the facade reads every response as it arrives and transfers status, content
+type and bytes to the Worker (`adopt`/`prime`), and the first demand for that key
+consumes the adopted response instead of fetching it again. A rejected early fetch
+falls back to an ordinary fetch. Relative `tileBase`/`fileBase` values in a
+fixture manifest are resolved against the manifest URL at load.
+
+Decodes are bounded by `decodeConcurrency`: a burst of cache hits after texture
+eviction queues rather than starting hundreds of `createImageBitmap` calls, and
+queue entries whose keys left demand are skipped when dequeued. Bitmaps are
+decoded with `premultiplyAlpha: 'premultiply'` for the renderer's blend mode.
 
 ## Planning and scheduling
 
@@ -113,8 +128,9 @@ tiles join current priority. Prefetched successful results are delivered and can
 buffer playback; renderer texture ownership/eviction limits decoded memory.
 
 204 absence is remembered for the session separately from the byte LRU. Only
-fully read successful bodies enter the LRU. Network failures, 408, 429 and 5xx retry
-at 150/300 ms, at most twice; ordinary 4xx fail immediately. Rejected fetch, manifest,
+fully read successful bodies enter the LRU. Network failures, timeouts, 408, 429
+and 5xx retry at 150/300 ms — or after `Retry-After`, capped at 5 s — at most
+twice, each attempt with a fresh AbortController; ordinary 4xx fail immediately. Rejected fetch, manifest,
 inventory and auxiliary JSON promises never enter a permanent success cache.
 Failed keys can be requested again on later demand. Content-versioned `/t/` paths
 and browser immutable caching replace legacy byte-range/ETag machinery.
@@ -172,8 +188,12 @@ including exclusion polygon boundaries. Removed demand releases retained rings
 and emits `{tileId, batch: null}` to remove the renderer batch (additive event
 behavior matching renderer.setAirspaceTile's existing nullable argument).
 
-Metadata comes from `/t/{path}/metadata`; each region chooses its newest held cycle
-on/before the day, valid for cycle_days (normally 28) exclusively. Gaps and dates
+Metadata comes from `/t/{path}/metadata`, loaded lazily on the first demand that
+carries airspace tiles (or the first query), never on boot; a failed load retries
+with exponential backoff (1 s doubling to 60 s) rather than on every camera move,
+and `airspaceStatus` reports the failure even when the caller passes
+`enabled: true`. Each region chooses its newest held cycle on/before the day, valid
+for cycle_days (normally 28) exclusively. Gaps and dates
 past the newest held cycle produce no region bit. Queries retain all altitude,
 hours and descriptive properties, exclude notches, dedupe version hits, take the
 lowest governing floor per badge and order floors, BADGE_ORDER and REGION_ORDER.
@@ -198,7 +218,8 @@ The local C1/C2 mock implements GET/HEAD tile statuses, coordinate/path validati
 204 outside zoom range, metadata, immutable success headers and gzip MVT. It serves
 synthetic C2 archives plus C4 and C5 fixtures within next/dataplane. A shared bandwidth
 budget covers all simultaneous responses. The PNG is deliberately a noisy 256 px,
-99,980-byte stress tile; measurements are not forecasts for production WebP sizes.
+~90 KB stress tile encoded by the contract fixtures' dependency-free `png()`;
+measurements are not forecasts for production WebP sizes.
 The mock uses catalogued synthetic paths, not physical PMTiles archives. Agent 1's
 canonical fixtures should replace this local catalog after merge; no canonical
 fixtures were available in this isolated branch.

@@ -17,6 +17,7 @@ from datetime import datetime,timezone
 from pathlib import Path
 from build_metadata_bundle import parse_key_dates, header_bounds
 from next_pmtiles import Archive
+from next_version_archives import bounds
 
 ROOT=Path(__file__).resolve().parent.parent
 PATTERN=re.compile(r'^(.*)\.([a-f0-9]{12})\.pmtiles$')
@@ -46,12 +47,9 @@ def build(directory,coverage,overlays=None,tile_base='https://data.archive.aero/
                 print('skipping start-only era '+k); continue
             if not dates: raise ValueError('invalid or start-only era '+k)
             if dates[0]>=dates[1]: raise ValueError('empty/inverted era interval')
-            # Helper validity checks are shared with today's bundle; frozen C2 uses
-            # nearest 4 decimals (rather than the old bundle's outward 2 decimals).
-            b=header_bounds(a.h,k,[])
-            if b is not None:
-                b=[round(a.h[n]/1e7,4) for n in ('min_lon_e7','min_lat_e7','max_lon_e7','max_lat_e7')]
-                if b[0]>=b[2] or b[1]>=b[3]: b=None
+            # Validity rule shared with today's bundle; frozen C2 rounds OUTWARD to 4 decimals
+            # (the old bundle: outward to 2) — nearest rounding shrank bounds and culled edge tiles.
+            b=bounds(a.h) if header_bounds(a.h,k,[]) is not None else None
             result['eras'].append({'k':k,'h':h,'b':b,'z':z,'c':a.coverage(6)})
         elif stem.startswith(('basemap/','airspace/')):
             kind=stem.split('/')[0]

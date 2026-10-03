@@ -8,7 +8,9 @@ Worker releases available throughout rollout. Do not overwrite any versioned key
 
 ## Local setup and inputs
 
-From the repository root, set these paths to the owner's actual local files:
+From the repository root, set these paths to the owner's actual local files.
+The `/Volumes/...` values below are placeholders the owner replaces, not paths
+this runbook verified:
 
 ```sh
 export NEXT_BUILD=/Volumes/projects/archive-next
@@ -44,26 +46,37 @@ Record the assets git commit alongside the output for reproducibility.
 Build a local mirror whose paths map to the original R2 namespaces. Copy or
 hard-link the era files into `raw/sectionals/` and the slug/date chart tree into
 `raw/sectionals/chart/`. (Use a filesystem copy if the build volume differs.)
-Keep basemap and airspace trees separate from the era tree.
+Keep basemap and airspace trees separate from the era tree. Then list what R2
+actually holds and plan from that inventory; the mirror only supplies hashes:
 
 ```sh
 rsync -a "$NEXT_ERAS/" "$NEXT_BUILD/raw/sectionals/"
 rsync -a "$NEXT_CHARTS/" "$NEXT_BUILD/raw/sectionals/chart/"
-"$NEXT_BUILD/venv/bin/python" scripts/next_version_archives.py --dir "$NEXT_BUILD/raw/sectionals" --prefix sectionals --out "$NEXT_BUILD/plans/originals.json"
+rclone lsjson -R --files-only r2:charts --include 'sectionals/**' > "$NEXT_BUILD/plans/listing.json"
+"$NEXT_BUILD/venv/bin/python" scripts/next_version_archives.py --listing "$NEXT_BUILD/plans/listing.json" --dir "$NEXT_BUILD/raw/sectionals" --prefix sectionals --out "$NEXT_BUILD/plans/originals.json"
 ```
 
-The plan maps each existing key to `{stem}.{sha256[:12]}.pmtiles`. Legacy chart
+`rclone lsjson` writes `Path` relative to the listed root, so with `r2:charts`
+as the root it is the bucket key (`sectionals/...`). Listing records accept
+`Path`, S3 `Key` or `key`; a `local` field can select a particular mirror
+filename; keys outside `--prefix` are skipped, so a whole-bucket listing works.
+Every record is `source: remote`: the object exists in R2 under `old`, and the
+plan is a server-side copy to `{stem}.{sha256[:12]}.pmtiles`. Legacy chart
 sources use extension-less `sectionals/chart/{slug}/{date}` keys; destinations
-always include `.pmtiles`. Compare the plan's `old` keys to a complete object
-inventory, including half-sheet chart names, before applying it. An existing
-missing source will fail rather than silently creating an incomplete archive.
+always include `.pmtiles`. A listed object with no mirror file fails the plan;
+mirror files absent from the listing are not planned — diff them yourself.
 
-If the owner already has a listing, use `--listing LISTING.json --dir MIRROR`.
-Listing records accept `key`, S3 `Key`, or rclone `Path`; a `local` field can
-select a particular mirror filename. Without a local mirror, listing records
-must have a full trusted `sha256` (ETag is insufficient), or the owner must
-explicitly add `--read-remote` to stream/hash the listed objects. This agent did
-not use that option. Output plans retain full SHA256, min/max zoom and bounds.
+The mirror must hold R2's current bytes. A stale mirror would stamp a copy with
+a hash its bytes do not have and silently undo a same-key republish, so three
+guards enforce it: the plan refuses a mirror file whose size differs from the
+listing's `Size`; the `.sh` asserts each source's R2 size (`rclone size --json`)
+before copying it; `--execute` asserts `ContentLength` and, for single-part
+ETags, the mirror md5 recorded in the plan. Freeze source writers from listing
+through copying. Without a local mirror, listing records must have a full
+trusted `sha256` (ETag is insufficient), or the owner must explicitly add
+`--read-remote` to stream/hash the listed objects. This agent did not use that
+option. Output plans retain full SHA256, size, min/max zoom and outward-rounded
+bounds.
 
 **Owner-only storage operation:** configure the rclone `r2:` remote, inspect
 `originals.json.sh`, and execute the reviewed copy commands:
@@ -77,12 +90,11 @@ Alternatively the Python tool can execute copies only with `--execute` and
 present in the environment:
 
 ```sh
-"$NEXT_BUILD/venv/bin/python" scripts/next_version_archives.py --dir "$NEXT_BUILD/raw/sectionals" --prefix sectionals --out "$NEXT_BUILD/plans/originals.json" --execute
+"$NEXT_BUILD/venv/bin/python" scripts/next_version_archives.py --listing "$NEXT_BUILD/plans/listing.json" --dir "$NEXT_BUILD/raw/sectionals" --prefix sectionals --out "$NEXT_BUILD/plans/originals.json" --execute
 ```
 
 That path uses boto3's managed multipart copy for multi-GB archives. The Python path refuses existing destinations unless their full SHA256 metadata
-matches, and guards source copies with the source ETag. Freeze source writers
-while hashing/copying so a local mirror still matches R2. The shell
+matches, and guards source copies with the source ETag. The shell
 path uses rclone server-side copy with `--immutable`. Copying existing bytes
 creates new names and leaves the old viewer operational. Hash local sources at
 storage speed; at 500 MB/s a 1 TB mirror takes roughly 33 minutes just to hash.
@@ -109,8 +121,13 @@ PY
 
 Every original stored tile is retained byte-for-byte. New levels are RGBA
 LANCZOS/WebP q80; new archive bytes require **new hashes**. Never upload overviews
-onto the versioned copies made in step 1. The overview plan is now a local upload
-plan, not a server-side copy plan: its unhashed source files do not exist in R2.
+onto the versioned copies made in step 1. The overview plan is a **local upload
+plan** (`source: local`), not a server-side copy plan: its `old` names are the
+legacy era keys, which do exist in R2 — with different bytes (no overviews). A
+server-side copy would have put the legacy bytes under the overview hash with
+`--immutable`, so the tool emits `rclone copyto <local file> r2:charts/<new>
+--immutable` uploads for it, and `--execute` uploads with boto3. The basemap and
+airspace plans below are local upload plans too.
 
 Render a small real-cutout proof before the full basemap:
 

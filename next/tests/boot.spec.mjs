@@ -47,3 +47,16 @@ test('URL replaceState is throttled to four per second during scrubbing', async 
   for (let i = 0; i < 10; i++) { await page.locator('#timeSelect').fill(i % 2 ? '1960-01-01' : '1970-01-01'); await page.locator('#timeSelect').dispatchEvent('change'); }
   await page.waitForTimeout(350); const times = await page.evaluate(() => window.__replacements); for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBeGreaterThanOrEqual(245);
 });
+test('a failing tile degrades the view instead of ending it', async ({ page }) => {
+  const warnings = []; page.on('console', message => { if (message.type() === 'warning') warnings.push(message.text()); });
+  let failed = false;
+  await page.route('**/t/sectionals/**', route => { if (failed) return route.fallback(); failed = true; return route.fulfill({ status: 404, body: '' }); });
+  await ready(page); await expect(page.locator('#fatalError')).toBeHidden();
+  expect(warnings.some(text => /Tile unavailable/.test(text))).toBe(true);
+});
+test('header rules are scoped to the deployed base, never the whole origin', async () => {
+  const headers = await readFile(new URL('../dist/_headers', import.meta.url), 'utf8');
+  expect(headers.startsWith('/next/*\n')).toBe(true); expect(headers).not.toMatch(/^\/\*$/m);
+  expect(headers).toContain('/next/sw.js\n  Cache-Control: no-cache');
+  const budget = JSON.parse(await readFile(new URL('../dist/budgets.json', import.meta.url))); expect(budget.base).toBe('/next/');
+});

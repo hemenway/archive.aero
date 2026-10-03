@@ -12,7 +12,7 @@ export const tileFragment = `#version 300 es
 precision highp float; precision highp int; precision highp sampler2DArray;
 uniform sampler2DArray atlas; uniform float layer; uniform float opacity;
 in vec2 uv; out vec4 color;
-void main(){color=texture(atlas,vec3(uv,layer));color.a*=opacity;}`;
+void main(){color=texture(atlas,vec3(uv,layer))*opacity;}`;
 export const ringVertex = `#version 300 es
 precision highp float; precision highp int; layout(location=0) in vec2 position;
 ${camera}
@@ -35,7 +35,7 @@ precision highp float; precision highp int; in vec2 local; flat in int status; f
 uniform float radius; out vec4 color;
 void main(){float d=length(local);if(d>radius+1.)discard;
 vec3 fill=status==0?vec3(54.,163.,93.)/255.:status==1?vec3(194.,59.,42.)/255.:vec3(139.,130.,116.)/255.;
-color=vec4(d>=radius-1.?vec3(1.):fill,d>=radius-1.?max(.55,faint):faint);}`;
+float a=d>=radius-1.?max(.55,faint):faint;color=vec4((d>=radius-1.?vec3(1.):fill)*a,a);}`;
 export const lineVertex = `#version 300 es
 precision highp float; precision highp int;
 layout(location=0) in vec2 position; layout(location=1) in vec2 previous;
@@ -62,8 +62,8 @@ precision highp float; precision highp int; in float distancePx; in float across
 uniform int pass; uniform float floorColor; out vec4 color;
 void main(){float dash=style==3?7.:style==4?5.:0.;if(dash>0.&&mod(distancePx,dash+4.)>=dash)discard;
 vec3 blue=vec3(79.,140.,245.)/255.,magenta=vec3(238.,82.,178.)/255.;
-if(style==6){if(pass==1)discard;float alpha=(across<=1./3.?3.:across<=2./3.?2.:1.)/6.;color=vec4(floorColor==700.?magenta:blue,alpha);}
-else color=pass==0?vec4(8.,12.,18.,153.)/255.:vec4(style==2||style==4?magenta:blue,1.);}`;
+if(style==6){if(pass==1)discard;float alpha=(across<=1./3.?3.:across<=2./3.?2.:1.)/6.;color=vec4((floorColor==700.?magenta:blue)*alpha,alpha);}
+else color=pass==0?vec4(vec3(8.,12.,18.)/255.*.6,.6):vec4(style==2||style==4?magenta:blue,1.);}`;
 export const pinVertex = `#version 300 es
 precision highp float; precision highp int; ${camera}
 uniform vec2 position; out vec2 local;

@@ -37,13 +37,15 @@ export function archive(tiles,{type=2,gzip=false,leaf=false,compression=2,bounds
 }
 function crc32(bytes) { let crc=0xffffffff; for(const b of bytes) { crc^=b;for(let j=0;j<8;j++)crc=(crc>>>1)^((crc&1)?0xedb88320:0); } return (crc^0xffffffff)>>>0; }
 function chunk(type,data) { const t=Buffer.from(type),h=Buffer.alloc(4),c=Buffer.alloc(4);h.writeUInt32BE(data.length);c.writeUInt32BE(crc32(Buffer.concat([t,data])));return Buffer.concat([h,t,data,c]); }
-export function png(color,size=256) {
+// pixel(x,y,rgba) may overwrite the default fixture pattern per pixel.
+export function png(color,size=256,pixel=null) {
   const raw=Buffer.alloc((size*4+1)*size);
   for(let y=0;y<size;y++)for(let x=0;x<size;x++) {
     const off=y*(size*4+1)+1+x*4; raw[off]=color[0];raw[off+1]=color[1];raw[off+2]=color[2];
     raw[off+3]=(x<4||y<4||x>=size-4||y>=size-4)?0:255;
     // A light diagonal gives fixtures a recognizable spatial pattern.
     if(Math.abs(x-y)<3)raw[off]=raw[off+1]=raw[off+2]=255;
+    if(pixel)pixel(x,y,raw.subarray(off,off+4));
   }
   const ihdr=Buffer.alloc(13);ihdr.writeUInt32BE(size);ihdr.writeUInt32BE(size,4);ihdr[8]=8;ihdr[9]=6;
   return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',ihdr),chunk('IDAT',deflateSync(raw)),chunk('IEND',Buffer.alloc(0))]);

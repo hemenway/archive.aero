@@ -23,15 +23,16 @@ class Renderer {
     this.events = new Map(); this.chart = new Map(); this.base = new Map(); this.rings = new Map(); this.airspace = new Map(); this.airspaceDraws = [];
     this.queue = []; this.queued = new Map(); this.style = { opacity: 1, hidden: false };
     this.fieldFilter = { year: 0, statusMask: 7 }; this.spaceFilter = { day: 0, classMask: 3, regionMask: 7 };
-    this.frame = 0; this.animation = null; this.lost = false; this.dead = false; this.drawCalls = 0; this.frameMs = 0; this.renderEvent = { frameMs: 0 };
+    this.frame = 0; this.animation = null; this.lost = false; this.dead = false; this.drawCalls = 0; this.frameMs = 0; this.renderEvent = { frameMs: 0 }; this.planSeq = 0;
     this.chartsVisible = []; this.baseVisible = []; this.chartDraws = []; this.baseDraws = []; this.viewDirty = true; this.planDirty = true;
-    this._drawBound = t => this._frame(t); this._emitBound = (e, p) => this._emit(e, p);
+    this._drawBound = t => this._frame(t); this._emitBound = (e, p) => this._emit(e, p); this._resizeBound = () => this.resize();
     this._initGL();
     this.abort = new AbortController();
     const listen = (name, fn) => canvas.addEventListener(name, fn, { signal: this.abort.signal });
     listen('webglcontextlost', e => {
       e.preventDefault(); this.lost = true; this.pool.clear(); cancelAnimationFrame(this.frame); this.frame = 0; this.animation = null;
-      for (const q of this.queue) q.bitmap.close(); this.queue.length = 0; this.queued.clear();
+      // Queued bitmaps were already reported delivered; evict them too, so the data plane re-requests every lost key.
+      for (const q of this.queue) { q.bitmap.close(); this._emit('evict', { key: q.key }); } this.queue.length = 0; this.queued.clear();
       this._emit('contextlost');
     });
     listen('webglcontextrestored', () => {
@@ -46,15 +47,15 @@ class Renderer {
     canvas.style.touchAction = 'none'; if (!canvas.hasAttribute('tabindex')) canvas.tabIndex = 0;
     this._input(listen);
     this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(canvas);
-    window.addEventListener('resize', () => this.resize(), { signal: this.abort.signal }); this.resize();
+    window.addEventListener('resize', this._resizeBound, { signal: this.abort.signal }); this.resize();
   }
   on(event, fn) { const listeners = this.events.get(event) ?? []; if (!listeners.includes(fn)) this.events.set(event, [...listeners, fn]); return this; }
   off(event, fn) { const listeners = this.events.get(event); if (listeners) this.events.set(event, listeners.filter(listener => listener !== fn)); return this; }
   _emit(event, payload) { const listeners = this.events.get(event); if (listeners) for (let i = 0; i < listeners.length; i++) listeners[i](payload); }
-  getCamera() { return { x: this.camera.x, y: this.camera.y, zoom: this.camera.zoom }; }
+  getCamera() { return { x: wrap(this.camera.x), y: this.camera.y, zoom: this.camera.zoom }; }
   setCamera({ x = this.camera.x, y = this.camera.y, zoom = this.camera.zoom }, { animate = false } = {}) {
     if (![x, y, zoom].every(Number.isFinite)) throw new TypeError('Invalid camera');
-    const target = { x, y: clamp(y, 0, 1), zoom: clamp(zoom, this.camera.minZoom, this.camera.maxZoom) };
+    const target = { x: wrap(x), y: clamp(y, 0, 1), zoom: clamp(zoom, this.camera.minZoom, this.camera.maxZoom) };
     if (animate) this._animate(target, 250);
     else { this.animation = null; Object.assign(this.camera, target); this._moved(); this._emit('moveend', this.getCamera()); }
   }
@@ -77,29 +78,50 @@ class Renderer {
   }
   hasTexture(key) { return this.pool.entries.has(key); }
   upload(key, bitmap) {
-    if (this.dead || this.lost) { bitmap.close(); return; }
+    if (this.dead) { bitmap.close(); return; }
+    if (this.lost) { bitmap.close(); this._emit('evict', { key }); return; }
     const size = bitmap.width;
     if ((size !== 256 && size !== 512) || bitmap.height !== size) { bitmap.close(); throw new RangeError('Tiles must be 256 or 512 pixels square'); }
     if (this.hasTexture(key) || this.queued.has(key)) { bitmap.close(); return; }
     const q = { key, bitmap, size }; this.queue.push(q); this.queued.set(key, q); this._invalidate();
   }
   _makePlan(plans, previous) {
-    const next = new Map();
+    const next = new Map(), seq = ++this.planSeq;
     for (const plan of plans) {
-      const id = tileId(plan.dst), cell = previous.get(id);
-      next.set(id, { dst: plan.dst, items: plan.items, completed: cell?.completed ?? this._previousAncestor(plan.dst, previous) });
+      const id = tileId(plan.dst), own = previous.get(id), ownItems = own?.completed && this._revive(own.completed), ancestor = this._previousAncestor(plan.dst, previous);
+      // The most recently completed snapshot wins: a parent finished for a
+      // newer date supersedes this cell's own snapshot of an older one, which
+      // otherwise reappears when the view zooms back in.
+      const from = ownItems && (!ancestor || own.completedSeq >= ancestor.cell.completedSeq) ? { items: ownItems, seq: own.completedSeq } : ancestor && { items: ancestor.items, seq: ancestor.cell.completedSeq };
+      next.set(id, { dst: plan.dst, items: plan.items, seq, completed: from?.items ?? null, completedSeq: from?.seq ?? 0 });
     }
     // Keep visible completed ancestors/children through a zoom transition.
     // Off-screen obsolete cells can be dropped; the pool caches their textures.
-    for (const [id, cell] of previous) if (!next.has(id) && this._onScreen(cell.dst) && cell.completed?.some(item => this.hasTexture(item.key))) next.set(id, { dst: cell.dst, items: null, completed: cell.completed });
+    for (const [id, cell] of previous) if (!next.has(id) && this._onScreen(cell.dst) && cell.completed) {
+      const completed = this._revive(cell.completed);
+      if (completed) next.set(id, { dst: cell.dst, items: null, seq: cell.seq, completed, completedSeq: cell.completedSeq });
+    }
     return next;
   }
   _previousAncestor(dst, cells) {
     for (let z = dst.z - 1; z >= 0; z--) {
-      const k = 2 ** (dst.z - z), c = cells.get(`${z}/${Math.floor(dst.x / k)}/${Math.floor(dst.y / k)}`);
-      if (c?.completed) return c.completed;
+      const k = 2 ** (dst.z - z), cell = cells.get(`${z}/${Math.floor(dst.x / k)}/${Math.floor(dst.y / k)}`), items = cell?.completed && this._revive(cell.completed);
+      if (items) return { cell, items };
     }
     return null;
+  }
+  // A completed snapshot stays drawable only while every item still resolves to
+  // a resident texture of its archive: the exact one, or a coarser ancestor.
+  // Evicted items make the whole snapshot undrawable rather than a partial one.
+  _revive(completed) {
+    let out = completed;
+    for (let i = 0; i < completed.length; i++) {
+      const item = completed[i];
+      if (this.pool.entries.has(item.key)) continue;
+      const r = this._resolve(item); if (!r) return null;
+      if (out === completed) out = completed.slice(); out[i] = r;
+    }
+    return out;
   }
   setChartPlan(plan) { this.planId = plan.id; this.chart = this._makePlan(plan.tiles, this.chart); this.planDirty = true; this._invalidate(); }
   setBasemapPlan(tilePlans) { this.base = this._makePlan(tilePlans, this.base); this.planDirty = true; this._invalidate(); }
@@ -174,20 +196,25 @@ class Renderer {
     const width = Math.max(1, Math.round(r.width * dpr)), height = Math.max(1, Math.round(r.height * dpr));
     if (this.dpr === dpr && this.camera.width === Math.max(1, r.width) && this.camera.height === Math.max(1, r.height) && this.canvas.width === width && this.canvas.height === height) return;
     this.dpr = dpr;
+    // ResizeObserver is silent when only the pixel ratio changes (a window dragged to another display), so watch that too.
+    this.dprQuery?.removeEventListener('change', this._resizeBound);
+    this.dprQuery = matchMedia(`(resolution: ${dpr}dppx)`); this.dprQuery.addEventListener('change', this._resizeBound, { signal: this.abort.signal });
     this.camera.width = Math.max(1, r.width); this.camera.height = Math.max(1, r.height);
     this.canvas.width = width; this.canvas.height = height;
     this._moved();
+    // Setting the backing store cleared it. Draw before the browser paints, so
+    // a resize, rotation or URL-bar collapse never shows one empty frame.
+    if (!this.lost) { cancelAnimationFrame(this.frame); this.frame = 0; this._frame(performance.now()); }
   }
   destroy() {
     this.dead = true; cancelAnimationFrame(this.frame); clearTimeout(this.wheelTimer);
-    this.observer.disconnect(); this.abort.abort(); this.pool.clear();
+    this.observer.disconnect(); this.abort.abort(); this.events.clear(); this.pool.clear();
     for (const q of this.queue) q.bitmap.close(); this.queue.length = 0; this.queued.clear();
     const gl = this.gl;
     for (const p of Object.values(this.programs)) gl.deleteProgram(p.program);
     for (const r of this.rings.values()) gl.deleteBuffer(r.buffer);
     for (const b of this.airspace.values()) for (const g of b.groups) { gl.deleteBuffer(g.buffer); gl.deleteVertexArray(g.vao); }
     gl.deleteBuffer(this.fieldBuffer); gl.deleteVertexArray(this.fieldVAO); gl.deleteVertexArray(this.emptyVAO);
-    this.events.clear();
   }
   _initGL() {
     const gl = this.gl; this.pool = new TexturePool(gl, this.budget, this._emitBound);
@@ -204,7 +231,7 @@ class Renderer {
       for (let i = 0; i < gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i++) { const n = gl.getActiveUniform(p, i).name; u[n] = gl.getUniformLocation(p, n); }
       this.programs[name] = { program: p, u };
     }
-    this.emptyVAO = gl.createVertexArray(); gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.activeTexture(gl.TEXTURE0);
+    this.emptyVAO = gl.createVertexArray(); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.activeTexture(gl.TEXTURE0);
   }
   _ringGPU(r) { const gl = this.gl; r.buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, r.buffer); gl.bufferData(gl.ARRAY_BUFFER, r.data, gl.STATIC_DRAW); }
   _fieldsGPU() {
@@ -261,11 +288,11 @@ class Renderer {
     return Math.abs(nearest - c.x) < c.width / c.world / 2 + half && Math.abs((dst.y + .5) / n - c.y) < c.height / c.world / 2 + half;
   }
   _backfill(tile, cells, draws) {
-    const exact = cells.get(tile.key);
-    if (exact?.completed) { draws.push({ tile, items: exact.completed }); return; }
+    const exact = cells.get(tile.key), own = exact?.completed && this._revive(exact.completed);
+    if (own) { exact.completed = own; draws.push({ tile, items: own }); return; }
     for (let z = tile.z - 1; z >= 0; z--) {
-      const k = 2 ** (tile.z - z), cell = cells.get(`${z}/${Math.floor(tile.x / k)}/${Math.floor(tile.y / k)}`);
-      if (cell?.completed && cell.completed.every(item => this.hasTexture(item.key))) { draws.push({ tile, items: cell.completed }); return; }
+      const k = 2 ** (tile.z - z), cell = cells.get(`${z}/${Math.floor(tile.x / k)}/${Math.floor(tile.y / k)}`), items = cell?.completed && this._revive(cell.completed);
+      if (items) { cell.completed = items; draws.push({ tile, items }); return; }
     }
     // While zooming out, old child tiles form the backfill mosaic until the
     // destination plan is ready. Prefer the coarsest completed children.
@@ -277,7 +304,8 @@ class Renderer {
         const f = 2 ** (dst.z - z), parent = cells.get(`${z}/${Math.floor(dst.x / f)}/${Math.floor(dst.y / f)}`);
         if (parent?.completed) { covered = true; break; }
       }
-      if (!covered) draws.push({ tile: { ...dst, worldX: dst.x + Math.floor(tile.worldX / 2 ** tile.z) * 2 ** dst.z }, items: cell.completed });
+      const items = covered ? null : this._revive(cell.completed);
+      if (items) { cell.completed = items; draws.push({ tile: { ...dst, worldX: dst.x + Math.floor(tile.worldX / 2 ** tile.z) * 2 ** dst.z }, items }); }
     }
   }
   _plans() {
@@ -292,7 +320,7 @@ class Renderer {
         if (cell?.items) {
           const resolved = []; let ready = true;
           for (const item of cell.items) { const r = this._resolve(item); if (!r) { ready = false; break; } resolved.push(r); }
-          if (ready) cell.completed = resolved;
+          if (ready) { cell.completed = resolved; cell.completedSeq = cell.seq; }
         }
         if (tile.onScreen) this._backfill(tile, cells, draws);
         // Partial replacement ancestors are pinned until the complete swap.
@@ -378,17 +406,26 @@ class Renderer {
     if (this.animation) {
       const a = this.animation, t = clamp((time - a.time) / a.duration, 0, 1), k = easing(t);
       if (a.anchor) this.camera.zoomAt(a.from.zoom + (a.to.zoom - a.from.zoom) * k, a.anchor[0], a.anchor[1]);
-      else { this.camera.x = a.from.x + (a.to.x - a.from.x) * k; this.camera.y = a.from.y + (a.to.y - a.from.y) * k; this.camera.zoom = a.from.zoom + (a.to.zoom - a.from.zoom) * k; }
+      else { this.camera.x = wrap(a.from.x + (a.to.x - a.from.x) * k); this.camera.y = a.from.y + (a.to.y - a.from.y) * k; this.camera.zoom = a.from.zoom + (a.to.zoom - a.from.zoom) * k; }
       this.viewDirty = true; this.planDirty = true; this._emit('move', this.getCamera());
       if (t === 1) { this.animation = null; this._emit('moveend', this.getCamera()); }
     }
     this._plans();
     let uploaded = 0, blocked = false;
+    // Textures the current plans need jump the queue. Superseded deliveries
+    // (dates already scrubbed past) only fill idle budget: under texture
+    // pressure, or past 64 waiting bitmaps, they are dropped with an evict so
+    // the data plane forgets them instead of holding decoded memory.
     while (this.queue.length && uploaded < 4 && performance.now() - start < 4) {
-      const q = this.queue[0], entry = this.pool.put(q.key, q.bitmap, q.size);
-      if (!entry) { blocked = true; this._emit('texturepressure', { key: q.key, maxTextureBytes: this.budget }); break; }
-      q.bitmap.close(); this.queue.shift(); this.queued.delete(q.key); uploaded++; this.planDirty = true; this._plans();
+      let index = this.queue.findIndex(q => this.pool.pinned.has(q.key)); const needed = index >= 0; if (!needed) index = 0;
+      const q = this.queue[index], entry = this.pool.put(q.key, q.bitmap, q.size);
+      if (!entry) {
+        if (needed) { blocked = true; this._emit('texturepressure', { key: q.key, maxTextureBytes: this.budget }); break; }
+        this._drop(index); continue;
+      }
+      q.bitmap.close(); this.queue.splice(index, 1); this.queued.delete(q.key); uploaded++; this.planDirty = true; this._plans();
     }
+    while (this.queue.length > 64) { const index = this.queue.findIndex(q => !this.pool.pinned.has(q.key)); if (index < 0) break; this._drop(index); }
     const gl = this.gl; gl.viewport(0, 0, this.canvas.width, this.canvas.height); gl.clearColor(.035, .047, .063, 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT); this.drawCalls = 0;
     this._drawPlans(this.baseDraws, 1);
@@ -397,9 +434,15 @@ class Renderer {
     this.renderEvent.frameMs = this.frameMs; this._emit('render', this.renderEvent);
     if (this.animation || (this.queue.length && !blocked)) this._invalidate();
   }
+  _drop(index) { const [q] = this.queue.splice(index, 1); q.bitmap.close(); this.queued.delete(q.key); this._emit('evict', { key: q.key }); }
   _invalidate() { if (!this.frame && !this.lost && !this.dead) this.frame = requestAnimationFrame(this._drawBound); }
   _moved() { this.viewDirty = true; this.planDirty = true; this._emit('move', this.getCamera()); this._invalidate(); }
-  _animate(to, duration, anchor) { this.animation = { from: this.getCamera(), to, duration, anchor, time: performance.now() }; this._invalidate(); }
+  _animate(to, duration, anchor) {
+    const from = this.getCamera();
+    // Interpolate towards the nearest world copy of the target, never the long way round.
+    if (to.x !== undefined) to = { ...to, x: to.x + Math.round(from.x - to.x) };
+    this.animation = { from, to, duration, anchor, time: performance.now() }; this._invalidate();
+  }
   _zoom(zoom, x = this.camera.width / 2, y = this.camera.height / 2) {
     this._animate({ zoom: clamp(Math.round(zoom), this.camera.minZoom, this.camera.maxZoom) }, 220, [x, y]);
   }

@@ -1,10 +1,11 @@
 import { ByteLRU } from './lru.js';
 const abortError = () => new DOMException('Demand superseded','AbortError');
+// The clock wraps the globals: browsers throw "Illegal invocation" when window.setTimeout is called as a method of another object.
 export class Scheduler {
-  constructor({fetch:fetcher=fetch,concurrency=8,cacheBytes=32*1024*1024,onResult=()=>{},onError=()=>{},onStats=()=>{},clock={now:()=>Date.now(),setTimeout,clearTimeout},backoff=150}={}) {
+  constructor({fetch:fetcher=fetch,concurrency=8,cacheBytes=32*1024*1024,onResult=()=>{},onError=()=>{},onStats=()=>{},clock={now:()=>Date.now(),setTimeout:(fn,ms)=>setTimeout(fn,ms),clearTimeout:t=>clearTimeout(t)},backoff=150,timeout=20000}={}) {
     if(!Number.isInteger(concurrency)||concurrency<1)throw new RangeError('Concurrency must be a positive integer');
-    this.heap=[];this.onStats=onStats;this.fetch=fetcher; this.concurrency=concurrency; this.onResult=onResult; this.onError=onError; this.clock=clock; this.backoff=backoff;
-    this.cache=new ByteLRU(cacheBytes); this.absent=new Set(); this.pending=new Map(); this.demand=new Map(); this.active=0; this.destroyed=false; this.seq=0;
+    this.heap=[];this.onStats=onStats;this.fetch=fetcher; this.concurrency=concurrency; this.onResult=onResult; this.onError=onError; this.clock=clock; this.backoff=backoff; this.timeout=timeout;
+    this.cache=new ByteLRU(cacheBytes); this.absent=new Set(); this.pending=new Map(); this.demand=new Map(); this.early=new Map(); this.active=0; this.destroyed=false; this.seq=0;
     this.metrics={requests:0,cancelled:0,bytes:0,retries:0};
   }
   setDemand(requests) {
@@ -22,6 +23,9 @@ export class Scheduler {
     this.heap=[];for(const job of this.pending.values())if(!job.running&&job.timer==null)this.push(job);
     this.pump();this.onStats(this.stats());
   }
+  // A response the page already requested (the boot script's early fetches) is
+  // consumed in place of this scheduler's own fetch the first time the key runs.
+  adopt(key,promise) { promise.catch(()=>{}); this.early.set(key,promise); }
   pump() {
     if(this.destroyed) return;
     while(this.active<this.concurrency) {
@@ -41,27 +45,34 @@ export class Scheduler {
     return first;
   }
   async run(job) {
-    const {key,url}=job.request, signal=job.controller.signal;
+    // Each attempt owns a fresh controller: a timed-out one must not poison the retry.
+    const {key,url}=job.request, controller=job.controller=new AbortController(), signal=controller.signal;
+    const timer=this.timeout>0 ? this.clock.setTimeout(()=>controller.abort(new DOMException('Tile timeout','TimeoutError')),this.timeout) : null;
     try {
       this.metrics.requests++;
-      const response=await this.fetch(url,{signal});
-      if(signal.aborted) throw abortError();
-      if(response.status!==204 && !response.ok) { const e=new Error(`Tile HTTP ${response.status}`); e.retryable=response.status>=500 || response.status===408 || response.status===429; throw e; }
+      const early=this.early.get(key); this.early.delete(key);
+      const response=await (early??this.fetch(url,{signal}));
+      if(signal.aborted) throw signal.reason??abortError();
+      if(response.status!==204 && !response.ok) {
+        const e=new Error(`Tile HTTP ${response.status}`); e.retryable=response.status>=500 || response.status===408 || response.status===429;
+        const after=Number(response.headers?.get('retry-after')); if(after>0) e.retryAfter=Math.min(after,5)*1000; throw e;
+      }
       const bytes=response.status===204 ? null : new Uint8Array(await response.arrayBuffer());
-      if(signal.aborted) throw abortError();
+      if(signal.aborted) throw signal.reason??abortError();
       if(bytes) { this.metrics.bytes+=bytes.byteLength; this.cache.set(key,bytes); } else this.absent.add(key);
       if(this.pending.get(key)===job) { this.pending.delete(key); this.onResult({...job.request,contentType:response.headers?.get('content-type')},bytes); }
     } catch(error) {
-      if(!signal.aborted && this.pending.get(key)===job) {
+      // Superseded demand already dropped the job; a timeout did not, and retries.
+      if(this.pending.get(key)===job && error?.name!=='AbortError') {
         if(error.retryable!==false && job.attempt<2) {
-          this.metrics.retries++; const delay=this.backoff*2**job.attempt++;
+          this.metrics.retries++; const delay=error.retryAfter??this.backoff*2**job.attempt; job.attempt++;
           job.timer=this.clock.setTimeout(()=>{job.timer=null;if(this.pending.get(key)===job)this.push(job);this.pump();},delay);
         } else { this.pending.delete(key); this.onError({key,error}); }
       }
-    } finally { job.running=false; this.active--; this.pump();this.onStats(this.stats()); }
+    } finally { if(timer!=null)this.clock.clearTimeout(timer); job.running=false; this.active--; this.pump();this.onStats(this.stats()); }
   }
   stats() { return {inflight:this.active,queued:Array.from(this.pending.values()).filter(j=>!j.running).length,bytesCached:this.cache.bytes,...this.metrics}; }
-  destroy() { this.destroyed=true; this.setDemand([]); this.cache.clear(); this.absent.clear(); }
+  destroy() { this.destroyed=true; this.setDemand([]); this.cache.clear(); this.absent.clear(); this.early.clear(); }
 }
 const compare = (a,b) => (a.priority??1)-(b.priority??1) || (a.distance??0)-(b.distance??0);
 

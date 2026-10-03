@@ -9,8 +9,8 @@ function harness(t, options={}) {
   const previous=globalThis.caches;clearDirectoryCache();t.after(()=>{globalThis.caches=previous;clearDirectoryCache();});
   const bytes=options.bytes??png([255,0,0]);
   const packed=archive([{z:6,x:15,y:25,bytes}],options);
-  const h=memoryHarness(new Map([[PATH+'.pmtiles',packed]]));
-  return {...h,bytes,packed,get:(suffix='6/15/25',method='GET')=>h.fetch('https://fixture.test/t/'+PATH+'/'+suffix,{method})};
+  const objects=new Map([[PATH+'.pmtiles',packed]]),h=memoryHarness(objects);
+  return {...h,objects,bytes,packed,get:(suffix='6/15/25',method='GET')=>h.fetch('https://fixture.test/t/'+PATH+'/'+suffix,{method})};
 }
 test('tile 200 has every C1 header; legacy archive URL is still a range proxy',async t=>{
   const h=harness(t);h.env.ALLOWED_ORIGIN='https://legacy.test';
@@ -57,7 +57,24 @@ test('sampled tile hits retain the Analytics Engine datapoint shape',async t=>{
   const h=harness(t);const points=[];h.env.SAMPLE_RATE='1';h.env.TILES={writeDataPoint:p=>points.push(p)};
   await h.get();await h.get('metadata');assert.equal(points.length,1);assert.equal(points[0].blobs.length,5);assert.equal(points[0].doubles.length,3);assert.equal(points[0].indexes[0],PATH+'.pmtiles');
 });
-test('storage errors and corrupt archives give retryable responses',async t=>{
-  const h=harness(t);t.mock.method(console,'error',()=>{});h.env.BUCKET.get=async()=>{throw Error('offline');};const r=await h.get();assert.equal(r.status,503);assert.equal(r.headers.get('retry-after'),'1');
+test('storage errors are retryable 503s even when the directory is already parsed',async t=>{
+  const h=harness(t,{leaf:true});t.mock.method(console,'error',()=>{});assert.equal((await h.get()).status,200);
+  h.entries.clear();h.env.BUCKET.get=async()=>{throw Error('offline');};
+  const r=await h.get();assert.equal(r.status,503);assert.equal(r.headers.get('retry-after'),'1');assert.equal(r.headers.get('cache-control'),'no-store');
+});
+test('a deleted archive is a 404 once its edge blocks expire, never an empty immutable 200',async t=>{
+  const h=harness(t,{leaf:true});assert.equal((await h.get()).status,200);assert.equal(directoryCacheStats().entries,3);
+  // Isolate still holds the header and both directories; R2 and the edge do not hold the object.
+  h.objects.delete(PATH+'.pmtiles');h.entries.clear();
+  for(const method of ['GET','HEAD']) {const r=await h.get('6/15/25',method);assert.equal(r.status,404);assert.equal(r.headers.get('cache-control'),'public, max-age=60');assert.equal((await r.arrayBuffer()).byteLength,0);}
+  assert.equal((await h.get('metadata')).status,404);assert.equal(directoryCacheStats().entries,0);
+});
+test('archives this code cannot decode are permanent 500s without Retry-After',async t=>{
+  t.mock.method(console,'error',()=>{});
+  const garbage=harness(t,{bytes:png([0,0,255])});garbage.objects.set(PATH+'.pmtiles',Buffer.alloc(400,7));
+  const r=await garbage.get();assert.equal(r.status,500);assert.equal(r.headers.get('retry-after'),null);assert.equal(r.headers.get('cache-control'),'public, max-age=60');
+  const untyped=harness(t,{type:0});assert.equal((await untyped.get()).status,500);
+  const rotten=harness(t,{leaf:true});const packed=Buffer.from(rotten.packed);packed.fill(0,127,127+8);rotten.objects.set(PATH+'.pmtiles',packed);
+  assert.equal((await rotten.get()).status,500);
 });
 test('Hilbert ids agree with v3 known coordinates',()=>{assert.equal(tileId(0,0,0),0);assert.equal(tileId(1,0,0),1);assert.equal(tileId(1,0,1),2);assert.equal(tileId(1,1,1),3);assert.equal(tileId(1,1,0),4);assert.ok(Number.isSafeInteger(tileId(24,2**24-1,2**24-1)));});

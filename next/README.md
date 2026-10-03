@@ -16,6 +16,9 @@ npm run test:next
 node next/build.mjs --check
 ```
 
+`--base /next/` (the default) is the URL prefix the shell is deployed under; every
+`_headers` rule is scoped to it. `--check` reads it back from `dist/budgets.json`.
+
 The committed build uses the 2D renderer and synthetic OffscreenCanvas Worker
 selected by `--stubs`. Its hashed C2 manifest has overlapping eras, coverage and
 sample airfields. The development server supplies tile responses locally; the
@@ -57,10 +60,11 @@ alongside esbuild, `build:next`, and `test:next`.
 
 - [ ] Replace shell-owned fixture data with agent 1's canonical fixtures/server;
       preserve the strict unexpected-request guard.
-- [ ] Adopt the additive `earlyFetches: Map<absolute URL, Promise<Response>>`
-      option described in `shell/NOTES.md`. Promises cannot be posted to a Worker;
-      consume them on the main thread before cloning serializable options.
-- [ ] Verify the hashed Worker URL rewrite against the merged data plane entry.
+- [x] Adopt the additive `earlyFetches: Map<absolute URL, Promise<Response>>`
+      option described in `shell/NOTES.md` (the data plane strips it from the
+      Worker options and primes its scheduler with the responses).
+- [x] Verify the hashed Worker URL rewrite against the merged data plane entry
+      (confirmed in a simulated one-era real build during the 2026-10-02 review).
 - [ ] Verify C7 camera events, bitmap ownership, absent tiles, full-plan swaps,
       resident ancestor fallback, renderer context restoration, clip rings and
       playback readiness on real imagery.

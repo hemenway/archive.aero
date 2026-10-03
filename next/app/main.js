@@ -7,8 +7,8 @@ const storage = { get(key) { try { return localStorage.getItem(key); } catch { r
 const number = value => value !== null && value.trim() !== '' && Number.isFinite(+value) ? +value : null;
 const clamp = (value, lo, hi) => Math.max(lo, Math.min(hi, value));
 const day = date => Math.floor(Date.parse(date) / 86400000);
-const absentKeys = new Set();
-let store, r, dp, frames, fields, fieldEntries = [], pinRevision = 0, browserRevision = 0, lastUrl = -Infinity, urlTimer, loadingTimer, loading = false, playingTimer, returnFocus, plan, chartTiles, manifest, statsTimer, fieldsPromise, failed = false, scrubDirection = 0, painted = false;
+const absentKeys = new Set(), failedKeys = new Set();
+let store, r, dp, frames, fields, fieldEntries = [], pinRevision = 0, browserRevision = 0, lastUrl = -Infinity, lastFailureToast = -Infinity, urlTimer, loadingTimer, loading = false, playingTimer, returnFocus, plan, chartTiles, manifest, statsTimer, fieldsPromise, failed = false, scrubDirection = 0, painted = false;
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => $('toast').hidden = true, 2500); }
 function fatal(error) {
   failed = true; clearTimeout(loadingTimer); $('loader').hidden = true;
@@ -16,6 +16,17 @@ function fatal(error) {
   $('fatalError').replaceChildren(document.createTextNode(error instanceof RendererUnsupportedError ? 'This browser cannot run the new chart renderer. ' : `${error.message || error}. Reload to retry. `));
   const a = document.createElement('a'); a.href = '/'; a.textContent = 'Open the current viewer'; $('fatalError').append(a); $('fatalError').hidden = false;
 }
+// A failed tile degrades the view instead of ending it: the item leaves the
+// plans for 30 s so the rest of the tile still swaps in, then becomes
+// requestable again. Only a dead data Worker is fatal.
+function degrade(key, error) {
+  console.warn(`archive.aero: ${key || 'data plane'}: ${error?.message || error}`);
+  if (key === 'airspace/metadata') { if (store) uniforms(store.get()); return; }
+  if (typeof key === 'string' && key.includes('/') && !failedKeys.has(key)) { failedKeys.add(key); setTimeout(() => failedKeys.delete(key), 30000); }
+  if (performance.now() - lastFailureToast > 10000) { lastFailureToast = performance.now(); toast('Some chart tiles failed to load'); }
+  if (plan) { renderPlans(); setLoading(); notePaint(); }
+}
+const skipped = key => absentKeys.has(key) || failedKeys.has(key);
 function closePanel(id, button) { if (store?.get().panels[id]) store.set({ panels: { ...store.get().panels, [id]: false } }); const focused = $(id).contains(document.activeElement); $(id).hidden = true; if (button) $(button).setAttribute('aria-expanded', 'false'); if (focused && button) $(button).focus(); }
 function togglePanel(id, button) {
   const was = $(id).hidden; closePanel('siteMenu', 'menuToggle'); closePanel('toolsPanel', 'toolsBtn');
@@ -81,6 +92,8 @@ function syncPlayback(state, previous) {
   for (const element of document.querySelectorAll('[aria-live], #timelineStatus, #loader, #afCount')) element.setAttribute('aria-live', state.playing ? 'off' : 'polite');
   if (state.playing) {
     $('warningOverlay').hidden = true;
+    // Playback steps through eras, so it leaves single-chart view; the readiness gate below watches the era plan.
+    if (state.solo) store.set({ solo: null });
     const tick = () => { if (!store.get().playing || failed) return; if (dp.readiness(store.get().date, chartTiles) >= 1) step(1, true); playingTimer = setTimeout(tick, 2000); };
     playingTimer = setTimeout(tick, 2000);
   }
@@ -105,10 +118,10 @@ function drawable(key) {
   for (let level = z; level >= 0; level--) { const factor = 2 ** (z - level); if (r.hasTexture(`${path}/${level}/${Math.floor(x / factor)}/${Math.floor(y / factor)}`)) return true; }
   return false;
 }
-function withoutAbsent(tiles) { return tiles.map(tile => ({ ...tile, items: tile.items.filter(item => !absentKeys.has(item.key)) })); }
+function withoutAbsent(tiles) { return tiles.map(tile => ({ ...tile, items: tile.items.filter(item => !skipped(item.key)) })); }
 function renderPlans() { r.setChartPlan({ ...plan, tiles: withoutAbsent(plan.tiles) }); r.setBasemapPlan(withoutAbsent(dp.planBasemap(r.visibleTiles(512)))); }
 function notePaint() {
-  if (painted || !plan?.tiles.some(t => t.items.some(i => !absentKeys.has(i.key)) && t.items.every(i => absentKeys.has(i.key) || drawable(i.key)))) return;
+  if (painted || !plan?.tiles.some(t => t.items.some(i => !skipped(i.key)) && t.items.every(i => skipped(i.key) || drawable(i.key)))) return;
   // C7 has no paint event. Observe texture residency, then allow the scheduled renderer frame to finish.
   requestAnimationFrame(() => requestAnimationFrame(() => { if (painted) return; painted = true; document.body.classList.add('painted'); performance.mark('first-chart-paint'); window.dispatchEvent(new Event('first-chart-paint')); }));
 }
@@ -197,6 +210,8 @@ function syncUI(state, previous) {
     if (state.layers.airfields.on && !fields) loadFields().catch(() => toast('Airfield data unavailable')); updateBrowser();
   }
   if (previous?.solo?.clip && !state.solo) r.setClipRing(previous.solo.clip.id, null);
+  // Hidden airfields leave the GPU entirely; a status mask of zero would still draw every instance per world copy.
+  if (previous && fields && state.layers.airfields.on !== previous.layers.airfields.on) r.setAirfields(state.layers.airfields.on ? fields : null);
   storage.set('airfieldsShown', state.layers.airfields.on ? '1' : '0'); storage.set('airfieldsStatus', JSON.stringify(state.layers.airfields.status)); storage.set('airspaceShown', state.layers.airspace.on ? '1' : '0');
   if (!previous || state.date !== previous.date || state.camera !== previous.camera || state.pin !== previous.pin) writeUrl();
 }
@@ -246,7 +261,8 @@ async function boot() {
   dp = await createDataPlane({ manifestUrl: __MANIFEST_URL__, earlyFetches: window.__earlyFetches || new Map() }); manifest = dp.manifest; frames = manifest.frames;
   const params = new URLSearchParams(location.search), lat = number(params.get('lat')), lng = number(params.get('lng')), zoom = number(params.get('zoom'));
   $('mapCanvas').tabIndex = -1; $('mapCanvas').addEventListener('focus', () => $('map').focus({ preventScroll: true }));
-  r = createRenderer($('mapCanvas'), { minZoom: 4, maxZoom: 14, maxTextureBytes: 96 * 1024 * 1024 });
+  // Touch devices keep the renderer's smaller default budget; 96 MiB fits three native items per tile on a 1440×900 desktop.
+  r = createRenderer($('mapCanvas'), { minZoom: 4, maxZoom: 14, maxTextureBytes: matchMedia('(pointer: coarse)').matches ? undefined : 96 * 1024 * 1024 });
   if (lat !== null && lng !== null && Math.abs(lat) <= 90) { const [x, y] = project(lat, lng, 0); r.setCamera({ x: x / 256, y: y / 256, zoom: zoom ?? 10 }); } else r.fitBounds([-124.8, 24.4, -67.1, 49.4], { padding: 70, maxZoom: 6 });
   const requested = params.get('date'), date = requested && Number.isFinite(Date.parse(requested)) ? requested < manifest.dateBounds.min ? manifest.dateBounds.min : requested > manifest.dateBounds.max ? manifest.dateBounds.max : new Date(requested).toISOString().slice(0, 10) : manifest.dateBounds.max;
   const pinParts = (params.get('pin') || '').split(','), pinLat = number(pinParts[0] ?? null), pinLng = number(pinParts[1] ?? null), pin = pinLat !== null && pinLng !== null && Math.abs(pinLat) <= 90 ? { lat: pinLat, lng: pinLng } : null;
@@ -257,15 +273,20 @@ async function boot() {
   $('airfieldsBtn').disabled = !manifest.hasAirfields; $('airspaceBtn').disabled = !manifest.hasAirspace;
   const min = day(manifest.dateBounds.min), span = day(manifest.dateBounds.max) - min || 1;
   for (let year = Math.ceil(+manifest.dateBounds.min.slice(0, 4) / 10) * 10; year <= +manifest.dateBounds.max.slice(0, 4); year += 10) { const tick = document.createElement('span'); tick.className = 'tick'; tick.textContent = year; tick.style.left = `${(day(`${year}-01-01`) - min) / span * 100}%`; $('ticksContainer').append(tick); }
-  dp.on('tile', ({ key, bitmap }) => { try { r.upload(key, bitmap); setLoading(); notePaint(); } catch (error) { bitmap.close(); fatal(error); } });
-  dp.on('absent', ({ key }) => { absentKeys.add(key); renderPlans(); setLoading(); notePaint(); }); dp.on('airspace', ({ tileId, batch }) => r.setAirspaceTile(tileId, batch)); dp.on('error', ({ error }) => fatal(error)); r.on('evict', ({ key }) => dp.markEvicted(key));
+  dp.on('tile', ({ key, bitmap }) => { try { r.upload(key, bitmap); setLoading(); notePaint(); } catch (error) { bitmap.close(); degrade(key, error); } });
+  dp.on('absent', ({ key }) => { absentKeys.add(key); renderPlans(); setLoading(); notePaint(); }); dp.on('airspace', ({ tileId, batch }) => r.setAirspaceTile(tileId, batch)); r.on('evict', ({ key }) => dp.markEvicted(key));
+  dp.on('error', ({ key, error }) => key === 'worker' ? fatal(error) : degrade(key, error));
+  dp.on?.('metadata', () => { if (store) uniforms(store.get()); });
   r.on('move', () => { const next = r.getCamera(), old = store.get().camera; if (next.x !== old.x || next.y !== old.y || next.zoom !== old.zoom) store.set({ camera: next }); });
   r.on('click', e => e.picked?.kind === 'airfield' ? openField(e.picked.index) : inspect({ lat: e.lat, lng: e.lng }));
   r.on('contextlost', () => toast('Graphics interrupted. Restoring charts…'));
-  r.on('contextrestored', () => { for (const tile of [...plan.tiles, ...dp.planBasemap(r.visibleTiles(512))]) for (const item of tile.items) dp.markEvicted(item.key); demand(store.get()); });
+  // The renderer reports every lost texture evicted; re-demanding fetches them again.
+  r.on('contextrestored', () => demand(store.get()));
   installControls(); store.subscribe(syncUI); syncUI(store.get()); paintHeat();
   const observer = new ResizeObserver(() => { r.resize(); demand(store.get()); paintHeat(); syncUI(store.get(), store.get()); }); observer.observe($('map'));
-  window.addEventListener('pagehide', () => { dp.destroy(); r.destroy(); clearTimeout(playingTimer); clearInterval(statsTimer); observer.disconnect(); }, { once: true });
+  // A page parked in the back/forward cache (persisted) comes back alive; only a real unload tears the viewer down.
+  let torn = false;
+  window.addEventListener('pagehide', e => { if (e.persisted || torn) return; torn = true; dp.destroy(); r.destroy(); clearTimeout(playingTimer); clearInterval(statsTimer); observer.disconnect(); });
   if ('serviceWorker' in navigator && !__STUBS__) navigator.serviceWorker.register(new URL('./sw.js', document.baseURI)).catch(() => toast('Offline shell unavailable'));
   document.body.dataset.ready = 'true';
 }

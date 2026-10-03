@@ -14,6 +14,9 @@ const value = flag => { const i = args.indexOf(flag); if (i < 0) return null; if
 const hash = bytes => createHash('sha256').update(bytes).digest('hex').slice(0, 12);
 const outputs = new Map();
 let source, manifestUrl = value('--manifest') || previousBuild?.manifestUrl;
+// Deployed URL prefix of this shell; header rules are scoped to it so a /next/ preview never governs the root viewer.
+const deployBase = value('--base') || previousBuild?.base || '/next/';
+if (!/^\/(?:[\w-]+\/)*$/.test(deployBase)) throw new Error(`--base must look like /next/ or /, got ${deployBase}`);
 if (stubs) {
   source = fixture; const bytes = JSON.stringify(source); const name = `manifest.${hash(bytes)}.json`; outputs.set(name, bytes); manifestUrl ||= `./${name}`;
 } else {
@@ -53,14 +56,16 @@ const sw = (await transform((await readFile(path.join(directory, 'sw.js'), 'utf8
 outputs.set('sw.js', sw);
 const scriptHashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`).join(' ');
 const csp = `default-src 'self'; script-src 'self' ${scriptHashes} https://plausible.io; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero https://get.geojs.io https://plausible.io; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
-const immutableHeaders = [...outputs.keys()].filter(name => name !== 'sw.js' && /\.(js|css)$/.test(name)).map(name => `/next/${name}\n  Cache-Control: public, max-age=31536000, immutable\n`).join('');
-outputs.set('_headers', `/*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}/next/manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n/next/\n  Cache-Control: no-cache\n/next/index.html\n  Cache-Control: no-cache\n/next/sw.js\n  Cache-Control: no-cache\n`);
+const immutableHeaders = [...outputs.keys()].filter(name => name !== 'sw.js' && /\.(js|css)$/.test(name)).map(name => `${deployBase}${name}\n  Cache-Control: public, max-age=31536000, immutable\n`).join('');
+// Cloudflare reads _headers only from the asset root, so this file is published there with rules already prefixed by the base.
+outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
 const externalJS = chunks.reduce((sum, name) => sum + gzipSync(outputs.get(name)).length, 0);
 const inlineJS = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].reduce((sum, match) => sum + gzipSync(match[1]).length, 0);
 const js = externalJS + inlineJS + gzipSync(worker.outputFiles.find(f => f.path.endsWith('.js')).contents).length;
 const sizes = { criticalJS: js, css: gzipSync(css).length, html: Buffer.byteLength(html), htmlGzip: gzipSync(html).length, worker: gzipSync(worker.outputFiles.find(f => f.path.endsWith('.js')).contents).length, inlineBoot: Buffer.byteLength(early) };
-if (sizes.criticalJS > 50 * 1024 || sizes.css > 12 * 1024 || sizes.html > 10 * 1024) throw new Error(`Build budgets exceeded: ${JSON.stringify(sizes)}`);
-outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 10240 }, assets: shellAssets }, null, 2) + '\n');
+// HTML carries the newest frame's era metadata inline; 12 KiB leaves room for several overlapping eras (gzip stays near 4 KB).
+if (sizes.criticalJS > 50 * 1024 || sizes.css > 12 * 1024 || sizes.html > 12 * 1024) throw new Error(`Build budgets exceeded: ${JSON.stringify(sizes)}`);
+outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 12288 }, assets: shellAssets }, null, 2) + '\n');
 const expected = new Set(outputs.keys());
 const existing = await readdir(outdir).catch(e => { if (e.code !== 'ENOENT') throw e; return []; });
 for (const [name, bytes] of outputs) {

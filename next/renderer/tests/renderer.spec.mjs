@@ -34,7 +34,7 @@ test('Web Mercator round trip, wrap, bounds, center-first tile resolution', asyn
   expect(result.wrapped.x).toBeCloseTo(128, 5);
   expect(result.chart[0].z).toBe(4); expect(result.base[0].z).toBe(3);
   expect(result.chart.every(t => t.x >= 0 && t.x < 2 ** t.z)).toBe(true);
-  expect(result.fit.x).toBeCloseTo(1, 5); expect(result.fit.zoom).toBeLessThanOrEqual(8);
+  expect(Math.min(result.fit.x, 1 - result.fit.x)).toBeLessThan(1e-5); expect(result.fit.zoom).toBeLessThanOrEqual(8);
 });
 
 test('wheel settles on integer zoom around cursor; focused keyboard pans', async ({ page, browserName }) => {
@@ -285,4 +285,97 @@ test('offline demo finishes repeated era scrubs within its default texture budge
 test('pick grid includes fields on the south Mercator edge and antimeridian',async({page})=>{
   const result=await page.evaluate(async()=>{r.setCamera({x:1,y:1,zoom:2});r.setAirfields({mx:new Float32Array([1]),my:new Float32Array([1]),start:new Uint16Array([1900]),end:new Uint16Array([0]),status:new Uint8Array([0])});await tick();return {picked:r.pick(128,128),color:pixel()};});
   expect(result.picked).toEqual({kind:'airfield',index:0});expect(result.color.slice(0,3)).toEqual([54,163,93]);
+});
+
+test('zooming back in after a date change draws the newer date, never the stale finer snapshot', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const c3 = { z: 3, x: 5, y: 5 }, c2 = { z: 2, x: 2, y: 2 }, cell = (dst, keys) => ({ dst, items: keys.map(key => ({ key, dst, src: { z: +key.split('/').at(-3), x: +key.split('/').at(-2), y: +key.split('/').at(-1) } })) });
+    r.setCamera({ x: .6875, y: .6875, zoom: 3 });
+    await solid('A/3/5/5', '#ff0000'); r.setChartPlan({ id: 'A', tiles: [cell(c3, ['A/3/5/5'])] }); await tick(); const a = pixel();
+    r.setCamera({ x: .6875, y: .6875, zoom: 2 }); await solid('B/2/2/2', '#00ff00'); r.setChartPlan({ id: 'B', tiles: [cell(c2, ['B/2/2/2'])] }); await tick(); const b = pixel();
+    r.setCamera({ x: .6875, y: .6875, zoom: 3 });
+    // Date B at z3: its own tile is pending and a second archive has no resident ancestor, so the swap waits.
+    r.setChartPlan({ id: 'B-z3', tiles: [cell(c3, ['B/3/5/5', 'other/3/5/5'])] }); await tick();
+    return { a, b, back: pixel() };
+  });
+  expect(result.a.slice(0, 3)).toEqual([255, 0, 0]); expect(result.b.slice(0, 3)).toEqual([0, 255, 0]); expect(result.back.slice(0, 3)).toEqual([0, 255, 0]);
+});
+
+test('a snapshot evicted while off-screen is never drawn as a partial composite', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    r.destroy(); const { createRenderer } = await import('/index.js'); window.r = createRenderer(document.querySelector('canvas'), { minZoom: 0, maxTextureBytes: 5 * 256 * 256 * 4, preserveDrawingBuffer: true });
+    const D = { z: 2, x: 2, y: 2 }, E = { z: 2, x: 3, y: 2 }, cell = (dst, keys) => ({ dst, items: keys.map(key => ({ key, dst, src: dst })) });
+    r.setCamera({ x: .625, y: .625, zoom: 2 });
+    await solid('a/2/2/2', '#ff0000'); await solid('b/2/2/2', '#0000ff'); r.setChartPlan({ id: 'p1', tiles: [cell(D, ['a/2/2/2', 'b/2/2/2']), cell(E, [])] }); await tick(); const before = pixel();
+    // Pan one tile east: D sits in the off-screen buffer while E's four textures exhaust the budget.
+    r.setCamera({ x: .875, y: .625, zoom: 2 }); r.setChartPlan({ id: 'p2', tiles: [cell(D, ['c/2/2/2']), cell(E, ['e/2/3/2', 'f/2/3/2', 'g/2/3/2', 'h/2/3/2'])] });
+    for (const [key, color] of [['e/2/3/2', '#111111'], ['f/2/3/2', '#222222'], ['g/2/3/2', '#333333'], ['h/2/3/2', '#444444']]) await solid(key, color); await tick(); await tick();
+    const evicted = { a: r.hasTexture('a/2/2/2'), b: r.hasTexture('b/2/2/2') };
+    r.setCamera({ x: .625, y: .625, zoom: 2 }); await tick(); const back = pixel();
+    await solid('c/2/2/2', '#00ff00'); await tick();
+    return { before, evicted, back, final: pixel() };
+  });
+  expect(result.before.slice(0, 3)).toEqual([0, 0, 255]); expect(result.evicted).toEqual({ a: false, b: true });
+  expect(result.back.slice(0, 3)).not.toEqual([0, 0, 255]); expect(result.final.slice(0, 3)).toEqual([0, 255, 0]);
+});
+
+test('resizing draws synchronously, so no frame is painted empty', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    await solid('size/2/2/2', '#dc1414'); plan('size', [{ key: 'size/2/2/2' }]); await tick();
+    r.canvas.style.width = '300px'; r.resize(); return pixel(150, 128);
+  });
+  expect(result.slice(0, 3)).toEqual([220, 20, 20]);
+});
+
+test('camera longitude stays wrapped, animations take the short way round, tiny canvases fit without throwing', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    r.setCamera({ x: 1.625, y: .625, zoom: 2 }); const wrapped = r.getCamera().x;
+    r.setCamera({ x: .99, y: .5, zoom: 4 }); r.setCamera({ x: .01, y: .5, zoom: 4 }, { animate: true });
+    await new Promise(resolve => setTimeout(resolve, 120)); const mid = r.getCamera().x;
+    await new Promise(resolve => setTimeout(resolve, 300)); const end = r.getCamera().x;
+    r.canvas.style.width = '40px'; r.canvas.style.height = '40px'; r.resize();
+    let threw = false; try { r.fitBounds([-124.8, 24.4, -67.1, 49.4], { padding: 70, maxZoom: 6 }); } catch { threw = true; }
+    return { wrapped, mid, end, threw, zoom: r.getCamera().zoom };
+  });
+  expect(result.wrapped).toBeCloseTo(.625, 6); expect(Math.min(result.mid, 1 - result.mid)).toBeLessThan(.02); expect(result.end).toBeCloseTo(.01, 6);
+  expect(result.threw).toBe(false); expect(result.zoom).toBe(0);
+});
+
+test('context loss reports every resident and queued texture evicted', async ({ page }) => {
+  const supported = await page.evaluate(() => !!r.gl.getExtension('WEBGL_lose_context')); test.skip(!supported, 'WEBGL_lose_context unavailable');
+  const result = await page.evaluate(async () => {
+    const evicted = []; r.on('evict', e => evicted.push(e.key));
+    await solid('one/2/2/2', '#ff0000'); await solid('two/2/2/2', '#00ff00'); await tick();
+    r.upload('queued/2/2/2', await syntheticTile(256, '#0000ff'));
+    const lost = new Promise(resolve => r.on('contextlost', resolve)); window.lose = r.gl.getExtension('WEBGL_lose_context'); lose.loseContext(); await lost;
+    r.upload('late/2/2/2', await syntheticTile(256, '#ffffff'));
+    return evicted.sort();
+  });
+  expect(result).toEqual(['late/2/2/2', 'one/2/2/2', 'queued/2/2/2', 'two/2/2/2']);
+  await page.evaluate(() => lose.restoreContext());
+});
+
+test('current-plan textures jump the upload queue; superseded deliveries are dropped under pressure', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    r.destroy(); const { createRenderer } = await import('/index.js'); window.r = createRenderer(document.querySelector('canvas'), { minZoom: 0, maxTextureBytes: 4 * 256 * 256 * 4, preserveDrawingBuffer: true });
+    r.setCamera({ x: .625, y: .625, zoom: 2 }); const evicted = []; r.on('evict', e => evicted.push(e.key));
+    for (let i = 0; i < 4; i++) await solid(`idle-${i}/2/2/2`, '#0000ff'); await tick();
+    plan('needed', [0, 1, 2, 3].map(i => ({ key: `needed-${i}/2/2/2` })));
+    const stale = await syntheticTile(256, '#ff0000'), bitmaps = await Promise.all([0, 1, 2, 3].map(() => syntheticTile(256, '#00ff00')));
+    r.upload('stale/2/2/2', stale); for (let i = 0; i < 4; i++) r.upload(`needed-${i}/2/2/2`, bitmaps[i]);
+    await tick(); await tick(); await tick();
+    return { evicted, needed: [0, 1, 2, 3].every(i => r.hasTexture(`needed-${i}/2/2/2`)), stale: r.hasTexture('stale/2/2/2'), queue: r.queue.length, pixel: pixel() };
+  });
+  expect(result.needed).toBe(true); expect(result.stale).toBe(false); expect(result.queue).toBe(0);
+  expect(result.evicted).toContain('stale/2/2/2'); expect(result.pixel.slice(0, 3)).toEqual([0, 255, 0]);
+});
+
+test('translucent tiles composite with premultiplied alpha', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const c = new OffscreenCanvas(256, 256), ctx = c.getContext('2d'); ctx.fillStyle = 'rgba(255,0,0,0.5)'; ctx.fillRect(0, 0, 256, 256);
+    r.upload('half/2/2/2', await createImageBitmap(c, { premultiplyAlpha: 'premultiply' })); plan('half', [{ key: 'half/2/2/2' }]); await tick();
+    return pixel();
+  });
+  // Clear colour (9,12,16) under 50 % red: 0.5*255 + 0.5*9 = 132, 0.5*12 = 6, 0.5*16 = 8.
+  expect(Math.abs(result[0] - 132)).toBeLessThanOrEqual(3); expect(result[1]).toBeLessThanOrEqual(8); expect(result[2]).toBeLessThanOrEqual(10);
 });

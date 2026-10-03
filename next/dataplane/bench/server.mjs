@@ -2,7 +2,7 @@ import http from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
-import {PNG} from 'pngjs';
+import {png} from '../../contract/fixtures/make_fixtures.mjs';
 import {gzipSync} from 'node:zlib';
 const root=path.resolve(fileURLToPath(new URL('../../../',import.meta.url)));
 export const HASH='0123456789ab';
@@ -18,9 +18,8 @@ export function syntheticManifest(origin) {
  return {version:1,generated:'2026-10-03T00:00:00Z',tileBase:`${origin}/t/`,fileBase:`${origin}/`,eras,
   basemap:{p:`basemap/mock.${HASH}`,z:[0,13],tileSize:512},airspace:{p:`airspace/mock.${HASH}`,z:[0,11]},airfields:{bin:`next/airfields.${HASH}.bin`,details:`next/airfields.${HASH}.json`},pins:{z:5,margin:2,base:`next/pins.${HASH}/`,shards:[396]},coverage:{segments:[]}};
 }
-const png=new PNG({width:256,height:256});let seed=1234;
-for(let i=0;i<png.data.length;i+=4) {seed=(seed*1664525+1013904223)>>>0;png.data[i]=seed>>>24;png.data[i+1]=80;png.data[i+2]=150;png.data[i+3]=255;}
-const raster=PNG.sync.write(png);
+// Deterministic noise keeps this a ~100 KB stress tile that deflate cannot shrink.
+let seed=1234;const raster=png([0,80,150],256,(x,y,p)=>{seed=(seed*1664525+1013904223)>>>0;p[0]=seed>>>24;p[1]=80;p[2]=150;p[3]=255;});
 const magic=Buffer.alloc(36);magic.write('AAAF1');magic.writeUInt32LE(1,8);magic.writeFloatLE(.25,16);magic.writeFloatLE(.4,20);magic.writeUInt16LE(1940,24);magic.writeUInt16LE(1970,28);magic[32]=1;
 export async function startServer({port=4182,latency=Number(process.env.LATENCY??80),mbps=Number(process.env.MBPS??10)}={}) {
  const metrics={requests:0,bytes:0,cancelled:0},active=new Set();
