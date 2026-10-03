@@ -538,8 +538,11 @@ def pdf_records(site, posts, cache_path):
             key = re.sub(r"^/atc/", "/", key)
             linking[key.lstrip("/")].append(p["href"])
     recs = []
+    paths = sorted(site.rglob("*.pdf"))
+    if not paths and cache:  # tree not mounted (or an HTML-only mirror): the scan cache stands in
+        paths = [site / rel for rel in sorted(cache)]
     with open(cache_path, "a", encoding="utf-8") as out:
-        for path in sorted(site.rglob("*.pdf")):
+        for path in paths:
             rel = str(path.relative_to(site))
             rec = cache.get(rel)
             if rec is None:

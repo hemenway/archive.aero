@@ -8,13 +8,18 @@
     "vendor:frontend": "node scripts/vendor_frontend.mjs",
     "check:frontend": "node scripts/vendor_frontend.mjs --check && node scripts/build_frontend.mjs --check",
     "test:workers": "node --test worker/test/*.test.mjs worker-atc/test/*.test.mjs",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "build:beta": "node scripts/build_beta.mjs",
+    "test:beta": "npm run build:beta && playwright test --config beta/playwright.config.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",
+    "@protomaps/basemaps": "5.7.2",
     "leaflet": "1.9.4",
+    "maplibre-gl": "6.11.2",
     "papaparse": "5.4.1",
     "pmtiles": "3.0.6",
+    "pngjs": "7.0.0",
     "protomaps-leaflet": "5.0.0"
   }
 }

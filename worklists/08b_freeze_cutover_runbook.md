@@ -1,9 +1,33 @@
-# 08b — freeze + cutover runbook (Aug 29–30)
+# 08b — archived freeze + cutover runbook
 
-Companion to `08_atchistory_migration.md`. That document is the plan and the
-record; this one is the **ordered command list** for the two live days, so
-Saturday and Sunday are mechanical. Authored 2026-08-26 (buffer week) after a
-pre-freeze health check. Where the two disagree, 08 governs — fix this file.
+**Closed execution record; reviewed 2026-09-21.** Planned for August 29–30,
+the freeze ran overnight August 30→31 and the hosting / public-launch / redirect
+steps completed August 31. [08](08_atchistory_migration.md) owns current recovery
+work, unresolved console follow-through and the detailed results.
+
+| Stage | Recorded outcome |
+|---|---|
+| Freeze, maps, flatten, parity and upload | Complete August 31: 0 parity failures, 0 unexplained sync deletions; frozen sitemaps copied and verified |
+| Old-host routing + production indexing guard | Complete August 31: both atchistory routes active, `ATC_NOINDEX="0"` |
+| Redirect cutover | Complete August 31: `MODE="redirect"`; 63,499 checks, 0 FAIL; 08a's seven target/old-URL pairs passed |
+| Search-console steps | Bing verification, Change of Address / Site Move and sitemap submission are **not recorded complete**; confirm in 08's Current work |
+| First unmatched-404 sweep | Complete September 1; ongoing sweeps and the September 20 repair follow-up belong to 08 |
+
+**Do not replay this runbook against today's origin or upload tree.** It preserves
+the original procedure and its hazards for audit. The September 20 record says the
+old origin no longer serves the collection, so `--refresh-live`, origin recrawls and
+grey-cloud DNS rollback are no longer valid recovery steps. Preserve the frozen
+parity cache. The same session patched 546 listings directly in R2 after the local
+volume mounted empty; a future rebuild must regenerate those listings before any
+sync. Every `atc-site` sync still requires the case-collision filter and a reviewed
+dry-run. Current config also has `ATC_SHELL="1"`; the pre-cutover values below are
+historical. No migration commands or production checks were run for this cleanup.
+
+## Original execution recipe (authored 2026-08-26)
+
+The remaining sections preserve the ordered command list and contemporaneous
+corrections. Their dates, assumptions, dirty-file lists, credentials state and
+rollback options describe the migration window; they are not a current task queue.
 
 `BUILD=/Volumes/projects/atchistory_build`. All scripts carry `~/venv` shebangs
 and run from the repo root.
@@ -24,7 +48,7 @@ and run from the repo root.
   Saturday (`npx wrangler login`).
 - `/Volumes/projects` mounted; build tree intact (`crawl/ logs/ oldhost/ site/ static/`).
 
-## T-minus (Thu Aug 27 – Fri Aug 28)
+## Historical T-minus (Thu Aug 27 – Fri Aug 28)
 
 1. **Bing Webmaster Tools — the one open pre-cutover checklist item** (user,
    ~5 min): sign in, use **Import from Google Search Console**, confirm both
@@ -37,7 +61,7 @@ and run from the repo root.
 
 ---
 
-## Freeze day — Saturday Aug 29
+## Freeze procedure — planned Saturday Aug 29; run August 30→31
 
 Order matters: logs → inventory → crawl → dump/uploads → maps → flatten →
 **parity gate** → sync → verify. Parity must finish before Sunday's redirect
@@ -232,14 +256,14 @@ rclone lsl r2:atc-site/History/FacilityPhotos/NE/north_platte/north_platte_fss19
 
 ---
 
-## Cutover day — Sunday Aug 30 (CDT; each step independently reversible)
+## Cutover procedure — planned Sunday Aug 30; run Monday Aug 31 (CDT)
 
 The §4 table in worklist 08 governs; this is the same plan with exact commands.
 
 ### 09:00 — atchistory.org onto the new stack (same URLs, MODE=serve)
 
 > **Run 2026-08-31. Two corrections from the live run (08 governs; recorded
-> here so a re-run is right first time):**
+> here as execution history, not a current rerun instruction):**
 > 1. **Deploy the routes BEFORE the DNS flip** (steps 2–3 before step 1). The
 >    routes are inert while the records are grey, so the flip becomes one
 >    transition instead of a window where CF proxies to Incapsula for nothing.
@@ -327,9 +351,10 @@ for u in robots.txt sitemap.xml sitemap-core.xml sitemap-atc.xml; do
   redirect map (redeploy is cheap).
 - Log the day in worklist 08.
 
-## Week 1 after (from 08 §5)
+## Historical week-1 follow-through (from 08 §5)
 
 Daily: GSC coverage on both properties ("Page with redirect" should grow),
 `atc_logs` 404 feed → map updates, CF zone analytics. No content/design changes
-to `/atc/` until rankings stabilize (~60 days). Registrar untouched — the
-transfer window analysis in 08 §5 says on/after ~Oct 29.
+to `/atc/` until rankings stabilize (~60 days). The actual August 31 cutover makes
+**October 30** the earliest stabilization review; optional registrar work needs
+fresh checks of the constraints recorded in 08 §5.

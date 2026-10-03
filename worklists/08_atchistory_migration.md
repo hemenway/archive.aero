@@ -1,11 +1,63 @@
 # 08 — atchistory.org → archive.aero/atc/ migration
 
-**Target cutover: Sunday 2026-08-30.** Plan written 2026-08-09 from recon of
-`/Volumes/projects/atchistory_backup` (full cPanel copy, 2026-07-13) and the live site.
+**Status reviewed 2026-09-21: cutover completed 2026-08-31; recovery and follow-up remain.**
+The original August 30 target slipped one day. WordPress was flattened into R2,
+old-host redirects were deployed, and the cutover check recorded **63,499 checks,
+0 FAIL**. Current repository configuration is `MODE="redirect"`, `ATC_NOINDEX="0"`,
+`ATC_SHELL="1"`. This review reconciles code, commit history and prior run records;
+it is not a fresh production, DNS or Search Console verification.
 
-Goal: fold atchistory.org into archive.aero under the `/atc/` path prefix, eliminate
-WordPress (full static flatten), 301 every old URL one-hop to its new home, keep SEO
-intact, near-zero downtime. Old hosting (HostMonster + SiteLock) decommissioned ~Oct 1.
+HostMonster and SiteLock **stay** for battcave.net (D1); there is no October account
+cancellation. The atchistory.org registration and published aliases are permanent.
+
+## Current work
+
+- [ ] **Confirm search-console follow-through:** Bing ownership for both domains,
+      GSC Change of Address, Bing Site Move and new-domain sitemap submission.
+      These were still unrecorded after the August 31 cutover; search impressions
+      do not prove console completion. Record actual outcomes, including any step
+      the console does not support, instead of assuming success.
+- [ ] **Revalidate the September 20 directory-link fix in GSC** and continue weekly
+      indexing/404 review. The fix was published and all 4,467 listing links were
+      recorded as 200/0-hop; a successful subsequent GSC validation is not recorded.
+      Check the earlier noindex validation outcome too. Historical check counts
+      and accepted inherited losses are in §7, not a claim that all URLs are indexed.
+- [ ] **Restore a complete local build tree before the next content sync.** The
+      September 20 session found an empty/stale `/Volumes/projects` mount and patched
+      546 listings directly in R2. Regenerate listings with the fixed
+      `scripts/atc_gen_indexes.py`, then rebuild/compare the upload tree so a stale
+      local copy cannot overwrite the repaired links. Every sync still requires
+      `--filter-from scripts/atc_r2_sync_filter.txt`, a dry-run and zero unexplained
+      deletions. Preserve `parity_live_cache.jsonl`: the old origin was reported
+      unavailable September 20; do not refresh away the surviving pre-move evidence.
+- [ ] **Resolve the old WP date-archive route policy** (§7, September 1). No fix is
+      recorded for the catch-all redirect into absent `/atc/2017/`-style pages.
+      Choose and verify an existing canonical destination before adding permanent
+      aliases; the old `/atc/archive/` suggestion is not itself a published numbered
+      archive page.
+- [ ] **Backlink maintenance:** recheck the dated survey in [08a](08a_backlink_repair.md)
+      before any edits. No external edit or outreach completion is recorded.
+- [ ] **Stabilization review on/after 2026-10-30** (60 days after actual cutover):
+      assess both domains' search recovery before Pagefind, new `/atc/` navigation,
+      inherited-content repairs (especially Life Stories), or other redesign work.
+      Optional registrar transfer also waits for this review and fresh transfer checks.
+      Archive-side consumers of the offline metadata can proceed through
+      [09](09_growth_and_revenue.md) / [16](16_jev_typesafe.md).
+
+**Already implemented:** the shared shell was enabled September 14. Commit `5843587`
+records the facility browser restored and deployed: 46 states/regions, 303 locations,
+993 entries, using `worker-atc/src/facilities.{js,json}` and
+`/atc/facility-photos?state=&city=`. This restores the existing browser; it does not
+complete Pagefind or Jev-powered map/timeline features. Worklist 16 records **W2 run
+September 21**: 1,333 post metadata records, 885 with coordinates, and a 1,405-PDF
+inventory under `worklists/data/atc/`. Those outputs are local; consumers remain open.
+
+## Historical plan and implementation record
+
+Plan written 2026-08-09 from recon of `/Volumes/projects/atchistory_backup`
+(full cPanel copy, 2026-07-13) and the then-live site. Dated counts, checks,
+pre-cutover commands and session notes below describe their recorded run, not work
+to repeat. [08b](08b_freeze_cutover_runbook.md) is the archived execution recipe.
 
 ---
 
@@ -26,16 +78,17 @@ intact, near-zero downtime. Old hosting (HostMonster + SiteLock) decommissioned 
   unlimited map size, versioned in git.
 - atchistory.org DNS moves to the existing Cloudflare account (free zone). Domain stays
   registered **forever** (expiry 2028-07-15 at Bluehost; renew/transfer later).
-- Content freeze: **Sat 2026-08-29**. Live site is the source of truth for WP content
-  (site is active — backup is fallback only); static trees + uploads come from the disk
-  backup with a freeze-day delta pass.
+- Content freeze: planned **Sat 2026-08-29**, executed **night of Aug 30→31**.
+  The live site supplied WP content at freeze; static trees + uploads came from the
+  disk backup with a freeze-day delta pass. The preserved build, R2 and frozen
+  evidence now replace the retired origin for recovery work.
 
 ## Approved decisions (all approved 2026-08-09)
 
 | # | Decision | Approved outcome |
 |---|----------|------------------|
 | D1 | battcave.net | Stays on HostMonster exactly as-is (own zone + NS, untouched by this migration); the hosting account is **never cancelled** and Bluehost access continues unchanged |
-| D2 | @atchistory.org mail | **✅ COMPLETE 2026-08-09 (~21:30): Cloudflare Email Routing live and round-trip tested.** Old SpamExperts MX + duplicate SPF TXTs removed; CF MX/SPF/DKIM added; `archive@` + catch-all forwarding. `mail` A record kept — IMAP door to the old mailbox for the history export (do the Mail.app export this week; old messages stay on the box until deleted). Sending-as deferred. battcave.net mail unaffected |
+| D2 | @atchistory.org mail | **COMPLETE:** Cloudflare Email Routing live and round-trip tested 2026-08-09. Old SpamExperts MX + duplicate SPF TXTs removed; CF MX/SPF/DKIM added; `archive@` + catch-all forwarding. **Mailbox checked empty 2026-08-21; no export remains.** Sending-as deferred. battcave.net mail unaffected |
 | D3 | ads.txt / AdSense | Drop — rewrite pass strips the AdSense code present on 678 crawled pages; ads.txt does not migrate |
 | D4 | Pre-move notice banner on old site | None — redirects speak for themselves |
 | D5 | Frozen WP comments | Keep visible as static text |
@@ -246,8 +299,9 @@ The backup stays pristine (rawtiffs discipline). Build dir layout:
       — on atc-staging the archive.aero-hosted JS appears dead *in the pane
       only*; real browsers run it fine. Judge visuals via archive.aero/atc/ in
       the pane, or staging in a normal browser.
-- [ ] Cutover-day remaining: add both atchistory.org host routes; flip
-      `MODE="redirect"` at 13:00 step; `ATC_NOINDEX="0"` at 11:00 step.
+- [x] **Cutover completed 2026-08-31:** both atchistory.org host routes added;
+      `MODE="redirect"` and `ATC_NOINDEX="0"` deployed. See §7 for the production
+      redirect check and the separate, still-unconfirmed console steps.
 
 ### D. Parity & redirect verification  → reports in `worklists/data/atc/`
 
@@ -285,8 +339,8 @@ The backup stays pristine (rawtiffs discipline). Build dir layout:
       post, facility-photos, classphotos/PhotoHome.htm (1252 charset),
       faa_world generated listing — all fully styled; spaces-in-name `.xls`
       byte-exact with Excel MIME; big-PDF Range → 206.
-- [x] `scripts/atc_redirect_check.py` **built + rehearsed 2026-08-20** (cutover-day
-      run at the 13:00 step still pending): every row — assert **single-hop 301** →
+- [x] `scripts/atc_redirect_check.py` **built + rehearsed 2026-08-20; production
+      cutover run 2026-08-31: 63,499 checks / 0 FAIL** (§7). Every row asserts **single-hop 301** →
       exact route_map target, query dropped → target 200 with no further hop.
       Matrix: http/https × www/apex; ALL 1,360 `?p=`/`page_id` shortlinks; 410 set;
       exception URLs (old robots, GSC file, 6 frozen sitemaps) 200; never-frozen
@@ -339,10 +393,9 @@ The backup stays pristine (rawtiffs discipline). Build dir layout:
       (user, 2026-08-21)** — the hard prerequisite for the cutover 14:00
       Change of Address; every pre-cutover day now accrues search data.
       Legacy URL-prefix property kept.
-- [ ] Bing Webmaster: both domains (needed for the 14:00 "Bing Site Move"
-      step). Easiest path now: Bing Webmaster Tools offers one-click **import
-      from GSC**, which pulls both freshly-verified domain properties — no
-      DNS records needed.
+- Bing Webmaster ownership / Site Move: **completion unrecorded**; tracked once in
+  Current work above. The original proposed route was an import from verified GSC
+  properties; confirm the present console state before acting.
 - [x] Mail (per D2 as approved — receiving moves to CF Email Routing).
       **CLOSED 2026-08-21 — workstream complete.** Steps 2–3 (Email Routing
       live + round-trip test) were done 2026-08-09. Step 1, the mailbox
@@ -380,24 +433,23 @@ The backup stays pristine (rawtiffs discipline). Build dir layout:
 
 ### F. archive.aero side (repo)
 
-- [x] `robots.txt` **staged 2026-08-20** (uncommitted, cutover 11:00 commit):
+- [x] `robots.txt` **published at cutover 2026-08-31** (staged August 20):
       allow all, `Sitemap: https://archive.aero/sitemap.xml`.
-- [x] `sitemap.xml` + children **staged 2026-08-20** (same commit):
+- [x] `sitemap.xml` + children **published at cutover 2026-08-31** (staged August 20):
       `scripts/atc_gen_sitemaps.py` → `sitemap.xml` (index) → `sitemap-atc.xml`
       (**1,379 canonical URIs** — frozen wp-sitemaps posts/pages/categories
       mapped through route_map, lastmod preserved, landing added; users +
       one-entry post_tag sitemaps excluded by §A3 policy) + `sitemap-core.xml`
       (/, about, contribute, sources — an index can't hold bare URLs, hence the
       second child). `--verify` asserts every URL 200 with 0 hops on prod.
-      **Rerun the generator + --verify after the freeze-day sitemap snapshot**,
-      before the 11:00 commit.
+      Freeze-day generation/verification completed (§4); the September 1 contact
+      redirect later reduced the ATC child to **1,378 URLs** (plus 4 core URLs).
 - [x] Nav link to `/atc/` (2026-08-09): index.html menu-panel item "ATC History
       Collection" (Feather radio stroke icon, matches existing pattern) +
-      about.html "The ATC History collection" section. **Edits staged
-      uncommitted in the working tree** — pushing to main publishes via GH
-      Pages, which stays scheduled for the cutover 11:00 commit.
-- [x] **Core pages canonicalized extensionless + URI covenant (2026-08-21,
-      staged uncommitted for the same 11:00 commit).** New repo-root
+      about.html "The ATC History collection" section. **Published 2026-08-31**
+      in the cutover repo push; shared site navigation was updated again September 14.
+- [x] **Core pages canonicalized extensionless + URI covenant (prepared 2026-08-21,
+      published in the 2026-08-31 cutover commit).** New repo-root
       `URI-POLICY.md` promotes the §A3 cool-URI rules to site law (address
       plan, new-collection checklist, redirect inventory); CLAUDE.md points at
       it. The site's own four pages now obey the "no extensions on documents"
@@ -428,9 +480,9 @@ The backup stays pristine (rawtiffs discipline). Build dir layout:
       `…/index.html` listing all 200 through the worker).
 - [x] CLAUDE.md section added (2026-08-09): atc-site/build-dir/never-in-git,
       private mail tree, worker deploy recipe, parity harness pointers.
-      README note still pending.
+      README ATC collection section is present; no documentation task remains here.
 
-## 4. Timeline
+## 4. Historical timeline — freeze/cutover completed August 31
 
 ### Week 1 — Aug 10–16: foundations
 Status 2026-08-09 (started a day early): zone + NS flip **done & propagated**;
@@ -457,7 +509,7 @@ delta (re-crawl HTML; it's ~1,400 pages), fresh uploads delta, final DB dump (re
 `?p=` map), frozen feed + wp-sitemap snapshots, fresh access-log pull → inventory
 tail, final parity run, `rclone sync` to prod bucket, then hands off the old site.
 
-### Freeze pass — executed night of Aug 30→31 (a day late; cutover day TBD)
+### Freeze pass — executed night of Aug 30→31 (cutover followed August 31)
 
 The planned Sat-freeze/Sun-cutover weekend slipped; the freeze pass ran
 overnight 2026-08-30 ≈23:00 → 01:10 CDT per `08b`, ending **GREEN end-to-end**.
@@ -497,17 +549,21 @@ the frozen freeze-day build; the old site is hands-off. Findings worth keeping:
   broken all live-broken-too**; sync 2,401 files, 0 deletions; `_oldhost/`
   sitemaps refreshed; post-sync prod sample 416 PASS / 0 FAIL; sitemaps
   verify 1,383/1,383 at 200/0 hops; collision survivor confirmed in R2.
-- Fresh `parity_live_cache.jsonl` on disk for the cutover-day redirect check.
-  Wrangler token fresh. **Still pending for cutover: Bing Webmaster
-  verification (user), then the 09:00/11:00/13:00/14:00 sequence on the new
-  cutover day.**
+- Fresh `parity_live_cache.jsonl` was ready for the August 31 redirect check.
+  At freeze completion the cutover sequence and Bing verification were still ahead;
+  the 09:00/11:00/13:00 steps subsequently completed (§7). Console outcomes remain
+  unrecorded and are tracked in Current work.
 
-### Cutover day — Sunday Aug 30 (each step independently reversible)
+### Original cutover sequence — planned August 30, core steps run August 31
+
+This table preserves the historical plan, including its then-available rollback.
+The old origin was reported retired September 20; a DNS rollback to HostMonster is
+no longer established. Production keeps staging noindexed permanently.
 
 | T | Step | Verify | Rollback |
 |---|------|--------|----------|
 | 09:00 | Flip atchistory.org + www to orange-cloud, add worker routes, MODE=**serve** (hosting move, same URLs) | Top-100 inventory URLs 200 on new stack; spot browser check | Grey-cloud DNS back → HostMonster serves again |
-| 11:00 | Add `archive.aero/atc/*` **and bare `archive.aero/atc`** routes (both already in wrangler.toml); drop staging noindex; push repo commit (robots, sitemaps, nav link) | `/atc/` + samples 200; **`curl -sI /atc` → 301 to `/atc/`**; robots/sitemap fetch | Remove route; revert commit |
+| 11:00 | Keep `archive.aero/atc/*` **and bare `archive.aero/atc`** routes; clear production `ATC_NOINDEX` (staging remains noindexed); push repo commit (robots, sitemaps, nav link) | `/atc/` + samples 200; **`curl -sI /atc` → 301 to `/atc/`**; robots/sitemap fetch | Remove route; revert commit |
 | 13:00 | Flip MODE=**redirect** on atchistory hosts; deploy | `atc_redirect_check.py` full pass (one-hop 301s, 410s, exceptions) | MODE=serve redeploy (seconds) |
 | 14:00 | GSC Change of Address atchistory.org → archive.aero (domain props; homepage 301 lands inside the target property, which satisfies the check — if the tool balks, proceed on 301s alone); Bing Site Move; submit `sitemap-atc.xml`; confirm frozen old-URL sitemaps fetchable | GSC accepts; sitemaps "Success" | CoA is revertible in GSC for 180 days |
 | EOD | Snapshot dashboards; first unmatched-404 sweep from `atc_logs` | — | — |
@@ -520,12 +576,14 @@ the frozen freeze-day build; the old site is hands-off. Findings worth keeping:
   rank-watch top queries: `atchistory`, `pilot checklist`, `faa history`, `atc history`.
   Expect impressions wobble 2–8 weeks; clean 1:1 301s recover.
 - **Do not** redesign, retitle, or restructure `/atc/` content until rankings
-  stabilize (~60 days). Move first, improve later.
+  stabilize (~60 days; earliest review **2026-10-30** after the actual August 31 move).
+  The recorded shell exception and facility-browser repair do not close the other
+  deferred items.
 - **Decommission (per D1/D2): nothing gets cancelled.** The HostMonster account
   stays indefinitely — it hosts battcave.net (site + mail) and blog.battcave.net;
   Bluehost access stays exactly as before (D1). @atchistory.org *receiving* moves
-  to CF Email Routing (D2); the old HostMonster mailbox keeps its history as an
-  archive until exported + deleted. SiteLock stays too (battcave's A records run
+  to CF Email Routing (D2); the old HostMonster mailbox was confirmed empty August 21.
+  SiteLock stays too (battcave's A records run
   through Incapsula). atchistory.org simply stops pointing at the account.
   Optional tidy-up later: remove atchistory web files + the browsable `/backup/`
   dir from public_html. Keep the Bluehost **registration**; optional calm transfer
@@ -534,10 +592,10 @@ the frozen freeze-day build; the old site is hands-off. Findings worth keeping:
 - Backlog (post-stabilization): Pagefind client search over `/atc/`; design
   integration pass (**step 1 live 2026-09-14, user's call ahead of the
   window** — the site shell is spliced into every `/atc/` page; `ATC_SHELL =
-  "0"` in `worker-atc/wrangler.toml` + deploy reverts the interior pages to
-  byte-identical, see the 09-14 log entry); Wikipedia citation URL updates
-  (careful, COI-aware — 301s make this optional); mixed-content sweep of old
-  pages; domain transfer.
+  "0"` in `worker-atc/wrangler.toml` + deploy removes it from interior pages,
+  see the 09-14 log entry; the later facility-browser restoration is independent);
+  mixed-content sweep of old pages; domain transfer. Backlink repairs live in 08a
+  and do not depend on the stabilization date.
 - **Domain-transfer timing constraints (verified 2026-08-21 against CF Registrar
   docs + PIR RDAP; the post-stabilization date already satisfies all of them):**
   1. *45-day renewal rule (real, financial):* transferring within 45 days of the
@@ -557,8 +615,9 @@ the frozen freeze-day build; the old site is hands-off. Findings worth keeping:
   3. Mechanics when the time comes: clear `clientTransferProhibited` at Bluehost,
      get the EPP/auth code, confirm registrant email is reachable; CF transfer
      adds +1 yr → expiry 2029-07-15 at wholesale.
-  **Net: transfer on/after ~Oct 29 (the existing gate) clears every window with
-  margin; cutover day Aug 30 involves NO registrar action — keep it that way.**
+  **Historical timing analysis only:** use **October 30 or later** for the corrected
+  stabilization review, then recheck the renewal invoice, contact-change lock and
+  registrar state before any optional transfer. The migration required no transfer.
 
 ## 6. Risk register
 
@@ -566,7 +625,7 @@ the frozen freeze-day build; the old site is hands-off. Findings worth keeping:
 |------|------------|
 | Incapsula blocks the flatten crawl | Local WP resurrection from DB dump (fallback path, tested in week 1 only if needed) |
 | Missed URLs → 404s post-cutover | Inventory from 5 sources; default prefix rule catches unknowns that exist in R2; `atc_logs` 404 feed + weekly map updates |
-| Duplicate content pre-cutover | Staging noindexed until 11:00 step; `/atc/` route not public before Aug 30 |
+| Duplicate content | Staging stays noindexed; production `ATC_NOINDEX` cleared August 31 (the `/atc/` route had served behind the guard since August 9) |
 | Charset mojibake on 1252-era pages | Byte-level rewrite; no charset in worker Content-Type for `.htm`; parity eyeball |
 | Soft-404s (SEO poison) | Worker returns real 404/410 statuses; parity asserts |
 | Redirect chains | Worker 301s straight to final `https://archive.aero/atc/...` from every host/scheme variant; checker asserts one hop |
@@ -688,12 +747,13 @@ to decouple the URI from storage, not rename storage to match.
       checklist article + landing page fully styled at canonical URIs on
       archive.aero/atc/ (banner via /atc/media/, theme via /atc/assets/).
 
-**Still open:**
+**Later follow-through:**
 - [x] Workstream F sitemap must list **canonical URIs only** — done 2026-08-20
       (`atc_gen_sitemaps.py` maps the frozen wp-sitemaps through route_map.json;
       1,379 canonical URIs, verified 200/0-hop).
-- [ ] Consider whether `/atc/history/Pubs/` etc. should be lowercased after all (free
-      to do post-stabilization, per the boundary above).
+- Deferred design consideration: deeper mixed-case asset paths remain as published.
+  Any future normalization must preserve every existing URI and storage key under
+  `URI-POLICY.md`; stabilization alone is not a reason to rename them.
 
 ### A4. Backlink sweep + completeness audit — **2026-08-13**
 
@@ -1299,3 +1359,22 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   `Thumbs.db` (Google's memory of Apache autoindexes; 0 in R2, linked from
   nowhere), the inherited dead links (Life Stories etc., §5). Search
   Console: Validate Fix on the 404 row again.
+- 2026-09-25: **Landing-page provenance note.** `/atc/` now carries a short
+  ruled callout under the intro (no heading, by request): the site was at risk
+  of being deleted, archive.aero took it over from its previous owner, and
+  readers with historical documents/photos/records are pointed at
+  `/contribute` ("send them in") so they are preserved with the collection.
+  The intro paragraph was cut to three plain sentences in the site's own
+  voice ("spent over 20 years collecting…", "old atchistory.org links still
+  work"). The "Can you help?" box says photos *and documents* and links to
+  `/contribute` instead of the address — the landing page's only remaining
+  `mailto:` is the footer Contact link. Two uploads the same night (the first
+  carried a "Why it moved here" heading and the address; revised on
+  request). Source `worker-atc/static/index.html` → installed
+  with `atc_flatten_rewrite.py --landing-only` (recent posts: 8, unchanged) →
+  `rclone copyto` of the one key (`index.html`, 13,498 B; R2 object verified
+  byte-equal; pre-change copy was byte-equal to the local build tree). Live
+  under a fresh cache key immediately; the plain URL turns over within the
+  1 h HTML `max-age`. No worker deploy, no sync, no other keys touched.
+  Preview recipe: launch config `atc-landing-preview` (`dev_server.py`
+  mounting the build tree at `/atc/` on 8904).

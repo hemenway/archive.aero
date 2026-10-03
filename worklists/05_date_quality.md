@@ -1,7 +1,12 @@
 # Worklist 05 — Date-quality flags in the dole
 
-*Generated 2026-07-16 from `master_dole_v2.csv` `note` column. Row-level detail:
-[`data/date_quality.csv`](data/date_quality.csv) (535 flagged rows, one line per flag).*
+**Updated 2026-09-21** from the current **7,672-row** catalog, loaded through
+`scripts/dole_v2.py`. No rows have blank `date` or `end_date` values. The three
+primary note flags total **544 flag occurrences on 301 distinct rows**; flags
+can overlap. These count retained note text, not a new validation of every date.
+
+The linked [data/date_quality.csv](data/date_quality.csv) is the **2026-07-16
+snapshot** (535 flag occurrences), not a regenerated current export.
 
 Every row has a `date` and `end_date` (the 2026-07-14 end-date fill closed all blanks —
 see `search_archive/end_date_fill_report.csv` for how each was derived), but three
@@ -9,13 +14,13 @@ classes of rows carry uncertainty flags that affect timeline accuracy:
 
 | Flag | Rows | Meaning | Fix path |
 |---|---|---|---|
-| `END-ESTIMATED` | 259 | `end_date` guessed from typical edition cadence (`typNNNd` in note) — no next edition was in the dole to anchor it | Each one resolves automatically when the *next* edition of that chart is found and cataloged; otherwise verify against edition tables (LOC/NOAA cartobibliographies) |
+| `END-ESTIMATED` | 263 | `end_date` guessed from typical edition cadence (`typNNNd` in note) — no next edition was in the dole to anchor it | When a next edition is found, review/recompute the end date and reconcile the note; cataloging alone does not prove the flag was cleared. Otherwise verify against edition tables (LOC/NOAA cartobibliographies) |
 | `GAP` | 236 | Long hole before the next known edition (`GAP NNNd before next`) — editions almost certainly existed in between and are missing from the dole | These are **search targets**, not data errors — feed the biggest ones into the hunt (see [03_web_sources_searched.md](03_web_sources_searched.md)) |
-| `DATE-APPROX` | 40 | Date read from context, not printed on the chart (e.g. "ca. 2004-05 per AVSIM", usahas "mid-2009") | Firm up only if a dated duplicate surfaces; low priority |
+| `DATE-APPROX` | 45 | Date read from context, not printed on the chart (e.g. "ca. 2004-05 per AVSIM", usahas "mid-2009") | Firm up only if a dated duplicate surfaces; low priority |
 
-Minor flags: `END-FROM-NEXT-EDITION` (10) and `BLANK_MAP` (6) are informational, not defects.
+Minor flags: `END-FROM-NEXT-EDITION` (12) and `BLANK_MAP` (6) are informational, not defects.
 
-## Biggest GAPs (highest-value search targets)
+## Largest retained GAP notes (unchanged in the current catalog)
 
 | Gap | Chart | After edition dated | Row |
 |---|---|---|---|
@@ -34,4 +39,7 @@ Note the cluster of ~1,800-day gaps starting 1960-61: that is the LOC collection
 out at its end, not lost editions of individual charts — the early-1960s era needs a
 *collection-level* source (NLA Australia Bib 1030946 is the known lever, ACTION_PLAN Tier 4).
 
-Full sorted list: `grep GAP data/date_quality.csv` (the `note` column carries the day count).
+Next action: rank current `GAP` notes from `dole_v2.load_rows()` and reconcile
+newly found editions before changing estimates. The table is a search lead, not
+a recomputed edition-coverage proof; use [03](03_web_sources_searched.md) and the
+current holdings to avoid repeating already-closed searches.

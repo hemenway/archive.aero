@@ -1,15 +1,44 @@
-# 11 — ACASIS `.imgcv2` recovery: 891 charts not in the catalog
+# 11 — ACASIS recovery: completed imports and remaining image work
 
-Status: **extracted to the attic — 868 charts + 706 sidecars, 16.5 GB.**
-Not catalogued; resume fetch not yet run.
-Opened 2026-08-24.
+**Status reviewed 2026-09-21.** Opened 2026-08-24. The initial 891 candidates
+were reduced to **868 extracted charts + 706 sidecars, 16.5 GB** after validation.
+The detailed dated recovery notes below preserve the original findings; they
+are not a current import queue.
+
+## Current status and next actions
+
+- [x] The nine gap-filling FAA sectionals were promoted and catalogued on
+  **2026-08-29**. All nine current catalog rows retain the recovery provenance;
+  `worklists/data/chart_pmtiles/manifest.jsonl` records their generated artifacts.
+- [x] The 31 live-FAADownloads sectionals were published in **406260d
+  (2026-08-26)**: 11 new era archives, 31 chart artifacts and metadata updates.
+- [x] The January 2026 Cincinnati/Los Angeles gaps were filled, and the eight
+  iFly gap-fillers were superseded by FAA originals in **73548cf (2026-08-29)**.
+- [x] The [2026-09-19 selective website-source import](data/acasis_import/2026-09-19/REPORT.md)
+  preserved additional chart and AIS sources. It did not complete HDD recovery.
+- [ ] Reconcile publication of the nine August 29 sectionals: their generated
+  chart keys have no matching `uploads.jsonl` receipts and no `pm` fields in the
+  local 2026-09-15 `timeline_data.json`. Verify remote artifacts and era coverage
+  before deciding what still needs publishing; do not import the rows again.
+- [ ] Locate and verify the recovery image, resume bundle and original source
+  device before resuming. The [September 19 assessment](data/acasis_before_wipe/2026-09-19/REPORT.md)
+  found an unchanged partial `image.imgcv2` and an empty sidecar directory. On
+  September 21 those image/resume paths are absent from the currently mounted
+  `/Volumes/ACASIS`; its name alone is not evidence of device identity or of a
+  completed recovery. No later resume completion record was found.
+- [ ] If image recovery resumes, refresh the targeted fetch plan against current
+  holdings, then resurvey the missing MFT fragments. Only **68.7% of D:'s file
+  records** and **53.9% of the physical disk** were captured; E: was not reached.
+- [ ] Decide catalog/URI support for TAC, FLY, HEL, WAC and other preserved
+  non-sectional collections before importing them.
 
 ## The source
 
-`/Volumes/ACASIS/.image.imgcv2.rawcopy-baee01e5e96f42c49531fd4993c9444f.partial`
+Original path: `/Volumes/ACASIS/.image.imgcv2.rawcopy-baee01e5e96f42c49531fd4993c9444f.partial`
 — 1,597,363,000,048 bytes. A **paused** HDD Raw Copy Tool v2.6 acquisition of a
 3 TB WDC WD30EZRX (`WD-WCC1T0799404`, volumes `D:` + `E:`), taken 2026-08-24.
-The disk is an **iFly GPS / iFly EFB build machine**: `/Data/FAADownloads/`,
+By 2026-09-19 it was named `image.imgcv2`; neither historical filename is
+currently present at that mount. The disk is an **iFly GPS / iFly EFB build machine**: `/Data/FAADownloads/`,
 `PlatesEngine*`, `_iFlyGPS_Data*`, `SeamlessEFB`. See [[ifly-card-2013-editions]].
 
 Not a raw image — a proprietary block container. Decoder lives in
@@ -42,7 +71,9 @@ Chain walk: 108,361 records (96,316 data / 12,040 checkpoint / 4 session /
 3,000,592,982,016. Consequences:
 
 - Partition 2 (`D:`, 2,738 GB, NTFS, cluster 8192, `$MFT` at cluster 393,216,
-  31 fragments) — MFT fully captured, 3,948,023 name-bearing records.
+  31 fragments) — 3,948,023 readable file records. The initial claim that its
+  MFT was fully captured was wrong: ten fragments were beyond the boundary
+  (see Survey coverage below).
 - Partition 3 (`E:`, 262 GB) starts at byte 2,738,448,498,688 — **never reached**.
   Its VBR is not in the image; nothing on E: is recoverable from this file.
 
@@ -54,7 +85,7 @@ presence is **not** proof — `validate.py` reads each file's TIFF magic and IFD
 dimensions before a chart is counted. 84 candidates failed that check.
 Same spirit as the null-island rule in CLAUDE.md: numeric success is not proof.
 
-## Result: 891 charts, 17.0 GB, none in `master_dole_v2.csv`
+## Initial survey result: 891 candidates, 17.0 GB (2026-08-24)
 
 1,545 distinct chart editions on disk; 569 already catalogued; 976 not; 891 of
 those content-validated and fully recoverable. Full list:
@@ -80,8 +111,9 @@ collections, not just new rows — each needs a URI-space decision per `URI-POLI
 
 ### The 9 gap-filling sectionals — extracted and GDAL-verified
 
-Already in `~/imgcv2-toolkit/out/`, decoded, centres checked against expected
-geography (no null-island):
+Originally extracted via `~/imgcv2-toolkit/out/`, decoded, centres checked
+against expected geography (no null-island). The table records the gaps at
+discovery; all nine now have catalog rows:
 
 | chart | ed | px | catalog neighbours |
 |---|---|---|---|
@@ -95,8 +127,8 @@ geography (no null-island):
 | Washington | 97 | 16708×12341 | 95, **·**, 98, 99 |
 | Wichita | 94 | 16680×12378 | 92, **·**, 95, 96 |
 
-Every one lands in a hole the catalog already shows. Not yet catalogued —
-these still need dole rows + `note` provenance before slicing.
+All nine were catalogued with provenance on 2026-08-29. Publication receipt
+reconciliation remains open in the current-status checklist above.
 
 ## Correction (same day): the sectional count is 9, not 59
 
@@ -157,17 +189,22 @@ container**, or read the FAA `.htm` sidecar, before calling it new.
   round-trip 0.0 m **plus** an independent landmark test (a known airport's
   WGS84 coordinate projected into each image lands on its charted symbol —
   `contact_sheet.png`). Lossy JPEG at ~78 m/px, collar stripped: gap-filler;
-  retire if FAA originals for 2026-01-22 surface. **Cincinnati and Los Angeles
-  blocked**: their 1/22 `.dat` payloads are 0 % captured in both ProdV9 builds
-  (LowRes ~37 MB + HighRes ~88 MB each) — another resume-the-copy item.
+  retire if FAA originals for 2026-01-22 surface. **Resolved 2026-08-29:** FAA
+  originals superseded these eight and filled Cincinnati/Los Angeles (73548cf).
+  Their image `.dat` payloads remain 0% captured in both ProdV9 builds, but they
+  are no longer an acquisition blocker for those chart editions.
 - **`Sec_<Place>-BIG.png`** — full-res renders with `.pgw` + `.prj`, so
   georeferenced. 40 of them, but only 1 is captured; the rest are past the edge.
 - **Small `Sec_*.png`** (~1200×950) — UI previews, no archival value.
 
-## Resume the copy to get 7 more sectionals
+## Original sequential-resume candidates (superseded as a chart-acquisition queue)
 
-Seven editioned sectionals sit **just past** the capture boundary, between
+The six sectionals listed below sat **just past** the capture boundary, between
 1.67 and 1.78 TB — the copy stopped at 1.616 TB:
+
+All six now have catalog rows (verified 2026-09-21). Keep these offsets as
+recovery evidence, but regenerate any fetch plan rather than treating the old
+list as six still-missing editions.
 
 | chart | ed | data at |
 |---|---|---|
@@ -221,7 +258,7 @@ georef; the other 169 rely on the recovered `.tfw` world files and need
 
 Two corrections to the first survey, both from checking rather than assuming:
 
-- **The count was 891, not 868.** A second validation pass — head *and* tail —
+- **The initial count was 891; the validated extraction count is 868.** A second validation pass — head *and* tail —
   killed 23 more. The first pass accepted file magic alone for non-TIFF formats,
   which let through deleted files whose first cluster had been reallocated: one
   presents as a valid 258×256 JPEG inside a 32 MB file that ends in zeroes. Every
@@ -273,7 +310,7 @@ Skip entirely: `D:\Data\FAADownloads\Plates` (150 GB of approach plates),
 
 Tier 1 + 4 + 6 + 7 is **14.3 GB** and needs no selection work at all.
 
-## Next
+## Historical 2026-08-25 plan (current actions are at the top)
 
 1. **Run the staged resume** — `/Volumes/ACASIS/imgcv2-resume/`, elevated, on the
    Windows box. 218 blocks / 3.66 GB fetches the ten missing `$MFT` fragments
@@ -283,11 +320,16 @@ Tier 1 + 4 + 6 + 7 is **14.3 GB** and needs no selection work at all.
 2. Re-run the survey against the fuller MFT — the 31 % never seen is the single
    biggest unknown here.
 3. Decide URI space for TAC / FLY / HEL / WAC per `URI-POLICY.md`.
-4. Catalogue the 9 gap-filling sectionals (back up the CSV first), then slice.
+4. Catalogue the 9 gap-filling sectionals — **completed 2026-08-29**; generated
+   artifacts are recorded, publication reconciliation remains open.
 
 ---
 
-# Resume procedure — exact restart point
+# Historical sequential-resume procedure — exact restart point
+
+Retained for recovery provenance. The sidecar plan below supersedes reopening
+the original container. Revalidate device identity, paths and the fetch targets
+before using either procedure.
 
 Derived from the container, not guessed. The tool's durable resume anchor is
 header `+0x68` = **file offset of the last checkpoint record**, and `+0x80` =
@@ -311,15 +353,16 @@ byte `1,615,864,004,608` / LBA `3,155,984,384`.** Overlap is safe; a gap is not.
 
 | goal | stop at byte | extra to copy | free after (of 2,403 GB) |
 |---|---|---|---|
-| 7 stranded sectionals + 3 WACs | 1,800,000,000,000 | 184 GB | ~2,219 GB |
+| originally stranded SEC/WAC targets | 1,800,000,000,000 | 184 GB | ~2,219 GB |
 | …plus Chicago HEL | 2,250,000,000,000 | 634 GB | ~1,769 GB |
 | whole disk | 3,000,592,982,016 | 1,385 GB | ~1,018 GB |
 
 ## Before touching it
 
-1. **Extract the 891 charts first.** The catastrophic failure mode is the tool
+1. **Preserve the validated extraction first (completed: 868 charts).** The catastrophic failure mode is the tool
    restarting at block 0 and overwriting 1.6 TB. 17 GB of extraction makes the
-   image expendable — cheapest insurance available.
+   original image safer to handle; selected chart extracts do not replace its
+   unexamined filesystem/deleted-file evidence.
 2. Baseline recorded: `fingerprint_preflight.json` (187 sampled blocks, hashed
    header + payload edges). Verify afterwards with `fingerprint.py check`.
 3. `sudo mdutil -i off /Volumes/ACASIS` — Spotlight is indexing a 1.6 TB file
@@ -354,8 +397,8 @@ python validate.py               # re-check the previously stranded charts
 
 ## Cheaper alternative — skip Windows entirely
 
-The MFT is fully captured, so the exact clusters holding every stranded chart
-are already known. The 38 SEC/WAC/HEL charts that failed validation need
+The MFT runlist is known, but its records are only partly captured. The original
+known-chart estimate (superseded by the August 25 plan below) was 38 SEC/WAC/HEL charts needing
 **92 blocks = 1.5 GB across 20 contiguous runs** (lowest 1,617,491,394,560;
 highest 2,621,154,787,328) — **119× less I/O than resuming to 1.8 TB**, and it
 reaches charts as deep as 2.62 TB that a 1.8 TB resume would still miss.
@@ -410,8 +453,8 @@ it is designed to, but a wrong guess truncates 1.6 TB, so prefer the sidecar.
 
 ## Fetch 3.66 GB, not 1,005 GB
 
-The MFT is fully addressable, so nothing on `D:` is hidden from us — the wanted
-bytes are known exactly. `fetch_plan.json` holds 218 sixteen-MiB blocks:
+The MFT runlist makes its missing fragments addressable; their file records
+remain unread until fetched. The historical `fetch_plan.json` holds 218 sixteen-MiB blocks:
 
 | phase | blocks | size | what |
 |---|---|---|---|
@@ -517,16 +560,17 @@ check now 54/55; the one remainder, **Cape Lisburne ed 48 vs 49**, is a genuine 
 in the FAA's own metadata and was left as stated. Expect the same effect when cataloging
 from the attic set — re-run a boundary check after.
 
-### Still open
+### Follow-through (reviewed 2026-09-21)
 
-- The 31 need a **slicer run**, then `build_metadata_bundle.py`,
-  `build_timeline_data.py` (+ R2 put) and `build_coverage.py`. Not done.
+- **The 31 were published 2026-08-26**, including chart artifacts and metadata
+  (406260d). The earlier "not done" entry was stale.
 - The 20 remaining `_unrecoverable/` charts are still unrecovered; 3 were rescued here
   (`CE-12 WAC 27`, `CJ-26 WAC 21`, `Puerto Rico-VI TAC 40`).
-- Not copied, still on the drive: 35 ENR_L / 12 ENR_H, 17 Caribbean VFR, 6 US/Alaska VFR
-  Wall Planning, 14 Grand Canyon, and a 2013 `Heli/` set with older Front/West/East
-  sheet naming.
-- The targeted **imgcv2 resume** (218 blocks / 3.66 GB) is still not run.
+- The once-unstaged ENR, Caribbean, wall-planning, Grand Canyon and Heli source
+  queue was superseded by the selected import below; use its per-file manifest
+  for retained/skipped decisions instead of recopying this old list.
+- No completion evidence was found for the targeted **imgcv2 resume**
+  (historical plan: 218 blocks / 3.66 GB); source-location verification comes first.
 
 
 ## 2026-09-19 — selective website-source archive completed

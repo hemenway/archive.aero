@@ -1,5 +1,9 @@
 # Deep archive consolidation — 2026-09-19
 
+**Closed.** Status reviewed 2026-09-21 against the saved final verification:
+823 moves, 2,680 duplicate removals, zero issues, catalog unchanged. Retain this
+report and its manifests as archival evidence; no cleanup actions remain here.
+
 Completed the user's request to file everything in `/Volumes/projects/deep archive`
 according to archive.aero's storage conventions and delete confirmed duplicates.
 

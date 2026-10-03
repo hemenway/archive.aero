@@ -1,5 +1,9 @@
 # Duplicate extraction cleanup — 2026-09-19
 
+**Closed.** Status reviewed 2026-09-21 against the saved final verification:
+15 duplicate removals, 15 retained copies rehashed, zero issues, catalog unchanged.
+Retain this report and its manifests; there is no remaining extraction queue.
+
 Completed the requested cleanup of
 `/Volumes/projects/rawtiffs_dup_extractions_2026-08-29`.
 
