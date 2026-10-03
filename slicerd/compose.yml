@@ -1,0 +1,61 @@
+# archive-slicer stack. The live copy is the OMV compose plugin's stack
+# "archive-slicer" (Services → Compose → Files); deploy.sh pushes this file
+# into it. Image is built locally on the NUC by deploy.sh (never pulled).
+services:
+  slicer:
+    image: archive-slicer:latest
+    pull_policy: never
+    container_name: archive-slicer
+    user: "1000:100"              # Ryan:users — owns rawtiffs and the projects share
+    restart: unless-stopped       # also how the controller remounts the sources overlay
+    ports:
+      - "8765:8765"               # MCP /mcp + REST /api (bearer token)
+    environment:
+      - TZ=America/Chicago
+      - SLICERD_G2P_CONCURRENCY=12
+      - SLICERD_G2P_MEM_MB=20000
+      - SLICERD_MIN_FREE_SLICE_GB=90
+    volumes:
+      # rawtiffs: plain read-only bind (kernel-enforced) ...
+      - /srv/dev-disk-by-uuid-c4376636-2ff1-41fc-b1c7-6761fd12fe5b/projects/rawtiffs:/data/rawtiffs:ro
+      # ... and the slicer's view of it: overlay with rawtiffs as the untouched
+      # lower layer; whatever slicer.py writes into its source tree lands in the
+      # SSD upper layer (inspect with the source_overlay tool)
+      - sources:/data/sources
+      - /srv/archive-slicer/src-upper:/data/src-upper:ro
+      - /srv/archive-slicer/work:/work                    # NVMe scratch
+      - /srv/archive-slicer/state:/state
+      - /srv/archive-slicer/code:/code:ro                 # releases pushed by `slicerctl sync`
+      - /srv/archive-slicer/secrets:/secrets:ro           # token, rclone.conf ([r2])
+      - /srv/dev-disk-by-uuid-c4376636-2ff1-41fc-b1c7-6761fd12fe5b/projects/slicer-runs:/runs
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+    shm_size: 2g
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # 62 GB host: leave ~8 GB for OMV, Jellyfin (+ transcodes), Samba, cloudflared.
+    # Inside the cap the kernel uses free RAM as page cache for the 35 GB mosaic
+    # the converter reads right after the slicer writes it.
+    mem_limit: 54g
+    memswap_limit: 54g
+    oom_score_adj: 500            # if anything must die under memory pressure, it is this
+    cpu_shares: 256               # Jellyfin/Samba win any CPU contention; idle CPU is all ours
+    ulimits:
+      nofile: 65536
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  sources:
+    driver: local
+    driver_opts:
+      type: overlay
+      device: overlay
+      o: lowerdir=/srv/dev-disk-by-uuid-c4376636-2ff1-41fc-b1c7-6761fd12fe5b/projects/rawtiffs,upperdir=/srv/archive-slicer/src-upper,workdir=/srv/archive-slicer/src-work

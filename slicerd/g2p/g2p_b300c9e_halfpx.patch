@@ -1,0 +1,33 @@
+diff --git a/internal/tile/resample.go b/internal/tile/resample.go
+index bbbf919..cb29be1 100644
+--- a/internal/tile/resample.go
++++ b/internal/tile/resample.go
+@@ -227,11 +227,11 @@ func sampleFromTileSources(sources []tileSource, srcX, srcY float64, cache *cog.
+ 		}
+ 
+ 		// Convert CRS coordinates to pixel coordinates using pre-computed level data.
+-		pixX := (srcX - src.geo.OriginX) / src.levelPixelSize
+-		pixY := (src.geo.OriginY - srcY) / src.levelPixelSizeY
++		pixX := (srcX-src.geo.OriginX)/src.levelPixelSize - 0.5
++		pixY := (src.geo.OriginY-srcY)/src.levelPixelSizeY - 0.5
+ 
+ 		// Check bounds.
+-		if pixX < 0 || pixX >= float64(src.imgW) || pixY < 0 || pixY >= float64(src.imgH) {
++		if pixX < -0.5 || pixX >= float64(src.imgW)-0.5 || pixY < -0.5 || pixY >= float64(src.imgH)-0.5 {
+ 			continue
+ 		}
+ 
+@@ -1541,10 +1541,10 @@ func sampleFromTileSourcesFloat(sources []tileSource, nodataValues []float64, sr
+ 			continue
+ 		}
+ 
+-		pixX := (srcX - src.geo.OriginX) / src.levelPixelSize
+-		pixY := (src.geo.OriginY - srcY) / src.levelPixelSizeY
++		pixX := (srcX-src.geo.OriginX)/src.levelPixelSize - 0.5
++		pixY := (src.geo.OriginY-srcY)/src.levelPixelSizeY - 0.5
+ 
+-		if pixX < 0 || pixX >= float64(src.imgW) || pixY < 0 || pixY >= float64(src.imgH) {
++		if pixX < -0.5 || pixX >= float64(src.imgW)-0.5 || pixY < -0.5 || pixY >= float64(src.imgH)-0.5 {
+ 			continue
+ 		}
+ 

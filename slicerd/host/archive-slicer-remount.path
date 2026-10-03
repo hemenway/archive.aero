@@ -1,0 +1,12 @@
+# The archive-slicer controller asks for a fresh rawtiffs overlay by creating
+# this file (only when it is idle). A policy restart keeps the old overlay
+# mount; only a full stop + start remounts it.
+[Unit]
+Description=Watch for archive-slicer overlay remount requests
+
+[Path]
+PathExists=/srv/archive-slicer/state/remount.request
+Unit=archive-slicer-remount.service
+
+[Install]
+WantedBy=multi-user.target

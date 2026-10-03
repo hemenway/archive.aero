@@ -1,0 +1,8 @@
+[Unit]
+Description=Stop + start archive-slicer so its rawtiffs overlay is remounted fresh
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'rm -f /srv/archive-slicer/state/remount.request; docker stop -t 30 archive-slicer; docker start archive-slicer'

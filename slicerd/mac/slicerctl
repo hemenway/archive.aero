@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""slicerctl — drive the archive-slicer container on the OMV NUC from the Mac.
+
+  slicerctl status                         host + queue summary
+  slicerctl eras [--start D] [--end D] [--contains S]
+  slicerctl pipeline RUN KEY... [--steps slice,convert,archive] [--charts]
+                     [--slicer-args "--parallel-warp 6"] [--concurrency N]
+                     [--mosaic move|delete|keep] [--force] [--keys-from FILE]
+  slicerctl submit TYPE --run RUN [--key KEY] [--param k=v ...] [--after JOB]
+  slicerctl jobs [--status running,queued] [--run RUN] [-n 30]
+  slicerctl job ID [--tail 40]       slicerctl log ID [-n 200] [--grep RX] [-f]
+  slicerctl wait ID                  block until the job finishes
+  slicerctl cancel ID | retry ID | pause | resume
+  slicerctl runs | run RUN | overlay [--stale] | remount | cleanup RUN [--key K] [--what temp,mosaic]
+  slicerctl sync [--repo PATH]       push scripts + catalog to the server as a new code release
+  slicerctl publish RUN KEY [--dry-run] [--allow-new] [--allow-unverified]
+                    [--max-tile-delta 0.02] [--message MSG] [--no-edge-refresh] [--finish-only]
+
+Config: ~/.config/slicerd/config.json {"url": ..., "token": ...}
+(or SLICERD_URL / SLICERD_TOKEN). The repo defaults to ~/archive.aero.
+"""
+import argparse
+import concurrent.futures
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+CONFIG = Path.home() / ".config" / "slicerd" / "config.json"
+DEFAULT_REPO = Path.home() / "archive.aero"
+HOST = os.environ.get("SLICERD_SSH", "omv")
+SERVER_CODE = "/srv/archive-slicer/code"
+SHARE_RUNS = Path("/Volumes/projects/slicer-runs")
+KEEP_RELEASES = 10
+
+
+def cfg():
+    c = {}
+    if CONFIG.exists():
+        c = json.loads(CONFIG.read_text())
+    c["url"] = os.environ.get("SLICERD_URL", c.get("url", "http://192.168.1.203:8765")).rstrip("/")
+    c["token"] = os.environ.get("SLICERD_TOKEN", c.get("token", ""))
+    return c
+
+
+def api(method, path, payload=None, timeout=120):
+    c = cfg()
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(c["url"] + path, data=data, method=method,
+                                 headers={"Authorization": f"Bearer {c['token']}",
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            msg = json.loads(e.read()).get("error")
+        except Exception:
+            msg = e.reason
+        sys.exit(f"slicerctl: {method} {path}: HTTP {e.code}: {msg}")
+    except urllib.error.URLError as e:
+        sys.exit(f"slicerctl: cannot reach {c['url']}: {e.reason}")
+
+
+def out(obj):
+    print(json.dumps(obj, indent=2, ensure_ascii=False))
+
+
+def say(msg):
+    print(f"[{time.strftime('%F %T')}] {msg}", flush=True)
+
+
+def sh(*args, cwd=None, check=True):
+    p = subprocess.run([str(a) for a in args], cwd=cwd, capture_output=True, text=True)
+    if check and p.returncode != 0:
+        raise RuntimeError(f"{' '.join(map(str, args[:3]))}… rc={p.returncode}: {(p.stderr or p.stdout).strip()[-400:]}")
+    return p.stdout.strip()
+
+
+# ---------------------------------------------------------------- simple commands
+
+def cmd_status(a):
+    s = api("GET", "/api/status")
+    h = s["host"]
+    temps = h.get("cpu_temps_c", {})
+    pkg = temps.get("Package id 0", max(temps.values()) if temps else None)
+    print(f"controller up since {s['controller_started']}{'  [PAUSED]' if s['paused'] else ''}")
+    print(f"code release {s['code_release'].get('id')}  (git {s['code_release'].get('git_head')}, "
+          f"synced {s['code_release'].get('synced_at')})")
+    print(f"converter {s['converter']}")
+    print(f"load {' '.join(h['load_avg'])} / {h['cpus']} cpus, {h.get('cpu_mhz_avg')} MHz, pkg {pkg} °C")
+    m, cm = h["host_mem_gb"], h["container_mem_gb"]
+    print(f"host RAM {m['available']} GB free of {m['total']} (cache {m['cached']}); "
+          f"container {cm.get('used')} / {cm.get('limit')} GB (anon {cm.get('anon')}, file {cm.get('file')})")
+    for k, d in h["disks"].items():
+        print(f"{k:9s} {d.get('free_gb')} GB free of {d.get('size_gb')}")
+    print(f"jobs: {s['jobs']}")
+    for r in s["running"]:
+        print(f"  RUNNING {r['id']} {r['type']} {r['run']} {r['key']} since {r['started']}")
+        print(f"          {r.get('last_line', '')[:160]}")
+    for jid, why in s["queued_blocked"].items():
+        print(f"  queued  {jid}: {why}")
+
+
+def cmd_jobs(a):
+    q = f"?limit={a.n}" + (f"&status={a.status}" if a.status else "") + (f"&run={a.run}" if a.run else "")
+    for j in api("GET", "/api/jobs" + q):
+        extra = j.get("error") or j.get("blocked") or j.get("last_line") or ""
+        print(f"{j['id']}  {j['status']:11s} {j['type']:8s} {j['run'] or '':24s} {j['key'] or '':26s} {extra[:90]}")
+
+
+def cmd_job(a):
+    out(api("GET", f"/api/jobs/{a.id}?tail={a.tail}"))
+
+
+def cmd_log(a):
+    q = f"?lines={a.n}" + (f"&grep={urllib.request.quote(a.grep)}" if a.grep else "")
+    lines = api("GET", f"/api/jobs/{a.id}/log{q}")
+    print("\n".join(lines))
+    if a.follow:
+        last = lines[-1] if lines else None
+        while True:
+            j = api("GET", f"/api/jobs/{a.id}")
+            new = api("GET", f"/api/jobs/{a.id}/log?lines=400")
+            if last in new:
+                new = new[len(new) - new[::-1].index(last):]
+            for ln in new:
+                print(ln, flush=True)
+            if new:
+                last = new[-1]
+            if j["status"] not in ("queued", "running"):
+                print(f"-- {j['status']}: {j.get('error') or ''}")
+                return
+            time.sleep(5)
+
+
+def wait_job(jid, quiet=False):
+    last = None
+    while True:
+        j = api("GET", f"/api/jobs/{jid}")
+        if not quiet:
+            new = api("GET", f"/api/jobs/{jid}/log?lines=400")
+            if last in new:
+                new = new[len(new) - new[::-1].index(last):]
+            for ln in new:
+                print("  " + ln, flush=True)
+            if new:
+                last = new[-1]
+        if j["status"] not in ("queued", "running"):
+            return j
+        time.sleep(5)
+
+
+def cmd_wait(a):
+    j = wait_job(a.id, quiet=a.quiet)
+    out({k: j.get(k) for k in ("id", "status", "error", "result")})
+    sys.exit(0 if j["status"] == "succeeded" else 1)
+
+
+def cmd_eras(a):
+    q = "&".join(f"{k}={v}" for k, v in (("start", a.start), ("end", a.end), ("contains", a.contains),
+                                         ("limit", a.limit)) if v)
+    r = api("GET", "/api/eras?" + q)
+    print("\n".join(r["keys"]))
+    print(f"-- {r['count']} keys ({r['source']})", file=sys.stderr)
+
+
+def parse_kv(items):
+    params = {}
+    for it in items or []:
+        k, _, v = it.partition("=")
+        try:
+            params[k] = json.loads(v)
+        except json.JSONDecodeError:
+            params[k] = v
+    return params
+
+
+def cmd_pipeline(a):
+    keys = list(a.keys)
+    if a.keys_from:
+        keys += [ln.strip() for ln in open(a.keys_from) if ln.strip() and not ln.startswith("#")]
+    payload = {"keys": keys, "run": a.run, "steps": a.steps.split(","), "charts": a.charts,
+               "mosaic": a.mosaic, "force": a.force}
+    if a.slicer_args:
+        payload["slicer_args"] = shlex.split(a.slicer_args)
+    if a.concurrency:
+        payload["concurrency"] = a.concurrency
+    out(api("POST", "/api/pipeline", payload))
+
+
+def cmd_submit(a):
+    params = {"run": a.run, **({"key": a.key} if a.key else {}), **parse_kv(a.param)}
+    out(api("POST", "/api/jobs", {"type": a.type, "params": params, "depends_on": a.after}))
+
+
+def cmd_cancel(a):
+    out(api("POST", f"/api/jobs/{a.id}/cancel", {}))
+
+
+def cmd_retry(a):
+    out(api("POST", f"/api/jobs/{a.id}/retry", {}))
+
+
+def cmd_pause(a):
+    out(api("POST", "/api/pause", {"paused": True}))
+
+
+def cmd_resume(a):
+    out(api("POST", "/api/pause", {"paused": False}))
+
+
+def cmd_runs(a):
+    out(api("GET", "/api/runs"))
+
+
+def cmd_run(a):
+    out(api("GET", f"/api/runs/{a.run}"))
+
+
+def cmd_overlay(a):
+    out(api("GET", "/api/overlay" + ("?stale=1" if a.stale else ""), timeout=600))
+
+
+def cmd_remount(a):
+    out(api("POST", "/api/remount", {}))
+
+
+def cmd_cleanup(a):
+    out(api("POST", "/api/cleanup", {"run": a.run, "key": a.key, "what": a.what.split(",")}))
+
+
+# ---------------------------------------------------------------- sync
+
+def cmd_sync(a):
+    repo = Path(a.repo).expanduser()
+    head = sh("git", "rev-parse", "--short", "HEAD", cwd=repo)
+    porcelain = subprocess.run(["git", "status", "--porcelain", "--", "scripts", "shapefiles"], cwd=repo,
+                               capture_output=True, text=True, check=True).stdout
+    dirty = [ln[3:] for ln in porcelain.splitlines() if ln.strip()]
+    rid = time.strftime("%Y%m%d-%H%M%S") + f"-{head}" + ("-dirty" if dirty else "")
+    csv = repo / "master_dole_v2.csv"
+    with tempfile.TemporaryDirectory() as td:
+        stage = Path(td) / rid
+        shutil.copytree(repo / "scripts", stage / "scripts",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        shutil.copytree(repo / "shapefiles", stage / "shapefiles")
+        for f in ("master_dole_v2.csv", "dates.csv"):
+            shutil.copy2(repo / f, stage / f)
+        (stage / "chart_pmtiles").mkdir()
+        for f in ("manifest.jsonl", "uploads.jsonl"):
+            src = repo / "worklists" / "data" / "chart_pmtiles" / f
+            if src.exists():
+                shutil.copy2(src, stage / "chart_pmtiles" / f)
+        meta = {"id": rid, "git_head": head, "dirty": dirty, "synced_at": time.strftime("%FT%T"),
+                "csv_sha256": hashlib.sha256(csv.read_bytes()).hexdigest()[:16],
+                "csv_rows": sum(1 for _ in open(csv)) - 1, "repo": str(repo)}
+        (stage / "RELEASE.json").write_text(json.dumps(meta, indent=2) + "\n")
+        say(f"release {rid}: scripts @ {head}{' + ' + str(len(dirty)) + ' dirty' if dirty else ''}, "
+            f"{meta['csv_rows']} catalog rows")
+        sh("rsync", "-a", f"{stage}/", f"{HOST}:{SERVER_CODE}/releases/{rid}/")
+    keep = KEEP_RELEASES
+    sh("ssh", HOST, f"set -e; cd {SERVER_CODE}; chown -R root:root releases/{rid}; chmod -R a+rX,go-w releases/{rid}; "
+       f"ln -sfn releases/{rid} current.tmp && mv -T current.tmp current; "
+       f"ls -1d releases/*/ | sort | head -n -{keep} | xargs -r rm -rf")
+    say(f"current → {rid}")
+
+
+# ---------------------------------------------------------------- publish (Mac half)
+
+UA = {"User-Agent": "archive-slicer-publish", "Cache-Control": "no-cache", "Pragma": "no-cache"}
+BLOCK = 1 << 20
+
+
+def fetch(url, start=None, end=None, timeout=120):
+    h = dict(UA)
+    if start is not None:
+        h["Range"] = f"bytes={start}-{end}"
+    for attempt in range(5):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=timeout) as r:
+                return r.status, r.read(), r.headers
+        except Exception:
+            if attempt == 4:
+                raise
+            time.sleep(2 ** attempt)
+
+
+def git_preflight(repo):
+    sh("git", "fetch", "-q", "origin", "main", cwd=repo)
+    if sh("git", "rev-parse", "--abbrev-ref", "HEAD", cwd=repo) != "main":
+        raise RuntimeError("repo is not on main")
+    if sh("git", "rev-list", "origin/main..HEAD", cwd=repo):
+        raise RuntimeError("local main has unpushed commits; not pushing them along with this publish")
+    if sh("git", "rev-list", "HEAD..origin/main", cwd=repo):
+        sh("git", "pull", "--ff-only", "-q", "origin", "main", cwd=repo)
+    dirty = sh("git", "status", "--porcelain", "--", "index.html", "src", "assets", cwd=repo)
+    if dirty:
+        raise RuntimeError(f"deploy files not clean: {dirty[:200]}")
+
+
+def wait_pages(repo, sha, timeout=1200):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        runs = json.loads(sh("gh", "run", "list", "--limit", "20", "--json", "name,status,conclusion,headSha",
+                             cwd=repo))
+        dep = next((r for r in runs if r["name"] == "Deploy site to GitHub Pages" and r["headSha"] == sha), None)
+        if dep and dep["status"] == "completed":
+            if dep["conclusion"] == "success":
+                return time.time() - t0
+            raise RuntimeError("Pages workflow failed: " + dep["conclusion"])
+        time.sleep(15)
+    raise RuntimeError("Pages deploy not seen within 20 min")
+
+
+def verify_live(base, key, bundle_path, size, prefix_sha256, edge_refresh=True):
+    m = None
+    for _ in range(40):  # GitHub Pages' CDN can serve the previous index.html for ~10 min
+        _, html, _ = fetch(f"https://archive.aero/?cb={int(time.time())}")
+        m = re.search(rb'data-viewer-preload href="(/assets/viewer\.[0-9a-f]+\.js)"', html)
+        if not m:
+            raise RuntimeError("live index.html: no viewer module preload")
+        _, mod, _ = fetch(f"https://archive.aero{m.group(1).decode()}?cb={int(time.time())}")
+        if bundle_path.name.encode() in mod:
+            break
+        time.sleep(30)
+    else:
+        raise RuntimeError(f"live viewer module still does not name {bundle_path.name} after 20 min")
+    st, data, hdr = fetch(base + bundle_path.name, 0, 1023)
+    total = int(hdr["Content-Range"].rsplit("/", 1)[1])
+    if st != 206 or total != bundle_path.stat().st_size or data != bundle_path.read_bytes()[:1024]:
+        raise RuntimeError(f"bundle through CDN: status {st} total {total}")
+    url = f"{base}{key}.pmtiles"
+    st, data, hdr = fetch(url, 0, BLOCK - 1)
+    total = int(hdr["Content-Range"].rsplit("/", 1)[1])
+    if st != 206 or total != size or hashlib.sha256(data).hexdigest() != prefix_sha256:
+        raise RuntimeError(f"era through CDN: status {st} total {total} vs {size}, or first MiB differs")
+    n = (size + BLOCK - 1) // BLOCK
+    if not edge_refresh:
+        return m.group(1).decode(), 0
+
+    def blk(i):
+        s, b, _ = fetch(url, i * BLOCK, min((i + 1) * BLOCK, size) - 1)
+        return s == 206 and len(b) == min(BLOCK, size - i * BLOCK)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        ok = sum(ex.map(blk, range(1, n))) + 1
+    if ok != n:
+        raise RuntimeError(f"era edge refresh: {ok}/{n} blocks OK")
+    return m.group(1).decode(), n
+
+
+def cmd_publish(a):
+    repo = Path(a.repo).expanduser()
+    run, key = a.run, a.key
+    t0 = time.time()
+    if not SHARE_RUNS.parent.is_dir():
+        raise RuntimeError("/Volumes/projects is not mounted (the bundle is read from the share)")
+    if a.finish_only:
+        ledger = SHARE_RUNS / run / "logs" / "uploaded.jsonl"
+        recs = [json.loads(ln) for ln in open(ledger) if ln.strip()] if ledger.exists() else []
+        recs = [r for r in recs if r.get("key") == key and not r.get("dry_run")]
+        if not recs:
+            raise RuntimeError(f"no upload record for {key} in {ledger}")
+        say(f"finishing the git half for the upload of {recs[-1].get('uploaded_at')} ({recs[-1]['bundle']})")
+        return finish_publish(a, repo, run, key, recs[-1], t0)
+    if not a.dry_run:
+        git_preflight(repo)
+        say("git preflight ok")
+    params = {"run": run, "key": key, "dry_run": a.dry_run, "confirm": not a.dry_run,
+              "allow_new": a.allow_new, "allow_unverified": a.allow_unverified,
+              "max_tile_delta": a.max_tile_delta}
+    j = api("POST", "/api/jobs", {"type": "publish", "params": params})
+    say(f"server job {j['id']}: eligibility, bundle{'' if a.dry_run else ', bundle + era upload'}")
+    j = wait_job(j["id"])
+    if j["status"] != "succeeded":
+        sys.exit(f"✗ server half {j['status']}: {j.get('error')}")
+    res = j["result"]
+    if a.dry_run:
+        say(f"dry run ok: would publish {key} with bundle {res['bundle']} ({res['eras']} eras); nothing uploaded")
+        return
+    try:
+        finish_publish(a, repo, run, key, res, t0)
+    except Exception as e:
+        say(f"✗ {key} and {res['bundle']} ARE ON R2 but the viewer was not updated: {e}")
+        say(f"  fix the cause, then: slicerctl publish {run} {key} --finish-only")
+        sys.exit(1)
+
+
+def finish_publish(a, repo, run, key, res, t0):
+    src = SHARE_RUNS / run / "bundles" / res["bundle"]
+    bundle = repo / res["bundle"]
+    shutil.copy2(src, bundle)  # keep every metadata-*.bundle (analytics offsets)
+    t_up = time.time()
+    git_preflight(repo)
+    sys.path.insert(0, str(repo / "scripts"))
+    from viewer_config import update_viewer_config
+    update_viewer_config(repo / "index.html", "bundleUrl", res["bundle_url"])
+    sh("git", "add", "index.html", "src/viewer.js", "assets", cwd=repo)
+    verb = "Publish" if res.get("new_era") else "Republish"
+    msg = a.message or (
+        f"{verb} {key}\n\n"
+        f"Sliced and converted on the NUC (archive-slicer run {run}; {res['converter']});\n"
+        f"tiles vs mosaic worst {res['worst_px']} px over {res['probes']} probes.\n\n"
+        f"Bundle {res['bundle']} ({res['eras']} eras); viewer config + hashed assets\n"
+        f"regenerated. Same-key republish: other colos' block caches age out <=24 h.")
+    sh("git", "commit", "-q", "-m", msg, "--", "index.html", "src/viewer.js", "assets", cwd=repo)
+    sha = sh("git", "rev-parse", "HEAD", cwd=repo)
+    sh("git", "push", "-q", "origin", "main", cwd=repo)
+    say(f"pushed {sha[:7]} {time.time() - t_up:.0f}s after the era upload finished")
+    waited = wait_pages(repo, sha)
+    base = res["bundle_url"][: -len(res["bundle"])]
+    module, n = verify_live(base, key, bundle, res["era_size"], res["prefix_sha256"],
+                            edge_refresh=not a.no_edge_refresh)
+    say(f"✓ {key}: live (Pages {waited:.0f}s, {module} → {res['bundle']}, {n} blocks refreshed) "
+        f"{time.time() - t0:.0f}s total")
+    with open(SHARE_RUNS / run / "logs" / "published.jsonl", "a") as f:
+        f.write(json.dumps({"key": key, "bundle": res["bundle"], "commit": sha, "worst_px": res["worst_px"],
+                            "converter": res["converter"], "published_at": time.strftime("%FT%T")}) + "\n")
+
+
+# ---------------------------------------------------------------- main
+
+def main():
+    ap = argparse.ArgumentParser(prog="slicerctl", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sp = ap.add_subparsers(dest="cmd", required=True)
+    sp.add_parser("status").set_defaults(fn=cmd_status)
+    p = sp.add_parser("jobs"); p.add_argument("--status"); p.add_argument("--run"); p.add_argument("-n", type=int, default=30); p.set_defaults(fn=cmd_jobs)
+    p = sp.add_parser("job"); p.add_argument("id"); p.add_argument("--tail", type=int, default=40); p.set_defaults(fn=cmd_job)
+    p = sp.add_parser("log"); p.add_argument("id"); p.add_argument("-n", type=int, default=200); p.add_argument("--grep"); p.add_argument("-f", "--follow", action="store_true"); p.set_defaults(fn=cmd_log)
+    p = sp.add_parser("wait"); p.add_argument("id"); p.add_argument("-q", "--quiet", action="store_true"); p.set_defaults(fn=cmd_wait)
+    p = sp.add_parser("eras"); p.add_argument("--start"); p.add_argument("--end"); p.add_argument("--contains"); p.add_argument("--limit", type=int, default=5000); p.set_defaults(fn=cmd_eras)
+    p = sp.add_parser("pipeline"); p.add_argument("run"); p.add_argument("keys", nargs="*")
+    p.add_argument("--keys-from"); p.add_argument("--steps", default="slice,convert,archive")
+    p.add_argument("--charts", action="store_true"); p.add_argument("--slicer-args", help='e.g. "--parallel-warp 6"')
+    p.add_argument("--concurrency", type=int); p.add_argument("--mosaic", default="move", choices=("move", "delete", "keep"))
+    p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_pipeline)
+    p = sp.add_parser("submit"); p.add_argument("type"); p.add_argument("--run"); p.add_argument("--key")
+    p.add_argument("--param", action="append", help="k=v (v parsed as JSON when possible)"); p.add_argument("--after")
+    p.set_defaults(fn=cmd_submit)
+    for name, fn in (("cancel", cmd_cancel), ("retry", cmd_retry)):
+        p = sp.add_parser(name); p.add_argument("id"); p.set_defaults(fn=fn)
+    sp.add_parser("pause").set_defaults(fn=cmd_pause)
+    sp.add_parser("resume").set_defaults(fn=cmd_resume)
+    sp.add_parser("runs").set_defaults(fn=cmd_runs)
+    sp.add_parser("remount").set_defaults(fn=cmd_remount)
+    p = sp.add_parser("run"); p.add_argument("run"); p.set_defaults(fn=cmd_run)
+    p = sp.add_parser("overlay"); p.add_argument("--stale", action="store_true"); p.set_defaults(fn=cmd_overlay)
+    p = sp.add_parser("cleanup"); p.add_argument("run"); p.add_argument("--key"); p.add_argument("--what", default="temp"); p.set_defaults(fn=cmd_cleanup)
+    p = sp.add_parser("sync"); p.add_argument("--repo", default=str(DEFAULT_REPO)); p.set_defaults(fn=cmd_sync)
+    p = sp.add_parser("publish"); p.add_argument("run"); p.add_argument("key")
+    p.add_argument("--repo", default=str(DEFAULT_REPO)); p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--allow-new", action="store_true"); p.add_argument("--allow-unverified", action="store_true")
+    p.add_argument("--max-tile-delta", type=float, default=0.02); p.add_argument("--message")
+    p.add_argument("--no-edge-refresh", action="store_true")
+    p.add_argument("--finish-only", action="store_true", help="only the Mac/git half, after an upload whose push failed")
+    p.set_defaults(fn=cmd_publish)
+    a = ap.parse_args()
+    try:
+        a.fn(a)
+    except RuntimeError as e:
+        sys.exit(f"✗ {e}")
+
+
+if __name__ == "__main__":
+    main()
