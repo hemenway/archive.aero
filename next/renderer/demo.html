@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>archive.aero · Offline renderer lab</title>
+<style>
+html,body{margin:0;height:100%;background:#101722;color:#e8eef8;font:14px system-ui}body{display:flex;flex-direction:column}
+header{display:flex;align-items:center;gap:18px;flex-wrap:wrap;padding:14px 22px;background:#16202f}h1{font-size:17px;margin:0}label{display:flex;gap:8px;align-items:center}input{accent-color:#71a6fa}output{font-variant-numeric:tabular-nums}canvas{display:block;flex:1;min-height:0;width:100%;outline-offset:-3px}footer{padding:8px 22px;color:#a6b7cf;font-size:12px}button{background:#2c4669;color:white;border:0;padding:7px 12px;border-radius:5px}
+</style>
+<header><h1>Offline renderer lab</h1><label>Era <input id="era" type="range" min="0" max="3" step="1" value="0"><output id="year">1950</output></label>
+<label>Opacity <input id="opacity" type="range" min="0" max="1" step=".05" value="1"></label><label><input id="fields" type="checkbox" checked> Airfields</label><button id="restore">Lose / restore context</button><output id="status"></output></header>
+<canvas aria-label="Map: drag, pinch or scroll to move; arrow keys pan; plus and minus zoom"></canvas>
+<footer>Synthetic tiles and overlays only. No network data. Delayed uploads exercise atomic chart swaps.</footer>
+<script type="module" src="./demo.js"></script></html>

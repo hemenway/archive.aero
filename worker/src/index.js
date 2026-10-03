@@ -1,3 +1,5 @@
+import { handleTiles } from "./tiles.js";
+
 // Cloudflare Worker: proxies R2 range requests for archive.aero PMTiles,
 // logging each tile-shaped read to Analytics Engine (sampled).
 //
@@ -223,7 +225,7 @@ function fromCached(cached) {
 export default {
   async fetch(request, env, ctx) {
     const startedAt = Date.now();
-    const origin = env.ALLOWED_ORIGIN || "*";
+    const origin = new URL(request.url).pathname.startsWith("/t/") ? "*" : env.ALLOWED_ORIGIN || "*";
 
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -247,6 +249,11 @@ export default {
       return withCors(new Response("Bad request", { status: 400 }), origin);
     }
     if (!key) return withCors(new Response("Not found", { status: 404 }), origin);
+
+    // Reserved virtual namespace; existing object URLs retain their range path.
+    if (url.pathname.startsWith("/t/")) {
+      return handleTiles(request, env, ctx, { getBlock, blockBytes: BLOCK_BYTES });
+    }
 
     // HEAD: answer from object metadata alone. Routing HEAD through the GET
     // path streams the whole object into the edge cache via waitUntil.

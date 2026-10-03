@@ -65,7 +65,7 @@ from viewer_config import update_viewer_config
 try:
     from pmtiles.tile import deserialize_header
 except ImportError:
-    sys.exit("needs the pmtiles package (run with ~/venv/bin/python)")
+    deserialize_header = None  # date/bounds helpers are also used by the next manifest builder
 
 MAGIC = b"AAMBv1\n\0"
 PREAMBLE_LEN = 16
@@ -339,6 +339,8 @@ def verify_bundle(path, source, sample=25):
 # ---------------------------------------------------------------- main
 
 def main():
+    if deserialize_header is None:
+        sys.exit("needs the pmtiles package (run with ~/venv/bin/python)")
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dir", help="directory of local .pmtiles files")
