@@ -33,7 +33,13 @@ class FakeS3:
     class exceptions:
         class ClientError(Exception):
             def __init__(self,code):super().__init__(code);self.response={'Error':{'Code':code}}
-    def __init__(self,objects):self.objects=objects;self.copies=[];self.uploads=[]
+    class Body:
+        def __init__(self,data):self.data=data;self.closed=False
+        def iter_chunks(self,size):  # tiny chunks exercise the multi-chunk prefix capture
+            for i in range(0,len(self.data),1000):yield self.data[i:i+1000]
+        def close(self):self.closed=True
+    def __init__(self,objects,bodies=None):self.objects=objects;self.bodies=bodies or {};self.copies=[];self.uploads=[]
+    def get_object(self,Bucket,Key):return {'Body':FakeS3.Body(self.bodies[Key]),'ContentLength':len(self.bodies[Key])}
     def head_object(self,Bucket,Key):
         if Key not in self.objects:raise self.exceptions.ClientError('404')
         return self.objects[Key]
@@ -145,6 +151,18 @@ class NextDataTests(unittest.TestCase):
         self.assertRaises(ValueError,run,[remote],{remote['old']:{**good,'ETag':'"'+'0'*32+'"'}})
         multipart={**good,'ETag':'"'+'0'*32+'-3"'};self.assertEqual(run([remote],{remote['old']:multipart}).copies,[(remote['old'],remote['new'],multipart['ETag'])])
         era.write_bytes(era.read_bytes()+b'\0');self.assertRaises(ValueError,run,[local],{})  # changed since the plan hashed it
+    def test_read_remote_streams_hashes_and_writes_sparse_directory_stubs(self):
+        import hashlib,os
+        era=self.archive('era.pmtiles',tiles=[(zxy_to_id(8,60,100),os.urandom(2_000_000)),(zxy_to_id(9,122,201),webp((1,2,3,255)))])
+        data=era.read_bytes();client=FakeS3({},{'sectionals/era.pmtiles':data})
+        listing=self.dir/'listing.json';listing.write_text(json.dumps([{'Path':'sectionals/era.pmtiles','Size':len(data)}]))
+        with unittest.mock.patch.object(next_version_archives,'remote_client',lambda:client):
+            [r]=plan(listing=listing,read_remote=True,stubs=self.dir/'stubs')
+        self.assertEqual((r['sha256'],r['md5'],r['size'],r['source']),(hashlib.sha256(data).hexdigest(),hashlib.md5(data).hexdigest(),len(data),'remote'))
+        stub=self.dir/'stubs'/r['new'];self.assertTrue(stub.exists());self.assertEqual(stub.stat().st_size,len(data))
+        self.assertLess(stub.stat().st_blocks*512,len(data)//2)  # a hole stands in for the tile data
+        a,b=Archive(era),Archive(stub);self.assertEqual(a.h,b.h);self.assertEqual(a.coverage(6),b.coverage(6));self.assertEqual(a.metadata(),b.metadata())
+        self.assertEqual([e[:3] for e in a.entries()],[e[:3] for e in b.entries()])
     def test_bounds_round_outward_in_plan_and_manifest(self):
         h={'min_lon_e7':-981234321,'min_lat_e7':300000900,'max_lon_e7':-950000900,'max_lat_e7':419999100}
         self.assertEqual(bounds(h),[-98.1235,30,-95,42])  # nearest would give [-98.1234,30.0001,-95.0001,41.9999]

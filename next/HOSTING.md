@@ -1,9 +1,10 @@
 # Hosting proposal (no deployment performed)
 
-Serve the built shell with Cloudflare Workers Static Assets. Place the contents of
-`next/dist/` beneath `/next/` in the assets directory for preview, except
-`_headers`, which Cloudflare reads only from the asset root: move that one file
-to the root. Its rules are already prefixed with the build's `--base` (`/next/*`
+Serve the built shell with Cloudflare Workers Static Assets. For the preview the
+shell lives at `beta.archive.aero/next/`, inside the MapLibre beta's assets
+(`beta/dist/next/`, written there directly with `build.mjs --outdir`), except
+`_headers`, which Cloudflare reads only from the asset root: its rules are
+appended to the beta's root `_headers`. Its rules are already prefixed with the build's `--base` (`/next/*`
 for the preview), so they never govern the current viewer or any other page.
 Keep the current viewer and its data routes available throughout the preview and
 switch.

@@ -5,12 +5,16 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { manifest as fixture } from './app/stubs/manifest.js';
-const root = fileURLToPath(new URL('../', import.meta.url)), directory = path.join(root, 'next'), outdir = path.join(directory, 'dist');
+const root = fileURLToPath(new URL('../', import.meta.url)), directory = path.join(root, 'next');
 const args = process.argv.slice(2), check = args.includes('--check');
+const value = flag => { const i = args.indexOf(flag); if (i < 0) return null; if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`${flag} needs a value`); return args[i + 1]; };
+// --outdir lets a real build land in a hosting tree (the beta's dist/next/) while next/dist keeps the stub build the tests use.
+const outdir = value('--outdir') ? path.resolve(value('--outdir')) : path.join(directory, 'dist');
 const previousBuild = check ? JSON.parse(await readFile(path.join(outdir, 'budgets.json'), 'utf8').catch(() => 'null')) : null;
+// The 80 KB C2 budget is a contract target; the owner may ship an over-budget manifest while the shard format is decided (2026-10-02).
+const allowOverBudget = args.includes('--allow-over-budget') || !!previousBuild?.allowOverBudget;
 const modulesExist = await Promise.all(['renderer/index.js', 'dataplane/index.js'].map(name => access(path.join(directory, name)).then(() => true, () => false)));
 const stubs = args.includes('--stubs') || (!args.includes('--manifest') && (previousBuild?.mode === 'stubs' || !modulesExist.every(Boolean)));
-const value = flag => { const i = args.indexOf(flag); if (i < 0) return null; if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`${flag} needs a value`); return args[i + 1]; };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex').slice(0, 12);
 const outputs = new Map();
 let source, manifestUrl = value('--manifest') || previousBuild?.manifestUrl;
@@ -25,7 +29,8 @@ if (stubs) {
   else { const response = await fetch(manifestUrl); if (!response.ok) throw new Error(`Manifest build fetch failed: ${response.status}`); source = await response.json(); }
 }
 if (source.version !== 1 || !source.eras?.length) throw new Error('Invalid C2 manifest');
-if (gzipSync(JSON.stringify(source)).length > 80 * 1024) throw new Error('Manifest exceeds 80 KB gzip');
+const manifestGzip = gzipSync(JSON.stringify(source)).length;
+if (manifestGzip > 80 * 1024 && !allowOverBudget) throw new Error(`Manifest exceeds 80 KB gzip (${manifestGzip} bytes); pass --allow-over-budget to ship it anyway`);
 const common = { absWorkingDir: root, bundle: true, minify: true, format: 'esm', target: 'es2022', sourcemap: 'external', write: false, outdir, entryNames: '[name].[hash]', chunkNames: 'chunk.[hash]', metafile: true };
 const workerEntry = path.join(directory, stubs ? 'app/stubs/worker.js' : 'dataplane/worker.js');
 const worker = await build({ ...common, entryPoints: { worker: workerEntry } });
@@ -65,7 +70,7 @@ const js = externalJS + inlineJS + gzipSync(worker.outputFiles.find(f => f.path.
 const sizes = { criticalJS: js, css: gzipSync(css).length, html: Buffer.byteLength(html), htmlGzip: gzipSync(html).length, worker: gzipSync(worker.outputFiles.find(f => f.path.endsWith('.js')).contents).length, inlineBoot: Buffer.byteLength(early) };
 // HTML carries the newest frame's era metadata inline; 12 KiB leaves room for several overlapping eras (gzip stays near 4 KB).
 if (sizes.criticalJS > 50 * 1024 || sizes.css > 12 * 1024 || sizes.html > 12 * 1024) throw new Error(`Build budgets exceeded: ${JSON.stringify(sizes)}`);
-outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 12288 }, assets: shellAssets }, null, 2) + '\n');
+outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, allowOverBudget, manifestGzip, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 12288 }, assets: shellAssets }, null, 2) + '\n');
 const expected = new Set(outputs.keys());
 const existing = await readdir(outdir).catch(e => { if (e.code !== 'ENOENT') throw e; return []; });
 for (const [name, bytes] of outputs) {

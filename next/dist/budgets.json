@@ -2,6 +2,8 @@
   "mode": "stubs",
   "manifestUrl": "./manifest.ecfc3cc3efa7.json",
   "base": "/next/",
+  "allowOverBudget": false,
+  "manifestGzip": 361,
   "bytes": {
     "criticalJS": 13835,
     "css": 2224,

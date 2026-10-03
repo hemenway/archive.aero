@@ -17,7 +17,11 @@ node next/build.mjs --check
 ```
 
 `--base /next/` (the default) is the URL prefix the shell is deployed under; every
-`_headers` rule is scoped to it. `--check` reads it back from `dist/budgets.json`.
+`_headers` rule is scoped to it. `--outdir DIR` writes a build somewhere other
+than `next/dist` (a hosting tree, so the committed stub build stays the one the
+tests use). `--allow-over-budget` ships a manifest above the 80 KB C2 budget
+while the shard format is decided. `--check` reads all three back from that
+directory's `budgets.json`.
 
 The committed build uses the 2D renderer and synthetic OffscreenCanvas Worker
 selected by `--stubs`. Its hashed C2 manifest has overlapping eras, coverage and
@@ -39,6 +43,17 @@ After renderer and data plane merge:
 node next/build.mjs --manifest https://data.archive.aero/next/manifest.HASH.json
 node next/build.mjs --check --manifest https://data.archive.aero/next/manifest.HASH.json
 ```
+
+The beta preview is built straight into the beta's hosting tree (the beta
+checkout is separate; its `beta/` directory is not in git):
+
+```sh
+node next/build.mjs --manifest https://data.archive.aero/next/manifest.HASH.json --manifest-file /path/to/manifest.HASH.json \
+  --base /next/ --allow-over-budget --outdir /path/to/archive.aero/beta/dist/next
+```
+
+Then append `beta/dist/next/_headers` to the beta's root `_headers` (Cloudflare
+reads only the root file), delete the nested copy, and deploy the beta Worker.
 
 Replace HASH with an actual immutable manifest hash. A deterministic local copy
 of that same manifest can be supplied with `--manifest-file /absolute/path.json`;

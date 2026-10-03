@@ -78,6 +78,28 @@ trusted `sha256` (ETag is insufficient), or the owner must explicitly add
 option. Output plans retain full SHA256, size, min/max zoom and outward-rounded
 bounds.
 
+### Without a mirror: stream from R2
+
+When no mirror is mounted, hash the objects by streaming them (R2 egress is
+free). `scripts/next_stream_hash.sh` splits the listing into shards, runs
+`next_version_archives.py --read-remote --stubs` per shard with credentials
+taken from the rclone `r2:` remote for that process only, then merges the shard
+plans into `plan.json` + `plan.json.sh`:
+
+```sh
+scripts/next_stream_hash.sh "$NEXT_BUILD/plans/listing.json" "$NEXT_BUILD/plans/sectionals" "$HOME/archive-next-build/stubs" sectionals 12
+```
+
+Every object is read once; a dropped connection retries that object only. A
+single stream from a home connection ran at about 8 MB/s on 2026-10-02 and six
+streams at 29 MB/s, so shard. `--stubs` writes, under each versioned name, a
+sparse file holding the archive's header, root, metadata and leaf directories
+with a hole where the tile data would be: `next_build_manifest.py --dir` reads
+exactly those bytes, so the manifest can be built with no local copy of any
+archive. The stub directory must be on a local APFS disk (sparse files; the
+apparent size equals the archives'). Plans from `--read-remote` carry the
+object's `size` and `md5`, so the same `.sh` and `--execute` guards apply.
+
 **Owner-only storage operation:** configure the rclone `r2:` remote, inspect
 `originals.json.sh`, and execute the reviewed copy commands:
 
@@ -200,7 +222,8 @@ PY
 ```
 
 The manifest reads headers/directories only, so the staging hash check is
-necessary. It computes z6 coverage from actual entries and validates the schema.
+necessary (or point `--dir` at the sparse stubs written by `--stubs`, whose
+names already carry the streamed hashes). It computes z6 coverage from actual entries and validates the schema.
 If it exceeds 80,000 bytes gzip, stop publication and resolve
 [CHANGE_REQUEST_C2.md](CHANGE_REQUEST_C2.md) with the other sections. The temporary
 `--allow-over-budget` option is explicit, not an automatic format change; the

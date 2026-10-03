@@ -21,6 +21,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from pathlib import Path
 from next_pmtiles import Archive, header
 
@@ -43,7 +44,38 @@ def bounds(h):
     return [h['min_lon_e7']//1000/1e4, h['min_lat_e7']//1000/1e4, -(-h['max_lon_e7']//1000)/1e4, -(-h['max_lat_e7']//1000)/1e4]
 
 
-def plan(directory=None, listing=None, prefix='sectionals', read_remote=False, bucket='charts'):
+def stream_remote(remote, bucket, key, attempts=3):
+    """Stream one object once: (sha256, md5, size, header, prefix bytes, prefix length).
+
+    The prefix covers header, root, metadata and leaf directories -- everything the
+    manifest builder reads -- so no local mirror is needed; tile data is never kept.
+    A dropped connection restarts this object only, not the whole shard."""
+    import time
+    for attempt in range(attempts):
+        try:
+            response = remote.get_object(Bucket=bucket, Key=key)
+            hasher = hashlib.sha256(); m = hashlib.md5(); head = bytearray(); need = 127; ah = None; pos = 0
+            try:
+                for chunk in response['Body'].iter_chunks(8*1024*1024):
+                    hasher.update(chunk); m.update(chunk)
+                    # head holds the object's first bytes contiguously; take this chunk's share of [0, need).
+                    if len(head) < need: head.extend(chunk[len(head)-pos:need-pos])
+                    if ah is None and len(head) >= 127:
+                        ah = header(bytes(head[:127]))
+                        need = max(ah[k+'_offset']+ah[k+'_length'] for k in ('root','metadata','leaf_directory'))
+                        if len(head) < need: head.extend(chunk[len(head)-pos:need-pos])
+                    pos += len(chunk)
+            finally: response['Body'].close()
+            if ah is None: raise ValueError(f'{key}: object shorter than a PMTiles header')
+            if pos != response['ContentLength']: raise IOError(f'{key}: streamed {pos} of {response["ContentLength"]} bytes')
+            return hasher.hexdigest(), m.hexdigest(), response['ContentLength'], ah, bytes(head[:need]), need
+        except (ValueError, KeyError): raise
+        except Exception as error:
+            if attempt == attempts-1: raise
+            print(f'{key}: {error!r}; retrying', file=sys.stderr); time.sleep(5*2**attempt)
+
+
+def plan(directory=None, listing=None, prefix='sectionals', read_remote=False, bucket='charts', stubs=None):
     records = json.loads(Path(listing).read_text()) if listing else []
     if isinstance(records, dict): records = records.get('objects', records.get('Contents'))
     if records is None: raise ValueError('listing must contain objects or Contents')
@@ -79,19 +111,18 @@ def plan(directory=None, listing=None, prefix='sectionals', read_remote=False, b
             digest, md5 = digest_file(file, bool(listing)); size = file.stat().st_size; hashed = str(file.resolve())
             a = Archive(file); z = [a.h['min_zoom'],a.h['max_zoom']]; b = bounds(a.h)
         elif remote:
-            response = remote.get_object(Bucket=bucket, Key=old)
-            hasher = hashlib.sha256(); m = hashlib.md5(); first = bytearray()
-            try:
-                for chunk in response['Body'].iter_chunks(8*1024*1024):
-                    hasher.update(chunk); m.update(chunk)
-                    if len(first) < 127: first.extend(chunk[:127-len(first)])
-            finally: response['Body'].close()
-            ah = header(bytes(first)); digest = hasher.hexdigest(); md5 = m.hexdigest(); size = response['ContentLength']
+            digest, md5, size, ah, stub, need = stream_remote(remote, bucket, old)
             z = [ah['min_zoom'], ah['max_zoom']]; b = bounds(ah)
         else:
             digest = record.get('sha256',''); z = record.get('z'); b = record.get('b')
         if not re.fullmatch('[a-f0-9]{64}',digest): raise ValueError(f'{old}: complete SHA256 required')
         path = stem+'.'+digest[:12]; new = path+'.pmtiles'
+        if stubs and remote:
+            # Sparse stub under the versioned name: real bytes up to the end of the directories, then a
+            # hole to the object's full size, so next_pmtiles.Archive accepts it and reads only indexes.
+            target = Path(stubs) / new; target.parent.mkdir(parents=True, exist_ok=True)
+            if len(stub) < need: raise ValueError(f'{old}: directories extend past the streamed prefix')
+            with open(target, 'wb') as f: f.write(stub); f.truncate(size)
         if not re.fullmatch(r'(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_.-]+\.[a-f0-9]{12}', path):
             raise ValueError('archive path does not satisfy C1: '+path)
         if new in seen: raise ValueError(f'duplicate destination {new}')
@@ -143,8 +174,10 @@ def transfer_config():
 
 
 def execute(records, bucket):
-    client = remote_client(); config = transfer_config()
+    client = remote_client(); config = transfer_config(); done = 0
     for r in records:
+        done += 1
+        if done % 100 == 0: print(f'{done}/{len(records)}', file=sys.stderr, flush=True)
         if r['old'] == r['new']: continue
         try:
             existing = client.head_object(Bucket=bucket, Key=r['new'])
@@ -178,10 +211,17 @@ def main():
     ap.add_argument('--listing',help='R2 inventory (rclone lsjson or S3 Contents): plan server-side copies of these objects')
     ap.add_argument('--prefix',default='sectionals',help='bucket prefix: prepended to scanned files; listing keys outside it are skipped')
     ap.add_argument('--read-remote',action='store_true',help='explicitly stream listing objects to hash them; needs environment credentials')
-    ap.add_argument('--out',required=True); ap.add_argument('--bucket',default='charts'); ap.add_argument('--execute',action='store_true')
+    ap.add_argument('--stubs',help='with --read-remote: directory for sparse header+directory stubs, named like the versioned keys, for next_build_manifest.py --dir')
+    ap.add_argument('--out'); ap.add_argument('--bucket',default='charts'); ap.add_argument('--execute',action='store_true')
+    ap.add_argument('--from-plan',help='execute an existing plan JSON (no re-planning, no --out); shard plans can run in parallel')
     args=ap.parse_args()
+    if args.from_plan:
+        if args.dir or args.listing or args.out: ap.error('--from-plan takes no planning arguments')
+        records=json.loads(Path(args.from_plan).read_text()); execute(records,args.bucket)
+        print(f'{len(records)} archives executed from {args.from_plan}'); return
     if not args.dir and not args.listing: ap.error('need --dir and/or --listing')
-    records=plan(args.dir,args.listing,args.prefix,args.read_remote,args.bucket)
+    if not args.out: ap.error('--out is required when planning')
+    records=plan(args.dir,args.listing,args.prefix,args.read_remote,args.bucket,args.stubs)
     Path(args.out).write_text(json.dumps(records,indent=2)+'\n')
     Path(args.out+'.sh').write_text(shell_commands(records,args.bucket))
     uploads=sum(r['source']=='local' for r in records)
