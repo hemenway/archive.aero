@@ -104,7 +104,10 @@ export async function makeFixtures(out=new URL('./out/',import.meta.url),base='h
     representative={p,tiles:tiles.map(({z,x,y})=>({z,x,y}))};
   }
   const airspace=await packed('airspace/fixture',[...Array.from({length:8},(_,i)=>({z:i+4,x:2**(i+4)>>2,y:2**(i+4)>>2,bytes:airspaceMvt()})),
-    {z:0,x:0,y:0,bytes:airspaceMvt()}],{type:1,gzip:true,leaf:true,metadata:{vector_layers:[{id:'class'},{id:'efloor'}],cycles:{us:['1940-01-01'],fr:['1940-01-01'],br:['1940-01-01']}}});
+    {z:0,x:0,y:0,bytes:airspaceMvt()}],{type:1,gzip:true,leaf:true,metadata:{vector_layers:[{id:'class'},{id:'efloor'}],archive_aero:{cycle_days:28,regions:{
+      us:{name:'United States',source:'FAA NASR',cycles:['1950-12-15','1951-01-12'],boxes:[[-180.25,-14.825,-62.133,75.25]]},
+      fr:{name:'France',source:'SIA',cycles:['1950-12-15'],boxes:[[-6,41,10,52]]},
+      br:{name:'Brazil',source:'DECEA GeoAISWEB',cycles:['1950-12-15'],boxes:[[-74.236,-34.257,-31.547,5.515]]}}}}});
   const basemap=await packed('basemap/fixture',Array.from({length:14},(_,z)=>({z,x:0,y:0,bytes:png([28,33,42],512)})),{metadata:{name:'Fixture dark basemap'}});
   const af=airfields(),afh=hash(Buffer.concat([af.bytes,json(af.details)]));await put(`next/airfields.${afh}.bin`,af.bytes);await put(`next/airfields.${afh}.json`,json(af.details));
   const chartP=await packed('sectionals/chart/fixture/1950-01-01',[{z:8,x:60,y:100,bytes:png(colors[0])}],{metadata:{name:'Fixture solo'}});

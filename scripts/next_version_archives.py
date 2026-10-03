@@ -44,17 +44,20 @@ def bounds(h):
     return [h['min_lon_e7']//1000/1e4, h['min_lat_e7']//1000/1e4, -(-h['max_lon_e7']//1000)/1e4, -(-h['max_lat_e7']//1000)/1e4]
 
 
-def stream_remote(remote, bucket, key, attempts=3):
-    """Stream one object once: (sha256, md5, size, header, prefix bytes, prefix length).
+def stream_remote(remote, bucket, key, attempts=8):
+    """Stream one object: (sha256, md5, size, header, prefix bytes, prefix length).
 
     The prefix covers header, root, metadata and leaf directories -- everything the
     manifest builder reads -- so no local mirror is needed; tile data is never kept.
-    A dropped connection restarts this object only, not the whole shard."""
+    A broken stream resumes with a Range request at the last hashed byte (If-Match
+    pins the object version), so a network blip costs seconds, not the object."""
     import time
-    for attempt in range(attempts):
+    hasher = hashlib.sha256(); m = hashlib.md5(); head = bytearray(); need = 127; ah = None; pos = 0
+    etag = total = None; strikes = 0
+    while total is None or pos < total:
         try:
-            response = remote.get_object(Bucket=bucket, Key=key)
-            hasher = hashlib.sha256(); m = hashlib.md5(); head = bytearray(); need = 127; ah = None; pos = 0
+            response = remote.get_object(Bucket=bucket, Key=key, **({'Range': f'bytes={pos}-', 'IfMatch': etag} if pos else {}))
+            if total is None: etag = response['ETag']; total = response['ContentLength']
             try:
                 for chunk in response['Body'].iter_chunks(8*1024*1024):
                     hasher.update(chunk); m.update(chunk)
@@ -64,18 +67,20 @@ def stream_remote(remote, bucket, key, attempts=3):
                         ah = header(bytes(head[:127]))
                         need = max(ah[k+'_offset']+ah[k+'_length'] for k in ('root','metadata','leaf_directory'))
                         if len(head) < need: head.extend(chunk[len(head)-pos:need-pos])
-                    pos += len(chunk)
+                    pos += len(chunk); strikes = 0  # progress clears the strike count
             finally: response['Body'].close()
-            if ah is None: raise ValueError(f'{key}: object shorter than a PMTiles header')
-            if pos != response['ContentLength']: raise IOError(f'{key}: streamed {pos} of {response["ContentLength"]} bytes')
-            return hasher.hexdigest(), m.hexdigest(), response['ContentLength'], ah, bytes(head[:need]), need
+            if pos < total: raise IOError(f'stream ended at byte {pos} of {total}')
         except (ValueError, KeyError): raise
         except Exception as error:
-            if attempt == attempts-1: raise
-            print(f'{key}: {error!r}; retrying', file=sys.stderr); time.sleep(5*2**attempt)
+            status = getattr(error, 'response', {}).get('ResponseMetadata', {}).get('HTTPStatusCode')
+            strikes += 1
+            if status in (400, 403, 404, 412, 416) or strikes >= attempts: raise
+            print(f'{key}: {error!r}; resuming at byte {pos}', file=sys.stderr, flush=True); time.sleep(min(60, 5*2**(strikes-1)))
+    if ah is None: raise ValueError(f'{key}: object shorter than a PMTiles header')
+    return hasher.hexdigest(), m.hexdigest(), total, ah, bytes(head[:need]), need
 
 
-def plan(directory=None, listing=None, prefix='sectionals', read_remote=False, bucket='charts', stubs=None):
+def plan(directory=None, listing=None, prefix='sectionals', read_remote=False, bucket='charts', stubs=None, journal=None):
     records = json.loads(Path(listing).read_text()) if listing else []
     if isinstance(records, dict): records = records.get('objects', records.get('Contents'))
     if records is None: raise ValueError('listing must contain objects or Contents')
@@ -88,6 +93,12 @@ def plan(directory=None, listing=None, prefix='sectionals', read_remote=False, b
                 key = key.removesuffix('.pmtiles')  # legacy full-sheet keys are extension-less
             records.append({'key':key,'local':p.relative_to(directory).as_posix()})
     result = []; seen = set()
+    # journal: one JSON line per streamed record, so an interrupted run resumes without re-reading finished objects.
+    done = {}
+    if journal and Path(journal).exists():
+        for line in Path(journal).read_text().splitlines():
+            if line.strip(): prior = json.loads(line); done[prior['old']] = prior
+    log = open(journal, 'a') if journal and remote else None
     for record in records:
         old = record.get('key') or record.get('Key') or record.get('Path'); local = record.get('local')
         if not old: raise ValueError('listing entry needs key, Key, or Path')
@@ -111,6 +122,10 @@ def plan(directory=None, listing=None, prefix='sectionals', read_remote=False, b
             digest, md5 = digest_file(file, bool(listing)); size = file.stat().st_size; hashed = str(file.resolve())
             a = Archive(file); z = [a.h['min_zoom'],a.h['max_zoom']]; b = bounds(a.h)
         elif remote:
+            prior = done.get(old)
+            if prior and (size is None or prior.get('size') == size) and (not stubs or (Path(stubs)/prior['new']).exists()):
+                if prior['new'] in seen: raise ValueError(f"duplicate destination {prior['new']}")
+                seen.add(prior['new']); result.append(prior); continue
             digest, md5, size, ah, stub, need = stream_remote(remote, bucket, old)
             z = [ah['min_zoom'], ah['max_zoom']]; b = bounds(ah)
         else:
@@ -131,6 +146,8 @@ def plan(directory=None, listing=None, prefix='sectionals', read_remote=False, b
         if md5: out['md5'] = md5
         if hashed: out['local'] = hashed
         result.append(out)
+        if log: log.write(json.dumps(out)+'\n'); log.flush()
+    if log: log.close()
     return result
 
 
@@ -221,7 +238,7 @@ def main():
         print(f'{len(records)} archives executed from {args.from_plan}'); return
     if not args.dir and not args.listing: ap.error('need --dir and/or --listing')
     if not args.out: ap.error('--out is required when planning')
-    records=plan(args.dir,args.listing,args.prefix,args.read_remote,args.bucket,args.stubs)
+    records=plan(args.dir,args.listing,args.prefix,args.read_remote,args.bucket,args.stubs,args.out+'.journal.jsonl' if args.read_remote else None)
     Path(args.out).write_text(json.dumps(records,indent=2)+'\n')
     Path(args.out+'.sh').write_text(shell_commands(records,args.bucket))
     uploads=sum(r['source']=='local' for r in records)

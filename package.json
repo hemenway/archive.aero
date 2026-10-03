@@ -13,7 +13,8 @@
     "check:next": "node next/build.mjs --check",
     "test:next": "npm run build:next && playwright test --config next/playwright.config.mjs",
     "test:dataplane": "node --test next/dataplane/test/*.test.mjs",
-    "test:renderer": "playwright test --config next/renderer/playwright.config.mjs"
+    "test:renderer": "playwright test --config next/renderer/playwright.config.mjs",
+    "test:next:real": "playwright test --config next/tests-real/playwright.config.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

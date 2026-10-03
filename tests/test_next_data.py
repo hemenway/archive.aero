@@ -34,12 +34,17 @@ class FakeS3:
         class ClientError(Exception):
             def __init__(self,code):super().__init__(code);self.response={'Error':{'Code':code}}
     class Body:
-        def __init__(self,data):self.data=data;self.closed=False
+        def __init__(self,data,fail_after=None):self.data=data;self.fail_after=fail_after;self.closed=False
         def iter_chunks(self,size):  # tiny chunks exercise the multi-chunk prefix capture
-            for i in range(0,len(self.data),1000):yield self.data[i:i+1000]
+            for i in range(0,len(self.data),1000):
+                if self.fail_after is not None and i+1000>self.fail_after:raise IOError('Connection broken')
+                yield self.data[i:i+1000]
         def close(self):self.closed=True
-    def __init__(self,objects,bodies=None):self.objects=objects;self.bodies=bodies or {};self.copies=[];self.uploads=[]
-    def get_object(self,Bucket,Key):return {'Body':FakeS3.Body(self.bodies[Key]),'ContentLength':len(self.bodies[Key])}
+    def __init__(self,objects,bodies=None):self.objects=objects;self.bodies=bodies or {};self.copies=[];self.uploads=[];self.gets=[];self.fail_after=None
+    def get_object(self,Bucket,Key,Range=None,IfMatch=None):
+        self.gets.append((Range,IfMatch));data=self.bodies[Key];start=int(Range[6:-1]) if Range else 0
+        fail,self.fail_after=self.fail_after,None  # only the first body breaks
+        return {'Body':FakeS3.Body(data[start:],fail),'ContentLength':len(data)-start,'ETag':'"etag"'}
     def head_object(self,Bucket,Key):
         if Key not in self.objects:raise self.exceptions.ClientError('404')
         return self.objects[Key]
@@ -163,6 +168,33 @@ class NextDataTests(unittest.TestCase):
         self.assertLess(stub.stat().st_blocks*512,len(data)//2)  # a hole stands in for the tile data
         a,b=Archive(era),Archive(stub);self.assertEqual(a.h,b.h);self.assertEqual(a.coverage(6),b.coverage(6));self.assertEqual(a.metadata(),b.metadata())
         self.assertEqual([e[:3] for e in a.entries()],[e[:3] for e in b.entries()])
+    def test_read_remote_resumes_a_broken_stream_with_range_and_journals_finished_records(self):
+        import hashlib,os
+        era=self.archive('era.pmtiles',tiles=[(zxy_to_id(8,60,100),os.urandom(6000))]);data=era.read_bytes()
+        listing=self.dir/'listing.json';listing.write_text(json.dumps([{'Path':'sectionals/era.pmtiles','Size':len(data)}]))
+        client=FakeS3({},{'sectionals/era.pmtiles':data});client.fail_after=2500;journal=self.dir/'plan.journal.jsonl'
+        with unittest.mock.patch.object(next_version_archives,'remote_client',lambda:client),unittest.mock.patch('time.sleep',lambda s:None):
+            [r]=plan(listing=listing,read_remote=True,stubs=self.dir/'stubs',journal=journal)
+            # Two whole 1000-byte chunks were hashed before the break; the stream resumes there, pinned to the same ETag.
+            self.assertEqual(client.gets,[(None,None),('bytes=2000-','"etag"')]);self.assertEqual(r['sha256'],hashlib.sha256(data).hexdigest())
+            self.assertEqual(Archive(self.dir/'stubs'/r['new']).h,Archive(era).h)
+            again=plan(listing=listing,read_remote=True,stubs=self.dir/'stubs',journal=journal)
+        self.assertEqual(again,[r]);self.assertEqual(len(client.gets),2)  # the journal answered; nothing was streamed again
+    def test_coverage_from_directory_runs_matches_per_tile_walk(self):
+        rng=random.Random(7);same=webp((9,9,9,255));tiles=[]
+        # Long runs of identical tiles (including one crossing a zoom boundary) and scattered singles, z4..z9.
+        last5=zxy_to_id(6,0,0)-1;tiles+=[(tid,same) for tid in range(last5-40,last5+60)]
+        start=zxy_to_id(9,100,200);tiles+=[(tid,same) for tid in range(start,start+700)]
+        ids={t for t,_ in tiles}
+        for _ in range(300):
+            z=rng.randrange(4,10);tid=zxy_to_id(z,rng.randrange(2**z),rng.randrange(2**z))
+            if tid not in ids:ids.add(tid);tiles.append((tid,webp((rng.randrange(256),rng.randrange(256),rng.randrange(256),255))))
+        a=Archive(self.archive('runs.pmtiles',tiles=tiles));self.assertTrue(any(e[3]>50 for e in a.entries()))
+        brute=set()
+        for tid,_ in a.tiles():
+            z,x,y=id_to_zxy(tid)
+            if z>=6:brute.add((x>>(z-6))+64*(y>>(z-6)))
+        self.assertEqual(a.coverage(6),sorted(brute));self.assertTrue(len(brute)>20)
     def test_bounds_round_outward_in_plan_and_manifest(self):
         h={'min_lon_e7':-981234321,'min_lat_e7':300000900,'max_lon_e7':-950000900,'max_lat_e7':419999100}
         self.assertEqual(bounds(h),[-98.1235,30,-95,42])  # nearest would give [-98.1234,30.0001,-95.0001,41.9999]

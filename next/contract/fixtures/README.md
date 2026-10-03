@@ -9,7 +9,7 @@ node next/contract/fixtures/serve.mjs
 
 The generator prints the manifest path; `out/fixture-index.json` also identifies
 it and example tile coordinates. The default manifest URL is
-`http://127.0.0.1:8765/next/manifest.380d9b057640.json`. All files in `out/` are
+`http://127.0.0.1:8765/next/manifest.dfb66f478bc3.json`. All files in `out/` are
 ignored and regenerable. Override destination and base URL with positional args:
 
 ```sh
@@ -25,7 +25,8 @@ used; the examples use synthetic data and example.com links.
 
 The dataset has four overlapping eras, one with null antimeridian bounds,
 PNG tiles at z4–11, compressed MVT class/efloor geometries for all eight style
-codes and three regions, 21 airfields with every status/year combination,
+codes and three regions (airspace metadata in the production
+`archive_aero.regions` shape, with a cycle in effect in January 1951), 21 airfields with every status/year combination,
 two z5 pin shards (391 and 392), a per-chart solo archive, and a basemap at z0–13.
 C4 details are index-aligned, and all archive hashes are computed from their bytes.
 This provides shared fixtures for the renderer, data plane, shell and data section.

@@ -140,11 +140,24 @@ class Archive:
         for tid, off, length, run in self.entries():
             for i in range(run): yield tid+i, (self.h['tile_data_offset']+off, length)
     def coverage(self, zoom=6):
-        cells = set()
-        for tid, _ in self.tiles():
-            z, x, y = id_to_zxy(tid)
-            if z >= zoom: cells.add((x >> (z-zoom), y >> (z-zoom)))
-        return sorted(x+2**zoom*y for x, y in cells)
+        # Hilbert ids are hierarchical: within a zoom level, position >> 2 is the parent's
+        # position one level up. A run of consecutive ids therefore covers a contiguous range
+        # of ancestor positions, which makes this O(directory entries) rather than O(tiles) --
+        # minutes saved per build on the multi-million-tile modern eras.
+        base = lambda z: (4**z-1)//3
+        positions = set()
+        for tid, _, _, run in self.entries():
+            end = tid+run-1
+            while tid <= end:  # a run may cross into the next zoom level
+                z = ((3*tid+1).bit_length()-1)//2; last = min(end, base(z+1)-1)
+                if z >= zoom:
+                    shift = 2*(z-zoom)
+                    positions.update(range((tid-base(z)) >> shift, ((last-base(z)) >> shift)+1))
+                tid = last+1
+        cells = []
+        for position in positions:
+            _, x, y = id_to_zxy(base(zoom)+position); cells.append(x+2**zoom*y)
+        return sorted(cells)
 
 
 def write_archive(path, tiles, h, metadata=None):

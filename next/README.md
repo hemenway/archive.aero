@@ -73,8 +73,12 @@ Merge order: **data contract → renderer → data plane → shell**. Resolve ro
 `package.json` and lockfile changes by preserving the other branches' additions
 alongside esbuild, `build:next`, and `test:next`.
 
-- [ ] Replace shell-owned fixture data with agent 1's canonical fixtures/server;
-      preserve the strict unexpected-request guard.
+- [x] Run the real modules against agent 1's canonical fixtures/server:
+      `npm run test:next:real` builds a real shell against the fixture manifest,
+      serves the fixtures through the actual tiles Worker handler and applies
+      the build's CSP (Chromium + mobile WebKit; needs WebGL2, so it is not in
+      the default `npm test` chain). The stub suite keeps its own fixture data
+      and its strict unexpected-request guard.
 - [x] Adopt the additive `earlyFetches: Map<absolute URL, Promise<Response>>`
       option described in `shell/NOTES.md` (the data plane strips it from the
       Worker options and primes its scheduler with the responses).
@@ -85,8 +89,11 @@ alongside esbuild, `build:next`, and `test:next`.
       playback readiness on real imagery.
 - [ ] Confirm optional airspace status data, pin stack fields, airfield operating
       dates and source links against production fixtures.
-- [ ] Re-run browser behaviors with the real modules, using canonical airfield
-      binaries, pin shards, metadata and real raster/vector tile responses.
+- [x] Re-run browser behaviors with the real modules, using canonical airfield
+      binaries, pin shards, metadata and real raster/vector tile responses
+      (boot, Worker-side data plane, early-fetch adoption, chart pixels, date
+      swap, airspace status, airfield browser, pin, solo — see
+      `tests-real/real.spec.mjs`; the full keyboard/a11y matrix stays on stubs).
 - [ ] Recheck end-to-end budgets including Worker and inline JS, actual request
       counts before first chart paint, manifest gzip ≤80 KB, and no font requests.
 - [ ] Measure WebKit mobile memory during repeated full-archive scrubs, playback,
