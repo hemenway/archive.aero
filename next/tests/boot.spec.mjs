@@ -60,3 +60,10 @@ test('header rules are scoped to the deployed base, never the whole origin', asy
   expect(headers).toContain('/next/sw.js\n  Cache-Control: no-cache');
   const budget = JSON.parse(await readFile(new URL('../dist/budgets.json', import.meta.url))); expect(budget.base).toBe('/next/');
 });
+test('the map is revealed when no chart can paint: outside coverage, or every tile failing', async ({ page }) => {
+  await page.goto('./?date=1960-01-01&lat=0&lng=0&zoom=8'); await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('body')).toHaveClass(/painted/); await expect(page.locator('#mapCanvas')).toHaveCSS('opacity', '1');
+  await page.route('**/t/sectionals/**', route => route.fulfill({ status: 404, body: '' }));
+  await page.goto(view); await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('body')).toHaveClass(/painted/); await expect(page.locator('#fatalError')).toBeHidden();
+});

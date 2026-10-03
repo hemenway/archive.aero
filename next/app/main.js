@@ -121,7 +121,11 @@ function drawable(key) {
 function withoutAbsent(tiles) { return tiles.map(tile => ({ ...tile, items: tile.items.filter(item => !skipped(item.key)) })); }
 function renderPlans() { r.setChartPlan({ ...plan, tiles: withoutAbsent(plan.tiles) }); r.setBasemapPlan(withoutAbsent(dp.planBasemap(r.visibleTiles(512)))); }
 function notePaint() {
-  if (painted || !plan?.tiles.some(t => t.items.some(i => !skipped(i.key)) && t.items.every(i => skipped(i.key) || drawable(i.key)))) return;
+  if (painted || !plan) return;
+  // Reveal the canvas once a tile is fully drawable -- or once nothing is left to wait for (no chart
+  // here, or every item absent or failed), so overlays and the basemap never stay hidden behind charts that will not paint.
+  const waiting = item => !skipped(item.key) && !drawable(item.key);
+  if (plan.tiles.some(t => t.items.some(waiting)) && !plan.tiles.some(t => t.items.some(i => !skipped(i.key)) && !t.items.some(waiting))) return;
   // C7 has no paint event. Observe texture residency, then allow the scheduled renderer frame to finish.
   requestAnimationFrame(() => requestAnimationFrame(() => { if (painted) return; painted = true; document.body.classList.add('painted'); performance.mark('first-chart-paint'); window.dispatchEvent(new Event('first-chart-paint')); }));
 }
