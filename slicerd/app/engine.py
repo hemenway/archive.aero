@@ -571,6 +571,8 @@ def h_archive(ctx):
         items.append(("mosaics", f.name, "move"))
     if p.get("charts", True) and (w / "charts").exists():
         for f in sorted((w / "charts").rglob("*.pmtiles")):
+            if ".part." in f.name:  # a later era's slice is still writing it (io lane lagging the cpu lane)
+                continue
             items.append(("charts", str(f.relative_to(w / "charts")), "move"))
         for f in ("manifest.jsonl", "manifest.seed_lines"):
             if (w / "charts" / f).exists():
@@ -692,7 +694,9 @@ class Engine:
             raise ValueError(f"script must be one of {sorted(SCRIPTS)}")
         if depends_on and not self.store.get(depends_on):
             raise ValueError(f"no such job {depends_on}")
-        jid = f"{time.strftime('%m%d-%H%M%S')}-{uuid.uuid4().hex[:4]}"
+        # 32 random bits: with 16, two of ~100 jobs queued in one second shared an id and
+        # the INSERT's IntegrityError ended a bulk pipeline call part-way (2026-10-03).
+        jid = f"{time.strftime('%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
         self.store.x("INSERT INTO jobs (id, type, lane, status, run, key, params, depends_on, created) "
                      "VALUES (?,?,?,?,?,?,?,?,?)", jid, jtype, JOB_TYPES[jtype], "queued", run, key,
                      json.dumps(params), depends_on, now())

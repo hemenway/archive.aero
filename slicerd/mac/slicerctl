@@ -4,7 +4,7 @@
   slicerctl status                         host + queue summary
   slicerctl eras [--start D] [--end D] [--contains S]
   slicerctl pipeline RUN KEY... [--steps slice,convert,archive] [--charts]
-                     [--slicer-args "--parallel-warp 6"] [--concurrency N]
+                     [--slicer-args "--parallel-warp 6"] [--concurrency N] [--min-zoom 0]
                      [--mosaic move|delete|keep] [--force] [--keys-from FILE]
   slicerctl submit TYPE --run RUN [--key KEY] [--param k=v ...] [--after JOB]
   slicerctl jobs [--status running,queued] [--run RUN] [-n 30]
@@ -12,6 +12,7 @@
   slicerctl wait ID                  block until the job finishes
   slicerctl cancel ID | retry ID | pause | resume
   slicerctl runs | run RUN | overlay [--stale] | remount | cleanup RUN [--key K] [--what temp,mosaic]
+  slicerctl errors RUN [--out DIR]   every failed job and every slicer ✗/⚠ line of a run, by cause
   slicerctl sync [--repo PATH]       push scripts + catalog to the server as a new code release
   slicerctl publish RUN KEY [--dry-run] [--allow-new] [--allow-unverified]
                     [--max-tile-delta 0.02] [--message MSG] [--no-edge-refresh] [--finish-only]
@@ -33,6 +34,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections import Counter, defaultdict
 from pathlib import Path
 
 CONFIG = Path.home() / ".config" / "slicerd" / "config.json"
@@ -185,17 +187,73 @@ def parse_kv(items):
     return params
 
 
+def submit_job(jtype, params, depends_on=None):
+    """Queue one job. The server names a job by its second plus 16 random bits and
+    answers 500 when two names collide, which a bulk /api/pipeline call does within
+    about a hundred jobs (2026-10-03: it stopped mid-era, 109 jobs in). A refused
+    insert leaves nothing behind, so it is simply tried again."""
+    c = cfg()
+    body = json.dumps({"type": jtype, "params": params, "depends_on": depends_on}).encode()
+    for attempt in range(10):
+        req = urllib.request.Request(c["url"] + "/api/jobs", data=body, method="POST",
+                                     headers={"Authorization": f"Bearer {c['token']}",
+                                              "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 500 and attempt < 9:
+                time.sleep(0.25)
+                continue
+            try:
+                msg = json.loads(e.read()).get("error")
+            except Exception:
+                msg = e.reason
+            sys.exit(f"slicerctl: POST /api/jobs: HTTP {e.code}: {msg}")
+        except urllib.error.URLError as e:
+            sys.exit(f"slicerctl: cannot reach {c['url']}: {e.reason}")
+
+
 def cmd_pipeline(a):
     keys = list(a.keys)
     if a.keys_from:
         keys += [ln.strip() for ln in open(a.keys_from) if ln.strip() and not ln.startswith("#")]
-    payload = {"keys": keys, "run": a.run, "steps": a.steps.split(","), "charts": a.charts,
-               "mosaic": a.mosaic, "force": a.force}
+    steps = a.steps.split(",")
+    bad = [s for s in steps if s not in ("slice", "convert", "archive")]
+    if bad or not steps:
+        sys.exit(f"slicerctl: steps must be from slice, convert, archive (got {steps}); uploads go through `slicerctl publish`")
+    common = {"charts": a.charts, "mosaic": a.mosaic, "force": a.force}
     if a.slicer_args:
-        payload["slicer_args"] = shlex.split(a.slicer_args)
+        common["slicer_args"] = shlex.split(a.slicer_args)
     if a.concurrency:
-        payload["concurrency"] = a.concurrency
-    out(api("POST", "/api/pipeline", payload))
+        common["concurrency"] = a.concurrency
+    # The converter's own floor is the zoom where the era fits one tile (z4-z6 for a
+    # single sheet). The Leaflet viewer never asks below z8, but the next/ renderer
+    # draws nothing below an archive's minimum zoom, so eras go down to z0.
+    if a.min_zoom >= 0:
+        common["g2p_args"] = ["-min-zoom", str(a.min_zoom)]
+    # A step this run already holds for a key (queued, running or done) is not queued
+    # again, so the same command resumes a submission that stopped part-way and
+    # completes a chain that lost its tail. --force queues everything regardless.
+    held = {}
+    if not a.force:
+        for r in api("GET", f"/api/jobs?run={urllib.request.quote(a.run)}&limit=1000000"):  # newest first
+            if r.get("key") and r["status"] in ("queued", "running", "succeeded"):
+                held.setdefault((r["key"], r["type"]), r["id"])
+    queued, skipped = [], 0
+    for n, key in enumerate(keys, 1):
+        prev = None
+        for step in steps:
+            if (key, step) in held:
+                prev, skipped = held[key, step], skipped + 1
+                continue
+            prev = submit_job(step, {**common, "run": a.run, "key": key}, prev)["id"]
+            queued.append(prev)
+        if n % 250 == 0:
+            print(f"  {n:,}/{len(keys):,} eras", file=sys.stderr, flush=True)
+    if skipped:
+        print(f"  {skipped:,} steps already held by run {a.run} were left as they are", file=sys.stderr)
+    out({"queued": queued})
 
 
 def cmd_submit(a):
@@ -237,6 +295,188 @@ def cmd_remount(a):
 
 def cmd_cleanup(a):
     out(api("POST", "/api/cleanup", {"run": a.run, "key": a.key, "what": a.what.split(",")}))
+
+
+# ---------------------------------------------------------------- errors
+
+# What a worklist needs from a run: every job that did not succeed, and every
+# problem line the slicer printed inside jobs that did (a chart that failed to
+# warp while its era's mosaic completed with the others). Read from the
+# server's job records and logs, so it can be rerun at any point of a run.
+PROBLEM_RX = "✗|⚠|No source files found|no data available|Warning: |Traceback"
+ENGINE_LINE = re.compile(r"^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] ")  # the controller's own lines repeat the job error
+SLICER_STAMP = re.compile(r"^\[\d\d:\d\d:\d\d\]\s*")
+NOISE = re.compile(r"Skipping print-size PDF")
+SOURCE_EXT = re.compile(r"\.(?:tiff?|zip|pdf|jpe?g|png|vrt)\b", re.I)
+LEAD_IN = re.compile(r"(?:\b(?:for|open|into|inside|from|payload|member|Skipping|Warping)|found:|failed:|download:|PDF:)\s+")
+CAUSES = [  # first match names the cause
+    ("download", r"Download failed|Failed to download|Downloaded but extraction failed|Connection error"),
+    ("zip", r"Extraction failed|ZIP payload|No member named|Don't know how to turn member"),
+    ("16-bit rescale", r"8-bit rescale failed"),
+    ("pdf", r"PDF"),
+    ("no source file", r"No source files found|Input file not found"),
+    ("no data for era", r"no data available|No valid input files for mosaic"),
+    ("catalog row", r"fix the dole row|row carries GCPs|container members share cutline"),
+    ("chart artifact", r"chart URI|chart pmtiles|Chart pmtiles|geotiff2pmtiles"),
+    ("no crs", r"no embedded CRS"),
+    ("gcp", r"GCP"),
+    ("cutline", r"[Ss]hapefile|[Cc]utline"),
+    ("unreadable source", r"Could not open|Cannot open|too small|unreadable"),
+    ("antimeridian", r"antimeridian|full-world"),
+    ("warp", r"[Ww]arp"),
+    ("mosaic", r"[Mm]osaic"),
+    ("alignment", r"misaligned|alignment"),
+    ("overlay remount", r"overlay|remount"),
+    ("disk space", r"SSD free space|No space left"),
+    ("interrupted", r"controller restarted|cancelled|interrupted"),
+]
+
+
+def cause_of(text):
+    for name, rx in CAUSES:
+        if re.search(rx, text):
+            return name
+    return "other"
+
+
+def source_file(text):
+    """The source file a slicer line is about (names can hold spaces: 'Washington SEC 97.tif')."""
+    m = re.search(r"\[CSV: ([^\]]+)\]", text)
+    if m:
+        return None if m.group(1) == "no match" else m.group(1).strip()
+    m = SOURCE_EXT.search(text)
+    if not m:
+        return None
+    head = text[:m.end()]
+    cuts = [c.end() for c in LEAD_IN.finditer(head)]
+    name = head[cuts[-1]:] if cuts else head.split()[-1]
+    return name.strip(" :'\"") or None
+
+
+def cmd_errors(a):
+    run = a.run
+    rows = api("GET", f"/api/jobs?run={urllib.request.quote(run)}&limit=1000000")
+    if not rows:
+        sys.exit(f"slicerctl: no jobs for run {run}")
+    rows.reverse()  # oldest first
+    finished = [r for r in rows if r["status"] not in ("queued", "running")]
+    records = []
+
+    def rec(row, severity, text, **extra):
+        records.append({"run": run, "key": row.get("key"), "job": row["id"], "step": row["type"],
+                        "severity": severity, "cause": extra.pop("cause", None) or cause_of(text),
+                        "text": text, "file": source_file(text) if row["type"] == "slice" and severity != "failed" else None,
+                        "finished": row.get("finished"), **extra})
+
+    def inspect(row):
+        """(row, job detail or None, slicer problem lines) for one finished job."""
+        detail, lines = None, []
+        if row["type"] in ("slice", "convert") and row.get("started"):
+            detail = api("GET", f"/api/jobs/{row['id']}")
+        if row["type"] == "slice" and row.get("started"):
+            raw = api("GET", f"/api/jobs/{row['id']}/log?lines=5000&grep={urllib.request.quote(PROBLEM_RX)}")
+            seen = set()
+            for ln in raw:
+                if ENGINE_LINE.match(ln) or NOISE.search(ln):
+                    continue
+                ln = SLICER_STAMP.sub("", ln).strip()
+                if ln and ln not in seen:  # a retried slice prints its problems twice
+                    seen.add(ln)
+                    lines.append(ln)
+        elif row["status"] == "failed":
+            lines = [ln for ln in api("GET", f"/api/jobs/{row['id']}/log?lines=12") if ln.strip()]
+        return row, detail, lines
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        inspected = list(ex.map(inspect, finished))
+    for row, detail, lines in inspected:
+        res = (detail or {}).get("result") or {}
+        hard = lambda ln: "✗" in ln or "No source files found" in ln or "no data available" in ln
+        if row["status"] != "succeeded":
+            err = row.get("error") or row["status"]
+            cause = None
+            if err.startswith("dependency "):
+                cause = "earlier step failed"
+            elif row["type"] == "slice" and "did not complete" in err:
+                # The slicer's own lines say why the era produced no mosaic.
+                cause = next((cause_of(ln) for ln in lines if hard(ln)), "slice incomplete")
+            rec(row, "not run" if cause == "earlier step failed" else "failed", err, cause=cause,
+                **({"log_tail": lines} if row["type"] != "slice" and lines else {}))
+        if row["type"] == "slice":
+            for ln in lines:
+                rec(row, "error" if hard(ln) else "warning", ln)
+            if res.get("attempt", 1) > 1:
+                rec(row, "warning", "slice needed the --parallel-warp 1 retry", cause="retry")
+        if row["type"] == "convert" and row["status"] == "succeeded":
+            if res.get("aligned") is None and not res.get("skipped"):
+                rec(row, "warning", "alignment unverified: no probe had chart coverage (publish needs --allow-unverified)",
+                    cause="alignment")
+            g2p = (detail.get("params") or {}).get("g2p_args") or []
+            wanted = int(g2p[g2p.index("-min-zoom") + 1]) if "-min-zoom" in g2p[:-1] else None
+            if wanted is not None and res.get("min_zoom") not in (None, wanted):
+                rec(row, "warning", f"archive starts at z{res['min_zoom']}, not the requested z{wanted}", cause="zoom floor")
+
+    # ---- per-era state, then the report
+    eras = defaultdict(dict)
+    for r in rows:
+        if r.get("key"):
+            eras[r["key"]][r["type"]] = r["status"]
+    done = sum(1 for e in eras.values() if e.get("archive") == "succeeded")
+    broken = sorted(k for k, e in eras.items() if any(v in ("failed", "cancelled", "interrupted") for v in e.values()))
+    waiting = len(eras) - done - len(broken)
+    status = Counter(r["status"] for r in rows)
+    sev = Counter(r["severity"] for r in records)
+    files = sorted({r["file"] for r in records if r["file"] and r["severity"] == "error"})
+    md = [f"# Slicer run {run}: problems", "",
+          f"*Generated {time.strftime('%F %T')} by `slicerctl errors {run}` from the server's job records and logs. "
+          f"{'The run is still going (' + f'{waiting:,}' + ' eras queued or in progress), so this is a partial list.' if waiting else 'Every queued era has finished.'}*",
+          "", "| | |", "|---|---|",
+          f"| Eras queued in this run | {len(eras):,} |",
+          f"| Eras archived (slice, convert, archive all succeeded) | {done:,} |",
+          f"| Eras with a failed or cancelled step | {len(broken):,} |",
+          f"| Eras still queued or running | {waiting:,} |",
+          f"| Jobs | {', '.join(f'{n:,} {s}' for s, n in sorted(status.items()))} |",
+          f"| Slicer error lines (✗, missing source, no data) | {sev['error']:,} |",
+          f"| Slicer warnings (⚠) and soft findings | {sev['warning']:,} |",
+          f"| Distinct source files named in an error line | {len(files):,} |", ""]
+
+    def section(title, picked, note=None):
+        if not picked:
+            return
+        md.extend([f"## {title}", ""] + ([note, ""] if note else []))
+        groups = defaultdict(list)
+        for r in picked:
+            groups[r["cause"]].append(r)
+        for cause, items in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            n_files = len({r["file"] for r in items if r["file"]})
+            md.append(f"### {cause}: {len(items)}" + (f" ({n_files} source files)" if n_files else ""))
+            md.append("")
+            for r in items:
+                md.append(f"- [ ] `{r['key']}` {r['step']}: {r['text']}")
+            md.append("")
+
+    section("Jobs that failed", [r for r in records if r["severity"] == "failed"],
+            "The era has no new archive. `slicerctl retry JOB` reruns the step and the steps that were waiting on it; "
+            "the job id and its last log lines are in errors.jsonl.")
+    section("Slicer errors inside eras", [r for r in records if r["severity"] == "error"],
+            "A chart that failed here is missing from its era's mosaic (and has no per-chart artifact) even when the era itself completed.")
+    section("Warnings", [r for r in records if r["severity"] == "warning"])
+    skipped = [r for r in records if r["severity"] == "not run"]
+    if skipped:
+        md.extend(["## Steps not run because an earlier step failed", "",
+                   f"{len(skipped)} jobs across {len({r['key'] for r in skipped})} eras; they rerun with the failed job's retry.", ""])
+    if not records:
+        md.extend(["No failures, error lines or warnings so far.", ""])
+
+    out_dir = Path(a.out).expanduser() if a.out else Path(a.repo).expanduser() / "worklists" / "data" / "slicer_runs" / run
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "errors.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
+    (out_dir / "errors.md").write_text("\n".join(md) + "\n")
+    print(f"{run}: {len(eras):,} eras: {done:,} archived, {len(broken):,} with a failed step, {waiting:,} queued or running")
+    print(f"  {sev['failed']:,} failed jobs, {sev['error']:,} slicer error lines ({len(files):,} source files), {sev['warning']:,} warnings")
+    for cause, n in Counter(r["cause"] for r in records if r["severity"] in ("failed", "error")).most_common():
+        print(f"    {n:5,}  {cause}")
+    print(f"  → {out_dir / 'errors.md'}\n  → {out_dir / 'errors.jsonl'}")
 
 
 # ---------------------------------------------------------------- sync
@@ -443,6 +683,7 @@ def main():
     p.add_argument("--keys-from"); p.add_argument("--steps", default="slice,convert,archive")
     p.add_argument("--charts", action="store_true"); p.add_argument("--slicer-args", help='e.g. "--parallel-warp 6"')
     p.add_argument("--concurrency", type=int); p.add_argument("--mosaic", default="move", choices=("move", "delete", "keep"))
+    p.add_argument("--min-zoom", type=int, default=0, help="lowest zoom in the era archive (default 0; -1 = the converter's auto floor)")
     p.add_argument("--force", action="store_true"); p.set_defaults(fn=cmd_pipeline)
     p = sp.add_parser("submit"); p.add_argument("type"); p.add_argument("--run"); p.add_argument("--key")
     p.add_argument("--param", action="append", help="k=v (v parsed as JSON when possible)"); p.add_argument("--after")
@@ -456,6 +697,8 @@ def main():
     p = sp.add_parser("run"); p.add_argument("run"); p.set_defaults(fn=cmd_run)
     p = sp.add_parser("overlay"); p.add_argument("--stale", action="store_true"); p.set_defaults(fn=cmd_overlay)
     p = sp.add_parser("cleanup"); p.add_argument("run"); p.add_argument("--key"); p.add_argument("--what", default="temp"); p.set_defaults(fn=cmd_cleanup)
+    p = sp.add_parser("errors"); p.add_argument("run"); p.add_argument("--out", help="output directory (default <repo>/worklists/data/slicer_runs/RUN)")
+    p.add_argument("--repo", default=str(DEFAULT_REPO)); p.set_defaults(fn=cmd_errors)
     p = sp.add_parser("sync"); p.add_argument("--repo", default=str(DEFAULT_REPO)); p.set_defaults(fn=cmd_sync)
     p = sp.add_parser("publish"); p.add_argument("run"); p.add_argument("key")
     p.add_argument("--repo", default=str(DEFAULT_REPO)); p.add_argument("--dry-run", action="store_true")

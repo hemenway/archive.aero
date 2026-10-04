@@ -2274,7 +2274,10 @@ class ChartSlicer:
         if not binary.exists():
             self.log(f"      ✗ geotiff2pmtiles binary not found at {binary}")
             return False
-        args = [str(binary), '-format', 'webp', '-quality', '80', '-min-zoom', '8',
+        # Levels down to z0 (was z8 until 2026-10-03). The Leaflet viewer never
+        # asks below z8 and downscales; the next/ renderer draws nothing below
+        # an archive's minimum zoom, and a sheet fitted to a phone sits at z6-7.
+        args = [str(binary), '-format', 'webp', '-quality', '80', '-min-zoom', '0',
                 '-concurrency', '2']
         try:
             ds = gdal.Open(str(warped_tif))

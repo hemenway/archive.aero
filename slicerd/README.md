@@ -45,9 +45,28 @@ slicerctl sync                      # after changing scripts/ or the catalog
 slicerctl eras --start 2024-01-01
 slicerctl pipeline 2026-10-03_reslice 2024-12-26_to_2025-02-20 2025-02-20_to_2025-04-17
 slicerctl jobs ; slicerctl log <id> -f
+slicerctl errors 2026-10-03_reslice # failed jobs + every slicer ✗/⚠ line, by cause
 slicerctl publish 2026-10-03_reslice 2024-12-26_to_2025-02-20 --dry-run
 slicerctl publish 2026-10-03_reslice 2024-12-26_to_2025-02-20   # live: R2 + index.html push
 ```
+
+`pipeline` converts with `-min-zoom 0` (`--min-zoom -1` restores the converter's
+auto floor, the zoom where the era fits one tile), and the slicer's per-chart
+artifacts go down to z0 as well. The Leaflet viewer never asks below z8; the
+`next/` renderer draws nothing below an archive's minimum zoom. The MCP
+`submit_pipeline` tool has no such default: queue the convert step with
+`submit_job` and `g2p_args: ["-min-zoom", "0"]`.
+
+`pipeline` queues one era at a time and retries a refused job, because the
+deployed server's job ids collide within about a hundred jobs queued in one
+call (fixed in `app/engine.py`, live after the next `deploy.sh`). A step the run
+already holds for a key is not queued again, so repeating the command resumes
+an interrupted submission; `--force` queues everything regardless.
+
+`errors RUN` reads the server's job records and logs and writes
+`worklists/data/slicer_runs/RUN/errors.md` (a checklist grouped by cause) and
+`errors.jsonl` (one record per problem, with job ids). It can be run at any
+point of a run and says when the list is partial.
 
 `publish` is split across machines. The NUC checks eligibility, builds the
 metadata bundle, and uploads the bundle and then the era. Straight away the Mac
