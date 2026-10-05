@@ -27,6 +27,8 @@ On Linux, install browser system dependencies with
   extracted from `src/viewer.js`.
   Loading tests cover local/deferred dependencies, on-demand PapaParse, missing or
   slow scripts, the no-DecompressionStream fallback, and conditional asset requests.
+- `npm run test:browser:site`: stages `_site/`, minifies it as the Pages deploy
+  does, and reruns the browser suite with `index.html` and `assets/` served from it.
 
 Browser tests serve the actual page, fingerprinted modules, styles and vendored
 libraries on `127.0.0.1:4173`, preserving the page's integrity checks. The local

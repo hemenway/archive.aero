@@ -18,13 +18,16 @@ for (const url of Object.keys(vendor)) {
 }
 // The guard extracts source classes; runtime tests execute the generated module.
 files.set('/src/viewer.js', ['src/viewer.js', 'text/javascript']);
+// SITE_ROOT=_site runs the same suite against the staged, minified deploy artifact.
+const staged = process.env.SITE_ROOT ? new URL(process.env.SITE_ROOT.replace(/\/?$/, '/'), new URL('../', import.meta.url)) : null;
 createServer(async (req, res) => {
   const pathname = new URL(req.url, 'http://localhost').pathname;
   const entry = files.get(pathname) || (/^\/assets\/(boot|viewer|csv)\.[a-f0-9]{16}\.js$/.test(pathname)
     ? [pathname.slice(1), 'text/javascript'] : null);
   if (!entry) { res.writeHead(404).end(); return; }
   try {
-    const body = await readFile(new URL('../' + entry[0], import.meta.url));
+    const published = staged && (entry[0] === 'index.html' || entry[0].startsWith('assets/'));
+    const body = await readFile(new URL(entry[0], published ? staged : new URL('../', import.meta.url)));
     const versioned = pathname.startsWith('/assets/') || pathname.startsWith('/vendor/');
     const headers = { 'content-type': entry[1], 'cache-control': versioned ? 'public, max-age=7200' : 'no-store',
       etag: '"' + createHash('sha256').update(body).digest('hex') + '"' };

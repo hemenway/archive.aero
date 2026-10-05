@@ -22,12 +22,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+      - run: npm ci
       - name: Check committed frontend artifacts
         run: node scripts/build_frontend.mjs --check
       - name: Test publication boundary
         run: python3 -m unittest discover -s tests -p 'test_pages_publication.py' -v
       - name: Stage allowlisted site files
         run: python3 scripts/build_pages.py
+      - name: Minify staged viewer modules
+        run: node scripts/minify_site.mjs
       - uses: actions/upload-pages-artifact@v4
         with:
           path: _site

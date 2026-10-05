@@ -23,7 +23,10 @@
 GitHub Pages uses the `Deploy site to GitHub Pages` Actions workflow. It publishes
 only `_site/`, staged by `python3 scripts/build_pages.py` from `site-files.json`
 and committed, fingerprinted `assets/{boot,viewer,csv}.*.js` modules. Old module
-hashes stay available for cached HTML. `dates.csv` is the viewer's public fallback
+hashes stay available for cached HTML. The workflow then minifies those staged
+modules with esbuild (`scripts/minify_site.mjs`); the committed copies stay
+readable, and `npm run test:browser:site` runs the browser suite against the
+minified artifact. `dates.csv` is the viewer's public fallback
 inventory (date and chart URL); operational CSVs are excluded.
 
 Worklists, scripts, source trees, local catalogs, credentials, and repository
