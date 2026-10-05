@@ -1503,7 +1503,7 @@ class ChartSlicer:
     # ---- warp-temp provenance -------------------------------------------
     # Every warp output gets a `<output>.georef.json` sidecar recording a
     # fingerprint of the inputs that produced it: the source file (path, size,
-    # mtime), the row's georef columns (GCPs, cutline, LCC, rotation,
+    # mtime), the row's georef columns (GCPs, cutline, LCC, rotation, crop,
     # src_crs), the cutline shapefile (path, size, mtime) and the warp mode.
     # Resume reuses a temp only when the sidecar matches the current row, and
     # the library rebuild restores only temps whose sidecar names a row that
@@ -1512,7 +1512,7 @@ class ChartSlicer:
     # alternate's leftover warp was mosaicked alongside the new winner, and
     # `washington_*` temps were credited to `washington_dc`.
     GEOREF_FIELDS = (
-        'filename', 'location', 'date', 'end_date', 'rotation', 'src_crs', 'half',
+        'filename', 'location', 'date', 'end_date', 'rotation', 'src_crs', 'half', 'crop',
         'cutline', 'cutline_wkt', 'lcc_lat1', 'lcc_lat2', 'lcc_lat0', 'lcc_lon0',
     )
 
@@ -1649,6 +1649,10 @@ class ChartSlicer:
         if not shapefile and not full_sheet and not no_cutline:
             self.log(f"      ✗ No shapefile available for {input_tiff.name}")
             return False
+
+        if record is not None and (record.get('crop') or '').strip():
+            self.log(f"      ⚠ {input_tiff.name}: crop is only applied to GCP rows - "
+                     f"this warp uses the file's own georeferencing and reads the whole image")
 
         # Row-declared source CRS (jpg + world file sources: GDAL reads the
         # .JGW but not the .prj, and a warp without srcSRS silently passes
@@ -1942,18 +1946,37 @@ class ChartSlicer:
         # authored in the rotated frame. Map them back to the raw file's frame
         # (the order-1 GCP fit absorbs the rotation, so no raster resampling).
         rotation = dole_v2.row_rotation(row)
-        if rotation:
+        crop_win = None
+        if rotation or (row.get('crop') or '').strip():
             src_ds = gdal.Open(str(input_tiff))
             if src_ds is None:
-                self.log(f"      ✗ Cannot open {input_tiff.name} to apply rotation {rotation}")
+                self.log(f"      ✗ Cannot open {input_tiff.name} to apply rotation/crop")
                 return False
             raw_w, raw_h = src_ds.RasterXSize, src_ds.RasterYSize
             src_ds = None
+        if rotation:
             context["pixels"] = [
                 dole_v2.px_display_to_raw(px, py, rotation, raw_w, raw_h)
                 for px, py in context["pixels"]
             ]
             self.log(f"    Rotation {rotation}° CW: GCP pixels remapped to raw frame")
+
+        # Overscan crop: only the row's crop window is read from the source,
+        # for the mosaic and the full-sheet artifact alike, so scanner bed
+        # never reaches a warp. The GCPs keep whole-image pixel coordinates
+        # in the catalog; shift them into the window here. A bad crop fails
+        # the row - warping the whole image instead would put the overscan
+        # back without anyone noticing.
+        try:
+            if (row.get('crop') or '').strip():
+                crop_win = dole_v2.row_crop_raw_window(row, raw_w, raw_h)
+        except ValueError as e:
+            self.log(f"      ✗ {e} - fix the dole row's crop")
+            return False
+        if crop_win:
+            xoff, yoff, xsize, ysize = crop_win
+            context["pixels"] = [(px - xoff, py - yoff) for px, py in context["pixels"]]
+            self.log(f"    Crop: source window {xsize}x{ysize} at ({xoff},{yoff}) of {raw_w}x{raw_h}")
 
         # A wrong cutline ref or wrong GCP lat/lons otherwise "succeed" into an
         # all-alpha raster and ship an empty mosaic (Tulsa/Milwaukee, 2026-07 run).
@@ -2006,6 +2029,7 @@ class ChartSlicer:
                 format="VRT",
                 GCPs=gcps,
                 outputSRS=str(context["source_crs"]),
+                srcWin=list(crop_win) if crop_win else None,
                 **render_options,
             )
             ds_vrt = gdal.Translate(str(temp_gcp_vrt), str(input_tiff), options=translate_options)
