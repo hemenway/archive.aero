@@ -28,6 +28,16 @@ for (const [marker, attr, name] of [['data-viewer-preload', 'href', 'viewer'], [
   if ([...generated.matchAll(pattern)].length !== 1) throw new Error(`Expected one ${marker} in index.html`);
   generated = generated.replace(pattern, (_, a, b) => a + urls.get(name) + b);
 }
+// The inline early fetch of the metadata bundle must ask for exactly what
+// MetaBundle.load will, so its arguments are copied from CONFIG, never typed.
+const viewerSource = await readFile(path.join(root, 'src', 'viewer.js'), 'utf8');
+const bundleUrl = /\bbundleUrl:\s*(null|'[^']*')/.exec(viewerSource);
+const bundleHead = /\bbundleHeadBytes:\s*(\d+)/.exec(viewerSource);
+const headCall = /(<script data-bundle-head>[\s\S]*?\}\)\()[^)]*(\);\s*<\/script>)/g;
+if (!bundleUrl || !bundleHead) throw new Error('Expected bundleUrl and bundleHeadBytes in src/viewer.js');
+if ([...generated.matchAll(headCall)].length !== 1) throw new Error('Expected one data-bundle-head script in index.html');
+const headUrl = bundleUrl[1] === 'null' ? 'null' : JSON.stringify(bundleUrl[1].slice(1, -1).replace(/\\(.)/g, '$1'));
+generated = generated.replace(headCall, (_, a, z) => `${a}${headUrl}, ${bundleHead[1]}${z}`);
 outputs.set('index.html', generated);
 for (const [relative, contents] of outputs) {
   const filename = path.join(root, relative);

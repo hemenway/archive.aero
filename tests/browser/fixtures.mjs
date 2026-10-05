@@ -32,14 +32,18 @@ const raster = archive();
 const vector = archive(true);
 
 // Valid metadata bundle exercises the normal boot path as well as CSV fallback.
-const index = gzipSync(Buffer.from(JSON.stringify({
-  version: 1, baseUrl: 'https://data.archive.aero/sectionals/',
-  groups: [{ name: 'fixture', off: 0, len: raster.length * keys.length, i0: 0, i1: keys.length }],
-  eras: keys.map((k, i) => ({ k, off: i * raster.length, len: raster.length })),
-})));
-const preamble = Buffer.alloc(16);
-preamble.write('AAMBv1\n\0'); preamble.writeUInt32LE(index.length, 8);
-const bundle = Buffer.concat([preamble, index, ...keys.map(() => raster)]);
+// eraBounds: optional [w, s, e, n] per era (index "b"), as real bundles carry.
+function makeBundle(eraBounds = null) {
+  const index = gzipSync(Buffer.from(JSON.stringify({
+    version: 1, baseUrl: 'https://data.archive.aero/sectionals/',
+    groups: [{ name: 'fixture', off: 0, len: raster.length * keys.length, i0: 0, i1: keys.length }],
+    eras: keys.map((k, i) => ({ k, off: i * raster.length, len: raster.length, ...(eraBounds ? { b: eraBounds[i] } : {}) })),
+  })));
+  const preamble = Buffer.alloc(16);
+  preamble.write('AAMBv1\n\0'); preamble.writeUInt32LE(index.length, 8);
+  return Buffer.concat([preamble, index, ...keys.map(() => raster)]);
+}
+const bundle = makeBundle();
 
 async function rangeResponse(route, bytes) {
   const range = /^bytes=(\d+)-(\d+)$/.exec(route.request().headers().range || '');
@@ -52,7 +56,8 @@ async function rangeResponse(route, bytes) {
   } });
 }
 
-export async function installFixtures(page, { bundleFails = false, csvFails = false } = {}) {
+export async function installFixtures(page, { bundleFails = false, csvFails = false, eraBounds = null } = {}) {
+  const bundleBytes = eraBounds ? makeBundle(eraBounds) : bundle;
   const errors = [];
   const unexpected = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -64,7 +69,7 @@ export async function installFixtures(page, { bundleFails = false, csvFails = fa
     const url = new URL(route.request().url());
     // WebKit routes local image blobs through this hook; they are not network IO.
     if (url.protocol === 'blob:' && url.origin === 'http://127.0.0.1:4173') return route.continue();
-    if (url.pathname.endsWith('.bundle')) return bundleFails ? route.fulfill({ status: 503, body: '' }) : rangeResponse(route, bundle);
+    if (url.pathname.endsWith('.bundle')) return bundleFails ? route.fulfill({ status: 503, body: '' }) : rangeResponse(route, bundleBytes);
     if (url.pathname.endsWith('.pmtiles')) return rangeResponse(route, url.pathname.includes('/basemap/') ? vector : raster);
     if (url.pathname.endsWith('/dates.csv')) return route.fulfill({ status: csvFails ? 503 : 200, contentType: 'text/csv', body: csv });
     if (url.pathname.endsWith('/timeline_data.json')) return route.fulfill({ json: inventory });

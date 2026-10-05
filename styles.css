@@ -161,6 +161,16 @@ body {
   letter-spacing: 1px;
 }
 
+.loading-noscript {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.loading-noscript a {
+  color: var(--primary);
+}
+
 #map {
   height: 100%;
   width: 100%;

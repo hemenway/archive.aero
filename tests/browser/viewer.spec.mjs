@@ -2,10 +2,10 @@ import { test, expect } from '@playwright/test';
 import { installFixtures } from './fixtures.mjs';
 
 const view = '/?date=1960-01-01&lat=32.7767&lng=-96.7970&zoom=10';
-async function ready(page, url = view) {
+async function ready(page, url = view, date = '1960-01-01') {
   await page.goto(url);
   await expect(page.locator('#loadingSplash')).toBeHidden();
-  await expect(page.locator('#timeSelect')).toHaveValue('1960-01-01');
+  await expect(page.locator('#timeSelect')).toHaveValue(date);
   await expect.poll(() => page.locator('#map canvas.leaflet-tile').evaluateAll(canvases =>
     canvases.some(canvas => canvas.getContext('2d').getImageData(128, 128, 1, 1).data[3] > 0)
   ), { message: 'a real PMTiles raster tile should render visible pixels' }).toBe(true);
@@ -132,5 +132,62 @@ test('without a share link the map opens on the lower 48 and never geolocates', 
   expect(Math.abs(parseFloat(link.searchParams.get('lat')) - 38.0)).toBeLessThan(0.6);
   expect(Math.abs(parseFloat(link.searchParams.get('lng')) + 95.95)).toBeLessThan(0.6);
   expect(hosts).not.toContain('get.geojs.io');
+  expect(diagnostics).toEqual({ errors: [], unexpected: [] });
+});
+
+test('the era index is read once, by the early fetch, and a share link never touches the newest era', async ({ page }) => {
+  const diagnostics = await installFixtures(page);
+  const heads = [];
+  const archives = new Set();
+  page.on('request', request => {
+    const url = new URL(request.url());
+    const range = request.headers().range || '';
+    if (url.pathname.endsWith('.bundle') && range.startsWith('bytes=0-')) heads.push(range);
+    if (url.pathname.endsWith('.pmtiles') && !url.pathname.includes('/basemap/')) archives.add(url.pathname.split('/').pop());
+  });
+  await ready(page);
+  // One head read, sized by CONFIG.bundleHeadBytes: the inline script's
+  // request is adopted by MetaBundle.load rather than repeated.
+  expect(heads).toEqual(['bytes=0-98303']);
+  // ?date=1960-01-01 paints its own era only; boot used to paint the newest
+  // frame (1970) first and read its tiles for nothing.
+  expect([...archives]).toEqual(['1960-01-01_to_1970-01-01.pmtiles']);
+  expect(diagnostics).toEqual({ errors: [], unexpected: [] });
+});
+
+test('the address bar follows the timeline, the map and the pin', async ({ page }) => {
+  const diagnostics = await installFixtures(page);
+  await page.goto('/');
+  await expect(page.locator('#loadingSplash')).toBeHidden();
+  // Untouched, a bare URL stays bare.
+  await page.waitForTimeout(600);
+  expect(new URL(page.url()).search).toBe('');
+  await page.locator('#prevBtn').click();
+  await expect(page).toHaveURL(/\?date=1960-01-01&lat=-?[\d.]+&lng=-?[\d.]+&zoom=6$/);
+  await page.locator('#map').focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/&zoom=6&pin=-?[\d.]+,-?[\d.]+$/);
+  // The address is a working permalink: a reload restores date and pin.
+  await page.reload();
+  await expect(page.locator('#loadingSplash')).toBeHidden();
+  await expect(page.locator('#timeSelect')).toHaveValue('1960-01-01');
+  await expect(page.locator('#pinPanel')).toBeVisible();
+  expect(diagnostics).toEqual({ errors: [], unexpected: [] });
+});
+
+test('playback skips editions that change nothing in view', async ({ page }) => {
+  // Three eras; only the first and last cover Dallas. Playing from the
+  // first must jump straight to the last, not sit on the Alaska-only era.
+  const dallas = [-98, 31, -95, 34];
+  const diagnostics = await installFixtures(page, { eraBounds: [dallas, [-150, 60, -140, 65], dallas] });
+  await ready(page, '/?date=1950-01-01&lat=32.7767&lng=-96.7970&zoom=10', '1950-01-01');
+  await page.clock.install();
+  await page.locator('#playBtn').click();
+  await page.clock.runFor(2100);
+  await expect(page.locator('#timeSelect')).toHaveValue('1970-01-01');
+  await page.locator('#playBtn').click();
+  // The step buttons still move one edition at a time.
+  await page.locator('#prevBtn').click();
+  await expect(page.locator('#timeSelect')).toHaveValue('1960-01-01');
   expect(diagnostics).toEqual({ errors: [], unexpected: [] });
 });
