@@ -131,3 +131,45 @@ and published in the [October 1 batch](georef_publish_2026-10-01.md). Chesapeake
 Bay 1952 is a WAC and remains preserved outside the sectional catalog. This is
 a separate donation from the 48 Ross scans in the September audit; those
 disposition items remain open.
+
+## Pericles donation + eBay purchases — 2026-10-04
+
+49 M40 scans from October 2–3 were filed in `rawtiffs/Pericles, Matthew/` (6 files)
+and `rawtiffs/eBay/` (43) and catalogued (7,695 → 7,744 rows; backup
+`pre_pericles_ebay_scans_2026-10-04.csv`). Georef tool items A9–A11.
+
+- 12 sectional sheets, 24 faces, 1980–92: Albuquerque 36, Atlanta 25, Dallas-Ft Worth 35,
+  Denver 34, Jacksonville 27, Las Vegas 35, Los Angeles 38, New Orleans 43/44/45/50,
+  Phoenix 34. None was held. Cutline and LCC prefilled from siblings, GCPs blank.
+- First non-sectional rows: 6 TACs (Denver 25, Las Vegas 24, New Orleans 28 and 30,
+  San Diego 11, Puerto Rico-VI 10) and 9 WAC sheets, 18 faces (CF-16 21, CF-17 21,
+  CF-19 18, CG-18 16, CG-19 16 and 22, CG-20 20, CG-21 17, CH-25 22). TAC cutline
+  blank; WAC rows carry `wac/<code>` (below).
+- Flight Case Planning Chart 1985-08-01 is a CONUS planning chart, not a WAC. It has a
+  row but should stay without GCPs unless it is wanted under the mosaics.
+
+Chart type is the location suffix (` TAC`, ` WAC`, ` Planning Chart`;
+`dole_v2.location_chart_type`). The slicer stacks one era's sources WAC, then
+sectional, then TAC (`dole_v2.CHART_TYPE_LAYER`). Chart URIs come out as
+`sectionals/chart/new_orleans_tac/<date>` and `sectionals/chart/cf_16_wac/<date>-north`.
+
+`shapefiles/wac/` (new, 8 outlines) holds the nominal sheet limits read off the printed
+corner labels: CF row 40–48N (CF-16 125–109W, CF-17 109–93W, CF-19 77–61W), CG row
+32–40N (CG-18 125–111W, CG-19 114–100W, CG-20 100–86W, CG-21 86–72W), CH-25 24–32N
+85–73W. The sheets bleed past these limits (CF-16 to about 49N, the others about 0.3°),
+and the rectangle trims that bleed. The georef tool's cutline picker now lists every
+shapefile folder (`terminal/`, `wac/`, …), and Check Overlay draws the selected
+cutline's real outline in red over the cyan graticule (15′ steps on TAC-sized sheets).
+
+Printed dates that differ from the scan names: Albuquerque ed 36 is 1985-11-21,
+Denver TAC ed 25 is 1986-02-13. The Puerto Rico–Virgin Islands sheet is a TAC.
+
+Open:
+- The stacking only orders charts inside one era file. A WAC whose date range differs
+  from the sectionals around it is its own era, and the viewer draws eras in effect by
+  start date, later on top (`src/viewer.js`, `rangesInEffect.sort`). A WAC that starts
+  after a sectional will cover it until the viewer learns chart types.
+- slicerd on the NUC runs its own copy of the slicer; it does not have the stacking yet.
+- Chesapeake Bay WAC (357) 1952 in the Roslewski folder is still uncatalogued.
+- Not scanned from this pile: the enroute low charts, Flight Test Guide, South Carolina,
+  Dominican Republic and Florida charts on the donation list.

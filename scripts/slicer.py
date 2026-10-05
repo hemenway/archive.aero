@@ -3327,8 +3327,12 @@ class ChartSlicer:
             # names within a location. gdalwarp composites last-source-wins,
             # so half-sheet seams and same-location overlaps must not follow
             # thread completion order (they did, via as_completed).
+            # Chart types stack by scale: WAC at the bottom, then sectionals,
+            # TAC on top (dole_v2.CHART_TYPE_LAYER; type = location suffix).
+            loc_layer = {loc: dole_v2.CHART_TYPE_LAYER[dole_v2.location_chart_type(loc.replace('_', ' '))]
+                         for loc in all_locations}
             mosaic_sources = []
-            for location in sorted(all_locations):
+            for location in sorted(all_locations, key=lambda loc: (loc_layer[loc], loc)):
                 entries = vrt_library.get(location, {}).get(date)
                 if not entries:
                     continue

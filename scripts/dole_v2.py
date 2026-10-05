@@ -246,6 +246,44 @@ def row_half(row) -> str:
     return value if value in ("north", "south", "east", "west") else ""
 
 
+# Chart type (2026-10-04): TACs, WACs and planning charts are catalogued
+# beside the sectionals and sliced into the same era mosaics. The type is
+# carried by the LOCATION suffix ("New Orleans TAC", "CF-16 WAC", "Flight
+# Case Planning Chart") rather than a column: the suffix already has to be
+# there so a TAC and the sectional of the same city and date get different
+# candidate groups, cutline votes and chart URIs, and a location-derived type
+# cannot be dropped by a writer that sanitizes rows to an older header.
+# Edition numbers are per chart type - never match on (city, edition) alone.
+CHART_TYPE_SECTIONAL = "sectional"
+_CHART_TYPE_SUFFIXES = (
+    (" planning chart", "planning"),
+    (" wac", "wac"),
+    (" tac", "tac"),
+)
+# Mosaic stacking, bottom to top. gdalwarp composites last-source-wins, so
+# where charts of one era overlap the WAC lies under the sectional and the
+# TAC on top (smaller scale below larger scale).
+CHART_TYPE_LAYER = {"planning": 0, "wac": 1, CHART_TYPE_SECTIONAL: 2, "tac": 3}
+
+
+def location_chart_type(location) -> str:
+    """'tac' / 'wac' / 'planning' from a location's suffix, else 'sectional'."""
+    loc = str(location or "").strip().lower()
+    for suffix, kind in _CHART_TYPE_SUFFIXES:
+        if loc.endswith(suffix):
+            return kind
+    return CHART_TYPE_SECTIONAL
+
+
+def row_chart_type(row) -> str:
+    return location_chart_type(row.get("location"))
+
+
+def row_layer(row) -> int:
+    """Mosaic stacking rank of the row's chart type (higher = drawn later)."""
+    return CHART_TYPE_LAYER[row_chart_type(row)]
+
+
 def row_rotation(row) -> int:
     """Row's display rotation in degrees clockwise: 0, 90, 180 or 270."""
     value = str(row.get("rotation") or "").strip()
