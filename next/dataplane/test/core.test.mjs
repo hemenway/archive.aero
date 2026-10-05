@@ -11,8 +11,11 @@ const withBitmaps=(t,value=async()=>({close(){}}))=>{const d=Object.getOwnProper
 test('main-thread facade, absent readiness and eviction are deterministic',async()=>{
  const calls=[];const dp=await createDataPlane({worker:false,manifestUrl:'http://fixture/manifest',fetch:async url=>{calls.push(String(url));return String(url).endsWith('manifest')?Response.json(manifest):new Response(null,{status:204});}});
  const tiles=[{z:10,x:238,y:410},{z:10,x:239,y:410}],date='1951-01-01';assert.deepEqual(dp.manifest.frames,['1950-01-01']);assert.equal(dp.readiness(date,tiles),0);let count=0;dp.on('absent',()=>count++);
+ const key=dp.planCharts(date,tiles).tiles[0].items[0].key;
  dp.setDemand({date,chartTiles:tiles,scrub:{direction:0}});await wait(()=>dp.readiness(date,tiles)===1);assert.equal(count,2); // shared full-res source plus bootstrap
- const n=calls.length,key=dp.planCharts(date,tiles).tiles[0].items[0].key;dp.markEvicted(key);assert.equal(dp.readiness(date,tiles),1);dp.setDemand({date,chartTiles:tiles});await wait(()=>count>=2);assert.equal(calls.length,n);dp.destroy();
+ // A tile the archive does not have leaves the plan.
+ assert.deepEqual(dp.planCharts(date,tiles).tiles.map(t=>t.items.length),[0,0]);
+ const n=calls.length;dp.markEvicted(key);assert.equal(dp.readiness(date,tiles),1);dp.setDemand({date,chartTiles:tiles});await wait(()=>count>=2);assert.equal(calls.length,n);dp.destroy();
 });
 test('queryPin loads only selected shard and failed JSON retries later',async()=>{
  let shardCalls=0;const inventory={locations:{Dallas:{ref:'d',charts:[{d:'1950-01-01',e:'1960-01-01'}]}},rings:{d:[[[-98,31],[-95,31],[-95,34],[-98,34]]]}};
@@ -22,7 +25,9 @@ test('queryPin loads only selected shard and failed JSON retries later',async()=
 test('a terminal Worker failure rejects future RPC instead of wedging promises',async t=>{
  const previous=globalThis.Worker;let instance;
  class MockWorker {constructor(){instance=this;}postMessage({id,method}){if(method==='init')queueMicrotask(()=>this.onmessage({data:{id,result:manifest}}));}terminate(){}}
- globalThis.Worker=MockWorker;t.after(()=>{if(previous===undefined)delete globalThis.Worker;else globalThis.Worker=previous;});
+ // The page fetches the manifest itself and hands it to the Worker.
+ const realFetch=globalThis.fetch;globalThis.fetch=async()=>Response.json(manifest);
+ globalThis.Worker=MockWorker;t.after(()=>{globalThis.fetch=realFetch;if(previous===undefined)delete globalThis.Worker;else globalThis.Worker=previous;});
  const dp=await createDataPlane({manifestUrl:'http://fixture/manifest'});let error;dp.on('error',e=>{error=e;});instance.onerror({message:'Worker crash'});assert.equal(error.error.message,'Worker crash');await assert.rejects(dp.loadAirfields(),/Worker crash/);await assert.rejects(dp.queryPin(-96.7,32.7,'1951-01-01'),/Worker crash/);dp.destroy();
 });
 test('superseded airspace tiles release retained rings and tell renderer to remove batches',async()=>{

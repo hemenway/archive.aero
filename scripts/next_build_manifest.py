@@ -55,7 +55,11 @@ def build(directory,coverage,overlays=None,tile_base='https://data.archive.aero/
             kind=stem.split('/')[0]
             if result[kind] is not None: raise ValueError('multiple '+kind+' archives; stage only the selected build')
             result[kind]={'p':stem+'.'+h,'z':z}
-            if kind=='basemap': result[kind]['tileSize']=512
+            if kind=='basemap':
+                result[kind]['tileSize']=512
+                # A vector archive (PMTiles tile type 1) is production's Protomaps cutout, painted in the browser with
+                # production's flavor; a raster one is drawn as it is.
+                if a.h['tile_type']==1: result[kind].update(format='mvt',flavor='dark',lang='en')
         else: raise ValueError('unknown archive namespace '+stem)
     result['eras'].sort(key=lambda e:(*parse_key_dates(e['k']),e['k']))
     if not result['eras']: raise ValueError('no era archives')

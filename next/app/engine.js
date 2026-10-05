@@ -131,9 +131,9 @@ export class MapController {
       chartInfoEffective: document.getElementById('chartInfoEffective')
     };
 
-    dp.on('tile', ({ key, bitmap }) => {
+    dp.on('tile', ({ key, bitmap, replace }) => {
       try {
-        renderer.upload(key, bitmap);
+        renderer.upload(key, bitmap, replace);
       } catch (error) {
         bitmap.close?.();
         this._degrade(key, error);
@@ -145,9 +145,13 @@ export class MapController {
     dp.on('absent', ({ key }) => {
       this.absentKeys.add(key);
       this._renderPlans();
+      this._replanSoon(); // what the missing tile was hiding comes back into the plan
       this._syncLoader();
       this._notePaint();
     });
+    // A decoded tile showed where its archive is blank or solid: the plan drops
+    // what can no longer be seen (the data plane has already stopped fetching it).
+    dp.on('occupancy', () => this._replanSoon());
     dp.on('airspace', ({ tileId, batch }) => renderer.setAirspaceTile(tileId, batch));
     dp.on('error', ({ key, error }) => {
       if (key === 'worker') { this.failed = true; this._syncLoader(); this.onFatal(error); }
@@ -170,6 +174,7 @@ export class MapController {
 
   destroy() {
     cancelAnimationFrame(this._demandFrame);
+    cancelAnimationFrame(this._replanFrame);
     clearInterval(this._watchTimer);
     clearTimeout(this.spinnerTimeout);
     this.resizeObserver.disconnect();
@@ -230,6 +235,22 @@ export class MapController {
     });
   }
 
+  _replanSoon() {
+    if (this._replanFrame || this._demandFrame || !this.plan) return;
+    this._replanFrame = requestAnimationFrame(() => {
+      this._replanFrame = 0;
+      if (!this.lastFrameDate || this.failed) return;
+      this.plan = this.dp.planCharts(this.lastFrameDate, this.chartTiles, { solo: this.soloState?.source || null });
+      this._renderPlans();
+      this._syncLoader();
+      this._notePaint();
+    });
+  }
+
+  // Charts hide what is under them only at full opacity, and only while none
+  // of them has failed to load.
+  _occlude() { return this.overlayOpacity >= 1 && !this.chartsHidden && this.failedKeys.size === 0; }
+
   // Tell the data plane what the view needs and hand the renderer the plan.
   _demand() {
     if (!this.lastFrameDate || this.failed) return;
@@ -244,7 +265,8 @@ export class MapController {
       airspaceTiles: this.airspaceOn ? this.chartTiles : [],
       center: { x: camera.x, y: camera.y },
       scrub: { direction: this.scrubDirection, velocity: this.playing ? 0.5 : 0, playing: this.playing },
-      solo
+      solo,
+      occlude: this._occlude()
     });
     this.plan = this.dp.planCharts(this.lastFrameDate, this.chartTiles, { solo });
     this._renderPlans();
@@ -337,7 +359,8 @@ export class MapController {
     console.warn(`archive.aero: ${key || 'data plane'}: ${error?.message || error}`);
     if (typeof key === 'string' && key.includes('/') && !this.failedKeys.has(key)) {
       this.failedKeys.add(key);
-      setTimeout(() => this.failedKeys.delete(key), 30000);
+      setTimeout(() => { this.failedKeys.delete(key); this._demandSoon(); }, 30000);
+      this._demandSoon();
     }
     const now = performance.now();
     if (!this._lastFailToast || now - this._lastFailToast > 4000) {
@@ -417,8 +440,10 @@ export class MapController {
   }
 
   setOpacity(opacity) {
+    const occluded = this._occlude();
     this.overlayOpacity = opacity;
     this._applyStyle();
+    if (occluded !== this._occlude()) this._demandSoon();
   }
 
   // The layers-panel charts switch. A persistent flag (not a one-shot

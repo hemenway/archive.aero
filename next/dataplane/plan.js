@@ -13,11 +13,65 @@ export function covered(c,t) {
   for(let y=t.y*s;y<(t.y+1)*s;y++) for(let x=t.x*s;x<(t.x+1)*s;x++) if(c.has(y*64+x)) return true;
   return false;
 }
+// Occupancy: what a decoded chart tile says about its own area, on an 8x8 grid of 32 px cells. Bytes 0-7 hold one row
+// each of "any pixel drawn", bytes 8-15 of "every pixel opaque". A tile up to three levels below reads its answer from
+// the cells it covers, so the low-resolution ancestor every archive loads first settles most of its descendants.
+export const EMPTY = new Uint8Array(16);
+export function occupancyOf(alpha,size=256) {
+  const out=new Uint8Array(16),cell=size/8;
+  for(let cy=0;cy<8;cy++) for(let cx=0;cx<8;cx++) {
+    let any=false,full=true;
+    for(let y=cy*cell;y<(cy+1)*cell;y++) { const row=(y*size)<<2; for(let x=cx*cell;x<(cx+1)*cell;x++) { const a=alpha[row+(x<<2)+3]; if(a) any=true; if(a!==255) full=false; } }
+    if(any) out[cy]|=1<<cx; if(full) out[8+cy]|=1<<cx;
+  }
+  return out;
+}
+// {any, full} for one source tile of an archive, from the nearest tile at or above it that has been seen; null if none.
+export function occupancy(occ,path,src) {
+  for(let dz=0;dz<=3&&dz<=src.z;dz++) {
+    const g=occ.get(`${path}/${src.z-dz}/${src.x>>dz}/${src.y>>dz}`); if(!g) continue;
+    const n=8>>dz,x0=(src.x&((1<<dz)-1))*n,y0=(src.y&((1<<dz)-1))*n,mask=((1<<n)-1)<<x0; let any=false,full=true;
+    for(let y=y0;y<y0+n;y++) { if(g[y]&mask) any=true; if((g[8+y]&mask)!==mask) full=false; }
+    return {any,full};
+  }
+  return null;
+}
+// Items are ordered bottom to top. Drop the ones known to draw nothing here (blank, or missing from the archive) and,
+// when charts are opaque, everything under an item known to cover the whole tile.
+export function cull(items,cullBy) {
+  if(!cullBy||!items.length) return items;
+  const {occ,occlude,absent}=cullBy,kept=[];
+  for(let i=items.length-1;i>=0;i--) {
+    const it=items[i];
+    // A tile the archive turned out not to have draws nothing and hides nothing, whatever its ancestor suggested.
+    if(absent?.has(it.key)) continue;
+    const o=occupancy(occ,it.key.slice(0,it.key.length-`/${it.src.z}/${it.src.x}/${it.src.y}`.length),it.src);
+    if(o&&!o.any) continue;
+    kept.push(it); if(occlude&&o?.full) break;
+  }
+  return kept.length===items.length?items:kept.reverse();
+}
+// Chart tiles ("z/x/y") nothing beneath can show through: one of the charts there is known to be solid (at a seam
+// the chart on top is cut off and the one under it fills the tile), or one is not yet known either way, so what is
+// under it waits for the answer.
+export function coveredCells(chartPlan,cullBy) {
+  const out=new Set(); if(!cullBy?.occlude) return out;
+  for(const {dst,items} of chartPlan) {
+    let solid=false,unknown=false;
+    for(const it of items) {
+      if(it.clip) continue;
+      const o=occupancy(cullBy.occ,it.key.slice(0,it.key.length-`/${it.src.z}/${it.src.x}/${it.src.y}`.length),it.src);
+      if(!o) unknown=true; else if(o.full) { solid=true; break; }
+    }
+    if(solid||unknown) out.add(`${dst.z}/${dst.x}/${dst.y}`);
+  }
+  return out;
+}
 function item(path,dst,z,era,clip=null) {
   const src = ancestor(dst,z);
   const key=tileKey(path,src);return clip ? {key,src,dst,clip} : {key,src,dst};
 }
-export function planCharts(manifest,date,tiles,solo=null) {
+export function planCharts(manifest,date,tiles,solo=null,cullBy=null) {
   const active = solo ? null : erasAt(manifest,date), plan=[];
   for(const dst of tiles) {
     const b = tileLonLatBounds(dst.z,dst.x,dst.y), items=[],sources=[],suffixes=[];
@@ -30,12 +84,31 @@ export function planCharts(manifest,date,tiles,solo=null) {
       const suffix=suffixes[z]??(suffixes[z]=`/${src.z}/${src.x}/${src.y}`);
       items.push({key:manifest.paths[i]+suffix,src,dst});
     }
-    plan.push({dst,items});
+    plan.push({dst,items:solo?items:cull(items,cullBy)});
   }
   return plan;
 }
-export function planBasemap(source,tiles) {
+// The basemap cutout holds the whole world only at low zooms; where a tile is known to be missing, its nearest
+// existing ancestor stands in so the map never falls back to nothing.
+export function planBasemap(source,tiles,absent=null,covered=null) {
   if(!source) return tiles.map(dst=>({dst,items:[]}));
-  return tiles.map(dst=>({dst,items:dst.z < source.z[0] ? [] : [item(source.p,dst,Math.min(dst.z,source.z[1]),0)]}));
+  const under=(z,x,y)=>covered.has(`${z}/${x}/${y}`);
+  return tiles.map(dst=>{
+    if(dst.z < source.z[0]) return {dst,items:[]};
+    // Wholly under opaque charts: not drawn, so not fetched or painted either. While a chart over it has yet to show
+    // whether it is solid, the tile waits: charts load first and most of a view never needs its basemap.
+    if(covered?.size) { let hidden=true; for(let i=0;i<4;i++) if(!under(dst.z+1,dst.x*2+(i&1),dst.y*2+(i>>1))) hidden=false; if(hidden) return {dst,items:[]}; }
+    let it=item(source.p,dst,Math.min(dst.z,source.z[1]),0);
+    while(absent?.has(it.key) && it.src.z>source.z[0]) it=item(source.p,dst,it.src.z-1,0);
+    return {dst,items:absent?.has(it.key)?[]:[it]};
+  });
+}
+export const isVector = source => source?.format==='mvt';
+// The chart cells over a set of basemap tiles, planned for themselves: the basemap's buffer ring reaches past the
+// chart tiles of a demand, and a tile out there is as hidden as one in view.
+export function basemapCover(manifest,date,basemapTiles,cullBy) {
+  if(!cullBy?.occlude||!manifest.raw.basemap) return null;
+  const cells=[]; for(const t of basemapTiles) for(let i=0;i<4;i++) cells.push({z:t.z+1,x:t.x*2+(i&1),y:t.y*2+(i>>1)});
+  return coveredCells(planCharts(manifest,date,cells,null,cullBy),cullBy);
 }
 export const planKeys = plan => new Set(plan.flatMap(t=>t.items.map(i=>i.key)));

@@ -77,11 +77,20 @@ class Renderer {
     return out;
   }
   hasTexture(key) { return this.pool.entries.has(key); }
-  upload(key, bitmap) {
+  // replace: a new image for a key already delivered (a basemap tile repainted with a neighbour's label). It takes
+  // the place of the waiting or resident one; a key the renderer no longer holds is ignored.
+  upload(key, bitmap, replace = false) {
     if (this.dead) { bitmap.close(); return; }
     if (this.lost) { bitmap.close(); this._emit('evict', { key }); return; }
     const size = bitmap.width;
     if ((size !== 256 && size !== 512) || bitmap.height !== size) { bitmap.close(); throw new RangeError('Tiles must be 256 or 512 pixels square'); }
+    if (replace) {
+      const waiting = this.queued.get(key), entry = this.pool.entries.get(key);
+      if (waiting && waiting.size === size) { waiting.bitmap.close(); waiting.bitmap = bitmap; }
+      else if (entry && entry.page.size === size) { this.pool.rewrite(entry, bitmap); bitmap.close(); this._invalidate(); }
+      else bitmap.close();
+      return;
+    }
     if (this.hasTexture(key) || this.queued.has(key)) { bitmap.close(); return; }
     const q = { key, bitmap, size }; this.queue.push(q); this.queued.set(key, q); this._invalidate();
   }

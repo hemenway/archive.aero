@@ -1,6 +1,8 @@
-import {createCore,manifestSummary} from './core.js';
-import {parseManifest,erasAt} from './manifest.js';
-import {planCharts,planBasemap,planKeys} from './plan.js';
+import {parseManifest,resolveBases,erasAt,manifestSummary} from './manifest.js';
+// The core normally runs in the Worker. The page loads its own copy only when it has to run it itself (no Worker, a
+// Worker that fails to start, or a test's fetch), so that copy stays out of the first-paint bundle.
+const createCore=async(...args)=>(await import('./core.js')).createCore(...args);
+import {planCharts,planBasemap,planKeys,basemapCover} from './plan.js';
 import {buildDemand} from './demand.js';
 import {decodeRaster} from './decode.js';
 import {AirspaceIndex} from './airspace.js';
@@ -10,6 +12,11 @@ export async function createDataPlane(options={}) {
   const mobile=!!nav && (/iP(ad|hone|od)|Android/.test(nav.userAgent??'') || (nav.platform==='MacIntel' && nav.maxTouchPoints>1));
   options={...options,mobile:options.mobile??mobile};
   const listeners=new Map(),ready=new Set(),absent=new Set(),airspace=new AirspaceIndex({});
+  // The page's copy of what decoded tiles say about blank and solid areas (plan.js). The core learns each grid first
+  // and sends it with the tile, so both sides cull the same items.
+  const occ=new Map();let occlude=true,last=null;
+  const cullBy=()=>({occ,absent,occlude});
+  const learn=(key,grid)=>{occ.delete(key);occ.set(key,grid);if(occ.size>8192)occ.delete(occ.keys().next().value);emit('occupancy',{key});};
   let workerStats={inflight:0,queued:0,bytesCached:0};
   let threadFailure=null,metadataLoaded=false,metadataError=null;
   let backend,thread,pending=new Map(),sequence=0,destroyed=false,generation=0,wanted=new Set(),paths=new Set(),decoding=new Set();
@@ -30,7 +37,7 @@ export async function createDataPlane(options={}) {
       finally{decoding.delete(payload.key);}
       return;
     }
-    if(event==='tile')ready.add(payload.key);
+    if(event==='tile'){ready.add(payload.key);if(payload.occ)learn(payload.key,payload.occ);}
     if(event==='absent')absent.add(payload.key);
     if(event==='error' && !(payload.error instanceof Error))payload.error=Object.assign(new Error(payload.error.message),{name:payload.error.name});
     if(event==='error'&&payload.key==='airspace/metadata')metadataError=payload.error.message;
@@ -51,7 +58,11 @@ export async function createDataPlane(options={}) {
       thread.onerror=error=>{threadFailure=new Error(error.message??'Worker failed');for(const p of pending.values())p.reject(threadFailure);pending.clear();emit('error',{key:'worker',error:new Error(error.message??'Worker failed')});};
       // Promises cannot cross postMessage; earlyFetches is adopted below instead.
       const {fetch:_,worker:__,earlyFetches:___,...serializable}=options;
-      manifest=parseManifest(await call('init',serializable));
+      // The page's preload of the manifest is already in flight; this fetch joins it while the Worker script loads, and
+      // the Worker is handed the JSON instead of requesting the same URL a second time.
+      const response=await fetch(options.manifestUrl);if(!response.ok)throw new Error(`Manifest HTTP ${response.status}`);
+      const raw=resolveBases(await response.json(),options.manifestUrl);
+      await call('init',{...serializable,manifest:raw});manifest=parseManifest(raw);
     } catch(error) {thread?.terminate();thread=null;threadFailure=null;pending.clear();backend=await createCore(options,(...args)=>void receive(...args));manifest=backend.m;}
   } else {backend=await createCore(options,(...args)=>void receive(...args));manifest=backend.m;}
   const reportError=error=>emit('error',{key:'demand',error});
@@ -74,13 +85,14 @@ export async function createDataPlane(options={}) {
   }
   return {
     manifest:manifestSummary(manifest),
-    planCharts(date,tiles,{solo}={}) {return {id:String(date)+(solo?`:${solo.paths.join(',')}:${solo.clip?.id??''}`:''),tiles:planCharts(manifest,date,tiles,solo)};},
-    planBasemap(tiles) {return planBasemap(manifest.raw.basemap,tiles);},
-    setDemand(state) {generation++;const demand=buildDemand(manifest,state,paths);paths=demand.paths;wanted=new Set(demand.requests.map(r=>r.key));void call('setDemand',state).catch(reportError);},
+    planCharts(date,tiles,{solo}={}) {return {id:String(date)+(solo?`:${solo.paths.join(',')}:${solo.clip?.id??''}`:''),tiles:planCharts(manifest,date,tiles,solo,cullBy())};},
+    // Follows the last demand: basemap tiles wholly under that frame's opaque charts are left out, as the core leaves them unfetched.
+    planBasemap(tiles) {const covered=last&&!last.solo?basemapCover(manifest,last.date,tiles,cullBy()):null;return planBasemap(manifest.raw.basemap,tiles,absent,covered);},
+    setDemand(state) {generation++;occlude=state.occlude!==false;last=state;const demand=buildDemand(manifest,state,paths,{occ,absent});paths=demand.paths;wanted=new Set(demand.requests.map(r=>r.key));void call('setDemand',state).catch(reportError);},
     on(event,fn) {if(!listeners.has(event))listeners.set(event,new Set());listeners.get(event).add(fn);},
     off(event,fn) {listeners.get(event)?.delete(fn);},
     markEvicted(key) {ready.delete(key);void call('markEvicted',key).catch(reportError);},
-    readiness(date,tiles) {const items=planCharts(manifest,date,tiles).flatMap(t=>t.items);if(!items.length)return 1;let n=0;for(const {key} of items)if(ready.has(key)||absent.has(key))n++;return n/items.length;},
+    readiness(date,tiles) {const items=planCharts(manifest,date,tiles,null,cullBy()).flatMap(t=>t.items);if(!items.length)return 1;let n=0;for(const {key} of items)if(ready.has(key)||absent.has(key))n++;return n/items.length;},
     loadAirfields:()=>call('loadAirfields'),airfieldDetails:i=>call('airfieldDetails',i),airfieldDetailsAll:()=>call('airfieldDetailsAll'),
     // A failed metadata load reports as unavailable even when the caller says the layer is enabled.
     airspaceRegionMask:d=>airspace.regionMask(d),airspaceStatus:(d,b,o={})=>airspace.status(d,b,{configured:!!manifest.raw.airspace,loaded:metadataLoaded,loadError:metadataError,...o,enabled:(o.enabled??true)&&!metadataError}),

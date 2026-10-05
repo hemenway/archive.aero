@@ -131,6 +131,25 @@
             },
             "tileSize": {
               "const": 512
+            },
+            "format": {
+              "enum": [
+                "raster",
+                "mvt"
+              ]
+            },
+            "flavor": {
+              "enum": [
+                "light",
+                "dark",
+                "white",
+                "grayscale",
+                "black"
+              ]
+            },
+            "lang": {
+              "type": "string",
+              "pattern": "^[A-Za-z-]{2,12}$"
             }
           }
         }

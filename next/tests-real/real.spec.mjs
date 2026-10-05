@@ -63,9 +63,12 @@ test('airspace, airfields and pins come through the real data plane', async ({ p
   await page.keyboard.press('Escape'); await expect(page.locator('#afPanel')).toBeHidden();
   await page.locator('#map').focus(); await page.keyboard.press('Enter');
   await expect(page.locator('#pinLoc')).toHaveText('Fixture 391'); await expect(page.locator('#pinBadge')).toHaveText('ed. 1');
+  // The fixture artifact holds z8 only and solo view flies out to fit the chart, below z8: the tiles asked for at the
+  // start may be cancelled before they answer, so the request, not its response, is what shows the artifact was used.
+  const asked = []; page.on('request', request => asked.push(request.url()));
   await page.getByRole('button', { name: 'View alone', exact: true }).click(); await expect(page.locator('#soloBar')).toBeVisible();
   await expect(page.locator('#soloLabel')).toHaveText('Viewing Fixture 391 · Jan 1950');
-  await expect.poll(() => responses.some(r => r.url.includes('/t/sectionals/chart/fixture/1950-01-01.') && r.status === 200)).toBe(true);
+  await expect.poll(() => asked.some(url => url.includes('/t/sectionals/chart/fixture/1950-01-01.'))).toBe(true);
   await page.locator('#soloExit').click(); await expect(page.locator('#soloBar')).toBeHidden();
   expect(problems).toEqual([]);
 });

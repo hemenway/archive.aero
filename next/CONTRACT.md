@@ -45,6 +45,7 @@ All four sections code to this. It is reproduced word for word in every agent's 
   - `b` is the lon/lat bounds `[w, s, e, n]` rounded to 4 decimal places, or `null`, meaning never cull this era.
   - `z` is the `[min, max]` zoom actually present in the archive.
   - `c` lists, in ascending order, the z6 tiles (as indices `y * 64 + x`) in which the archive has at least one tile. `null` means "assume coverage wherever `b` overlaps."
+- `basemap` may carry `"format": "mvt"` with a Protomaps `flavor` and label `lang` (added 2026-10-05): the archive then holds production's vector tiles, each painted by the data plane into the same 512 px tile a raster basemap would supply. Without `format` the tiles are raster images.
 - `basemap`, `airspace`, `airfields` and `pins` may each be `null`, meaning that feature is off. Paths in `p` resolve against `tileBase`. File paths (`bin`, `details`, `base`) resolve against `fileBase`.
 - **Rules every consumer applies the same way:**
   - An era is in effect on date D when start ≤ D < end. ISO date strings compare correctly as plain strings.

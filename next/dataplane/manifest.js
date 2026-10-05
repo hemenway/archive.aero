@@ -56,12 +56,18 @@ export function erasAt(manifest, date) {
 export async function loadManifest(url, fetcher = fetch, signal) {
   const response = await fetcher(url, {signal});
   if (!response.ok) throw new Error(`Manifest HTTP ${response.status}`);
-  const raw = await response.json();
-  // Production manifests carry absolute bases; fixtures may use relative ones.
-  // Resolve them once, against the manifest URL, so every consumer can build URLs.
+  return parseManifest(resolveBases(await response.json(), url));
+}
+// Production manifests carry absolute bases; fixtures may use relative ones.
+// Resolve them once, against the manifest URL, so every consumer can build URLs.
+export function resolveBases(raw, url) {
   if (raw && typeof raw === 'object') {
     const origin = new URL(String(url), globalThis.location?.href ?? 'http://localhost/').href;
     for (const base of ['tileBase', 'fileBase']) if (typeof raw[base] === 'string') raw[base] = new URL(raw[base], origin).href;
   }
-  return parseManifest(raw);
+  return raw;
+}
+export function manifestSummary(m) {
+  return {frames:m.frames,dateBounds:m.dateBounds,coverage:m.raw.coverage,eraCount:m.paths.length,
+    hasBasemap:!!m.raw.basemap,hasAirspace:!!m.raw.airspace,hasAirfields:!!m.raw.airfields,hasPins:!!m.raw.pins};
 }

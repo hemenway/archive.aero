@@ -11,7 +11,7 @@ function transfers(value,out=new Set()) {
 self.onmessage=async({data:{id,method,args=[]}})=>{
   try {
     let result;
-    if(method==='init') {core=await createCore(args[0],(event,payload)=>{const safe=event==='error'?{...payload,error:{message:payload.error.message,name:payload.error.name}}:payload;self.postMessage({event,payload:safe},transfers(safe));if(core)self.postMessage({event:'stats',payload:core.stats()});});result=core.m.raw;}
+    if(method==='init') {core=await createCore(args[0],(event,payload)=>{const safe=event==='error'?{...payload,error:{message:payload.error.message,name:payload.error.name}}:payload;self.postMessage({event,payload:safe},transfers(safe));if(core)self.postMessage({event:'stats',payload:core.stats()});});result=args[0].manifest?null:core.m.raw;}
     else {
       result=await core[method](...args);
       if(method==='loadAirfields' && result) {const buffer=result.mx.buffer.slice(0);result=Object.fromEntries(Object.entries(result).map(([k,a])=>[k,new a.constructor(buffer,a.byteOffset,a.length)]));}

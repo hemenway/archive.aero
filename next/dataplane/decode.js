@@ -16,3 +16,21 @@ export async function decodeRaster(bytes,{bitmap=true,contentType}={}) {
   }
   finally { URL.revokeObjectURL(url); }
 }
+
+// Reads a decoded 256 px chart tile back once to learn where it is blank and where it is solid (plan.js occupancyOf).
+// Returns null where no 2D canvas exists on this thread; planning then simply culls nothing.
+let probeContext;
+export function probeOccupancy(bitmap,occupancyOf) {
+  if(bitmap.width!==256||bitmap.height!==256) return null;
+  if(probeContext===undefined) {
+    try {
+      const canvas=typeof OffscreenCanvas==='function'?new OffscreenCanvas(256,256):typeof document!=='undefined'?Object.assign(document.createElement('canvas'),{width:256,height:256}):null;
+      probeContext=canvas?.getContext('2d',{willReadFrequently:true})??null;
+    } catch { probeContext=null; }
+  }
+  if(!probeContext) return null;
+  try {
+    probeContext.globalCompositeOperation='copy';probeContext.drawImage(bitmap,0,0);
+    return occupancyOf(probeContext.getImageData(0,0,256,256).data);
+  } catch { return null; }
+}

@@ -37,9 +37,10 @@ const manifestGzip = gzipSync(JSON.stringify(source)).length;
 if (manifestGzip > 80 * 1024 && !allowOverBudget) throw new Error(`Manifest exceeds 80 KB gzip (${manifestGzip} bytes); pass --allow-over-budget to ship it anyway`);
 const common = { absWorkingDir: root, bundle: true, minify: true, format: 'esm', target: 'es2022', sourcemap: 'external', write: false, outdir, entryNames: '[name].[hash]', chunkNames: 'chunk.[hash]', metafile: true };
 const workerEntry = path.join(directory, stubs ? 'app/stubs/worker.js' : 'dataplane/worker.js');
-const worker = await build({ ...common, entryPoints: { worker: workerEntry } });
+// The Worker is a module worker; splitting lets the basemap painter load with the first basemap tile, not with boot.
+const worker = await build({ ...common, splitting: true, entryPoints: { worker: workerEntry } });
 for (const file of worker.outputFiles) outputs.set(path.relative(outdir, file.path), file.contents);
-const workerName = path.relative(outdir, worker.outputFiles.find(f => f.path.endsWith('.js')).path);
+const workerFile = worker.outputFiles.find(f => /worker\.[^/]*\.js$/.test(f.path)), workerName = path.relative(outdir, workerFile.path);
 const result = await build({ ...common, splitting: true, entryPoints: { app: path.join(directory, 'app/main.js') }, define: { __MANIFEST_URL__: JSON.stringify(manifestUrl), __SITE_ORIGIN__: JSON.stringify(linksOrigin || ''), __WORKER_URL__: JSON.stringify(`./${workerName}`), __STUBS__: String(stubs) }, plugins: [{ name: 'hashed-data-worker', setup(builder) { builder.onLoad({ filter: /next\/dataplane\/index\.js$/ }, async ({ path: filename }) => ({ contents: (await readFile(filename, 'utf8')).replace(/new URL\(['"]\.\/worker\.js['"],\s*import\.meta\.url\)/g, `new URL('./${workerName}', import.meta.url)`), loader: 'js' })); } }], alias: { '@next/renderer': path.join(directory, stubs ? 'app/stubs/renderer.js' : 'renderer/index.js'), '@next/dataplane': path.join(directory, stubs ? 'app/stubs/dataplane.js' : 'dataplane/index.js') } });
 for (const file of result.outputFiles) outputs.set(path.relative(outdir, file.path), file.contents);
 const app = path.relative(outdir, result.outputFiles.find(f => /app\..*\.js$/.test(f.path)).path);
@@ -83,11 +84,16 @@ const pageColor = (property, variable) => {
 };
 const critical = `html,body{height:100%;margin:0;background:${pageColor('background', '--bg-dark')};color:${pageColor('color', '--text-light')}}#mapCanvas{opacity:0}`;
 const start = source.eras.map(e => e.k.split('_to_')[0]).sort().at(-1);
-const newest = source.eras.filter(e => { const [a, b] = e.k.split('_to_'); return a <= start && start < b; }).map(e => ({ p: `sectionals/${e.k}.${e.h}`, b: e.b, z: e.z }));
+// The inlined frame only feeds the early tile requests, so it is capped: a 1940s date has ~100 single-sheet eras in
+// effect at once (26 KB of HTML and as many early requests when the newest era was 1946, the partial beta of 2026-10-04).
+// The data plane fetches whatever was not requested early.
+const newest = source.eras.filter(e => { const [a, b] = e.k.split('_to_'); return a <= start && start < b; }).slice(0, 24).map(e => ({ p: `sectionals/${e.k}.${e.h}`, b: e.b, z: e.z }));
 const base = new URL(source.tileBase, new URL(manifestUrl, 'https://archive.aero/next/')).href;
 const early = (await transform(await readFile(path.join(directory, 'shell/early.js'), 'utf8'), { minify: true, target: 'es2022' })).code.trim();
 if (Buffer.byteLength(early) > 1536) throw new Error(`Boot script exceeds 1.5 KB: ${Buffer.byteLength(early)}`);
-const bootData = JSON.stringify({ base: stubs ? './t/' : base, eras: newest, start, map: source.basemap }).replaceAll('<', '\\u003c');
+// A vector basemap is not requested at boot: most of a view lies under charts, and the data plane fetches only the
+// basemap tiles that show.
+const bootData = JSON.stringify({ base: stubs ? './t/' : base, eras: newest, start, map: source.basemap?.format === 'mvt' ? null : source.basemap }).replaceAll('<', '\\u003c');
 const json = JSON.stringify(manifestUrl).replaceAll('<', '\\u003c');
 const escape = text => text.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
 const attr = value => /^[a-zA-Z0-9_:.\/-]+$/.test(value) ? value : `"${escape(value)}"`;
@@ -192,8 +198,8 @@ const immutableHeaders = [...outputs.keys()].filter(name => name !== 'sw.js' && 
 outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
 const externalJS = chunks.reduce((sum, name) => sum + gzipSync(outputs.get(name)).length, 0);
 const inlineJS = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].reduce((sum, match) => sum + gzipSync(match[1]).length, 0);
-const js = externalJS + inlineJS + gzipSync(worker.outputFiles.find(f => f.path.endsWith('.js')).contents).length;
-const sizes = { criticalJS: js, css: gzipSync(css).length, cssRaw: Buffer.byteLength(css), html: Buffer.byteLength(html), htmlGzip: gzipSync(html).length, worker: gzipSync(worker.outputFiles.find(f => f.path.endsWith('.js')).contents).length, inlineBoot: Buffer.byteLength(early), lazyJS: lazyChunks.reduce((sum, name) => sum + gzipSync(outputs.get(name)).length, 0), fonts: fontBytes };
+const js = externalJS + inlineJS + gzipSync(workerFile.contents).length;
+const sizes = { criticalJS: js, css: gzipSync(css).length, cssRaw: Buffer.byteLength(css), html: Buffer.byteLength(html), htmlGzip: gzipSync(html).length, worker: gzipSync(workerFile.contents).length, inlineBoot: Buffer.byteLength(early), lazyJS: lazyChunks.reduce((sum, name) => sum + gzipSync(outputs.get(name)).length, 0), fonts: fontBytes };
 // HTML is the production page's markup plus the newest frame's era metadata inline; 24 KiB (uncompressed) leaves room for
 // both to grow. The CSS limit is on gzip and covers production's styles.css, shell/next.css and the font faces.
 if (sizes.criticalJS > 50 * 1024 || sizes.css > 12 * 1024 || sizes.html > 24 * 1024) throw new Error(`Build budgets exceeded: ${JSON.stringify(sizes)}`);
