@@ -153,10 +153,14 @@ page = edit(page, 'Leaflet stylesheet link', /<link rel="stylesheet" href="\/ven
 page = edit(page, 'styles.css link', /<link rel="stylesheet" href="styles\.css"[^>]*>/g, 1, '');
 page = edit(page, 'Google Fonts preconnect', /<link rel="preconnect" href="https:\/\/fonts\.(?:googleapis|gstatic)\.com"[^>]*>/g, 2, '');
 page = edit(page, 'Google Fonts stylesheet link', /<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/[^"]*"[^>]*>/g, 1, '');
+// Production starts its era-index fetch from an inline script; the shell's data plane reads the manifest instead.
+page = edit(page, 'bundle-head script', /<script data-bundle-head>[\s\S]*?<\/script>/g, 1, '');
+// Production preloads coverage.json for the timeline heat strip; the shell carries coverage inside the manifest.
+page = edit(page, 'coverage preload', /<link rel="preload" href="coverage\.json"[^>]*>/g, 1, '');
 page = edit(page, 'viewer entry script', /<script type="module" data-viewer-entry[^>]*><\/script>/g, 1, '');
 let plausibleSrc;
 page = edit(page, 'Plausible block', /<script async src="(https:\/\/plausible\.io\/[^"]+)"><\/script>\s*<script>[^<]*<\/script>/g, 1, (_, src) => { plausibleSrc = src; return ''; });
-page = edit(page, 'site link', /href="\/(atc\/|about|sources|contribute)"/g, 10, linksOrigin ? `href="${linksOrigin}/$1"` : '$&');
+page = edit(page, 'site link', /href="\/(atc\/|about|sources|contribute)"/g, 11,linksOrigin ? `href="${linksOrigin}/$1"` : '$&');
 // Lifts one element out of the page by its opening tag, balancing the <div>s nested in it.
 const take = (what, opening) => {
   const start = page.indexOf(opening);

@@ -8,10 +8,10 @@
   "manifestGzip": 361,
   "bytes": {
     "criticalJS": 17652,
-    "css": 7377,
-    "cssRaw": 35241,
-    "html": 19005,
-    "htmlGzip": 5770,
+    "css": 7409,
+    "cssRaw": 35411,
+    "html": 19168,
+    "htmlGzip": 5826,
     "worker": 345,
     "inlineBoot": 1366,
     "lazyJS": 5505,
@@ -28,7 +28,7 @@
     "./app.IQFRE7NP.js",
     "./chunk.V6KBJ7CT.js",
     "./chunk.D6MR6EBD.js",
-    "./styles.c6a9f6a656ab.css",
+    "./styles.4414b910ec83.css",
     "./manifest.ecfc3cc3efa7.json"
   ]
 }
