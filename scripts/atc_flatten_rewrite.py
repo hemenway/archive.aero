@@ -183,7 +183,24 @@ DEAD_FEED_ALT = re.compile(
     rb'''[^"'>]*feed/?["']?[^>]*>\s*''')
 
 
+# RSS <guid isPermaLink="false"> is an opaque item identifier, not a link:
+# rewriting /atc/?p=N inside it to the canonical slug makes every item "new"
+# to subscribers (found 2026-10-05 on the frozen feed's 10 items). The
+# canonical pass skips these spans; the host pass already ran over them.
+GUID_EL = re.compile(rb"(?is)<guid\b[^>]*>.*?</guid>")
+
+
 def canonicalize(data, counts):
+    out, pos = [], 0
+    for m in GUID_EL.finditer(data):
+        out.append(_canonicalize_chunk(data[pos:m.start()], counts))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_canonicalize_chunk(data[pos:], counts))
+    return b"".join(out)
+
+
+def _canonicalize_chunk(data, counts):
     def make(name, sep, unescape, prefix):
         def sub(m):
             if not m.group(1):
@@ -308,6 +325,22 @@ SCAN_EXT_SRC = re.compile(
     rb'(?i)<(?:script|iframe)[^>]+src=["\']?(?:https?:)?//([^/"\'>\s]+)')
 
 
+def _copy_tree(src):
+    """cp -Rc into site/. A Finder .DS_Store present in BOTH crawl/ and static/
+    makes the second clone fail ("File exists") and cp exits 1 after copying
+    everything else (2026-10-05) -- junk the merge strips anyway, so only a
+    non-junk failure is fatal."""
+    r = subprocess.run(["cp", "-Rc", str(src) + "/.", str(SITE)],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return
+    lines = [l for l in r.stderr.splitlines() if l.strip()]
+    bad = [l for l in lines if not any(f"/{j}:" in l for j in JUNK_NAMES)]
+    if bad:
+        raise RuntimeError(f"cp -Rc {src.name}/ failed:\n" + "\n".join(bad))
+    print(f"note: cp {src.name}/: ignored {len(lines)} junk-file collision(s)")
+
+
 def merge():
     # The projects volume intermittently fails deletes mid-tree (.DS_Store /
     # indexer races). Retry rm; if it still won't die, shove the remnant aside
@@ -327,20 +360,29 @@ def merge():
     SITE.mkdir()
     OLDHOST.mkdir(exist_ok=True)
     # APFS clone when possible; cp falls back to plain copy otherwise
-    subprocess.run(["cp", "-Rc", str(STATIC) + "/.", str(SITE)], check=True)
-    subprocess.run(["cp", "-Rc", str(CRAWL) + "/.", str(SITE)], check=True)
+    _copy_tree(STATIC)
+    _copy_tree(CRAWL)
+    print("merged -> site/ (copies done)")
+
+
+def finalize_merge():
+    """Junk strip + old-host sitemap park. Separate from the copies so a run
+    can resume with --no-merge after a merge whose copies completed. SMB /
+    Finder-indexer races make a listed .DS_Store vanish before unlink
+    (2026-10-05), so a missing junk file is not an error."""
+    OLDHOST.mkdir(exist_ok=True)
     for junk in SITE.glob("_*.csv"):
-        junk.unlink()
+        junk.unlink(missing_ok=True)
     n_junk = 0
     for j in SITE.rglob("*"):
         if j.name in JUNK_NAMES and j.is_file():
-            j.unlink()
+            j.unlink(missing_ok=True)
             n_junk += 1
     n_old = 0
     for sm in SITE.glob("wp-sitemap*.xml"):
         shutil.move(str(sm), OLDHOST / sm.name)
         n_old += 1
-    print(f"merged -> site/ ; {n_old} old-URL sitemaps -> oldhost/ ; "
+    print(f"{n_old} old-URL sitemaps -> oldhost/ ; "
           f"{n_junk} Finder junk files stripped")
 
 
@@ -383,7 +425,9 @@ def main():
     if "--landing-only" in sys.argv:
         install_landing()
         return
-    merge()
+    if "--no-merge" not in sys.argv:   # resume on an already-copied site/
+        merge()
+    finalize_merge()
     strip_counts, rw_counts = Counter(), Counter()
     residual, ext_hosts, evals, aliasrefs = [], Counter(), [], Counter()
     n_files = n_changed = 0

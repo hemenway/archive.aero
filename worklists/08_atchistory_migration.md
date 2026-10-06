@@ -22,14 +22,17 @@ cancellation. The atchistory.org registration and published aliases are permanen
       recorded as 200/0-hop; a successful subsequent GSC validation is not recorded.
       Check the earlier noindex validation outcome too. Historical check counts
       and accepted inherited losses are in §7, not a claim that all URLs are indexed.
-- [ ] **Restore a complete local build tree before the next content sync.** The
-      September 20 session found an empty/stale `/Volumes/projects` mount and patched
-      546 listings directly in R2. Regenerate listings with the fixed
-      `scripts/atc_gen_indexes.py`, then rebuild/compare the upload tree so a stale
-      local copy cannot overwrite the repaired links. Every sync still requires
-      `--filter-from scripts/atc_r2_sync_filter.txt`, a dry-run and zero unexplained
-      deletions. Preserve `parity_live_cache.jsonl`: the old origin was reported
-      unavailable September 20; do not refresh away the surviving pre-move evidence.
+- [x] **Restore a complete local build tree** — done 2026-10-05 (§7): listings
+      regenerated, full flatten rebuild, `site/` verified against R2 (0 missing,
+      0 deletions on a dry-run sync). What remains is a decision, not a repair:
+- [ ] **Decide whether to ship the September 14 rewrite rules** (1,862 objects:
+      comments-feed `<link>` strip + `?p=N` shortlink → canonical slug, see §7
+      2026-10-05). Committed in `eff24c2` an hour after the build R2 holds, never
+      synced. It is a `/atc/` content change under the §5 hold (~Oct 30). The
+      sync is safe from this tree either way; commands in §7. Every sync still
+      requires `--filter-from scripts/atc_r2_sync_filter.txt`, a dry-run and
+      zero unexplained deletions. Preserve `parity_live_cache.jsonl`: the old
+      origin is gone; do not refresh away the surviving pre-move evidence.
 - [ ] **Resolve the old WP date-archive route policy** (§7, September 1). No fix is
       recorded for the catch-all redirect into absent `/atc/2017/`-style pages.
       Choose and verify an existing canonical destination before adding permanent
@@ -1418,3 +1421,42 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   Verified live from archive.aero, atchistory.org and staging. Like every
   other alias 301, the query string is not carried (only DirectorySlash and
   the facility-photos params keep theirs).
+- 2026-10-05: **Build tree restored (Current-work item 3).** The projects
+  mount is populated again (static/ 13,346 files, site/ 15,221). Baseline
+  `rclone check site ↔ r2:atc-site` (sync filter, `--checksum`): 14,672 match,
+  546 differ = exactly the 09-14 listings, nothing missing on either side.
+  `atc_gen_indexes.py` regenerated the 546 listings (0 relative hrefs): 542
+  byte-identical to the 09-20 R2 patch, 4 differ only in the self-crumb of a
+  space-named directory (`Canal%20Zone` vs a literal space; both answer 200).
+  The full `atc_flatten_rewrite.py` rebuild needed two robustness fixes: a
+  Finder `.DS_Store` in both `crawl/` and `static/` made the second `cp -Rc`
+  exit 1 (`_copy_tree` now ignores junk-name collisions only), and the junk
+  strip then hit a `.DS_Store` that vanished between listing and unlink (the
+  SMB/Finder race the script already documents) — `finalize_merge()` split
+  out with `missing_ok`, `--no-merge` resumes a run whose copies completed.
+  The same race left two `site.trash.*` remnants (3 ghost `.DS_Store` entries
+  the server lists but refuses to unlink) — delete later. Full-pass numbers:
+  2,541 text files, 1,921 changed; host 177,319, canon_plain 153,959,
+  canon_relative 1,202 (was 2,604: listings are absolute at source now),
+  dead_feed_alt 2,076 (was 217); 22 junk stripped, 6 sitemaps → `oldhost/`,
+  landing installed (8 posts, byte-equal to R2). `rewrite_report.txt` holds
+  the later partial pass; these are the full-run figures.
+  **Final check: 13,356 match, 1,862 differ, 0 missing; dry-run sync = 1,862
+  updates, 0 deletions.** The 1,862 are not stale — they are the two rules
+  committed in `eff24c2` (09-14 23:16) an hour *after* the 20:17 build R2
+  was uploaded from: the comments-feed `<link rel=alternate>` stripped from
+  1,858 pages (`/atc/comments/feed/` is a 410) and 1,352 `rel=shortlink`
+  `/atc/?p=N` rewritten to the canonical slug (the Worker 301s `?p=` anyway),
+  plus the 4 `%20` listings. One side effect caught before shipping: the
+  shortlink rule also rewrote the frozen feed's 10 `<guid isPermaLink="false">`
+  ids, which would make every item new to subscribers — `canonicalize()` now
+  skips `<guid>` spans and `feed/index.html` is byte-equal to R2 again. A
+  second `--no-merge` pass over the rewritten tree changed nothing else (same
+  1,862 set: idempotent). The report's one `ATTR!` residual is the landing's
+  meta-description prose. **Decision open (user):** shipping the 1,862 is a
+  `/atc/` content change under the §5 hold; the tree is safe to sync from
+  either way. Recipe (dry-run first, expect 1,862 updates / 0 deletions):
+  `rclone sync /Volumes/projects/atchistory_build/site r2:atc-site
+  --filter-from scripts/atc_r2_sync_filter.txt --checksum --dry-run`, then
+  the same without `--dry-run`. The parity harness will then show 1,862 size
+  diffs against the cached live oracle — expected, not a regression.
