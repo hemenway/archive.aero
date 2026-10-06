@@ -161,6 +161,16 @@ body {
   letter-spacing: 1px;
 }
 
+.loading-noscript {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.loading-noscript a {
+  color: var(--primary);
+}
+
 #map {
   height: 100%;
   width: 100%;
@@ -661,6 +671,18 @@ body.zooming .leaflet-control-attribution {
 .tools-control {
   position: relative;
   pointer-events: auto;
+}
+
+/* The Layers control and the utility rail are authored as children of main,
+   ahead of #map, and viewer.js reparents them into the map's top-right control
+   corner at startup. Until then they sit in normal flow and push the whole map
+   down by their combined height (~136 px on a phone) for a few frames - the
+   single layout shift Lighthouse scored at 0.17 CLS (2026-10-05). Park them
+   out of flow and out of sight while they wait; the rule stops matching the
+   moment they are moved. */
+.map-main > .leaflet-control {
+  position: absolute;
+  visibility: hidden;
 }
 
 .tools-btn {
