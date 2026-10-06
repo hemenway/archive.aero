@@ -77,6 +77,21 @@ function oldShapeOf(path) {
 // listing whose "ak/" then resolved to /atc/history/ak/ -- a 404 (Search
 // Console, 2026-09-20). Map canonicals such as /atc/History are permanent and
 // exempt; their listings carry absolute links instead (atc_gen_indexes.py).
+// The old site stored its publication PDFs twice, /History/Pubs/X and /pdf/X
+// (393 byte-identical pairs, 2026-10-05), and both trees map to canonical
+// URIs (/atc/history/Pubs/X, /atc/library/X). A PDF cannot declare its own
+// canonical, so Search Console filed the history/Pubs copies as "Duplicate
+// without user-selected canonical" (first seen 2026-09-04). Name the twin so
+// the server can point a Link: rel="canonical" header at the library copy,
+// which Google honours for non-HTML files. HTML pages carry their own tag.
+// Pure: the caller still checks the twin exists with the same ETag (six
+// pairs differ) before emitting the header.
+export function libraryTwin(key) {
+  const m = /^History\/Pubs\/(.+)$/.exec(key);
+  if (!m || /\.(html?|shtml)$/i.test(key)) return null;
+  return { key: "pdf/" + m[1], canon: PREFIX + "/library/" + m[1] };
+}
+
 export function isDirIndexKey(key) {
   return INDEX_NAMES.some((n) => key.endsWith("/" + n));
 }
@@ -124,6 +139,20 @@ export function routeOldPath(path) {
   if (/^\/feed\/(atom|rdf|rss2?)\/?$/i.test(path)) return { to: PREFIX + "/feed" };
   if (path !== "/feed/" && path !== "/feed" && /\/feed\/?$/.test(path))
     return { status: 410 };
+  // An index file named explicitly is an alias of its directory: "a
+  // directory index IS the directory" (atc_canonical_map.py), whose canonical
+  // is the slashed URI -- or whatever the directory itself routes to (a map
+  // canonical such as /atc/History, a drop). Resolved through the directory
+  // so either host costs ONE hop. Without this the serving side found the
+  // key, saw a dir-index key and DirectorySlash'd
+  // /atc/history/Pubs/faa_world/1977/index.html to index.html/ -> 404
+  // (2026-10-05 sweep). Explicit aliases of the file keep precedence
+  // (/pdf/index.htm -> /atc/library/); the site root is handled below.
+  const idx = INDEX_NAMES.find((n) => path.endsWith("/" + n));
+  if (idx && path !== "/" + idx && !ALIAS[path] && !(oldShape && ALIAS[oldShape])) {
+    const dir = path.slice(0, -idx.length);
+    return routeOldPath(dir) ?? { to: PREFIX + dir };
+  }
   const canon = canonicalOf(path);
   if (canon && canon !== PREFIX + path) return { to: canon };
   // A path that IS a canonical URI is served, whatever shape it has; its

@@ -1378,3 +1378,43 @@ deploy: 14 × one-hop-301→200, 2 × 410, 0 problems.
   1 h HTML `max-age`. No worker deploy, no sync, no other keys touched.
   Preview recipe: launch config `atc-landing-preview` (`dev_server.py`
   mounting the build tree at `/atc/` on 8904).
+- 2026-10-05: **Search Console "Duplicate without user-selected canonical"
+  (95 PDFs, first seen 09-04) resolved with a `Link: rel="canonical"`
+  header.** Cause: the old site stored its publication PDFs twice,
+  `/History/Pubs/X` and `/pdf/X` — 441 overlapping files, 393 byte-identical
+  (6 differ, 42 live only under `/pdf/`) — and the map gives the two trees two
+  canonical spaces (`/atc/history/Pubs/X`, `/atc/library/X`), so each shared
+  PDF answered 200 at both, with no way for a PDF to declare a canonical.
+  Google picked the library copy and filed the history/Pubs one as the
+  duplicate. Fix (worker deploy df9342fe): `routes.js::libraryTwin(key)` names
+  the `pdf/` twin of any non-HTML `History/Pubs/` key; `index.js::
+  withTwinCanonical` heads the twin and, only when its ETag matches the served
+  object, adds `Link: <https://archive.aero/atc/library/X>; rel="canonical"`
+  on the 200/206/304. Both copies keep serving (URIs are permanent); the six
+  differing pairs and the library side get no header. Verified live on
+  faa_world 12-1977 and mukluk dec-1959 (header present), faa_world aug-1980
+  (differs → none), the library URL and a Pubs .htm (none). PDFs already in
+  the edge cache turn over within their 24 h `max-age`. Route tests 28/28.
+  The sibling "Alternate page with proper canonical tag" row (273
+  `?state=&city=` / `?c=&y=` variants, jump on 09-15 from the shell recrawl)
+  is the design working — no action, do not Validate.
+  **Still open, dashboard-side:** plain `http://archive.aero/*` serves 200
+  instead of redirecting (viewer, `/atc/`, PDFs all checked) — turn on
+  "Always Use HTTPS" for the zone; HTML survives via its https canonical tag,
+  PDFs do not. Then Validate Fix on the duplicate row.
+- 2026-10-05 (later): **Explicitly named index files 301 to their directory**
+  (worker deploy 9d496478). The twin sweep found
+  `/atc/history/Pubs/faa_world/1977/index.html` (and every other
+  rule-derived listing named by file, 50 of them) 301'ing to `index.html/`
+  and then 404'ing: the serving side found the key, saw a dir-index key and
+  DirectorySlash'd the *file* URI. `routes.js::routeOldPath` now treats an
+  index name (`index.html`, `index.htm`, `Default.htm`) as an alias of its
+  directory and resolves through the directory's own route, so the target is
+  the slashed URI, or the map canonical where the map gave the directory one
+  (`/history/index.html` → `/atc/History`), or a drop — one hop from either
+  host. Explicit file aliases keep precedence (`/pdf/index.htm` →
+  `/atc/library/`); `/index.html` → `/atc/` unchanged. `atc_parity_check.py::
+  expected_canonical` mirrors it. Tests 30/30 (routes + dirslash cases).
+  Verified live from archive.aero, atchistory.org and staging. Like every
+  other alias 301, the query string is not carried (only DirectorySlash and
+  the facility-photos params keep theirs).

@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { PREFIX, canonicalOf, keyCandidates, routeOldPath, slashedOnlyCandidates,
+import { PREFIX, canonicalOf, keyCandidates, libraryTwin, routeOldPath, slashedOnlyCandidates,
          wantsDirectorySlash } from "../src/routes.js";
 
 const MAP = JSON.parse(readFileSync(new URL("../src/route_map.json", import.meta.url)));
@@ -191,4 +191,46 @@ test("DirectorySlash: the slashed probe only adds keys a rule respells", () => {
   assert.deepEqual(slashedOnlyCandidates("/atc/history/Pubs/early_communications.pdf"), []);
   assert.deepEqual(slashedOnlyCandidates("/atc/images/"), []);
   assert.deepEqual(slashedOnlyCandidates("/atc/classphotos"), []);
+});
+
+test("history/Pubs files name their library twin; HTML and other trees do not", () => {
+  assert.deepEqual(libraryTwin("History/Pubs/faa_world/1977/faa_world_12-1977.pdf"), {
+    key: "pdf/faa_world/1977/faa_world_12-1977.pdf",
+    canon: "/atc/library/faa_world/1977/faa_world_12-1977.pdf",
+  });
+  assert.deepEqual(libraryTwin("History/Pubs/mukluk_telegraph_pubs/pdf_files/1959/mukluk_telegraph_dec_1959.pdf"), {
+    key: "pdf/mukluk_telegraph_pubs/pdf_files/1959/mukluk_telegraph_dec_1959.pdf",
+    canon: "/atc/library/mukluk_telegraph_pubs/pdf_files/1959/mukluk_telegraph_dec_1959.pdf",
+  });
+  // HTML pages carry their own rel=canonical tag
+  assert.equal(libraryTwin("History/Pubs/faa_world/FAA_World.htm"), null);
+  assert.equal(libraryTwin("History/Pubs/faa_world/1977/index.html"), null);
+  // only the Pubs subtree, and only that direction
+  assert.equal(libraryTwin("History/checklst.htm"), null);
+  assert.equal(libraryTwin("History/Western Airway Beacons List.xls"), null);
+  assert.equal(libraryTwin("pdf/faa_world/1977/faa_world_12-1977.pdf"), null);
+  // the twin's canonical URI serves itself (never redirects)
+  assert.equal(routeOldPath("/library/faa_world/1977/faa_world_12-1977.pdf"), null);
+});
+
+test("an index file named explicitly is an alias of its directory, one hop from either spelling", () => {
+  const cases = {
+    "/History/Pubs/faa_world/1977/index.html": "/atc/history/Pubs/faa_world/1977/",
+    "/history/Pubs/faa_world/1977/index.html": "/atc/history/Pubs/faa_world/1977/",
+    "/classphotos/7711/index.html": "/atc/class-photos/7711/",
+    // the directory's own route wins: map canonical (slashless, permanent)
+    "/History/index.html": "/atc/History",
+    "/history/index.html": "/atc/History",
+    "/History/Default.htm": "/atc/History",
+    // explicit aliases of the file keep precedence over the generic rule
+    "/pdf/index.htm": "/atc/library/",
+    "/History/SouthDakota/index.htm": "/atc/history/SouthDakota/",
+    // the site root
+    "/index.html": "/atc/",
+  };
+  for (const [path, want] of Object.entries(cases))
+    assert.deepEqual(routeOldPath(path), { to: want }, path);
+  // the directory URIs they land on serve themselves
+  assert.equal(routeOldPath("/history/Pubs/faa_world/1977/"), null);
+  assert.equal(routeOldPath("/class-photos/7711/"), null);
 });
