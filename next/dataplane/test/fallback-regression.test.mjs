@@ -69,6 +69,31 @@ test('still-demanded fallback basemap survives a demand generation change', asyn
   assert.match(h.events[0].key, /^basemap\//);
 });
 
+test('a delivered basemap tile stays demanded when the date changes to charts not yet decoded', async t => {
+  // Two eras over the same place; the basemap tile is z3 under the z4 chart tiles.
+  const h = await harness(t, raw({eras: [era(), era('2001-01-01', '2002-01-01')], basemap: {p: 'basemap/test.0123456789ab', z: [0, 13]}}));
+  const basemapTile = {z: 3, x: 1, y: 1}, charts = [0, 1, 2, 3].map(i => ({z: 4, x: 2 + (i & 1), y: 2 + (i >> 1)}));
+  const state = {date: '2000-06-01', chartTiles: charts, basemapTiles: [basemapTile], occlude: true};
+  h.dp.setDemand(state); await flush();
+  // The charts are unknown, so the basemap waits: only the four chart tiles (and their low-zoom fallback) were asked for.
+  assert.equal(h.fetches.filter(u => u.includes('/basemap/')).length, 0);
+  for (const d of h.decodes.splice(0)) d.resolve(bitmap()); await flush();
+  // Decoded charts turned out partly blank (no alpha probe here: unknown stays unknown without a probe), so force the
+  // answer the way a decoded tile would: a blank grid says nothing is drawn, the basemap under it is wanted now.
+  h.dp.setDemand({...state, occlude: false}); await flush();
+  assert.equal(h.fetches.filter(u => u.includes('/basemap/')).length, 1);
+  const base = h.decodes.find(d => true); base.resolve(bitmap()); h.decodes.length = 0; await flush();
+  assert.ok(h.events.some(e => e.key.startsWith('basemap/')));
+  // Now scrub to the second era with occlusion back on: its charts are unknown, but the delivered basemap tile stays
+  // in the plan and in demand instead of being dropped and re-planned once the charts decode.
+  h.dp.setDemand({...state, date: '2001-06-01', occlude: true}); await flush();
+  assert.equal(h.dp.planBasemap([basemapTile])[0].items.length, 1);
+  const fetchesBefore = h.fetches.length;
+  for (const d of h.decodes.splice(0)) d.resolve(bitmap()); await flush();
+  assert.equal(h.fetches.filter(u => u.includes('/basemap/')).length, 1);
+  assert.ok(h.fetches.length >= fetchesBefore);
+});
+
 test('still-demanded fallback prefetch survives demand updates and buffers the next frame', async t => {
   const h = await harness(t, raw({eras: [era(), era('2001-01-01', '2002-01-01')]}));
   const state = {...chartState, scrub: {playing: true}};

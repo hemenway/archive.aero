@@ -158,6 +158,15 @@ export class MapController {
       else if (key !== 'airspace/metadata') this._degrade(key, error); // the airspace switch reports its own load failures
     });
     renderer.on('evict', ({ key }) => dp.markEvicted(key));
+    // Everything the plans need is resident or waiting and the budget is full:
+    // the swap cannot finish and the renderer has stopped uploading. Say so;
+    // a silent stall looked like tiles that never loaded.
+    renderer.on('texturepressure', ({ key, maxTextureBytes }) => {
+      const now = performance.now();
+      if (this._lastPressureWarning && now - this._lastPressureWarning < 10000) return;
+      this._lastPressureWarning = now;
+      console.warn(`archive.aero: texture budget of ${Math.round(maxTextureBytes / 1048576)} MiB is full of needed tiles; ${key} and others wait (${JSON.stringify(renderer.stats())})`);
+    });
     renderer.on('contextlost', () => Utils.toast('Graphics interrupted. Restoring charts…'));
     // The renderer reports every lost texture evicted; re-demanding fetches them again.
     renderer.on('contextrestored', () => this._demand());

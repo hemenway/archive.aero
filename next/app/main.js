@@ -178,11 +178,15 @@ async function initApp() {
 
   let renderer;
   try {
-    // Touch devices keep the renderer's smaller default budget; 96 MiB fits
-    // three native items per tile on a 1440×900 desktop.
+    // The renderer stops uploading once everything the plans need is pinned
+    // past its budget, and it stays stopped until demand shrinks. A scrub
+    // through the 1940s-50s, where dozens of partial eras overlap, pins the
+    // old date's drawn tiles and the new date's items together: ~85 MiB at
+    // 2000×1200 z5, ~100 MiB at z6, ~40 MiB on a phone (2026-10-05, when a
+    // 96 MiB desktop budget left half the map on its blurry fallback).
     renderer = createRenderer(canvas, {
       minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM,
-      maxTextureBytes: matchMedia('(pointer: coarse)').matches ? undefined : 96 * 1024 * 1024
+      maxTextureBytes: (matchMedia('(pointer: coarse)').matches ? 96 : 256) * 1024 * 1024
     });
   } catch (error) {
     console.error('Renderer failed to start', error);

@@ -17,7 +17,7 @@ class Renderer {
     if (!this.gl) throw new RendererUnsupportedError();
     this.coarse = options.coarsePointer ?? matchMedia('(pointer: coarse)').matches;
     const ios = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    this.budget = options.maxTextureBytes ?? ((ios || (this.coarse && Math.min(screen.width, screen.height) <= 820)) ? 24 : 64) * 1024 * 1024;
+    this.budget = options.maxTextureBytes ?? ((ios || (this.coarse && Math.min(screen.width, screen.height) <= 820)) ? 48 : 128) * 1024 * 1024;
     if (!Number.isFinite(this.budget) || this.budget < 256 * 256 * 4) throw new RangeError('maxTextureBytes must fit at least one 256px RGBA tile');
     this.camera = new Camera({ minZoom: options.minZoom ?? 4, maxZoom: options.maxZoom ?? 14, center: [0, 0], zoom: options.minZoom ?? 4 });
     this.events = new Map(); this.chart = new Map(); this.base = new Map(); this.rings = new Map(); this.airspace = new Map(); this.airspaceDraws = [];
@@ -428,11 +428,16 @@ class Renderer {
     // (dates already scrubbed past) only fill idle budget: under texture
     // pressure, or past 64 waiting bitmaps, they are dropped with an evict so
     // the data plane forgets them instead of holding decoded memory.
+    // Chart and basemap pages never share storage, so one size being full
+    // does not stop the other's needed uploads this frame.
+    const stuck = new Set();
     while (this.queue.length && uploaded < 4 && performance.now() - start < 4) {
-      let index = this.queue.findIndex(q => this.pool.pinned.has(q.key)); const needed = index >= 0; if (!needed) index = 0;
+      let index = this.queue.findIndex(q => this.pool.pinned.has(q.key) && !stuck.has(q.size)); const needed = index >= 0;
+      if (!needed) index = this.queue.findIndex(q => !this.pool.pinned.has(q.key));
+      if (index < 0) break;
       const q = this.queue[index], entry = this.pool.put(q.key, q.bitmap, q.size);
       if (!entry) {
-        if (needed) { blocked = true; this._emit('texturepressure', { key: q.key, maxTextureBytes: this.budget }); break; }
+        if (needed) { stuck.add(q.size); if (!blocked) { blocked = true; this._emit('texturepressure', { key: q.key, maxTextureBytes: this.budget }); } continue; }
         this._drop(index); continue;
       }
       q.bitmap.close(); this.queue.splice(index, 1); this.queued.delete(q.key); uploaded++; this.planDirty = true; this._plans();
@@ -444,7 +449,7 @@ class Renderer {
     if (!this.style.hidden) this._drawPlans(this.chartDraws, this.style.opacity);
     this._drawOverlays(); this.frameMs = performance.now() - start;
     this.renderEvent.frameMs = this.frameMs; this._emit('render', this.renderEvent);
-    if (this.animation || (this.queue.length && !blocked)) this._invalidate();
+    if (this.animation || (this.queue.length && (!blocked || uploaded))) this._invalidate();
   }
   _drop(index) { const [q] = this.queue.splice(index, 1); q.bitmap.close(); this.queued.delete(q.key); this._emit('evict', { key: q.key }); }
   _invalidate() { if (!this.frame && !this.lost && !this.dead) this.frame = requestAnimationFrame(this._drawBound); }
@@ -454,6 +459,13 @@ class Renderer {
     // Interpolate towards the nearest world copy of the target, never the long way round.
     if (to.x !== undefined) to = { ...to, x: to.x + Math.round(from.x - to.x) };
     this.animation = { from, to, duration, anchor, time: performance.now() }; this._invalidate();
+  }
+  _wheelZoom() {
+    const d = this.wheelDelta; this.wheelDelta = 0; if (!d) return;
+    const d2 = Math.abs(d) / (120 * 4), levels = Math.min(4, Math.ceil(4 * Math.log(2 / (1 + Math.exp(-d2))) / Math.LN2));
+    // A step during a running step continues from where that one is heading, never from its half-way zoom.
+    const from = this.animation?.to.zoom ?? this.camera.zoom;
+    this._zoom(Math.round(from) - Math.sign(d) * levels, ...this.wheelAnchor);
   }
   _zoom(zoom, x = this.camera.width / 2, y = this.camera.height / 2) {
     this._animate({ zoom: clamp(Math.round(zoom), this.camera.minZoom, this.camera.maxZoom) }, 220, [x, y]);
@@ -496,11 +508,15 @@ class Renderer {
     };
     listen('pointerup', e => finish(e, false)); listen('pointercancel', e => finish(e, true)); listen('lostpointercapture', e => finish(e, true));
     listen('dblclick', e => { e.preventDefault(); const p = local(e); this._zoom(this.camera.zoom + 1, ...p); });
+    // Production's scroll-wheel feel (Leaflet, 120 px per level, 60 ms debounce): deltas accumulate, then the map
+    // steps at least one whole level in the direction of travel, up to four, anchored at the cursor. Following the
+    // wheel to a fractional zoom and snapping to the nearest level afterwards read as a stuck wheel on trackpads,
+    // whose gestures deliver small deltas: anything under half a level snapped back to where it started.
+    this.wheelDelta = 0;
     this.canvas.addEventListener('wheel', e => {
-      e.preventDefault(); this.animation = null;
-      const p = local(e), delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.camera.height : 1);
-      this.camera.zoomAt(this.camera.zoom - delta / 120, ...p); this._moved(); clearTimeout(this.wheelTimer);
-      this.wheelTimer = setTimeout(() => this._zoom(this.camera.zoom, ...p), 60);
+      e.preventDefault();
+      this.wheelDelta += e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.camera.height : 1); this.wheelAnchor = local(e);
+      clearTimeout(this.wheelTimer); this.wheelTimer = setTimeout(() => this._wheelZoom(), 60);
     }, { passive: false, signal: this.abort.signal });
     listen('keydown', e => {
       const pan = { ArrowLeft: [80, 0], ArrowRight: [-80, 0], ArrowUp: [0, 80], ArrowDown: [0, -80] }[e.key];

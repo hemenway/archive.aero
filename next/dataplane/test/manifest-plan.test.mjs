@@ -75,3 +75,23 @@ test('a basemap tile wholly under solid charts is left out; a partly covered one
   const blankTop=new Map([['c/7/20/20',occupancyOf(alphaTile(x=>x<16?255:0))]]);
   assert.equal(planBase(source,[{z:9,x:80,y:80}],null,coveredCells(four,{occ:blankTop,occlude:true}))[0].items.length,1);
 });
+test('a basemap tile already delivered stays planned while the charts over it are unknown, not once they prove solid',()=>{
+  const source={p:'basemap/x.0123456789ab',z:[0,13],format:'mvt'},solid=occupancyOf(alphaTile(()=>255));
+  const cell=(x,y)=>({dst:{z:10,x,y},items:[{key:`c/10/${x}/${y}`,src:{z:10,x,y},dst:{z:10,x,y}}]});
+  const four=[cell(160,160),cell(161,160),cell(160,161),cell(161,161)],tile=[{z:9,x:80,y:80}];
+  const unknown=coveredCells(four,{occ:new Map(),occlude:true});
+  assert.deepEqual([...unknown.values()],['unknown','unknown','unknown','unknown']);
+  // Not delivered: waits for the charts. Delivered (exact or an ancestor the renderer draws instead): stays.
+  assert.equal(planBase(source,tile,null,unknown,new Set())[0].items.length,0);
+  assert.equal(planBase(source,tile,null,unknown,new Set(['basemap/x.0123456789ab/9/80/80']))[0].items.length,1);
+  assert.equal(planBase(source,tile,null,unknown,new Set(['basemap/x.0123456789ab/7/20/20']))[0].items.length,1);
+  assert.equal(planBase(source,tile,null,unknown,new Set(['basemap/x.0123456789ab/9/81/80']))[0].items.length,0);
+  // Known solid on top: left out even when delivered (nothing of it can show).
+  const covered=coveredCells(four,{occ:new Map([['c/7/20/20',solid]]),occlude:true});
+  assert.deepEqual([...covered.values()],['solid','solid','solid','solid']);
+  assert.equal(planBase(source,tile,null,covered,new Set(['basemap/x.0123456789ab/9/80/80']))[0].items.length,0);
+  // Three solid, one unknown: still nothing can show through until the fourth answers; a delivered tile stays.
+  const mixed=new Map(covered); mixed.set('10/161/161','unknown');
+  assert.equal(planBase(source,tile,null,mixed,new Set())[0].items.length,0);
+  assert.equal(planBase(source,tile,null,mixed,new Set(['basemap/x.0123456789ab/9/80/80']))[0].items.length,1);
+});

@@ -7,7 +7,7 @@
   "linksOrigin": null,
   "manifestGzip": 361,
   "bytes": {
-    "criticalJS": 17504,
+    "criticalJS": 17652,
     "css": 7377,
     "cssRaw": 35241,
     "html": 19005,
@@ -25,7 +25,7 @@
   "assets": [
     "./index.html",
     "./worker.PSVLAI42.js",
-    "./app.HSUYG75Q.js",
+    "./app.IQFRE7NP.js",
     "./chunk.V6KBJ7CT.js",
     "./chunk.D6MR6EBD.js",
     "./styles.c6a9f6a656ab.css",

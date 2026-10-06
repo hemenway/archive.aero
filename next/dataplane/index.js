@@ -87,8 +87,8 @@ export async function createDataPlane(options={}) {
     manifest:manifestSummary(manifest),
     planCharts(date,tiles,{solo}={}) {return {id:String(date)+(solo?`:${solo.paths.join(',')}:${solo.clip?.id??''}`:''),tiles:planCharts(manifest,date,tiles,solo,cullBy())};},
     // Follows the last demand: basemap tiles wholly under that frame's opaque charts are left out, as the core leaves them unfetched.
-    planBasemap(tiles) {const covered=last&&!last.solo?basemapCover(manifest,last.date,tiles,cullBy()):null;return planBasemap(manifest.raw.basemap,tiles,absent,covered);},
-    setDemand(state) {generation++;occlude=state.occlude!==false;last=state;const demand=buildDemand(manifest,state,paths,{occ,absent});paths=demand.paths;wanted=new Set(demand.requests.map(r=>r.key));void call('setDemand',state).catch(reportError);},
+    planBasemap(tiles) {const covered=last&&!last.solo?basemapCover(manifest,last.date,tiles,cullBy()):null;return planBasemap(manifest.raw.basemap,tiles,absent,covered,ready);},
+    setDemand(state) {generation++;occlude=state.occlude!==false;last=state;const demand=buildDemand(manifest,state,paths,{occ,absent,delivered:ready});paths=demand.paths;wanted=new Set(demand.requests.map(r=>r.key));void call('setDemand',state).catch(reportError);},
     on(event,fn) {if(!listeners.has(event))listeners.set(event,new Set());listeners.get(event).add(fn);},
     off(event,fn) {listeners.get(event)?.delete(fn);},
     markEvicted(key) {ready.delete(key);void call('markEvicted',key).catch(reportError);},

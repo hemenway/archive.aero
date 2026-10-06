@@ -49,6 +49,24 @@ test('wheel settles on integer zoom around cursor; focused keyboard pans', async
   await page.keyboard.press('+'); await expect.poll(() => page.evaluate(() => r.getCamera().zoom)).toBe(4);
 });
 
+test('a small wheel gesture still steps one whole level; steps during a step continue, never snap back', async ({ page }) => {
+  // Trackpads deliver deltas far below 120 px: a gesture worth a third of a level snapped back to its start (2026-10-05).
+  const wheel = (deltaY, n = 1) => page.evaluate(({ deltaY, n }) => {
+    for (let i = 0; i < n; i++) r.canvas.dispatchEvent(new WheelEvent('wheel', { deltaY, clientX: 80, clientY: 90, bubbles: true, cancelable: true }));
+  }, { deltaY, n });
+  await wheel(-8, 5);
+  await expect.poll(() => page.evaluate(() => r.getCamera().zoom)).toBe(3);
+  // A second gesture while the first still animates: one more level from the first's target.
+  await wheel(-8, 5); await page.waitForTimeout(80); await wheel(-8, 5);
+  await expect.poll(() => page.evaluate(() => r.getCamera().zoom)).toBe(5);
+  // Large deltas step several levels at once, capped at four.
+  await wheel(2400);
+  await expect.poll(() => page.evaluate(() => r.getCamera().zoom)).toBe(1);
+  // Integer zoom is left alone by an empty debounce.
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => r.getCamera().zoom)).toBe(1);
+});
+
 test('atomic multi-item swaps: every sampled animation frame retains charts; stale delivery stays superseded', async ({ page }) => {
   const result = await page.evaluate(async () => {
     r.setBasemapPlan([{ dst: { z: 1, x: 1, y: 1 }, items: [{ key: 'base/1/1/1', src: { z: 1, x: 1, y: 1 }, dst: { z: 1, x: 1, y: 1 } }] }]);
@@ -368,6 +386,24 @@ test('current-plan textures jump the upload queue; superseded deliveries are dro
   });
   expect(result.needed).toBe(true); expect(result.stale).toBe(false); expect(result.queue).toBe(0);
   expect(result.evicted).toContain('stale/2/2/2'); expect(result.pixel.slice(0, 3)).toEqual([0, 255, 0]);
+});
+
+test('a full basemap budget does not stop needed chart uploads, and the queue keeps draining', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    // Room for one 512 px basemap page layer plus three 256 px chart layers (pages take what the budget leaves).
+    r.destroy(); const { createRenderer } = await import('/index.js'); window.r = createRenderer(document.querySelector('canvas'), { minZoom: 0, maxTextureBytes: (512 * 512 + 3 * 256 * 256) * 4, preserveDrawingBuffer: true });
+    r.setCamera({ x: .625, y: .625, zoom: 2 }); const pressure = []; r.on('texturepressure', e => pressure.push(e.key));
+    const base = { z: 1, x: 1, y: 1 };
+    r.setBasemapPlan([{ dst: base, items: [{ key: 'base-0/1/1/1', src: base, dst: base }, { key: 'base-1/1/1/1', src: base, dst: base }] }]);
+    plan('charts', [0, 1, 2].map(i => ({ key: `chart-${i}/2/2/2` })));
+    // Both needed basemap tiles are queued first; only one fits, and the charts behind them must still upload.
+    r.upload('base-0/1/1/1', await syntheticTile(512, '#0000ff')); r.upload('base-1/1/1/1', await syntheticTile(512, '#0000ff'));
+    for (let i = 0; i < 3; i++) r.upload(`chart-${i}/2/2/2`, await syntheticTile(256, '#00ff00'));
+    for (let i = 0; i < 4; i++) await tick();
+    return { pressure, charts: [0, 1, 2].every(i => r.hasTexture(`chart-${i}/2/2/2`)), base0: r.hasTexture('base-0/1/1/1'), queue: r.queue.length, pixel: pixel() };
+  });
+  expect(result.charts).toBe(true); expect(result.base0).toBe(true); expect(result.queue).toBe(1);
+  expect(result.pressure).toContain('base-1/1/1/1'); expect(result.pixel.slice(0, 3)).toEqual([0, 255, 0]);
 });
 
 test('translucent tiles composite with premultiplied alpha', async ({ page }) => {

@@ -51,11 +51,11 @@ export function cull(items,cullBy) {
   }
   return kept.length===items.length?items:kept.reverse();
 }
-// Chart tiles ("z/x/y") nothing beneath can show through: one of the charts there is known to be solid (at a seam
-// the chart on top is cut off and the one under it fills the tile), or one is not yet known either way, so what is
-// under it waits for the answer.
+// Chart tiles ("z/x/y") nothing beneath can show through, each with why: "solid" when one of the charts there is
+// known to be solid (at a seam the chart on top is cut off and the one under it fills the tile), "unknown" when one
+// is not yet known either way, so what is under it waits for the answer.
 export function coveredCells(chartPlan,cullBy) {
-  const out=new Set(); if(!cullBy?.occlude) return out;
+  const out=new Map(); if(!cullBy?.occlude) return out;
   for(const {dst,items} of chartPlan) {
     let solid=false,unknown=false;
     for(const it of items) {
@@ -63,9 +63,15 @@ export function coveredCells(chartPlan,cullBy) {
       const o=occupancy(cullBy.occ,it.key.slice(0,it.key.length-`/${it.src.z}/${it.src.x}/${it.src.y}`.length),it.src);
       if(!o) unknown=true; else if(o.full) { solid=true; break; }
     }
-    if(solid||unknown) out.add(`${dst.z}/${dst.x}/${dst.y}`);
+    if(solid) out.set(`${dst.z}/${dst.x}/${dst.y}`,'solid'); else if(unknown) out.set(`${dst.z}/${dst.x}/${dst.y}`,'unknown');
   }
   return out;
+}
+// Whether a basemap item, or an ancestor the renderer would draw in its place, has already been delivered.
+export function residentAt(resident,source,it) {
+  if(!resident?.size) return false;
+  for(let z=it.src.z;z>=source.z[0];z--) if(resident.has(tileKey(source.p,ancestor(it.src,z)))) return true;
+  return false;
 }
 function item(path,dst,z,era,clip=null) {
   const src = ancestor(dst,z);
@@ -90,17 +96,25 @@ export function planCharts(manifest,date,tiles,solo=null,cullBy=null) {
 }
 // The basemap cutout holds the whole world only at low zooms; where a tile is known to be missing, its nearest
 // existing ancestor stands in so the map never falls back to nothing.
-export function planBasemap(source,tiles,absent=null,covered=null) {
+// resident: keys already delivered (the page's or the core's). A tile wholly under charts of unknown occupancy is
+// not fetched until they answer, but one already on screen stays in the plan: scrubbing dates made every basemap
+// tile under the next date's still-loading charts vanish and return (2026-10-05).
+export function planBasemap(source,tiles,absent=null,covered=null,resident=null) {
   if(!source) return tiles.map(dst=>({dst,items:[]}));
-  const under=(z,x,y)=>covered.has(`${z}/${x}/${y}`);
+  const under=(z,x,y)=>covered.get(`${z}/${x}/${y}`);
   return tiles.map(dst=>{
     if(dst.z < source.z[0]) return {dst,items:[]};
-    // Wholly under opaque charts: not drawn, so not fetched or painted either. While a chart over it has yet to show
-    // whether it is solid, the tile waits: charts load first and most of a view never needs its basemap.
-    if(covered?.size) { let hidden=true; for(let i=0;i<4;i++) if(!under(dst.z+1,dst.x*2+(i&1),dst.y*2+(i>>1))) hidden=false; if(hidden) return {dst,items:[]}; }
     let it=item(source.p,dst,Math.min(dst.z,source.z[1]),0);
     while(absent?.has(it.key) && it.src.z>source.z[0]) it=item(source.p,dst,it.src.z-1,0);
-    return {dst,items:absent?.has(it.key)?[]:[it]};
+    if(absent?.has(it.key)) return {dst,items:[]};
+    // Wholly under opaque charts: not drawn, so not fetched or painted either. While a chart over it has yet to show
+    // whether it is solid, a tile not yet delivered waits: charts load first and most of a view never needs its basemap.
+    if(covered?.size) {
+      let solid=true,hidden=true;
+      for(let i=0;i<4;i++) { const why=under(dst.z+1,dst.x*2+(i&1),dst.y*2+(i>>1)); if(!why) { hidden=solid=false; break; } if(why!=='solid') solid=false; }
+      if(solid || (hidden && !residentAt(resident,source,it))) return {dst,items:[]};
+    }
+    return {dst,items:[it]};
   });
 }
 export const isVector = source => source?.format==='mvt';

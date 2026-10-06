@@ -41,13 +41,13 @@ export class DataCore {
   }
   cullBy(occlude=this.state?.occlude) { return {occ:this.occ,absent:this.scheduler.absent,occlude:occlude!==false}; }
   planCharts(date,tiles,{solo}={}) { return {id:String(date)+(solo?`:${solo.paths.join(',')}:${solo.clip?.id??''}`:''),tiles:planCharts(this.m,date,tiles,solo,this.cullBy())}; }
-  planBasemap(tiles) { const s=this.state,covered=s&&!s.solo?basemapCover(this.m,s.date,tiles,this.cullBy()):null;return planBasemap(this.m.raw.basemap,tiles,this.scheduler.absent,covered); }
+  planBasemap(tiles) { const s=this.state,covered=s&&!s.solo?basemapCover(this.m,s.date,tiles,this.cullBy()):null;return planBasemap(this.m.raw.basemap,tiles,this.scheduler.absent,covered,this.delivered); }
   // A recull replays the last demand after new occupancy or a missing basemap tile; it keeps the path baseline of the
   // demand it replays, so archives new to that demand still load their low-resolution tile first.
   setDemand(state,recull=false) {
     if(!recull) this.basePaths=this.paths;
     this.state=state;
-    const {requests,paths}=buildDemand(this.m,state,this.basePaths,{occ:this.occ,absent:this.scheduler.absent});this.paths=paths;this.wanted=new Set(requests.map(r=>r.key));const airspaceTiles=state.airspaceTiles??[];
+    const {requests,paths}=buildDemand(this.m,state,this.basePaths,{occ:this.occ,absent:this.scheduler.absent,delivered:this.delivered});this.paths=paths;this.wanted=new Set(requests.map(r=>r.key));const airspaceTiles=state.airspaceTiles??[];
     // Decoded vector geometry is bounded by current spatial/temporal demand.
     for(const key of this.airspace.tiles?.keys()??[]) if(!this.wanted.has(key)) {const coord=this.airspace.tiles.get(key).tile;this.airspace.deleteTile(key);this.delivered.delete(key);this.emit('airspace',{tileId:`${coord.z}/${coord.x}/${coord.y}`,batch:null});}
     for(const key of this.decoding.keys())if(!this.wanted.has(key))this.decoding.delete(key);
