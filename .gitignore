@@ -62,5 +62,13 @@ worklists/14_geotiff2pmtiles_upstream_drafts.md
 worklists/helper_prompt.md
 /.agents
 
+# Independent beta build and Wrangler local state
+/beta/dist/
+/.wrangler/
+
+/beta/.wrangler/
+
 # GitHub Pages publication artifact
 /_site/
+Donation List.numbers
+/beta

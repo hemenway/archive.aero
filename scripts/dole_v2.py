@@ -35,6 +35,15 @@ Schema (one row per map):
                 writers sanitize rows to that header, so an optional column
                 missing from the list is silently dropped on every rewrite
                 (the 2026-08-27 sdcards import lost it exactly that way).
+    crop:       "x0,y0,x1,y1" - the part of the scan that is the sheet, in
+                the same full-resolution rotated display frame as gcp*_px/_py
+                (origin top-left, x1/y1 exclusive). Everything outside it is
+                overscan (scanner bed, lid, a neighbouring sheet) and never
+                reaches a warp: the slicer reads only this window, for the
+                mosaic and for the full-sheet chart artifact alike, and the
+                cutline then trims inside it. GCP pixels stay in whole-image
+                coordinates, so setting or clearing a crop never moves them.
+                OPTIONAL column; blank = the whole image. GCP rows only.
 
 This module is GDAL-light: only cutline geometry reading needs osgeo.ogr,
 imported lazily so metadata-only consumers can run without GDAL.
@@ -53,12 +62,12 @@ V2_FIELDS = [
     "gcp4_px", "gcp4_py", "gcp4_lat", "gcp4_lon",
     "cutline", "cutline_wkt",
     "lcc_lat1", "lcc_lat2", "lcc_lat0", "lcc_lon0",
-    "rotation", "src_crs", "half", "proj",
+    "rotation", "src_crs", "half", "proj", "crop",
 ]
 
 # Columns that may be absent from a CSV on disk (added after the v2 freeze).
 # Writers always emit the full V2_FIELDS header; readers treat these as "".
-V2_OPTIONAL_FIELDS = {"rotation", "src_crs", "half", "proj"}
+V2_OPTIONAL_FIELDS = {"rotation", "src_crs", "half", "proj", "crop"}
 
 LCC_TEMPLATE = (
     "+proj=lcc +lat_1={lat1} +lat_2={lat2} +lat_0={lat0} "
@@ -246,6 +255,44 @@ def row_half(row) -> str:
     return value if value in ("north", "south", "east", "west") else ""
 
 
+# Chart type (2026-10-04): TACs, WACs and planning charts are catalogued
+# beside the sectionals and sliced into the same era mosaics. The type is
+# carried by the LOCATION suffix ("New Orleans TAC", "CF-16 WAC", "Flight
+# Case Planning Chart") rather than a column: the suffix already has to be
+# there so a TAC and the sectional of the same city and date get different
+# candidate groups, cutline votes and chart URIs, and a location-derived type
+# cannot be dropped by a writer that sanitizes rows to an older header.
+# Edition numbers are per chart type - never match on (city, edition) alone.
+CHART_TYPE_SECTIONAL = "sectional"
+_CHART_TYPE_SUFFIXES = (
+    (" planning chart", "planning"),
+    (" wac", "wac"),
+    (" tac", "tac"),
+)
+# Mosaic stacking, bottom to top. gdalwarp composites last-source-wins, so
+# where charts of one era overlap the WAC lies under the sectional and the
+# TAC on top (smaller scale below larger scale).
+CHART_TYPE_LAYER = {"planning": 0, "wac": 1, CHART_TYPE_SECTIONAL: 2, "tac": 3}
+
+
+def location_chart_type(location) -> str:
+    """'tac' / 'wac' / 'planning' from a location's suffix, else 'sectional'."""
+    loc = str(location or "").strip().lower()
+    for suffix, kind in _CHART_TYPE_SUFFIXES:
+        if loc.endswith(suffix):
+            return kind
+    return CHART_TYPE_SECTIONAL
+
+
+def row_chart_type(row) -> str:
+    return location_chart_type(row.get("location"))
+
+
+def row_layer(row) -> int:
+    """Mosaic stacking rank of the row's chart type (higher = drawn later)."""
+    return CHART_TYPE_LAYER[row_chart_type(row)]
+
+
 def row_rotation(row) -> int:
     """Row's display rotation in degrees clockwise: 0, 90, 180 or 270."""
     value = str(row.get("rotation") or "").strip()
@@ -289,6 +336,69 @@ def px_display_to_raw(dx: float, dy: float, rotation: int,
     if rotation == 270:
         return raw_w - dy, dx
     return dx, dy
+
+
+# --- CROP ---------------------------------------------------------------
+# An overscanned sheet carries scanner bed around the paper. `crop` boxes the
+# paper in the display frame (the frame the GCPs are authored in); consumers
+# take the raw-frame window from row_crop_raw_window and shift their raw GCP
+# pixels by its offset. This is the one place the storage format is known.
+
+def format_crop(x0: float, y0: float, x1: float, y1: float) -> str:
+    """Catalog text for a display-frame crop box (whole pixels)."""
+    return ",".join(str(int(round(v))) for v in (x0, y0, x1, y1))
+
+
+def row_crop(row) -> Optional[Tuple[float, float, float, float]]:
+    """Row's crop box (x0, y0, x1, y1) in display-frame pixels, or None.
+
+    Raises ValueError on a value that is present but unusable: a crop that
+    silently fell back to the whole image would put the overscan back."""
+    value = str(row.get("crop") or "").strip()
+    if not value:
+        return None
+    parts = [_fnum(p) for p in value.split(",")]
+    if len(parts) != 4 or any(p is None for p in parts):
+        raise ValueError(f"{row.get('filename')}: crop must be 'x0,y0,x1,y1', got {value!r}")
+    x0, y0, x1, y1 = parts
+    if not (x0 < x1 and y0 < y1):
+        raise ValueError(f"{row.get('filename')}: crop is empty or inverted: {value!r}")
+    return x0, y0, x1, y1
+
+
+def crop_display_to_raw(crop, rotation: int, raw_w: float, raw_h: float
+                        ) -> Tuple[float, float, float, float]:
+    """A display-frame box as (x0, y0, x1, y1) in the raw file's frame."""
+    ax, ay = px_display_to_raw(crop[0], crop[1], rotation, raw_w, raw_h)
+    bx, by = px_display_to_raw(crop[2], crop[3], rotation, raw_w, raw_h)
+    return min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)
+
+
+def crop_raw_to_display(box, rotation: int, raw_w: float, raw_h: float
+                        ) -> Tuple[float, float, float, float]:
+    """Inverse of crop_display_to_raw."""
+    ax, ay = px_raw_to_display(box[0], box[1], rotation, raw_w, raw_h)
+    bx, by = px_raw_to_display(box[2], box[3], rotation, raw_w, raw_h)
+    return min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)
+
+
+def row_crop_raw_window(row, raw_w: int, raw_h: int) -> Optional[Tuple[int, int, int, int]]:
+    """Row's crop as a GDAL source window (xoff, yoff, xsize, ysize) in the
+    RAW file's frame, clamped to the raster, or None when the row has no crop
+    or the crop covers the whole image. Raises ValueError when the crop
+    misses the raster entirely."""
+    crop = row_crop(row)
+    if crop is None:
+        return None
+    x0, y0, x1, y1 = crop_display_to_raw(crop, row_rotation(row), raw_w, raw_h)
+    x0, y0 = max(0, int(round(x0))), max(0, int(round(y0)))
+    x1, y1 = min(int(raw_w), int(round(x1))), min(int(raw_h), int(round(y1)))
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError(f"{row.get('filename')}: crop {row.get('crop')!r} lies outside "
+                         f"the {raw_w}x{raw_h} image")
+    if (x0, y0, x1, y1) == (0, 0, int(raw_w), int(raw_h)):
+        return None
+    return x0, y0, x1 - x0, y1 - y0
 
 
 def is_gcp_ready(row) -> bool:

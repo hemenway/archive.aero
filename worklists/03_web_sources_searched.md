@@ -1,19 +1,31 @@
 # Worklist 03 — Online sources already searched (do not duplicate effort)
 
+**Reviewed 2026-09-21 against local records only.** This is the search-history
+index, not a fresh verification of external availability. The last recorded broad
+search round here is **2026-07-23**. Contacts, login-only leads and scheduled
+rechecks have no later completion evidence in this record. No outreach or new
+online search was performed during this cleanup.
+
+The findings CSV still has **1,517 rows**. The full queue was attempted and
+analyzed in July; use [07](07_download_queue.md) for its deduplicated acquisition
+state, not the original 1,309-row download count. Local source availability now
+needs reconciliation separately ([02](02_disk_vs_dole.md)).
+
 *Generated 2026-07-16, condensed from `search_archive/dole_search_log.txt` Parts 1–8,
 `dole_search_handoff_round8.md`, and all 13 lane reports. Those remain the authoritative
 record — this is the quick-reference index. Rounds 1–7 ran 2026-07-07 → 07-08.*
 
 **Findings CSV:** `search_archive/missing_from_dole_online.csv` — 1,517 rows
-(`source,name,url,date_or_edition,note`; +27 from round 9, 2026-07-23). Era: 87×1930s, 118×1940s, 19×1950s, 20×1960s,
+(`source,name,url,date_or_edition,note`; +27 from round 9, 2026-07-23). The
+**original 1,490-row** era breakdown was: 87×1930s, 118×1940s, 19×1950s, 20×1960s,
 **176×1970–2010 (the desert)**, 1,060×2011+, 10 undated.
 
 > **Round-9 addendum (2026-07-23 — full detail: search log Part 9).** +27 findings:
-> 23 desert-era sectionals (1981–1991, incl. Cold Bay 1991 + Jacksonville 1951) from
+> 23 GPO microfiche findings (mostly 1981–1991, plus Jacksonville 1951) from
 > archive.org's NEW GPO-depository microfiche ingest (Readex microfilm, 400dpi panels;
 > active channel — **recheck monthly**), 4 raremaps (Washington 1945, Douglas Restricted
 > 1944 +verso, LA R-2 NEW STOCK +verso, Fairbanks ca.1941-42). Verdict changes: FAA
-> `chart_sample_files` DEAD, faacharts.faa.gov DEAD (next FAA recheck ~2026-08-13);
+> `chart_sample_files` DEAD, faacharts.faa.gov DEAD (the suggested ~2026-08-13 recheck is overdue/unrecorded here);
 > raremaps re-sweep via **live sitemap** (not CDX — sitemap is not CF-walled);
 > university-ArcGIS frontier EXH (ASU remains unique); usenetarchives bulk sweep EXH
 > (closed, diminishing returns confirmed); usahas EXH (missing tiles deleted wholesale —
@@ -22,11 +34,12 @@ record — this is the quick-reference index. Rounds 1–7 ran 2026-07-07 → 07
 > public (full POA forum sweep without login). Rumsey 9911.000 is mislabeled in LUNA —
 > the scan is Roswell (Q-4), not Phoenix; search Rumsey by media ID.
 
-**Verdict key:** EXH = exhausted (do not re-search) · EXH+ = exhausted, findings recovered ·
+**Verdict key (as of the recorded search):** EXH = searched with no further
+known yield (avoid repeating the same sweep without a new lead) · EXH+ = exhausted, findings recovered ·
 LOGIN = free login needed (manual) · CONTACT = files exist, only the owner has them ·
 WALL = bot-wall, browser-only residual · DEAD = host/service gone · RECHECK = periodic re-check worthwhile.
 
-## 1. Master table
+## 1. Historical source-search table (July 2026)
 
 ### US federal institutions
 
@@ -133,21 +146,39 @@ CONTACT list).
 | Wikimedia Commons | Exhaustive 274-file inventory: Newberry Chicago 1955 ×2, ESRI SF 2008 | **EXH+** (3) / **RECHECK** uploads | Parts 3, 4 |
 | GitHub (~90 repos) | Code only, no chart binaries | **EXH** | Part 4 |
 
-## 2. What's still OPEN (ranked)
+## 2. Remaining acquisition lanes
 
-1. **CONTACT emails** (files confirmed to exist): ① ASU Hub (600dpi masters incl. Juneau 1971 — FILE_NAMEs/SuDoc/barcodes in `lane_j_report.md`); ② GlidePlan (117 mosaics — ask in `lane_g_report.md` + `glideplan_macmaps_inventory.txt`); ③ Ivo Welch (Jan-2006 NACO eastern set); ④ Matt Fox (53-zip set incl. all 15 AK); ⑤ ChartGeek author + DeTect/usahas; ⑥ Neilson, Alley, Honeck, Tomblin, Morrissey.
-2. **Scan requests**: NLA Bib 1030946 (biggest desert lever) + Bib 7796679; Fort Collins Cheyenne 1955/59; Harvard Orlando 1943; Archives West/OAC papers (log Part 6); ASU's unscanned Phoenix 1968-01-04.
-3. **Free-login afternoons**: AVSIM (Fox Packs + Myers packs), POA 141250, x-plane.org 38646.
-4. **Physical media** (proven no rips online): MapTech AeroPack CDs, ChartGeek DVD, RMS VISTA CDs, Air Chart Systems atlases, NACO subscription CDs, PC Pilot cover discs (issues 22–81, 84+). Set eBay saved searches.
-5. **Download-queue residue**: re-pull Seward_93.zip (largest CDX capture); batch-sweep the remaining ~1,300 pre-1971/post-2010 rows of the findings CSV.
-6. **Thin frontiers**: custom-domain CONTENTdm dorks; usenetarchives bulk pre-2003; browser-only residuals (OldMapsOnline, IU VDL, Arizona Memory Prescott, kchistory, LOC webarchive, archive.today); other university map-hub ArcGIS feature services (the ASU method generalizes).
-7. **Periodic re-checks**: FAA next-edition dir (56-day cycle — only externally fixed cadence); raremaps CDX slug re-sweep; new archive.org / Wikimedia uploads; eBay→dealer-scan pipeline.
+1. **Owner/master-file leads:** ASU Hub, GlidePlan, Ivo Welch, Matt Fox,
+   ChartGeek/DeTect, Neilson, Alley, Honeck, Tomblin and Morrissey. The lane reports
+   hold contact context, ASU barcodes and inventories. Outreach status is unknown;
+   check prior correspondence before contacting anyone.
+2. **Scan requests:** NLA Bib 1030946 and 7796679, Fort Collins Cheyenne 1955/59,
+   Harvard Orlando 1943, Archives West/OAC papers, ASU Phoenix 1968-01-04. Historical
+   holdings claims require verification when resuming the lane.
+3. **Login access:** AVSIM Fox/Myers packs, POA 141250 and x-plane.org 38646.
+   Pack 12 was already cataloged; reconcile it via 02 instead of counting it as a
+   new find. Other access/download completion is unrecorded here.
+4. **Physical media:** MapTech AeroPack, ChartGeek, RMS VISTA, Air Chart Systems,
+   NACO subscription and PC Pilot cover discs. Cross-check the later recoveries
+   in [11](11_acasis_img_recovery.md) and [12](12_sdcard_batch.md) before buying
+   or soliciting duplicates. No saved-search automation is established by this doc.
+5. **Candidate preparation:** [07](07_download_queue.md) owns the 258 deferred
+   HUNT26 candidate files and their historical import plan. Seward 93 needs a
+   different source; its known captures were exhausted in July.
+6. **Targeted rechecks:** new archive.org/GPO microfiche and Wikimedia uploads,
+   raremaps **live sitemap** (round 9 superseded the CDX suggestion), current FAA
+   cycle directories, and specific browser-only/custom-domain institutional leads.
+   No later sweep is recorded. The university ArcGIS and usenet bulk lanes were
+   exhausted in round 9; reopen only with a concrete new lead.
 
 ## 3. Rules of the hunt (summary — full text in `dole_search_handoff_round8.md`)
 
 - **Scope**: 1:500k sectionals only (USAF editions, versos, half-sheets, and distinct scans of dole-held editions COUNT); exclude TAC/WAC/ONC/planning/helicopter/IFR/strips/state charts/crops.
 - **Pyramids/mosaics** assembling a complete chart count as findings (artifact class in note); sub-~1000px thumbnails are record-only.
 - **Verify** every URL (`curl -sIL` → 200 + plausible size); Wayback `id_` + largest CDX capture; ~1MB on a big file = truncated, reject; CC pre-2013 ARC silently truncates at 512KB.
-- **Dedupe** against BOTH master_dole_v2.csv (download_link + filename; URL flattening: `/` and spaces → `_`) and missing_from_dole_online.csv.
+- **Dedupe** against BOTH the catalog (loaded with `scripts/dole_v2.py`) and
+  missing_from_dole_online.csv, including **location + edition + side**, not only
+  download_link/filename or flattened URLs. July's URL-only check overcounted
+  1,021 already-held editions (07).
 - **Record** findings as CSV rows; record-only items in the log; log zero-yields too, as the next log Part.
 - Technique cheat-sheet (raremaps GCS bypass, Trove keyless API, usenetarchives unlock, NARA WAF quirks, CDX gotchas, bot-wall master list): handoff §TECHNIQUE.

@@ -51,7 +51,15 @@ import airfields_freeman_extract as X  # noqa: E402
 from jev_client import DATA_DIR, JevClient, JevError, choice, noul  # noqa: E402
 
 # ---------------------------------------------------------------- policy
-ADOPT_MIN = 0.60         # Jev fills a blank only at/above this confidence
+# Per-question confidence floors, set on the 40-row hand-labeled sample
+# (worklists/data/jev/airfields_dates_labels.csv, run of 2026-09-21):
+#   built 29/30 correct at >=0.7, earliest 27/30, closed 23/26, last_seen 23/24;
+#   below 0.7 every question drops to roughly coin-flip, so an answer under
+#   the floor is treated as not_stated.
+Q_MIN = {"built_year": 0.70, "earliest_evidence_year": 0.70, "closed_year": 0.70,
+         "gone_by_year": 0.70, "last_evidence_year": 0.70}
+GONE_BY_WINDOW = 15      # years a gone-by chart may trail the last sighting and still count
+ADOPT_MIN = 0.70         # Jev fills a blank only at/above this confidence
 ADOPT_OVER_WEAK = 0.90   # Jev overrides a weak regex basis only at/above this
 STILL_OPEN_MIN = 0.80    # noul level that flags a regex "gone" for review
 WEAK_START = {"after_absence", "faa1988_listed", "lifespan_csv"}
@@ -115,6 +123,11 @@ def questions_for(years):
     }
 
 
+def row_id(r):
+    """Answers are keyed per entry, not per URL: three anchor-less entries share a page URL."""
+    return r["url"] + "|" + r["name"]
+
+
 def load_segments(tree):
     tree = os.path.abspath(tree)
     segments = {}
@@ -159,7 +172,12 @@ def pick(ans, qid):
 
 def jev_columns(ans):
     """Jev's own start/end derivation, mirroring derive() in the regex pass:
-    start = built else earliest; end = closed else gone_by else last_evidence."""
+    start = built else earliest; end = closed else gone_by else last_evidence.
+    Answers under their Q_MIN floor count as not_stated. A gone-by year is only
+    believed when it is LATER than every evidence of existence: Jev reads "no
+    longer depicted on the <year> chart" literally and will happily return the
+    1941 chart that predates the field (18/40 on the labeled sample without the
+    guard) — ordering years is arithmetic, so it lives here, not in the prompt."""
     out = {}
     built, cb = pick(ans, "built_year")
     earliest, ce = pick(ans, "earliest_evidence_year")
@@ -167,6 +185,22 @@ def jev_columns(ans):
     gone, cg = pick(ans, "gone_by_year")
     last, cl = pick(ans, "last_evidence_year")
     still = float(ans["still_open"]["noul"])
+    if cb < Q_MIN["built_year"]:
+        built = None
+    if ce < Q_MIN["earliest_evidence_year"]:
+        earliest = None
+    if cc < Q_MIN["closed_year"]:
+        closed = None
+    if cl < Q_MIN["last_evidence_year"]:
+        last = None
+    floor = max(y for y in (built, earliest, last, 0) if y is not None)
+    if cg < Q_MIN["gone_by_year"] or (gone is not None and gone <= floor):
+        gone = None
+    # ...and only shortly after a confident last sighting: Freeman's "a 2018
+    # aerial view shows no trace" is literally a gone-by year for a field last
+    # seen in 1919, and would put "in operation until 2018" on the pin card.
+    if gone is not None and (last is None or gone - last > GONE_BY_WINDOW):
+        gone = None
     for k, v in (("jev_built", built), ("jev_built_conf", cb), ("jev_earliest", earliest),
                  ("jev_earliest_conf", ce), ("jev_closed", closed), ("jev_closed_conf", cc),
                  ("jev_gone_by", gone), ("jev_gone_by_conf", cg), ("jev_last_seen", last),
@@ -193,7 +227,36 @@ def jev_columns(ans):
     return out
 
 
-def merge(row, jc, review):
+CLOSURE_VERB = re.compile(r"\b(closed|abandoned|deactivated|decommissioned|ceased|shut\s+down|razed|"
+                          r"bulldozed|demolished)\b", re.I)
+DEPICTED_ABANDONED = re.compile(
+    r"(depicted|labeled|labelled|shown|charted|listed|marked)\s+(?:\w+\s+){0,3}?(abandoned|closed)"
+    r"|abandoned\s+(airfield|airport|site)s?\s+on\b|photo\s+of\s+the\s+abandoned", re.I)
+
+
+def year_sentences(seg, year):
+    return [m.group(0) for m in re.finditer(r"[^.]*\b" + str(year) + r"\b[^.]*\.", seg)]
+
+
+def range_pair(seg, a, b):
+    """'closed between 1976-79' / '1976 & 1979' / '1976 to 1979': the regex pass
+    keeps the first year, Jev (as instructed) the last — the same statement."""
+    a, b = int(a), int(b)
+    if a >= b:
+        return False
+    return re.search(rf"\b{a}\s*(?:-|–|&|and|to)\s*(?:{b}|{b % 100:02d})\b", seg) is not None
+
+
+def regex_closure_misfire(seg, year):
+    """True when every closure-verb sentence carrying the regex's year is a
+    chart/photo depiction of an ALREADY abandoned field ("still depicted as an
+    abandoned airfield on 2002 charts"), i.e. the verb matched but the year is
+    the chart's, not the closure's."""
+    hits = [t for t in year_sentences(seg, year) if CLOSURE_VERB.search(t)]
+    return bool(hits) and all(DEPICTED_ABANDONED.search(t) for t in hits)
+
+
+def merge(row, jc, review, seg=""):
     """Apply the J2 rule to one row (in place). Returns the action taken."""
     r_s = int(row["start_year"]) if row["start_year"] else None
     r_e = int(row["end_year"]) if row["end_year"] else None
@@ -218,6 +281,8 @@ def merge(row, jc, review):
     elif r_s is None and j_s is not None and jc["jev_start_conf"] >= ADOPT_MIN:
         row["start_year"], row["start_basis"] = j_s, jc["jev_start_basis"]
         actions.append("start=jev_fill")
+    elif r_s is not None and j_s is not None and abs(r_s - j_s) <= 2:
+        actions.append("start=agree_2y")
     elif r_s is not None and j_s is not None:
         if row["start_basis"] in WEAK_START and jc["jev_start_basis"] == "jev_built" \
                 and jc["jev_start_conf"] >= ADOPT_OVER_WEAK:
@@ -250,10 +315,19 @@ def merge(row, jc, review):
         # is strictly more information and replaces it (logged for review).
         stronger = jc["jev_end_basis"] == "jev_closed" or (
             jc["jev_end_basis"] in ("jev_gone_by", "jev_last_seen") and j_e > r_e)
-        if row["end_basis"] in WEAK_END and stronger and jc["jev_end_conf"] >= ADOPT_OVER_WEAK:
+        if abs(j_e - r_e) <= 2:
+            actions.append("end=agree_2y")
+        elif range_pair(seg, r_e, j_e):
+            actions.append("end=agree_range")
+        elif row["end_basis"] in WEAK_END and stronger and jc["jev_end_conf"] >= ADOPT_OVER_WEAK:
             review.append(_rv(row, "end", r_e, j_e, jc, "adopted_over_weak"))
             row["end_year"], row["end_basis"] = j_e, jc["jev_end_basis"]
             actions.append("end=jev_over_weak")
+        elif row["end_basis"] == "closed_stated" and jc["jev_end_basis"] == "jev_closed" \
+                and jc["jev_end_conf"] >= ADOPT_OVER_WEAK and regex_closure_misfire(seg, r_e):
+            review.append(_rv(row, "end", r_e, j_e, jc, "adopted_over_misfire"))
+            row["end_year"], row["end_basis"] = j_e, jc["jev_end_basis"]
+            actions.append("end=jev_over_misfire")
         else:
             review.append(_rv(row, "end", r_e, j_e, jc, "kept_regex"))
             actions.append("end=disagree")
@@ -348,13 +422,13 @@ def main():
         jev = JevClient(task="airfields_dates", workers=args.workers)
         with open(ANSWERS_PATH, "a", encoding="utf-8") as out:
             for (r, state, qs), ans in jev.ask_many(
-                    specs, lambda sp: (sp[0]["url"], sp[1], sp[2]), label="airfields "):
+                    specs, lambda sp: (row_id(sp[0]), sp[1], sp[2]), label="airfields "):
                 if isinstance(ans, JevError):
                     print(f"  ERROR {r['name']}: {ans}", file=sys.stderr)
                     continue
-                rec = {"id": r["url"], "name": r["name"], "model": jev.model, "answers": ans,
+                rec = {"id": row_id(r), "name": r["name"], "model": jev.model, "answers": ans,
                        "candidates": list(qs["closed_year"]["criteria"])}
-                answers[r["url"]] = rec
+                answers[row_id(r)] = rec
                 out.write(json.dumps(rec, ensure_ascii=False) + "\n")
         print(jev.summary(), file=sys.stderr)
 
@@ -365,14 +439,15 @@ def main():
     for r in rows:
         for k in ("start_year", "start_basis", "end_year", "end_basis", "status"):
             r[f"_orig_{k}"] = r[k]
-        rec = answers.get(r["url"])
+        rec = answers.get(row_id(r))
         if rec is None:
             jc = {}
             tally["no_answer"] += 1
         else:
             jc = jev_columns(rec["answers"])
             jc["jev_model"] = rec["model"]
-            for a in merge(r, jc, review):
+            seg = re.sub(r"\s+", " ", segments.get((r["page"], r["name"]), ""))
+            for a in merge(r, jc, review, seg):
                 tally[a] += 1
         if jev_fields is None and jc:
             jev_fields = list(jc)
@@ -454,7 +529,7 @@ def evaluate(answers, labels_path):
     for col, qid in qmap.items():
         tally = {b: [0, 0] for b in bands}
         for lb in labels:
-            rec = answers.get(lb["url"])
+            rec = answers.get(lb["url"] + "|" + lb["name"])
             if not rec or qid not in rec["answers"]:
                 continue
             a = rec["answers"][qid]
@@ -467,8 +542,26 @@ def evaluate(answers, labels_path):
         line = "  ".join(f"[{lo:.1f}-{min(hi, 1):.1f}) {c}/{t}" for (lo, hi), (c, t) in tally.items())
         tot_c = sum(c for c, _ in tally.values()); tot_t = sum(t for _, t in tally.values())
         print(f"{col:10s} {tot_c}/{tot_t} overall   {line}")
-    so = [(float(answers[lb["url"]]["answers"]["still_open"]["noul"]), lb["still_open"].strip().lower() in ("1", "y", "yes", "true"))
-          for lb in labels if lb["url"] in answers]
+    # derived level — the start/end that the merge would actually adopt
+    for field, lab_cols in (("start", ("built", "earliest")), ("end", ("closed", "gone_by", "last_seen"))):
+        ok = n = blank_ok = blank_n = 0
+        for lb in labels:
+            rec = answers.get(lb["url"] + "|" + lb["name"])
+            if not rec:
+                continue
+            jc = jev_columns(rec["answers"])
+            truth = next((lb[c] for c in lab_cols if lb[c].strip()), "")
+            got = jc[f"jev_{field}_year"]
+            if got == "":
+                blank_n += 1
+                blank_ok += (truth == "")
+            else:
+                n += 1
+                ok += (truth != "" and abs(int(truth) - int(got)) <= 2)
+        print(f"derived {field}: {ok}/{n} within 2y of the label when Jev gives a year; "
+              f"{blank_ok}/{blank_n} correctly blank")
+    so = [(float(answers[k]["answers"]["still_open"]["noul"]), lb["still_open"].strip().lower() in ("1", "y", "yes", "true"))
+          for lb in labels if (k := lb["url"] + "|" + lb["name"]) in answers]
     if so:
         tp = sum(1 for p, t in so if p >= STILL_OPEN_MIN and t); fp = sum(1 for p, t in so if p >= STILL_OPEN_MIN and not t)
         fn = sum(1 for p, t in so if p < STILL_OPEN_MIN and t)
@@ -483,7 +576,7 @@ def report(rows, answers):
     for field, basis_key in (("start", "start_basis"), ("end", "end_basis")):
         by = {}
         for r in rows:
-            rec = answers.get(r["url"])
+            rec = answers.get(row_id(r))
             if not rec:
                 continue
             jc = jev_columns(rec["answers"])
@@ -506,6 +599,19 @@ def report(rows, answers):
         print(f"-- {field}")
         for b, d in sorted(by.items(), key=lambda kv: -sum(kv[1].values())):
             print(f"   {b:18s} {dict(d)}")
+    # the disagreements that matter: regex closed_stated vs a confident Jev closure
+    hard = []
+    for r in rows:
+        rec = answers.get(row_id(r))
+        if not rec or r["_orig_end_basis"] != "closed_stated":
+            continue
+        jc = jev_columns(rec["answers"])
+        if jc["jev_end_basis"] == "jev_closed" and jc["jev_end_conf"] >= 0.9 and r["_orig_end_year"] \
+                and abs(int(r["_orig_end_year"]) - jc["jev_end_year"]) > 2:
+            hard.append((r["name"], r["_orig_end_year"], jc["jev_end_year"], jc["jev_end_conf"], r["url"]))
+    print(f"closed_stated vs confident (>=0.9) jev_closed differing by >2y: {len(hard)}")
+    for h in hard[:12]:
+        print("   ", h[0][:50], "regex", h[1], "jev", h[2], f"conf {h[3]:.2f}")
     confs = [jev_columns(a["answers"])["jev_end_conf"] for a in answers.values()]
     if confs:
         confs.sort()

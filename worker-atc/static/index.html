@@ -74,7 +74,17 @@
       font-size: 2rem; margin: 0 0 2px; letter-spacing: 0.005em;
     }
     .tagline { color: var(--text-muted); margin: 0 0 18px; font-size: 1.02rem; }
-    .intro { max-width: 66ch; margin: 0 0 34px; color: rgba(255, 255, 255, 0.86); }
+    .intro { max-width: 66ch; margin: 0 0 18px; color: rgba(255, 255, 255, 0.86); }
+
+    /* provenance note: ruled callout under the intro */
+    .notice {
+      max-width: 72ch; margin: 0 0 34px; padding: 12px 18px 12px 16px;
+      background: var(--bg-card); border-left: 3px solid var(--secondary);
+      border-radius: 0 10px 10px 0;
+    }
+    .notice p { margin: 0 0 8px; font-size: 0.95rem; color: rgba(255, 255, 255, 0.86); }
+    .notice p:last-child { margin-bottom: 0; }
+    .notice a { font-weight: 600; }
 
     .cols { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 40px; }
 
@@ -146,12 +156,19 @@
     <h1>Air Traffic Control History</h1>
     <p class="tagline">Dedicated to the history of FAA Flight Service Stations.</p>
     <p class="intro">
-      For more than two decades, <strong>atchistory.org</strong> gathered the history of the
-      FAA's Flight Service Stations and the people who worked them: facility photographs,
-      training class photos, early airway maps, scanned publications, and first-person life
-      stories. The collection now lives here permanently, preserved exactly as it stood in
-      August&nbsp;2026. Every old atchistory.org link redirects to its page here.
+      <strong>atchistory.org</strong> spent over 20 years collecting the history of FAA Flight
+      Service Stations: facility photos, class photos, early airway maps, scanned publications,
+      and life stories. It's all here now, exactly as it was in August&nbsp;2026, and old
+      atchistory.org links still work.
     </p>
+
+    <div class="notice">
+      <p>The original atchistory.org site was at risk of being deleted. archive.aero took it over
+        from its previous owner so that none of it would be lost.</p>
+      <p>If you have historical documents, photographs, or records from Flight Service or air traffic
+        control, please <a href="/contribute">send them in</a> so they can be preserved alongside
+        the collection.</p>
+    </div>
 
     <div class="cols">
       <main>
@@ -228,9 +245,9 @@
 
         <div class="box help">
           <h2>Can you help?</h2>
-          <p>Old photos of air traffic facilities, equipment, or the people who ran them are
-            still being added. Scans of at least 300&nbsp;dpi are best.</p>
-          <p><a href="mailto:ryan@archive.aero">ryan@archive.aero</a></p>
+          <p>Old photos and documents from air traffic facilities, equipment, and the people who
+            ran them are still being added. Scans of at least 300&nbsp;dpi are best.</p>
+          <p><a href="/contribute">How to contribute &rarr;</a></p>
         </div>
 
         <div class="box viewer">

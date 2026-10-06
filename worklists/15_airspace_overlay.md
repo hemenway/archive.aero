@@ -1,5 +1,22 @@
 # 15 — Airspace overlay (class airspace, three regions)
 
+**Status reviewed 2026-09-21: class airspace is published; the older FAA
+extension is locally archived but unpublished.** `src/viewer.js` still points
+to `airspace/class-20260916b.pmtiles`, matching the latest saved upload receipt.
+Viewer implementation and `CONFIG.airspaceUrl` moved from `index.html` to
+`src/viewer.js` in 5843587; `--update-html index.html` still resolves the correct
+source and rebuilds the fingerprinted frontend modules.
+
+| Region | Latest recorded published build | Local additions awaiting a build |
+|---|---|---|
+| US | 86 cycles, 2020-03-26–2026-10-01 | 30 compatible NASR cycles; 116 held in total, back to 2017-10-12, with gaps |
+| France | 36 cycles, 2019-02-28–2026-10-01, with gaps | No later build/import recorded here |
+| Brazil | One 2026-09-03 snapshot | Continue preserving later snapshots as available |
+
+Evidence: `worklists/data/airspace/{builds,uploads}.jsonl`, current viewer
+configuration, and the [September 19 import report](data/acasis_import/2026-09-19/REPORT.md).
+This review checked those local records; it did not rebuild or publish tiles.
+
 Started 2026-09-14. The viewer gains a time-aware airspace layer built from the
 AIS series held in `/Volumes/projects/aisdata/` (see `scripts/aisdata_pull.py`):
 FAA NASR first (US, 2026-09-15), then the other regions on disk (2026-09-15/16):
@@ -10,24 +27,25 @@ history sources are parsed (all three regions have it).
 
 ## Design (settled 2026-09-14)
 
-- **One vector PMTiles archive per build**, all 86 held cycles merged: a polygon
+- **One vector PMTiles archive per build**, originally all 86 held US cycles merged: a polygon
   *version* (geometry + drawing attributes) that is unchanged across consecutive
   cycles is stored once with a `from`/`to` validity interval. Churn is 1–2 % per
   cycle, so 86 cycles cost ~1.5× one cycle: 8,139 versions over 7,654 shapes.
 - **Rendered by a second protomaps-leaflet layer** (`AirspaceLayer` in
-  index.html) with sectional-legend paint rules; the timeline date is applied
+  `src/viewer.js`) with sectional-legend paint rules; the timeline date is applied
   in the rule filters and `rerenderTiles()` repaints cached tiles — scrubbing
   never refetches, and repaints only when the cycle in effect changes. Outside
-  the held window (before 2020-03-26, or 28 days past the newest cycle) nothing
-  is drawn and the status line says why — only dates with data get airspace
+  the held window or inside a gap nothing is drawn for that region and the status
+  line says why — only dates with data get airspace
   (Ryan's call, 2026-09-15; the first cut clamped to the earliest cycle).
 - **Pin card "Airspace here"**: the class stack under the pin for the selected
   date, from the layer's decoded tiles (no second click handler, no second
   fetch). Sorted by floor; exclusion polygons drawn but not listed.
-- **Dated immutable key** (`airspace/nasr-<stamp>.pmtiles`), same reasoning as
+- **Dated immutable key** (`airspace/class-<stamp>.pmtiles`; the initial US-only
+  series used `airspace/nasr-<stamp>.pmtiles`), same reasoning as
   the basemap; `--update-html` rewrites `CONFIG.airspaceUrl`.
-- Off by default (opt-in, remembered): over a 1950s chart today's airspace is a
-  comparison, not context.
+- Off by default (opt-in, remembered). Dates outside a region's held coverage,
+  including 1950s charts, draw no airspace for that region.
 
 ## Regions (added 2026-09-16)
 
@@ -105,13 +123,19 @@ history sources are parsed (all three regions have it).
 
 ## Next
 
+- [ ] B0a. Build and verify the 30 newly imported compatible US NASR cycles,
+      including representative 2017–2019 dates and gaps. Publish to a new dated
+      immutable key, then update the viewer URL/frontend artifacts. The local
+      parser check passed for every new feature, but it is not a rendered or
+      published-build check. Keep `nasr_legacy/` outside this task until its
+      older formats have parser support.
 - [ ] B1. Special-use airspace (MOA/R/P/W/A) + Mode C veils, current-only from
       the ADDS GeoJSON (`us_faa/adds/<date>/Special_Use_Airspace.geojson`,
       `Class_Airspace.geojson` MODE C rows) as a `sua` layer with a
       "current only" caveat in the panel. France (SIA `R`/`D`/`P`/`TRA`/`CBA`
       espaces, per cycle) and Brazil (`eac_r`/`eac_p`/`eac_d`) slot into the
       same layer.
-- [~] B0. France after 2023-10: Ryan downloads each cycle from the SIA shop
+- [ ] B0. Continue France cycle acquisition: Ryan downloads each cycle from the SIA shop
       ("AIM Data" → "Données aéronautiques XML AIRAC mm/yy", 5.6 MB — not the
       eAIP); the pull files it (zip or the folder Safari expands) under
       `fr_sia/cycles/<date>/`. 09/26 + 10/26 filed and published 2026-09-16

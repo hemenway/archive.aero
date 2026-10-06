@@ -1,9 +1,18 @@
 # 16 — Jev (TypeSafe) as programmable judgment for archive.aero
 
-**Plan written 2026-09-18.** Companion to [09](09_growth_and_revenue.md) (growth) and
+**Updated 2026-09-21; plan written 2026-09-18.** Companion to [09](09_growth_and_revenue.md) (growth) and
 [08](08_atchistory_migration.md) (ATC migration). Jev is a *System One* model: it
 returns typed answers (a choice, a yes/no probability, a score) over state you send
 it — it does not generate text. Docs: <https://docs.typesafe.ai/llms.txt>.
+
+**Current state:** W1 and W2 ran locally on 2026-09-21. Freeman dates are merged
+into `airfields.json`; the ATC post/PDF indexes exist under `worklists/data/atc/`.
+Publication of the airfield data and all W2 consumers remain open. Next: finish
+the planned validation samples (40 Freeman labels and about 40 ATC spot checks
+recorded so far, against the ≥50-row target), review flagged disagreements, then
+publish the airfield data and build the B1 airport-page pilot. W3–W5 have not
+started; W6 is conditional future work. The results below are local evidence,
+not a fresh check of production.
 
 **What it is for here:** the places where the site's pipelines currently stop at a
 regex heuristic or a blank field because the source is free text — Paul Freeman's
@@ -44,124 +53,133 @@ below costs well under $1 in total.
 
 ---
 
-## Open decisions
+## Decisions
 
 | # | Decision | Recommendation |
 |---|---|---|
 | J1 | Is a small live endpoint acceptable for W4 (the viewer "Find" box), given the README's "no application backend" claim? | **Yes, as a stateless proxy in the existing `tiles` Worker** (the same shape as the range proxy — no database, no sessions), rate-limited and cached. If that feels like a backend, W4 waits; W1–W3, W5 need nothing live. |
-| J2 | Do W1's Jev dates overwrite the regex dates or sit beside them? | **Beside, then adopt by rule:** Jev wins where the regex was blank/conflict and Jev's confidence ≥ threshold; disagreements above threshold go to a review CSV; regex `closed_stated` with a matching Jev answer stays as-is. |
+| J2 | How are Jev and regex dates reconciled? | **Implemented 2026-09-21:** retain the regex columns in the dated CSV, then adopt by rule. Fill blanks/conflicts above threshold; retain disagreements for review, with the documented weak-basis and closure-misfire exceptions below. |
 | J3 | Publish Jev-derived ATC metadata inside `/atc/` before the 2026-10-30 stabilization date? | **No.** Build the index now (offline JSON), consume it first from archive.aero-side surfaces (airport pages, viewer layers), and only add `/atc/` navigation after 08 §5 releases it. |
 
 ---
 
 ## Workstreams (ordered by payoff ÷ effort)
 
-### Status 2026-09-18 evening — W1 + W2 built, verified, **blocked on API credits**
+### Results 2026-09-21 — W1 and W2 ran; airfields.json not yet published
 
-The account returned `HTTP 402 billing_error` ("no available TypeSafe API credits")
-after the ~7,500-token pilot; every request since has failed the same way. Top up at
-<https://console.typesafe.ai/settings/billing> — the whole W1 + W2 run is ≈ 7.4 M
-input tokens ≈ **$0.31** (W1 5.9 M ≈ $0.25, W2 posts 1.4 M ≈ $0.06, W2 PDFs < $0.01),
-so $5 covers it many times over. Everything that does not need the API is done:
+**W1 (Freeman dates)** — 2,822 entries, 9.09 M input tokens, **$0.38**, 139 s at 8 workers.
+Answers in `worklists/data/jev/airfields_dates_answers.jsonl` (keyed `url|name`; cache
+makes every re-merge free). Policy after the labeled evaluation (40 rows, per-question
+accuracy by confidence band, `--labels`): `built` 20/20 and `earliest` 14/15 at ≥0.9,
+`closed` 18/19 at ≥0.9, `last_seen` 23/24 at ≥0.7 — but `gone_by` 18/40: asked for "the
+earliest chart on which it was *no longer* depicted", Jev returns the earliest chart that
+didn't show it, often **before the field existed** (Amboy 1941, Jackass 1944, Thompson
+1930), or a 2018 "no trace remains" aerial for a field last seen in 1919 (Dominguez).
+Ordering years is arithmetic, so it moved into code: per-question floors of **0.7**
+(`Q_MIN`), gone-by only if later than every evidence of existence *and* within
+`GONE_BY_WINDOW = 15` years of a confident last sighting. Derived accuracy on the labels:
+start 33/35, end 23/28 within 2 y (the misses are convention: my label said "gone by
+1991", Jev said "last seen 1987").
+Two regex traits surfaced by the disagreement sample: (1) "closed between 1976-79" —
+the regex keeps the first year, Jev the last: 254 such pairs are now counted as agreement
+(`end=agree_range`), regex value kept; (2) **"still depicted as an abandoned airfield on
+2002 charts" matches the regex closure verb and steals the chart year** — detected in
+code (`regex_closure_misfire`) and yielded to a ≥0.9 Jev closure (28 rows). In a sample
+of 12 genuine ≥0.9 disagreements Jev was right 8, regex 3, 1 unknown; the rest stay
+regex and sit in `airfields_dates_review.csv` (453 end + 298 start `kept_regex`).
+The review CSV has **874 audit rows**: 751 retained date disagreements, 25 status
+flags, and 98 adopted overrides/conflict resolutions (including 6 start-year
+weak-basis overrides). The adopted rows are an audit trail, not unresolved tasks.
+**Result:** end years 2,518 → 2,666, start 2,717 → 2,798, `unknown` 252 → 104; adopted:
+142 end fills, 81 start fills, 58 weak-end overrides, 28 misfire overrides, 6 conflict
+resolutions; 25 status flags (15 regex-gone/Jev-open, 10 OA-open/narrative-closed).
+Outputs: `~/archives/airfields-freeman-full/airfields_2026-08-21_r0914_jev_dated.{csv,geojson}`
+(CSV keeps the regex columns plus `jev_*` and `*_conf`; GeoJSON keeps the compact
+viewer properties), with the GeoJSON copied to the repo `airfields.json`;
+the pre-Jev copy is `~/archive.aero-attic/airfields_pre_jev_2026-09-21.json`.
+**Not yet published** — `cd worker && npx wrangler r2 object put
+charts/sectionals/airfields.json --file ../airfields.json --content-type application/json --remote`.
 
-- `scripts/jev_client.py` — key from `.env`, pinned `jev-1.13.0`, backoff on 429/529,
-  **402 fails fast**, sqlite cache (`worklists/data/jev/cache.sqlite`, resumable),
-  JSONL audit log per task, thread-pool `ask_many`.
-- `scripts/airfields_freeman_dates_jev.py` (W1) — dry-run: all 2,822 entries have a
-  narrative + candidates. `--merge-only` with no answers reproduces the live
-  `airfields.json` exactly (identity check passed), so every change in the real run is
-  Jev-driven. Merge rule implemented as J2 plus three rules the labeling forced:
-  a regex `conflict` row takes a consistent confident Jev pair; a weak regex end
-  (`last_seen`) yields to a confident closure or a confident *later* gone-by/last-seen;
-  an OurAirports `open` whose narrative states a closure is flagged
-  (`open_but_narrative_closed`) but never auto-changed. Candidate fix: two-digit slash
-  dates ≤ 26 now offer the 19yy reading too (`5/1/25` was only ever 2025, so 1920s
-  Airway-Bulletin evidence could not be chosen).
-- **W1b labeled sample: done** — 40 rows, stratified over the population Jev will
-  change (20 end-blank, 5 start-blank, 5 both-blank, 5 conflict, 5 weak-end), read
-  in full and labeled by Claude on 09-18 → `worklists/data/jev/airfields_dates_labels.csv`
-  (alternates in `note`). Findings while labeling: regex `closed_stated` can be wrong
-  (Heber Springs 2nd location got the *original* field's 1934 closure; Temco-Garland's
-  1984 is "depicted as abandoned"), `last_seen` ends can be decades early (Lone Star:
-  chart 1968, flown into the late 1990s), and an OA `open` can be a neighbour
-  (Thompson Field VA). `--labels` prints per-question accuracy by confidence band.
-- `scripts/atc_posts_jev.py` (W2) — dry-run: 1,333 posts, candidates found on 805
-  (idents) / 1,045 (places) / 1,186 (dates). Gazetteer built from the 1988 NASR file
-  (17,648 airports; **212 FSS idents with an on-airport home** — an authoritative
-  1988 FSS location table — 223 FSS names), OurAirports (39,525 codes), and a 24-row
-  ARTCC→city table (the sampler's `ARTCCFAC.DAT` is route segments). Join verified on
-  ANB/MOB/SAN/TAL/ABQ/WJF/TPH/UMM/ZAN. PDF catalog **done in code**: 1,405 PDFs, 1,333
-  periodical issues (1,286 dated from the filename, 1,267 to the month), 454 with a
-  text layer, 46 standalone documents with text → Jev.
-
-**Run book (after credits):**
-```
-~/venv/bin/python scripts/airfields_freeman_dates_jev.py \
-  --tree ~/archives/airfields-freeman-full/snapshot-2026-08-21/www.airfields-freeman.com \
-  --dated ~/archives/airfields-freeman-full/airfields_2026-08-21_r0914_dated.csv \
-  --out-csv ~/archives/airfields-freeman-full/airfields_2026-08-21_r0914_jev_dated.csv \
-  --out-geojson ~/archives/airfields-freeman-full/airfields_2026-08-21_r0914_jev_dated.geojson \
-  --report --labels worklists/data/jev/airfields_dates_labels.csv
-# read the accuracy-by-band table + review CSV, adjust ADOPT_MIN / ADOPT_OVER_WEAK,
-# then `--merge-only` re-merges from the cache for free; cp the geojson to airfields.json
-# and publish with wrangler r2 object put charts/sectionals/airfields.json (memory recipe)
-~/venv/bin/python scripts/atc_posts_jev.py --report
-# -> worklists/data/atc/posts_meta.jsonl, posts_index.json, pdfs.jsonl; hand-check 50
-```
+**W2 (ATC metadata)** — 1,333 posts (1.92 M tokens, **$0.08**) + 46 standalone PDFs
+($0.003). `/Volumes/projects` was a stale SMB mount, so the post HTML came from the
+`atc-site` bucket via rclone into `~/archives/atc-site-posts/` (1,361 pages, 84 MB); the
+PDF scan cache from 09-18 stood in for the tree. Kinds: 617 facility_photo, 261
+class_photo, 246 facility_history, 75 airway_infrastructure, 37 publication, 29 map, 27
+roster, 10 personal_story, 31 other; facility type 885 fss / 216 office_or_academy / 6
+tower / 2 center. 685 idents chosen (611 at ≥0.5; a random dozen all correct), 1,040
+places, 1,065 depicted years, 258 opened + 120 closed dates. **885 posts carry
+coordinates**: 439 via the 1988 FSS-on-airport table, 159 via 1988 airport ident, 207/76
+via city, 4 via OurAirports ident. facilities.json regression: state 98 %, city+state 92 %
+(most "misses" are facilities.json labels that are facility names — "Huron FSS" — where
+Jev returned the city). Category→kind is coherent (Class Photos 213/214). Outputs in
+`worklists/data/atc/`: `posts_meta.jsonl` (raw answers + join), `posts_index.json`
+(1,333 records, 572 KB, public-shaped), `pdfs.jsonl` (1,405 records, including 1,333
+periodical entries; 1,286 have an issue year and 1,267 an issue month parsed from
+filenames). Consumers (W2c) not started; nothing under `/atc/` changed.
 
 ### W1. Freeman airfield dates — fill the blanks, fix the conflicts (viewer pins + outreach C5)
 
 `airfields.json` (2,822 entries) drives pins that appear/disappear with the timeline.
-Today **304 have no end year, 105 no start year, 252 are `status=unknown`, 8 are
-`conflict`** — all from `airfields_freeman_dates.py`'s regex rules. The pilot showed
-Jev resolving exactly those cases from the same narrative.
+The **pre-run regex baseline** had 304 blank end years, 105 blank start years,
+252 `status=unknown` and 8 conflicts. The local 2026-09-21 output has **156 blank
+end years, 24 blank start years, 104 unknown and 0 conflicts** (plus 52 open).
 
 - [x] W1a. `scripts/airfields_freeman_dates_jev.py`: per entry, state =
       `{airfield_name, narrative}` (the entry segment from `extract_page(..., keep_segment=True)`,
-      capped ~9k chars), candidates = `segment_years()` deduped + `not_stated`. Five
+      capped at 14,000 chars), candidates = `segment_years()` deduped + `not_stated`. Six
       questions in one request, wording as piloted, with two fixes learned there:
       `last_evidence_year` must exclude "remains/traces/outline still visible"
       (Lost Hills picked a 2025 remnants photo at 0.33), and `earliest_evidence_year`
       should say "dated" evidence (undated photos → `not_stated` is right).
       Questions: `built_year`, `earliest_evidence_year`, `closed_year`,
-      `last_evidence_year` (Choice), `still_open` (Noul).
+      `gone_by_year`, `last_evidence_year` (Choice), `still_open` (Noul).
 - [x] W1b. Hand-labeled sample (40 rows, stratified over the rows Jev will change —
       regex-confident rows get the free agreement test instead) → thresholds after the run.
-- [ ] W1c. Run all 2,822 (~7 M tokens ≈ $0.30, minutes). Merge per J2 into the dated
-      CSV/GeoJSON; new columns `start_basis`/`end_basis` gain a `jev` value and a
-      `*_conf`. Regenerate `airfields.json`; the viewer's pin logic is unchanged.
-- [ ] W1d. Report: how many blanks filled, how many regex values contradicted, the
-      review-queue size. Feeds **09 C5** directly: era-correct deep links for the
+- [x] W1c. Ran 2026-09-21 (9.1 M tokens, $0.38). Merged per J2 (+ the range / misfire /
+      window rules above); `airfields.json` regenerated locally, publish pending.
+- [x] W1d. Report (above): 142 end + 81 start fills, 98 adopted overrides/conflict
+      resolutions, 751 date disagreements + 25 status flags to review. Feeds **09 C5**:
+      era-correct deep links for the
       Freeman outreach need exactly these years.
+- [ ] W1e. Extend the 40-row labeled sample to the planned ≥50 and review the
+      retained disagreements/status flags; record any threshold changes and
+      re-merge from cached answers if needed.
+- [ ] W1f. Publish the verified `airfields.json` to R2 using the command above,
+      then verify the served data and representative viewer pins.
 
 ### W2. ATC collection metadata layer (F1–F3 inputs, B1 cross-links; ships nothing in `/atc/` yet)
 
 1,333 WordPress posts (~206k content tokens total) carry only category tags and, for
-993 "Facilities" posts, a city/state from the old facility-photos page. No post has a
-machine-readable facility ident, facility type, date, or coordinates — which is what
-F1 (photos on the map), F3 (opening/closing timeline) and B1 ("ATC material for this
-airport") all need.
+993 "Facilities" posts, a city/state from the old facility-photos page. That was
+the input baseline; the local indexes now supply facility, date and coordinate
+metadata for F1 (photos on the map), F3 (opening/closing timeline) and B1 ("ATC
+material for this airport"). Those consumers have not shipped.
 
-- [x] W2a. `scripts/atc_posts_jev.py` (built; run pending credits): state = `{title, categories, entry_text}`
-      (+ first-page text for the 1,405 PDFs via existing extraction, capped). Candidates
+- [x] W2a. `scripts/atc_posts_jev.py` (ran 2026-09-21): state = `{title, categories, entry_text}`
+      (code calls the content field `text`). The PDF inventory has 1,405 records;
+      Jev processed capped first-page text for 46 standalone PDFs. Candidates
       from regex: 3-letter/4-letter idents in title/text, `Month D, YYYY` and bare years,
       `City, ST` spans. Questions per post: `page_kind` (Choice, piloted set),
-      `facility_type` (fss / tower / center / other), `facility_ident` (Choice over
-      found idents + none), `city_state` (Choice over found spans + none),
+      `facility_type` (fss / tower / center / office_or_academy / other_or_none),
+      `facility_ident` (Choice over found idents + none), `place` (Choice over found spans + none),
       `opened_date` / `closed_date` (Choice over date candidates + not_stated),
-      `photo_year` (Choice over years + not_stated — the year the photo/class depicts),
-      `about_one_facility`, `about_a_person` (Nouls). Cost ≈ $0.10 for posts, ≈ $0.15
-      for PDFs.
-- [x] W2b. Join in code (built, verified on 9 idents): ident → coordinates (OurAirports / `historical-data`
-      airport lifespan CSV / faa1988), city+state → the same. Output
-      `worklists/data/atc/posts_meta.jsonl` and a public
-      `atc/posts_index.json` (ident, kind, type, dates, coords, href, preview image).
+      `depicted_year` (Choice over years/decades + not_stated — the year the subject depicts),
+      `about_one_facility`, `about_a_person` (Nouls). Actual run cost and PDF scope
+      are recorded in the results above.
+- [x] W2b. Join in code (885 posts with coordinates): ident → coordinates from
+      the OurAirports snapshot / 1988 `AIRPORTS.DAT` (plus ARTCC mapping),
+      city+state → the same gazetteer. Output
+      `worklists/data/atc/posts_meta.jsonl` and the public-shaped local
+      `worklists/data/atc/posts_index.json` (ident, kind, type, dates, coords, href,
+      preview image). No public index URL has been published.
 - [ ] W2c. Consumers, in order: **B1 airport pages** (list the posts whose ident or
       city matches — the fusion 09 asks for), **F1** viewer layer (facility photo pins,
-      era-gated by `photo_year`), **F3** (tower/FSS open–close spans as a timeline
+      era-gated by the index's `year`), **F3** (tower/FSS open–close spans as a timeline
       layer). `/atc/` "related pages" and category landings wait for 2026-10-30 (J3).
-- [ ] W2d. Acceptance: hand-check 50 posts across kinds; the facilities.json 993
-      already have city/state — agreement with those is the free regression test.
+- [x] W2d. Initial review: ~40 posts read across kinds during candidate design and result
+      review (idents, years, closures all correct); facilities.json regression 98 % / 92 %.
+- [ ] W2e. Complete the planned ≥50-post acceptance sample across kinds and
+      coordinate sources before publishing a consumer; preserve the results.
 
 ### W3. Airport-page pilot (09 B1) — entity alignment for the cross-links
 
@@ -233,8 +251,8 @@ exactly.
 
 | Window | Work |
 |---|---|
-| **Sep 19–22** | `scripts/jev_client.py`; W1a–W1d (Freeman dates); W2a–W2b (ATC metadata, offline). Both are inputs the B1 pilot and the C5 outreach want. |
-| **Sep 23–30** | W3a–W3b inside the B1 pilot build; W5a alongside the A4 export. |
+| **Sep 19–22** | W1a–W1d and W2a–W2b complete locally. Remaining: validation/review (W1e, W2e) and airfields publication (W1f). |
+| **Sep 23–30 (proposed)** | W3a–W3b inside the B1 pilot build; W5a alongside the A4 export. |
 | **After the B pilot indexes** | W4 (J1 permitting), flagged, measured. |
 | **Oct 30+** | W2c's `/atc/`-side consumers, per 08 §5. |
 
@@ -247,4 +265,5 @@ exactly.
   `/Volumes/projects/atchistory_build/site/*/index.html`; airfields gaps from
   `airfields.json` property counts; pricing and limits from
   <https://docs.typesafe.ai/models.md> on 2026-09-18.
-- Skill: `typesafe@typesafe-ai` plugin v0.5.7 (installed; `/typesafe:typesafe-ai`).
+- Repository skill: `typesafe-ai` in `.agents/skills/typesafe-ai/SKILL.md`;
+  installation provenance is recorded in `skills-lock.json`.

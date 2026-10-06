@@ -43,11 +43,13 @@ IS_APPLE_SILICON = (sys.platform == "darwin" and platform.machine().lower() in {
 # Warp outputs whose EPSG:3857 width reaches ~full-world are pathological (bad georef).
 WORLD_WIDTH_M = 35_000_000.0
 
-# Intermediate cutline-warp outputs are transient and only re-read by GDAL during
-# mosaicking, so compress them with DEFLATE level 1 (libdeflate - nearly free on
-# Apple Silicon) to cut temp-dir I/O. No NUM_THREADS: the warp phase already
-# parallelizes across jobs, so internal threads would oversubscribe the CPU.
-INTERMEDIATE_CREATION_OPTS = ['TILED=YES', 'BIGTIFF=YES', 'COMPRESS=DEFLATE', 'ZLEVEL=1']
+# Intermediate warp outputs (cutline warps for the mosaic, full-sheet chart warps,
+# GCP warps) are transient and only re-read by GDAL / geotiff2pmtiles, so they are
+# written UNCOMPRESSED: the mosaic GeoTIFF is the one compressed output. Put
+# --temp-dir on a local scratch disk - a lanczos sectional warp is ~0.75 GB raw
+# (~3x its DEFLATE size), which is cheap locally and slow over the SMB share.
+# Uncompressed temps also retire the 2026-07 DEFLATE corrupt-on-write failures.
+INTERMEDIATE_CREATION_OPTS = ['TILED=YES', 'BIGTIFF=YES']
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +160,10 @@ class ChartSlicer:
         self.geotiff_completed = 0
         self.geotiff_times: List[float] = []
         self.parallel_warp = 0
+        # One resampling kernel for every warp (per-chart, GCP, mosaic). Lanczos:
+        # nearest leaves stair-stepped text/runways at z12 (2026-09-29 DFW test:
+        # SSIMULACRA2 42 nearest vs 85 lanczos) and compresses worse.
+        self.resample_alg = gdal.GRA_Lanczos
         # In threaded warp mode we already parallelize by job; avoid extra internal threads on Apple Silicon.
         self.warp_multithread = not IS_APPLE_SILICON
         self.abbreviations = {
@@ -1497,7 +1503,7 @@ class ChartSlicer:
     # ---- warp-temp provenance -------------------------------------------
     # Every warp output gets a `<output>.georef.json` sidecar recording a
     # fingerprint of the inputs that produced it: the source file (path, size,
-    # mtime), the row's georef columns (GCPs, cutline, LCC, rotation,
+    # mtime), the row's georef columns (GCPs, cutline, LCC, rotation, crop,
     # src_crs), the cutline shapefile (path, size, mtime) and the warp mode.
     # Resume reuses a temp only when the sidecar matches the current row, and
     # the library rebuild restores only temps whose sidecar names a row that
@@ -1506,7 +1512,7 @@ class ChartSlicer:
     # alternate's leftover warp was mosaicked alongside the new winner, and
     # `washington_*` temps were credited to `washington_dc`.
     GEOREF_FIELDS = (
-        'filename', 'location', 'date', 'end_date', 'rotation', 'src_crs', 'half',
+        'filename', 'location', 'date', 'end_date', 'rotation', 'src_crs', 'half', 'crop',
         'cutline', 'cutline_wkt', 'lcc_lat1', 'lcc_lat2', 'lcc_lat0', 'lcc_lon0',
     )
 
@@ -1532,7 +1538,7 @@ class ChartSlicer:
             'shapefile': self._file_stamp(shapefile),
             'full_sheet': bool(full_sheet),
             'warp_output': 'tif' if full_sheet else getattr(self, 'warp_output', 'tif').lower(),
-            'resample': int(getattr(self, 'resample_alg', gdal.GRA_Bilinear)),
+            'resample': int(self.resample_alg),
             'row': {k: (rec.get(k) or '').strip() for k in self.GEOREF_FIELDS},
             'gcps': {k: (rec.get(k) or '').strip() for k in dole_v2.V2_FIELDS if k.startswith('gcp')},
         }
@@ -1644,6 +1650,10 @@ class ChartSlicer:
             self.log(f"      ✗ No shapefile available for {input_tiff.name}")
             return False
 
+        if record is not None and (record.get('crop') or '').strip():
+            self.log(f"      ⚠ {input_tiff.name}: crop is only applied to GCP rows - "
+                     f"this warp uses the file's own georeferencing and reads the whole image")
+
         # Row-declared source CRS (jpg + world file sources: GDAL reads the
         # .JGW but not the .prj, and a warp without srcSRS silently passes
         # degrees through as target-CRS meters). '' -> trust the file.
@@ -1708,7 +1718,7 @@ class ChartSlicer:
 
             # Step 2: Warp with cutline. Write GTiff (default) or VRT when requested
             # Note: Not specifying xRes/yRes allows GDAL to maintain source resolution during warp
-            # Intermediates use DEFLATE level 1 (INTERMEDIATE_CREATION_OPTS) to cut temp-dir I/O
+            # Intermediates are written uncompressed (INTERMEDIATE_CREATION_OPTS)
             def _safe_unlink(path: Path) -> None:
                 try:
                     if path.exists():
@@ -1737,7 +1747,7 @@ class ChartSlicer:
                     cutlineSRS=shapefile_srs if use_cutline else None,
                     cropToCutline=crop_to_cutline if use_cutline else False,
                     dstAlpha=True,
-                    resampleAlg=getattr(self, 'resample_alg', gdal.GRA_Bilinear),
+                    resampleAlg=self.resample_alg,
                     creationOptions=creation_opts,
                     multithread=getattr(self, 'warp_multithread', True),
                     transformerOptions=transformer_opts or None,
@@ -1936,18 +1946,37 @@ class ChartSlicer:
         # authored in the rotated frame. Map them back to the raw file's frame
         # (the order-1 GCP fit absorbs the rotation, so no raster resampling).
         rotation = dole_v2.row_rotation(row)
-        if rotation:
+        crop_win = None
+        if rotation or (row.get('crop') or '').strip():
             src_ds = gdal.Open(str(input_tiff))
             if src_ds is None:
-                self.log(f"      ✗ Cannot open {input_tiff.name} to apply rotation {rotation}")
+                self.log(f"      ✗ Cannot open {input_tiff.name} to apply rotation/crop")
                 return False
             raw_w, raw_h = src_ds.RasterXSize, src_ds.RasterYSize
             src_ds = None
+        if rotation:
             context["pixels"] = [
                 dole_v2.px_display_to_raw(px, py, rotation, raw_w, raw_h)
                 for px, py in context["pixels"]
             ]
             self.log(f"    Rotation {rotation}° CW: GCP pixels remapped to raw frame")
+
+        # Overscan crop: only the row's crop window is read from the source,
+        # for the mosaic and the full-sheet artifact alike, so scanner bed
+        # never reaches a warp. The GCPs keep whole-image pixel coordinates
+        # in the catalog; shift them into the window here. A bad crop fails
+        # the row - warping the whole image instead would put the overscan
+        # back without anyone noticing.
+        try:
+            if (row.get('crop') or '').strip():
+                crop_win = dole_v2.row_crop_raw_window(row, raw_w, raw_h)
+        except ValueError as e:
+            self.log(f"      ✗ {e} - fix the dole row's crop")
+            return False
+        if crop_win:
+            xoff, yoff, xsize, ysize = crop_win
+            context["pixels"] = [(px - xoff, py - yoff) for px, py in context["pixels"]]
+            self.log(f"    Crop: source window {xsize}x{ysize} at ({xoff},{yoff}) of {raw_w}x{raw_h}")
 
         # A wrong cutline ref or wrong GCP lat/lons otherwise "succeed" into an
         # all-alpha raster and ship an empty mosaic (Tulsa/Milwaukee, 2026-07 run).
@@ -2000,6 +2029,7 @@ class ChartSlicer:
                 format="VRT",
                 GCPs=gcps,
                 outputSRS=str(context["source_crs"]),
+                srcWin=list(crop_win) if crop_win else None,
                 **render_options,
             )
             ds_vrt = gdal.Translate(str(temp_gcp_vrt), str(input_tiff), options=translate_options)
@@ -2059,7 +2089,7 @@ class ChartSlicer:
                             cutlineSRS=cutline_srs,
                             outputBounds=bounds,
                             dstAlpha=True,
-                            resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
+                            resampleAlg=self.resample_alg,
                             polynomialOrder=1,
                             creationOptions=INTERMEDIATE_CREATION_OPTS,
                             multithread=getattr(self, 'warp_multithread', True),
@@ -2099,7 +2129,7 @@ class ChartSlicer:
                     cutlineSRS=cutline_srs if mask else None,
                     cropToCutline=mask,
                     dstAlpha=True,
-                    resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
+                    resampleAlg=self.resample_alg,
                     polynomialOrder=1,
                     creationOptions=None if to_vrt else INTERMEDIATE_CREATION_OPTS,
                     multithread=getattr(self, 'warp_multithread', True),
@@ -2268,7 +2298,10 @@ class ChartSlicer:
         if not binary.exists():
             self.log(f"      ✗ geotiff2pmtiles binary not found at {binary}")
             return False
-        args = [str(binary), '-format', 'webp', '-quality', '80', '-min-zoom', '8',
+        # Levels down to z0 (was z8 until 2026-10-03). The Leaflet viewer never
+        # asks below z8 and downscales; the next/ renderer draws nothing below
+        # an archive's minimum zoom, and a sheet fitted to a phone sits at z6-7.
+        args = [str(binary), '-format', 'webp', '-quality', '80', '-min-zoom', '0',
                 '-concurrency', '2']
         try:
             ds = gdal.Open(str(warped_tif))
@@ -2492,6 +2525,53 @@ class ChartSlicer:
 
         return progress_cb
 
+    # Web Mercator half-extent; 2*R/256/2**z is the zoom-z tile-grid pixel size.
+    MERC_R = 20037508.342789244
+
+    def _mosaic_grid(self, files: List[Path]) -> Tuple[float, Tuple[float, float, float, float]]:
+        """Pixel size + snapped bounds for the era mosaic.
+
+        The mosaic used to take the finest source pixel (22.7 m on modern eras,
+        set by one 1:250k inset), upsampling every sectional ~2.2x only for
+        geotiff2pmtiles to shrink it again: a second resample (with lanczos:
+        3.6x slower, and a nearest mosaic threw away the lanczos gain - DFW
+        z12 SSIMULACRA2 58) on ~2.8x more pixels than the archive keeps.
+        Instead: take geotiff2pmtiles' own max-zoom rule on the finest source
+        X pixel (floor(log2(2R / (px * 256)))), and mosaic straight onto that
+        zoom's tile grid (pixel = 2R/256/2**z, bounds on pixel multiples of
+        the origin). Same archive max zoom as before; the mosaic's one
+        resample lands on the pixels the tiles are cut from (DFW z12 84.4,
+        mosaic step ~2.4x faster than lanczos at 22.7 m, conversion reads
+        2.8x fewer pixels). Square pixels by construction, which also retires
+        the non-square finest-x/finest-y mosaics.
+        """
+        finest = None
+        minx = miny = float('inf')
+        maxx = maxy = float('-inf')
+        for f in files:
+            ds = gdal.Open(str(f))
+            gt = ds.GetGeoTransform()
+            w, h = ds.RasterXSize, ds.RasterYSize
+            ds = None
+            px = abs(gt[1])
+            finest = px if finest is None else min(finest, px)
+            xs = (gt[0], gt[0] + gt[1] * w)
+            ys = (gt[3], gt[3] + gt[5] * h)
+            minx, maxx = min(minx, *xs), max(maxx, *xs)
+            miny, maxy = min(miny, *ys), max(maxy, *ys)
+        zoom = max(0, min(28, math.floor(math.log2(2 * self.MERC_R / (finest * 256)))))
+        res = 2 * self.MERC_R / 256 / 2 ** zoom
+        bounds = self._snap_to_grid((minx, miny, maxx, maxy), res)
+        self.log(f"    Mosaic grid: z{zoom} tile pixels ({res:.4f} m; finest source {finest:.4f} m)")
+        return res, bounds
+
+    def _snap_to_grid(self, bounds: Tuple[float, float, float, float], res: float) -> Tuple[float, float, float, float]:
+        """Grow minX/minY/maxX/maxY outward to multiples of res from -R (the tile-grid origin)."""
+        R = self.MERC_R
+        minx, miny, maxx, maxy = bounds
+        return (-R + math.floor((minx + R) / res) * res, -R + math.floor((miny + R) / res) * res,
+                -R + math.ceil((maxx + R) / res) * res, -R + math.ceil((maxy + R) / res) * res)
+
     def create_mosaic_geotiff(self, input_files: List[Path], output_tiff: Path, compress: str = 'LZW') -> Tuple[bool, Optional[float]]:
         """Mosaic the individual warped chart rasters directly into one GeoTIFF.
 
@@ -2524,10 +2604,9 @@ class ChartSlicer:
             else:
                 self.log(f"    Creating mosaic GeoTIFF with {compress} compression ({num_threads} threads)...")
 
-            # Output resolution: leave xRes/yRes unset so gdal.Warp matches the finest
-            # source pixel size on its own (equivalent to BuildVRT resolution='highest').
-            # Verified byte-identical to an explicit finest-res pre-scan, so no extra
-            # gdal.Open passes are needed here.
+            # Output grid: the Web Mercator tile grid of the max zoom geotiff2pmtiles
+            # will pick for this mosaic, not the finest source pixel (see _mosaic_grid).
+            res, grid_bounds = self._mosaic_grid(valid_files)
 
             # Configure GDAL for single-process mosaic creation (use all CPUs)
             _configure_gdal_for_phase('geotiff', workers=1)
@@ -2549,12 +2628,12 @@ class ChartSlicer:
                     creation_opts.append('ZLEVEL=1')
 
             # Optional clip window: projWin is ULX ULY LRX LRY -> Warp outputBounds is minX minY maxX maxY
-            output_bounds = None
+            output_bounds = grid_bounds
             projwin = getattr(self, 'clip_projwin', None)
             if projwin:
                 ulx, uly, lrx, lry = projwin
-                output_bounds = (ulx, lry, lrx, uly)
-                self.log(f"    Applying clip bounds (minX,minY,maxX,maxY): ({ulx}, {lry}, {lrx}, {uly})")
+                output_bounds = self._snap_to_grid((ulx, lry, lrx, uly), res)
+                self.log(f"    Applying clip bounds (minX,minY,maxX,maxY): {output_bounds}")
 
             start_time = time.time()
             progress_cb = self._make_geotiff_progress_cb(start_time)
@@ -2562,7 +2641,9 @@ class ChartSlicer:
             warp_kwargs = dict(
                 format='GTiff',
                 creationOptions=creation_opts,
-                resampleAlg=getattr(self, 'resample_alg', gdal.GRA_NearestNeighbour),
+                resampleAlg=self.resample_alg,
+                xRes=res,
+                yRes=res,
                 multithread=True,
                 warpMemoryLimit=1024,  # MB working buffer (default ~64) -> fewer, larger chunks
                 warpOptions=['NUM_THREADS=ALL_CPUS'],  # parallelize the resampling compute (-wo)
@@ -3270,8 +3351,12 @@ class ChartSlicer:
             # names within a location. gdalwarp composites last-source-wins,
             # so half-sheet seams and same-location overlaps must not follow
             # thread completion order (they did, via as_completed).
+            # Chart types stack by scale: WAC at the bottom, then sectionals,
+            # TAC on top (dole_v2.CHART_TYPE_LAYER; type = location suffix).
+            loc_layer = {loc: dole_v2.CHART_TYPE_LAYER[dole_v2.location_chart_type(loc.replace('_', ' '))]
+                         for loc in all_locations}
             mosaic_sources = []
-            for location in sorted(all_locations):
+            for location in sorted(all_locations, key=lambda loc: (loc_layer[loc], loc)):
                 entries = vrt_library.get(location, {}).get(date)
                 if not entries:
                     continue
@@ -3375,9 +3460,10 @@ Examples:
     parser.add_argument(
         "-r", "--resample",
         type=str,
-        choices=['nearest', 'bilinear', 'cubic', 'cubicspline'],
-        default='nearest',
-        help="Resampling algorithm for warping (default: nearest). Use 'nearest' for faster processing with charts"
+        choices=['lanczos', 'cubic', 'cubicspline', 'bilinear', 'nearest'],
+        default='lanczos',
+        help="Resampling kernel for every warp, per-chart and mosaic (default: lanczos). "
+             "'nearest' is faster but stair-steps text and lines at full zoom"
     )
 
     parser.add_argument(
@@ -3591,6 +3677,7 @@ Examples:
 
     # Map resampling algorithm
     resample_map = {
+        'lanczos': gdal.GRA_Lanczos,
         'nearest': gdal.GRA_NearestNeighbour,
         'bilinear': gdal.GRA_Bilinear,
         'cubic': gdal.GRA_Cubic,

@@ -60,6 +60,23 @@ test("slashless rule-derived directories 301 to the slashed spelling, same host"
   }
 });
 
+test("an index file named explicitly 301s to its directory, one hop from either host", async (t) => {
+  const { request } = harness(t);
+  const cases = {
+    "https://archive.aero/atc/history/FacilityPhotos/index.html": "https://archive.aero/atc/history/FacilityPhotos/",
+    "https://archive.aero/atc/class-photos/7711/index.html": "https://archive.aero/atc/class-photos/7711/",
+    // the directory's own canonical, not index.html/ (the 2026-10-05 404)
+    "https://archive.aero/atc/history/index.html": "https://archive.aero/atc/History",
+    "https://atchistory.org/classphotos/7711/index.html": "https://archive.aero/atc/class-photos/7711/",
+    "https://atc-staging.archive.aero/history/FacilityPhotos/index.html": "https://atc-staging.archive.aero/history/FacilityPhotos/",
+  };
+  for (const [url, want] of Object.entries(cases)) {
+    const res = await request(url);
+    assert.equal(res.status, 301, url);
+    assert.equal(res.headers.get("location"), want, url);
+  }
+});
+
 test("slashed directories, files and map canonicals still serve", async (t) => {
   const { request } = harness(t);
   for (const url of [

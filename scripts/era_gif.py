@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """Animate one spot through time from the published era PMTiles.
 
-  ~/venv/bin/python scripts/era_gif.py LAT LON ZOOM START END STEPS [out.gif]
+  ~/venv/bin/python scripts/era_gif.py LAT LON ZOOM START END STEPS [out.gif] [--skip-empty]
   e.g.  ... 32.78 -96.80 9 1940-01-01 2026-01-01 40 dallas.gif
 
 Each frame is the 3x3 tile block around the point, compositing every era whose
 [start, end) covers the date and whose bounds touch the block, oldest first
 (same rule as index.html). Era bounds + headers/directories come from the
 metadata bundle index.html points at, so only tile bodies hit the network.
+Dates no era covers render as dark frames; --skip-empty drops them instead.
+Every frame carries a small date label in its top-left corner.
 """
 import gzip, io, json, math, re, struct, sys, datetime as dt, urllib.request
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 import pmtiles.reader as pr
 from viewer_config import viewer_config_source
 
-lat, lon, z = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
-d0, d1 = (dt.date.fromisoformat(s) for s in sys.argv[4:6])
-steps, out = int(sys.argv[6]), (sys.argv[7] if len(sys.argv) > 7 else "era.gif")
+skip_empty = "--skip-empty" in sys.argv
+argv = [a for a in sys.argv[1:] if a != "--skip-empty"]
+lat, lon, z = float(argv[0]), float(argv[1]), int(argv[2])
+d0, d1 = (dt.date.fromisoformat(s) for s in argv[3:5])
+steps, out = int(argv[5]), (argv[6] if len(argv) > 6 else "era.gif")
 
 def http(url, off=None, n=None):
     h = {"User-Agent": "era_gif"}
@@ -60,10 +64,30 @@ def tile(era, x, y):
         tiles[key] = im
     return tiles[key]
 
+def label_font(size=16):
+    """Small readable face: Pillow's bundled scalable default, else a system TTF, else the bitmap default."""
+    try: return ImageFont.load_default(size=size)
+    except TypeError: pass
+    for f in ("/System/Library/Fonts/Supplemental/Arial.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+        try: return ImageFont.truetype(f, size)
+        except OSError: pass
+    return ImageFont.load_default()
+FONT = label_font()
+
+def stamp(frame, text, pad=5, margin=8):
+    """Date label, top-left: white text on a translucent dark box so it reads on any chart."""
+    over = Image.new("RGBA", frame.size, (0, 0, 0, 0)); d = ImageDraw.Draw(over)
+    l, t, r, b = d.textbbox((margin + pad, margin + pad), text, font=FONT)
+    d.rectangle((margin, margin, r + pad, b + pad), fill=(20, 20, 20, 200))
+    d.text((margin + pad, margin + pad), text, font=FONT, fill="white")
+    frame.alpha_composite(over)
+
+BG = (20, 20, 20, 255)
+blank = Image.new("RGB", (768, 768), BG[:3])  # RGB: getbbox() on RGBA would test alpha only
 frames = []
 for i in range(steps):
-    day = (d0 + (d1 - d0) * i / max(steps - 1, 1)).isoformat()
-    frame = Image.new("RGBA", (768, 768), (20, 20, 20, 255))
+    day = (d0 + dt.timedelta(days=round((d1 - d0).days * i / max(steps - 1, 1)))).isoformat()  # nearest day
+    frame = Image.new("RGBA", (768, 768), BG)
     for era in eras:
         s, e = era["k"].split("_to_")
         b = era.get("b")
@@ -73,7 +97,10 @@ for i in range(steps):
             for dy in range(3):
                 t = tile(era, x0 + dx, y0 + dy)
                 if t: frame.alpha_composite(t, (dx * 256, dy * 256))
-    ImageDraw.Draw(frame).text((10, 10), day, fill="white")
+    if skip_empty and ImageChops.difference(frame.convert("RGB"), blank).getbbox() is None:
+        print(day, "empty, skipped", flush=True); continue
+    stamp(frame, day)
     frames.append(frame.convert("P", palette=Image.ADAPTIVE)); print(day, flush=True)
+if not frames: sys.exit("no frames: nothing published covers that spot in that date range")
 frames[0].save(out, save_all=True, append_images=frames[1:], duration=300, loop=0)
-print("wrote", out)
+print("wrote", out, f"({len(frames)} frames)")

@@ -1,38 +1,56 @@
-# 08a — inbound backlink repair (pre-cutover)
+# 08a — inbound backlink maintenance
 
 Companion to `08_atchistory_migration.md`. Covers the *external* half of the move:
-correcting the highest-value inbound links so they point at canonical
+correcting useful existing inbound links so they point at canonical
 `archive.aero/atc/…` URIs instead of atchistory.org paths.
 
-Compiled 2026-08-13 from: Wikimedia `list=exturlusage` across en/de/fr/es/it/nl/pl/
+**Status reviewed 2026-09-21:** the August 31 cutover and repository redirect repairs
+are complete. **No Wikimedia edits, disclosure, webmaster email or later backlink
+survey is recorded as completed.** The external list below is a dated survey, not
+a verified current queue. Redirects keep the old links working; this work is optional
+maintenance and does not gate the October 30 stabilization review.
+
+## Remaining work
+
+- [ ] Recheck the survey: confirm each old link still exists, its intended target
+      still serves the right content, and the canonical target has no redirect hops.
+      Keep a dated record of rechecks and any subsequent edits/reversions.
+- [ ] If proceeding with Wikimedia maintenance, confirm the relevant wiki's current
+      conflict-of-interest/link-maintenance rules and make the disclosed URL-only
+      repairs below. Keep archived references and archived discussions intact.
+- [ ] Recheck dreamsmithphotos and TVTropes before deciding on outreach/edits;
+      the suggested email below is an **unsent draft**.
+- [ ] Repeat the backlink survey and inspect external referrers from the existing
+      ATC 404 review when doing follow-up. This worklist does not configure a recurring run.
+
+## Survey and repair reference — 2026-08-13
+
+Compiled from: Wikimedia `list=exturlusage` across en/de/fr/es/it/nl/pl/
 ru/pt/sv/ja/simple + commons/wikidata/wikisource/wikibooks; awstats all-time
 referrer table (`atchistory_backup/traffic_analysis/report_data.json`); raw-log
 referrer tally. Every target below was resolved live through the deployed worker
-and confirmed 200.
+and confirmed 200 **on that date**. The seven-target smoke loop was repeated at the
+August 31 cutover, with direct 200s and old forms redirecting in one hop (08 §7).
+No fresh external verification was performed for this cleanup.
 
 ---
 
-## Why do this before cutover (and not after)
+## Original pre-cutover rationale (historical)
 
-- The targets are **already live**: `archive.aero/atc/*` has been routed since
-  2026-08-09, so every replacement URL returns 200 today. Nothing breaks.
-- `X-Robots-Tag: noindex, nofollow` is still on until the Aug 30 11:00 step. This
-  does **not** matter for these edits — Wikipedia's own external links are
-  `rel="nofollow"`, so they never passed PageRank anyway. Their value is referral
-  traffic (the Checklist article alone sent 6,034 visits) and downstream citation
-  copying. Both survive noindex.
-- The real reason to start now is **pacing**. Ten edits across ten articles all
-  swapping in the same new domain, done in one sitting, reads as WP:REFSPAM and
-  gets mass-reverted. Spread over two-plus weeks it reads as what it is:
-  link-rot maintenance.
+- The destinations were available from August 9 behind a production noindex guard;
+  that guard was removed at the actual August 31 cutover. Staging remains noindexed.
+- Referral traffic and citation accuracy motivated direct-link maintenance even
+  before indexing. The Checklist article had sent 6,034 visits in the historical data.
+- The original plan proposed a small number of disclosed repairs at a time. The
+  domain migration is now complete; there is no remaining pre-cutover deadline.
 
-## Conflict-of-interest ground rules (read once, then follow)
+## Project guardrails for any external repairs
 
-Ryan now operates the destination site, so these are COI edits under
-[WP:COI](https://en.wikipedia.org/wiki/Wikipedia:Conflict_of_interest). They are
-still permitted — repairing an existing citation whose URL moved is explicitly
-routine maintenance ([WP:LINKROT](https://en.wikipedia.org/wiki/Wikipedia:Link_rot)).
-Stay inside these lines:
+Ryan operates the destination site, so consult
+[WP:COI](https://en.wikipedia.org/wiki/Wikipedia:Conflict_of_interest). These are
+proposed repairs to existing citations whose URLs moved
+([WP:LINKROT](https://en.wikipedia.org/wiki/Wikipedia:Link_rot)), not completed edits.
+Check the applicable wiki's current rules before editing. The project's scope is:
 
 1. **Disclose once** on your Wikipedia user page. One sentence is enough:
    *"I operate archive.aero, which now hosts the former atchistory.org collection.
@@ -90,16 +108,16 @@ worklist 08 §A4. Two carry standing obligations:
 
 ---
 
-## Step 1 — Wikimedia edits (13 links across 10 pages)
+## Step 1 — Wikimedia candidates (17 URL occurrences across 12 editable pages)
 
-Every "new URL" below was verified: 200, correct content-type, zero further hops.
-Old URLs are exact — copy/paste them into the wikitext editor's find field.
+Every "new URL" below was verified in the August 13 survey: 200, correct
+content-type, zero further hops. Counts exclude the archived talk-page entry.
+Old URLs are the spellings captured then; recheck before editing.
 
-### 1a. The checklist citation — 6 pages, highest value
+### 1a. The checklist citation — 5 editable pages + 1 archived discussion
 
 `http://www.atchistory.org/History/checklst.htm` (49,463 all-time hits; **404 on
-the live site since ~2020** — these are dead refs today, so this is a strict
-improvement any editor would welcome)
+the old live site since ~2020** at survey time; the migration now redirects this path)
 → **`https://archive.aero/atc/how-the-pilots-checklist-came-about`**
 
 | # | Wiki | Page | Occurrences | Notes |
@@ -165,7 +183,7 @@ component only. `Pubs/` and the rest keep their case. Copy exactly.
 
 Checked 2026-08-13; all-time hit counts from awstats.
 
-| Referrer | Hits | Status today | Action |
+| Referrer | Hits | Status on 2026-08-13 | Candidate action |
 |----------|------|--------------|--------|
 | `dreamsmithphotos.com/arrow/States/wy/wyoming.html` | 631 | **200, 3 live links** to the dead `Summit_RadioBeacon*_WY.htm` pages | Email the webmaster. Step 0's legacy map makes them work regardless; the email is upgrade, not repair |
 | `atvutah.com` YaBB forum | 1,549 | 200, links are inside threads (not on index) | Low value, links are old thread posts. Skip |
@@ -177,7 +195,7 @@ Checked 2026-08-13; all-time hit counts from awstats.
 | `viglink.com/sites/atchistory.org` | 313 | Affiliate rewriter, not a real backlink | Ignore |
 | `atchistory.com/about/` (`.com`, not `.org`) | 263 | **Host dead** | Ignore — unrelated dead domain |
 
-### Suggested email to dreamsmithphotos.com
+### Unsent draft for dreamsmithphotos.com (recheck links before use)
 
 > Subject: atchistory.org photo links on your Wyoming page
 >
@@ -186,14 +204,15 @@ Checked 2026-08-13; all-time hit counts from awstats.
 > rebuild. I've taken over hosting that collection; the Summit / Beacon Hill
 > photos now live at
 > https://archive.aero/atc/history/FacilityPhotos/WY/RadioBeacons/
-> — the old links will also redirect there from Aug 30. No action needed if
-> you'd rather leave them; just wanted you to have the working address.
+> — the old links also redirect there following the August 31 migration.
+> No action needed if you'd rather leave them; just wanted you to have the working address.
 
 ---
 
-## Step 3 — verify, and re-verify after cutover
+## Step 3 — target and redirect verification reference
 
-Before cutover (targets serve directly):
+For any future repair, recheck the direct targets (this seven-target subset is not
+the complete Wikimedia candidate list):
 
 ```bash
 for u in \
@@ -211,14 +230,16 @@ done
 Expect `200 0hop` on every line. Any redirect hop means the URL written into
 Wikipedia is an alias, not the canonical — fix the wikitext, not the worker.
 
-After the Aug 30 cutover, re-run the same loop plus the old-URL forms
+Also check the old-URL forms
 (`https://www.atchistory.org/History/checklst.htm` etc.) and confirm one-hop 301.
-`scripts/atc_redirect_check.py` covers the old-URL side already.
+`scripts/atc_redirect_check.py` covers the old-URL side; its last recorded cutover
+run passed August 31. Preserve its frozen live cache, since the former origin was
+reported unavailable September 20.
 
 ## Step 4 — post-cutover watch
 
-- Re-run the LinkSearch sweep monthly for a quarter; new links accrue, and other
-  editors may revert. One command per wiki:
+- Suggested manual cadence: re-run the LinkSearch sweep monthly through November;
+  this document does not configure a scheduled monitor. One query per wiki:
   `https://en.wikipedia.org/w/api.php?action=query&list=exturlusage&euquery=atchistory.org&eulimit=500&euprop=title|url&format=json&formatversion=2`
 - Watch `atc_logs` referrers for external hosts hitting 404s — that is the
   discovery channel for backlinks no log or sitemap knew about.

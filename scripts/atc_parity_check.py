@@ -517,6 +517,12 @@ def main():
         hit = ROUTES["alias"].get(path, ROUTES["alias"].get(alt))
         if hit is not None:
             return hit
+        # An index file named explicitly is an alias of its directory
+        # (routes.js lockstep, 2026-10-05); explicit aliases above win.
+        idx = next((n for n in ("index.html", "index.htm", "Default.htm")
+                    if path.endswith("/" + n)), None)
+        if idx and path != "/" + idx:
+            return expected_canonical(path[:-len(idx)])
         # Site-feed serialization variants 301 to the frozen feed
         # (routes.js lockstep, 2026-08-31).
         if re.match(r"^/+feed/(atom|rdf|rss2?)/?$", path, re.I):

@@ -11,7 +11,7 @@
 // routes.js (W3C "Cool URIs don't change" — see that file's header).
 
 import P_MAP from "./p_map.json" with { type: "json" };
-import { PREFIX, keyCandidates, routeOldPath, slashedOnlyCandidates, wantsDirectorySlash }
+import { PREFIX, keyCandidates, libraryTwin, routeOldPath, slashedOnlyCandidates, wantsDirectorySlash }
   from "./routes.js";
 import { injectShell, shellBody, shellHead } from "./shell.js";
 import { FACILITIES_VERSION, facilityVariant, restoreFacilities } from "./facilities.js";
@@ -216,10 +216,26 @@ async function serveKey(env, key, request, headers, shell = null) {
 // caller 301s to path + "/" so the page's relative links resolve inside the
 // directory (routes.js, wantsDirectorySlash).
 const DIRECTORY_SLASH = Symbol("directory-slash");
+
+// Link: rel="canonical" on files the old site stored in two trees (routes.js,
+// libraryTwin). Emitted only when the twin exists under the same ETag -- the
+// trees disagree on six PDFs, and those stay separate documents. Both copies
+// keep serving 200 (URIs are permanent); the header just names which one
+// search engines should index. One R2 head per uncached request; cachedServe
+// keeps the result for the response's own max-age.
+async function withTwinCanonical(env, key, response) {
+  const twin = libraryTwin(key);
+  if (!twin || ![200, 206, 304].includes(response.status)) return response;
+  const head = await env.BUCKET.head(twin.key).catch(() => null);
+  if (!head || head.httpEtag !== response.headers.get("etag")) return response;
+  response.headers.set("link", `<${NEW_ORIGIN}${encodeURI(twin.canon)}>; rel="canonical"`);
+  return response;
+}
+
 async function serveCanonical(env, canon, request, extraHeaders, shell) {
   for (const k of keyCandidates(canon)) {
     const r = await serveKey(env, k, request, extraHeaders, shell);
-    if (r) return wantsDirectorySlash(canon, k) ? DIRECTORY_SLASH : r;
+    if (r) return wantsDirectorySlash(canon, k) ? DIRECTORY_SLASH : withTwinCanonical(env, k, r);
   }
   for (const k of slashedOnlyCandidates(canon))
     if (await env.BUCKET.head(k)) return DIRECTORY_SLASH;

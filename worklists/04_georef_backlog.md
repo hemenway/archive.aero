@@ -1,9 +1,11 @@
 # Worklist 04 — Georeferencing and candidate-selection backlog
 
-## Current status — 2026-10-01
+## Current status — 2026-10-02
 
 Read-only catalog review through `scripts/dole_v2.py`: **7,695 rows**, **3,482
-without complete GCPs**, including **115 dated before 2011**. These are metadata
+without complete GCPs**, including **115 dated before 2011** (unchanged since
+the October 1 batch; the catalog's last write that night added publication notes
+only). These are metadata
 counts, not the number needing hand work: native GeoTIFFs and world-file JPGs can
 warp without row GCPs, while incorrect saved GCPs can still need repair. Only the
 **two GlidePlan rows** have neither a cutline reference nor inline WKT; the four
@@ -18,19 +20,19 @@ See [October 1 publication](georef_publish_2026-10-01.md) for the completed batc
 | Remaining item | Evidence and next action |
 |---|---|
 | ~~**Boston 1953-12 → 1970 sheet extent (27 rows)**~~ | **Fixed and republished 2026-09-25** — see the 2026-09-25 entry below. `ca000440r` (1957-06-01) is the only Boston row of the period still open (hand redo, next row). |
-| **Boston 1957 `ca000440r`** | Stored GCPs remain suspect; rotation is still 90, with `extents/boston_ma`. Redo against the actual 40–44N × 69–72W sheet, rotation 270, as diagnosed on September 15. Not published in that batch. |
+| **Boston 1957 `ca000440r`** | Stored GCPs remain suspect; rotation is still 90, with `extents/boston_ma`. Redo against the actual 40–44N × 69–72W sheet, rotation 270, as diagnosed on September 15, and point the cutline at `extents/boston_ma_1953`. Not published in that batch. |
 | **SF 1971 WASP 415 pair** | Both have GCPs and inline cutlines, but `half` remains blank and SP remains 45/33. Set sides from scan evidence, compare projection residuals, verify fold coverage and republish; upload ledger has only the bare-date artifact. |
-| **Juneau 2013 Batch19 hold conflict** | The row has GCPs although its note/sidebar still say hold; 2014 remains GCP-less. Resolve the August 19 preference for native ZIP editions before another slice; do not blindly apply/reapply inference. |
+| **Juneau 2013 Batch19 hold conflict** | The 2013 scan (`…_023_001.jpg`) has GCPs although its note says withheld; 2014 (`…_012_001.jpg`) remains GCP-less. The live 2013 era and `chart/juneau/2013-04-04-north`/`-south` still come from the Juneau 53 wayback ZIP, so nothing published is wrong, but the next slice of 2013-04-04 would rank the scan first. Either blank the 2013 GCPs (backup + dated note) or drop the hold. The 2011/12/15/16 scans won on purpose (published from scan GCPs on August 19). Sidebar B4 now lists both rows, so the conflict is visible there. |
 | **Hawaiian 1947–66** | 15 ca-series rows still lack GCPs (includes `ca001666X`); two-panel scans need per-panel treatment. 1968/69 rows already have GCPs. |
 | **simviation 2010–11** | 55 rows still lack GCPs. Since September 12 they point to chart TIFFs extracted losslessly from embedded JPEGs; the old manual page-assembly instruction is superseded. |
-| **Dutch Harbor 2004 south** | Row still lacks GCPs; review/apply the August 20 full-resolution fit after locating the source. |
-| **Hawaiian 2004 archive.org JPG** | Still lacks GCPs. The separate AVSIM JPG has `src_crs=EPSG:4269` and provenance for its JGW; first verify that world-file path before assuming hand GCPs are needed. |
+| **Dutch Harbor 2004 south** | Row still lacks GCPs; review/apply the August 20 full-resolution fit after locating the source. Only `chart/dutch_harbor/2004-03-18-north` is live. |
+| **Hawaiian 2004 archive.org JPG** | Optional upgrade, not a gap. The AVSIM JPG's world-file path works: it was published August 19 as `chart/hawaiian_islands/2004-07-01` (warp `georef`), and its live header bounds (161.18–154.06°W, 18.21–23.62°N, z8–10) were checked on October 2. The archive.org scan (`dole_gap_2026-07/archive2004/`) has the same ~6.8k px, is uncropped and has 3.4× the bytes; it needs hand GCPs only if it should replace the AVSIM source. |
 | **ESRI SF 2008** | Still lacks GCPs. SF 1966 was verified and published October 1; SF 1978 north was published September 15. |
 | **GlidePlan Mt. Shasta + Reno Whites** | Still lack GCPs and a cutline decision; consider explicit whole-sheet `none` for these collar-free mosaics, then verify the warp. |
 | ~~**Wichita 1972 WASP 418 pair**~~ | **Published October 1**: both hand GCPs ready, sides explicit, modern SP verified by residuals, fold cutlines traced; era plus north/south chart artifacts read back. |
-| **Dallas 1981 north (419_01)** | Now has GCPs, `half=north`, corrected SP; no traced `cutline_wkt` and no north artifact in the upload ledger. Verify edges/fold and publication status before treating it as complete. |
+| **Dallas 1981 north (419_01)** | **Do not slice 1981-01-22 yet.** Pixel corners were added between August 26 and September 15, so the row counts as ready, but the east corners kept the prefilled **−94°**. Its pixel spans match the 1982 north face (`420_02`, −102..−95) to 0.04 %, and every other DFW WASP face says −95. Read the printed corner label, fix `gcp2_lon`/`gcp3_lon`, then trace its fold cutline (`wasp_fold_cutline.py`), reslice and publish `chart/dallas_ft_worth/1981-01-22-north`. Only `-south` is live. Sidebar A8. |
 | **Denver 1975 seam** | Both halves published September 15; a ≤4 km pale band was recorded. Reconcile their GCPs at the fold before republishing improved same-key artifacts. |
-| **Tool status/sidebar** | `row_status()` still equates a GCP-less `sectional/` cutline with embedded georef. The completed A2/A3/A4/A7/B1 entries were reconciled October 1. Correct the status heuristic and resolve the separate B4 Juneau hold conflict (01). |
+| **Tool status/sidebar** | `row_status()` still equates a GCP-less `sectional/` cutline with embedded georef (B3), which hides the Hawaiian ca-scans, ESRI SF, simviation, the archive.org 2004 JPGs and Seward 93 from the incomplete count. Sidebar refreshed October 2: new A8 (Dallas 1981 north), A6 rewritten for the Hawaiian finding, B4 now shows the 2013 conflict, A3 names the cutline fix. The tool keeps only a local copy; the pre-edit backup is `~/archive.aero-attic/1georef_toolv10_pre_todo_refresh_2026-10-02.py`. The 5001 instance shows the new list after a restart. |
 
 **Completed since the original list:** most 2004 JPGs, Juneau 1994–2010, Cheyenne
 2009, Dallas 1981 south/1982 both halves, Key West 1928–35, Chicago 1939,

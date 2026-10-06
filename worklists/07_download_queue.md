@@ -1,80 +1,56 @@
 # Worklist 07 — Online findings download queue
 
-*Generated 2026-07-16 by matching `search_archive/missing_from_dole_online.csv` (1,490
-verified findings) URLs against `master_dole_v2.csv` download_links.
-**181 cataloged · 1,309 pending.** Pending rows extracted to
-[`data/download_queue_pending.csv`](data/download_queue_pending.csv).*
+## Current status — 2026-09-21
 
-Every URL here was already verified live (200 + plausible size) during the hunt — this is
-a download/catalog queue, not a search list. Verification and dedupe rules:
-`search_archive/dole_search_handoff_round8.md`.
+The **1,517-row findings queue was attempted and analyzed in July**, not left as
+1,309 untouched downloads. `rawtiffcandidates/_analysis_report.md` remains the
+July 24 evidence: 295 include, 1,021 include-after-georef, 158 already cataloged,
+24 KML indexes, 13 reference-only, 4 failed and 2 suspect-truncated. These are
+analysis verdicts, not 1,517 successful usable downloads.
 
-## Already cataloged (181) — the 2026-07 Tier-1 batch
+Edition-level dedupe on July 25 reduced the proposed additions to 264 candidates.
+Only **six HUNT26 rows remain in the current 7,672-row catalog**, confirmed via
+`scripts/dole_v2.py`; the other **258 files / 229 proposed rows** were deferred
+back to `/Volumes/projects/rawtiffcandidates/`. That is the last reviewed import
+plan, not a fresh claim that all 258 are still unique or ready.
 
-archive.org 2004 set (78), simviation realcharts (42), NARA Juneau 305976 (23), usahas
-ChartGeek mosaics (23), plus 15 one-offs (aviationtoolbox, NOAA, glideplan, ESRI, FAA
-sample…). These are staged in `/Volumes/projects/rawtiffs/dole_gap_2026-07/` and have dole
-rows — their remaining work is georeferencing ([04](04_georef_backlog.md)) and slicer
-fixes ([01](01_dole_slicer_failures.md)).
+- [ ] Revalidate `data/hunt26_plan.csv` against today's **location + edition +
+  side** holdings and the files before resuming any import; resolve its 104
+  historical location/year collisions and explicit exclusions.
+- [ ] Prepare the retained candidates that need work (GPO fiche stitching,
+  georef, source/edition checks), then verify one chart end-to-end before batching.
+  Do not replay the old whole-queue download or import instructions blindly.
+- [ ] Keep the July failure/truncation dispositions; Seward 93 requires an
+  alternative source, not another pull of its known broken capture.
+- [ ] Pursue new contact/login/scan-request leads through [03](03_web_sources_searched.md).
+  Outreach/access completion is unrecorded here.
 
-## Pending (1,309), by source
+The July 25 **31 already-on-disk-but-uncataloged** items were closed by the
+August 20 audit. That old queue stays closed; the **new** September 21 source
+availability/disposition findings belong in [02](02_disk_vs_dole.md).
+No source files, catalog rows or generated artifacts were changed for this doc update.
 
-| Source | Rows | Notes |
-|---|---|---|
-| Wayback FAA `visual/<date>/PDFs/` print PDFs | 760 | 2011+ cycles; 13 whole + 11 partial editions. ⚠ 407 of the CDX captures are 1MB-truncated (editions 08-2021, 5×2022, 3×2023 unrecoverable as PDFs) — the queue rows are the verified-good ones, but re-check size on download |
-| Wayback FAA old-layout `sectional_files/*` zips | 279 | 2011–2019 edition zips — the big post-2010 backfill |
-| LOC gct00498 "Base & Duplicates" | 72 | pre-1971 tiffs, direct tile.loc.gov pulls |
-| NARA rg-370/305976 (non-Juneau remainder) | 55 | 1940s TX, Tulsa 1950, Seattle 1945, etc. |
-| raremaps.com GCS | 43 | DZI pyramids 20–33k px — need tile-assembly like usahas (incl. **LA 1976 r+v, desert era**) |
-| U. Alabama cartweb | 19 | MrSID `getimage` wid=5000 |
-| NOAA historical charts | 17 | 1932–35 CAA + 1950 batch remainder |
-| FAA `chart_sample_files` | 11 | incl. the 317 MB AOD LA separation-plates zip |
-| NLA Sheila Scott collection | 10 | annotated 1965–71 US sectionals, `/image` 5000px |
-| Institutional one-offs (LOC probes, UWM, Leventhal, OK State, Newberry, Birmingham, El Paso, Ohio, UNT/UTA, curtiswright, NLA Whiting, archive.org items) | 43 | mixed eras, mostly pre-1971 |
+## Historical July 16 queue baseline
 
-Era shape of the pending set: **773 post-2010 · 136 pre-1971 · 5 in-era 1971–2010 ·
-395 undated-in-CSV** (mostly wayback PDFs whose `date_or_edition` is an edition string —
-the URL carries the cycle date).
+The original URL-only comparison was **181 cataloged / 1,309 pending** out of
+1,490 findings; the pending export [data/download_queue_pending.csv](data/download_queue_pending.csv)
+is a historical snapshot. Its largest lanes were 760 visual-layout FAA PDFs,
+279 old-layout ZIPs, 72 LOC scans, 55 NARA scans, 43 raremaps, 19 cartweb,
+17 NOAA, 11 FAA samples, 10 NLA and 43 one-offs. These counts were superseded by
+round 9 and the full download/edition-dedupe passes below. URL mismatch alone
+must not be treated as a new edition or an uncompleted download.
 
-## Suggested batching
+## 2026-07-24 — full queue attempted and analyzed
 
-1. **LOC gct00498 (72)** — same pipeline as the existing ca-scans; biggest pre-1971 payload.
-2. **Wayback old-layout zips (279)** — same handling as existing wayback zip rows; watch
-   for truncated captures (take largest CDX capture; ~1 MB on a big file = reject).
-3. **Wayback visual PDFs (760)** — needs the GeoPDF SRS fix from
-   [01A](01_dole_slicer_failures.md) first, or they'll all fail the same way.
-4. **raremaps DZI (43)** — write a small tile-stitcher (usahas mosaic code is the template).
-5. The rest are small manual batches.
-
-## Still-open acquisition lanes beyond this queue
-
-Contacts / scan requests / logins / physical media — see
-[03_web_sources_searched.md §2](03_web_sources_searched.md) and
-`search_archive/ACTION_PLAN.md` Tiers 2–6. The email payloads (ASU barcodes, GlidePlan
-inventory, Welch/Fox file lists, AVSIM download IDs) are in
-`search_archive/dole_search_lane_reports/`.
-
-## How to regenerate
-
-```bash
-~/venv/bin/python - <<'EOF'
-import csv
-dole = {(r['download_link'] or '').strip() for r in csv.DictReader(open('master_dole_v2.csv'))}
-online = list(csv.DictReader(open('worklists/search_archive/missing_from_dole_online.csv')))
-print(sum((r['url'] or '').strip() not in dole for r in online), 'pending')
-EOF
-```
-
-## 2026-07-24 — full queue downloaded and analyzed
-
-All 1,517 rows pulled to `/Volumes/projects/rawtiffcandidates/` (183 GB, per-source
+All 1,517 rows attempted into `/Volumes/projects/rawtiffcandidates/` (183 GB, per-source
 subdirs). Row-level results: `_download_manifest.csv` / `_manifest.jsonl` (url, sha1,
 bytes, status) and `_analysis.csv` / `_analysis_report.md` (dims, dpi, georef, verdict).
 No byte-identical duplicates in the set.
 
 **Verdicts:** 295 include (55 GB) · 1,021 FAA print-PDFs include-after-georef (130 GB) ·
-158 already cataloged (+24 usahas KML indexes = the Tier-1 181) · 13 reference-only
-(low-res) · 6 dead.
+158 already cataloged (+24 usahas KML indexes) · 13 reference-only
+(low-res) · 4 failed and 2 suspect-truncated. The 24 KML indexes are separate from the
+158 already-cataloged verdicts; these are file/URL verdicts, not catalog-row counts.
 
 Findings that update the assumptions above:
 
@@ -92,12 +68,12 @@ Findings that update the assumptions above:
   recovered at 9000 px. raremaps `img_121271` max pyramid level 404s; stitched at
   level−1 (13k px). 2004-set `Albuquerque North.jpg`, UNT high_res, Newberry Commons,
   Ohio Memory, El Paso CONTENTdm returned <5k px derivatives → reference_only.
-- NOAA Data Sampler CD-ROM iso downloaded but unexplored (vector samples, likely
-  reference-only).
+- NOAA Data Sampler CD-ROM was classified `failed` / `unreadable raster` in
+  `_analysis_report.md`; the earlier "downloaded but unexplored" note does not
+  establish a usable chart source.
 
-Suggested inclusion order stays as §Suggested batching, with 3 replaced by:
-sibling-georef the FAA print PDFs (both lanes), then 300 dpi convert per the
-established PDF-source convention.
+FAA print PDFs require 300-dpi rasterization and sibling-based georef; the
+July 25 edition dedupe below determines which are worth preparing at all.
 
 ### Dedupe vs holdings (2026-07-25)
 
@@ -116,9 +92,9 @@ FAA-era content was already held from other sources (NARA rg-237 cycle pulls, FA
   includes 756/757 of the visual-PDF lane and 245/277 of the old-layout lane. Nothing
   to do.
 - **31 on disk but uncataloged** — file already in rawtiffs, no dole row: 25 old-layout
-  SEC editions + 6 LOC ca-scans. Need dole rows only, no download.
-  **STALE — closed 2026-08-20:** the fresh two-way audit (`scripts/audit_disk_vs_dole.py`)
-  finds **0 catalogable files left**; everything real got rows during the July–August
+  SEC editions + 6 LOC ca-scans. This was the historical import-only remainder.
+  **Closed 2026-08-20:** that two-way audit (`scripts/audit_disk_vs_dole.py`)
+  found **0 catalogable files left**; everything real got rows during the July–August
   sessions, and the 13 residual unclaimed files are all explained (see worklist 02's
   2026-08-20 note + `data/uncataloged_on_disk_2026-08-20.csv`).
 
@@ -134,10 +110,10 @@ brownsville_87, great_falls_81, juneau_51, los_angeles_89) stayed — files in
 with note tag `HUNT26`, sliceable as-is. Everything else was moved back to
 `/Volumes/projects/rawtiffcandidates/` under its original paths.
 
-To redo the batch later: `worklists/data/hunt26_move.py` (moves per the plan,
+Historical tools for a future revalidated batch: `worklists/data/hunt26_move.py` (moves per the plan,
 handles the jp2→LZW-tif conversion that strips the bogus Greenwich georef and
-the .php→.jpg renames) then `scripts/import_hunt26.py` (idempotent — skips the
-6 already-present zips). Georef-tool sidebar items G1–G8 for the 229-row
+the .php→.jpg renames) then `scripts/import_hunt26.py` (skips the six already-present HUNT26 zips;
+that check does not replace a current edition-level review). Georef-tool sidebar items G1–G8 for the 229-row
 hand-GCP backlog are preserved in `worklists/data/hunt26_worklist_items.py`.
 
 Durable findings from the identification pass (all encoded in the plan CSV):
@@ -154,6 +130,6 @@ Durable findings from the identification pass (all encoded in the plan CSV):
 - The archive.org vintage jp2s carry a bogus Greenwich geotransform.
 - GPO fiche zips hold jp2 camera tiles + a hugin .pto — stitch before GCP.
 
-Remaining on the candidates volume besides these: the 1,021 edition-dups, 158
+Other July 25 candidate dispositions: the 1,021 edition-dups, 158
 already cataloged, and 13 reference-only. (The 31 disk-but-uncataloged rows are
 closed as of 2026-08-20 — see the dedupe section above.)

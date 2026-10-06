@@ -1,7 +1,15 @@
 # Worklist 12 — 2026-08 SD-card batch (five iFly EFB cards)
 
+**Status reviewed 2026-09-21: the 18-sectional import and publication are complete.**
+The nine FAA-original follow-up imports also completed on August 29; their
+publication receipts still need reconciliation in [worklist 11](11_acasis_img_recovery.md).
+The September 19 survey archived the selected enroute sources. This file keeps
+the original batch's method, scope and publication evidence.
+
 *Imaged 2026-08-20 + 2026-08-27 with `scripts/sd_slurp.py`; mined 2026-08-27.
-Images (the permanent as-found record): `/Volumes/ACASIS/All SD cards/2026-08-20/`.*
+Historical image location: `/Volumes/ACASIS/All SD cards/2026-08-20/`.
+That directory is absent at the currently mounted path as of September 21;
+verify the source device/location before further recovery work.*
 
 ## The cards
 
@@ -62,7 +70,8 @@ Images (the permanent as-found record): `/Volumes/ACASIS/All SD cards/2026-08-20
 - `ifly_sdcard_tac_honolulu_inset/` + `geotiff_tac_honolulu_inset/` —
   Honolulu Inset TAC eds 97 (card 001) + 99 (card 006).
 - `ifly_sdcard_sec_2014-15_2017/` — the source bundle trios for the 20
-  rawtiffs sectionals; extraction manifests sit in each rawtiffs parent. No
+  originally staged sectional sheets (18 retained after the Western Aleutian
+  retraction); extraction manifests sit in each rawtiffs parent. No
   side staging dir was kept (rule: extracted/derived files live in
   rawtiffs / rawtiffs_attic directly).
 
@@ -88,8 +97,8 @@ the 2020 set.
 - **Atlanta 94, Brownsville 94, Charlotte 97, Dutch Harbor 50, Halifax 92,
   Jacksonville 95, Miami 96, Washington 97, Wichita 94**: the attic's
   `acasis_imgcv2_FAA_originals/SEC` holds full-res FAA originals of all nine
-  — they should enter the catalog from there (their own import), not from
-  0.9x iFly copies. ← open item
+  — **promoted and catalogued 2026-08-29**, with FAA-original recovery provenance
+  in all nine current rows. The iFly copies were correctly left out.
 - Card 007's Salt Lake City 99 / San Antonio 101 (2018): in the image's dead
   zone, and both editions already catalogued from FAA sources.
 
@@ -142,11 +151,16 @@ not uploaded (content unchanged).
 - Live checks: bundle, a new era archive, and a new chart artifact all
   serve 206 from data.archive.aero.
 
-## Still open
+## Follow-up
 
-1. Import the nine FAA-original sectionals from the attic (separate import,
-   full-res beats the cards).
-2. Worklist 07 unchanged.
+- [x] Import the nine FAA-original sectionals from the attic — catalogued
+  2026-08-29; generated chart artifacts are recorded in the chart manifest.
+- [ ] Reconcile those nine chart artifacts against remote publication before
+  publishing anything: local upload receipts and timeline `pm` stamps are absent.
+  Tracked centrally in [worklist 11](11_acasis_img_recovery.md).
+- Future TAC/WAC publication depends on the collection/URI decision in
+  worklist 11. The original card-007 partial-capture limit remains documented;
+  no later complete-image evidence was found in this review.
 
 
 ## 2026-09-19 — enroute survey expanded
