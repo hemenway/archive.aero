@@ -132,7 +132,14 @@ class Renderer {
     }
     return out;
   }
-  setChartPlan(plan) { this.planId = plan.id; this.chart = this._makePlan(plan.tiles, this.chart); this.planDirty = true; this._invalidate(); }
+  setChartPlan(plan) {
+    this.planId = plan.id; this.chart = this._makePlan(plan.tiles, this.chart);
+    // How much of the new plan was already on the GPU: the measure of a scrub back to a date (stats().planResident).
+    let total = 0, resident = 0;
+    for (const tile of plan.tiles) for (const item of tile.items) { total++; if (this.pool.entries.has(item.key)) resident++; }
+    this.planResidency = { resident, total };
+    this.planDirty = true; this._invalidate();
+  }
   setBasemapPlan(tilePlans) { this.base = this._makePlan(tilePlans, this.base); this.planDirty = true; this._invalidate(); }
   setChartStyle(style) { Object.assign(this.style, style); this.style.opacity = clamp(this.style.opacity, 0, 1); this._invalidate(); }
   setClipRing(id, ring) {
@@ -200,7 +207,7 @@ class Renderer {
     }
     return best < 0 ? null : { kind: 'airfield', index: best };
   }
-  stats() { return { textures: this.pool.entries.size, textureBytes: this.pool.bytes, drawCalls: this.drawCalls, frameMs: this.frameMs }; }
+  stats() { return { textures: this.pool.entries.size, textureBytes: this.pool.bytes, drawCalls: this.drawCalls, frameMs: this.frameMs, uploads: this.pool.uploads, planResident: this.planResidency?.resident ?? 0, planItems: this.planResidency?.total ?? 0 }; }
   resize() {
     if (this.dead) return;
     const r = this.canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
@@ -423,24 +430,27 @@ class Renderer {
       if (t === 1) { this.animation = null; this._emit('moveend', this.getCamera()); }
     }
     this._plans();
-    let uploaded = 0, blocked = false;
-    // Textures the current plans need jump the queue. Superseded deliveries
-    // (dates already scrubbed past) only fill idle budget: under texture
-    // pressure, or past 64 waiting bitmaps, they are dropped with an evict so
-    // the data plane forgets them instead of holding decoded memory.
+    let uploaded = 0, idle = 0, blocked = false;
+    // Textures the current plans need jump the queue: up to sixteen a frame or
+    // about six milliseconds of frame CPU work (a date scrubbed back to
+    // re-uploads a whole view, ~120 tiles, which at four a frame took half a
+    // second). Superseded deliveries (dates already scrubbed past) only fill
+    // idle budget, at most four a frame: under texture pressure, or past 64
+    // waiting bitmaps, they are dropped with an evict so the data plane
+    // forgets them instead of holding decoded memory.
     // Chart and basemap pages never share storage, so one size being full
     // does not stop the other's needed uploads this frame.
     const stuck = new Set();
-    while (this.queue.length && uploaded < 4 && performance.now() - start < 4) {
+    while (this.queue.length && uploaded < 16 && performance.now() - start < 6) {
       let index = this.queue.findIndex(q => this.pool.pinned.has(q.key) && !stuck.has(q.size)); const needed = index >= 0;
-      if (!needed) index = this.queue.findIndex(q => !this.pool.pinned.has(q.key));
+      if (!needed) { if (idle >= 4) break; index = this.queue.findIndex(q => !this.pool.pinned.has(q.key)); }
       if (index < 0) break;
       const q = this.queue[index], entry = this.pool.put(q.key, q.bitmap, q.size);
       if (!entry) {
         if (needed) { stuck.add(q.size); if (!blocked) { blocked = true; this._emit('texturepressure', { key: q.key, maxTextureBytes: this.budget }); } continue; }
         this._drop(index); continue;
       }
-      q.bitmap.close(); this.queue.splice(index, 1); this.queued.delete(q.key); uploaded++; this.planDirty = true; this._plans();
+      q.bitmap.close(); this.queue.splice(index, 1); this.queued.delete(q.key); uploaded++; if (!needed) idle++; this.planDirty = true; this._plans();
     }
     while (this.queue.length > 64) { const index = this.queue.findIndex(q => !this.pool.pinned.has(q.key)); if (index < 0) break; this._drop(index); }
     const gl = this.gl; gl.viewport(0, 0, this.canvas.width, this.canvas.height); gl.clearColor(.035, .047, .063, 1);

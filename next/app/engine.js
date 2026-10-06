@@ -229,7 +229,27 @@ export class MapController {
     const inEffect = this.dp.eraCountAt(selectedDateStr);
     if (this.els.chartInfoEffective) this.els.chartInfoEffective.textContent = String(inEffect);
     if (inEffect === 0) Utils.toast('No charts available for selected date');
+    // Where this frame's tiles come from is measured against these counters (lastFrameTiming).
+    this._frameTiming = { date: selectedDateStr, start: performance.now(), stats: this.dp.stats(), uploads: this.r.stats().uploads, logged: false };
     this._demand();
+  }
+
+  // Once a frame's plan is delivered, record how it was served: tiles already
+  // on the GPU, bytes from the data plane's cache, fetches (and how many of
+  // those were in-flight fetches of a date scrubbed back to), texture uploads.
+  // console.debug, so it reads in a verbose console without being noise.
+  _noteFrameReady() {
+    const t = this._frameTiming;
+    if (!t || t.logged || t.date !== this.lastFrameDate || !this.frameReady()) return;
+    t.logged = true;
+    const s = this.dp.stats(), r = this.r.stats(), ms = Math.round(performance.now() - t.start);
+    const delta = name => (s[name] ?? 0) - (t.stats[name] ?? 0);
+    this.lastFrameTiming = {
+      date: t.date, ms, resident: r.planResident, items: r.planItems,
+      cacheHits: delta('cacheHits'), requests: delta('requests'), readopted: delta('readopted'), uploads: r.uploads - t.uploads
+    };
+    const f = this.lastFrameTiming;
+    console.debug(`archive.aero: ${f.date} ready in ${f.ms} ms: ${f.resident}/${f.items} tiles already on the GPU, ${f.cacheHits} from the byte cache, ${f.requests} fetched (${f.readopted} re-adopted in flight), ${f.uploads} texture uploads`);
   }
 
   _applyStyle() {
@@ -302,10 +322,12 @@ export class MapController {
     this._watchTimer = setInterval(() => {
       this._syncLoader();
       this._notePaint();
+      this._noteFrameReady();
       if (this.failed || (++polls > 10 && !this._chartsLoading() && this.frameReady())) clearInterval(this._watchTimer);
     }, 50);
     this._syncLoader();
     this._notePaint();
+    this._noteFrameReady();
   }
 
   // True while tiles for the current demand are queued or in flight.

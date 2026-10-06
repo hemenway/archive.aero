@@ -20,10 +20,14 @@ export class DataCore {
     this.occ=new Map();this.state=null;this.basePaths=new Set();this.reculling=null;this.painter=null;
     // Tiles are small and one round trip each, so latency, not bandwidth, sets the pace: HTTP/2 and 3 multiplex these
     // over one connection. (An HTTP/1.1 browser still queues at its own six per host.)
-    this.scheduler=new Scheduler({concurrency:options.mobile?16:24,...options,fetch:fetcher,cacheBytes:options.cacheBytes??(options.mobile?12:32)*1024*1024,
+    // The encoded byte cache is the store behind the GPU for dates scrubbed past: a view's date is ~4 MB of encoded
+    // tiles, so 128 MiB holds a few decades of scrubbing and a return to any of them costs a decode, not a fetch.
+    const nav=globalThis.navigator,memory=nav?.deviceMemory,cores=nav?.hardwareConcurrency??4;
+    this.scheduler=new Scheduler({concurrency:options.mobile?16:24,...options,fetch:fetcher,cacheBytes:options.cacheBytes??(options.mobile?(memory>=4?64:32):(memory>=8?256:128))*1024*1024,
       onStats:s=>this.emit('stats',s),onResult:(r,b)=>{this.accept(r,b);},onError:e=>this.emit('error',e)});
-    // Decodes are bounded so a burst of cache hits after eviction cannot start hundreds of createImageBitmap calls at once.
-    this.decodeQueue=[];this.paintQueue=[];this.painting=false;this.decodesActive=0;this.decodeLimit=options.decodeConcurrency??4;this.earlyDeferred=new Map();
+    // Decodes are bounded so a burst of cache hits after eviction cannot start hundreds of createImageBitmap calls at
+    // once; a returning date is a burst of exactly that, so desktops decode up to eight at a time.
+    this.decodeQueue=[];this.paintQueue=[];this.painting=false;this.decodesActive=0;this.decodeLimit=options.decodeConcurrency??(options.mobile?4:Math.min(8,Math.max(4,cores>>1)));this.earlyDeferred=new Map();
     // Airspace metadata loads lazily (first airspace demand or query) with backoff; it never blocks boot.
     this.metadataLoading=null;this.metadataFailures=0;this.metadataRetryAt=0;
   }

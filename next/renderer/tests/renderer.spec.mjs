@@ -273,7 +273,7 @@ test('uploads are capped per frame, transfer bitmap ownership, and close duplica
     await new Promise(resolve=>{const listener=()=>{if(!r.queue.length){r.off('render',listener);resolve();}};r.on('render',listener);});
     return {counts,closed:bitmaps.every(bitmap=>bitmap.width===0),duplicateClosed:duplicate.width===0,resident:r.stats().textures};
   });
-  expect(result.counts.reduce((a,b)=>a+b,0)).toBe(12);expect(Math.max(...result.counts)).toBeLessThanOrEqual(4);expect(result.closed).toBe(true);expect(result.duplicateClosed).toBe(true);expect(result.resident).toBe(12);
+  expect(result.counts.reduce((a,b)=>a+b,0)).toBe(12);expect(Math.max(...result.counts)).toBeLessThanOrEqual(16);expect(result.closed).toBe(true);expect(result.duplicateClosed).toBe(true);expect(result.resident).toBe(12);
 });
 
 test('context restoration rebuilds clip, airfield, and airspace GPU buffers',async({page})=>{

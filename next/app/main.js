@@ -186,7 +186,10 @@ async function initApp() {
     // 96 MiB desktop budget left half the map on its blurry fallback).
     renderer = createRenderer(canvas, {
       minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM,
-      maxTextureBytes: (matchMedia('(pointer: coarse)').matches ? 96 : 256) * 1024 * 1024
+      // The pool is also the cross-date cache: a scrub back to a date whose
+      // textures are still resident draws at once. Machines with 8 GB or more
+      // keep a decade of views.
+      maxTextureBytes: (matchMedia('(pointer: coarse)').matches ? 96 : navigator.deviceMemory >= 8 ? 384 : 256) * 1024 * 1024
     });
   } catch (error) {
     console.error('Renderer failed to start', error);

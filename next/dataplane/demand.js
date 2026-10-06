@@ -22,7 +22,12 @@ export function buildDemand(manifest,state,previousPaths=new Set(),{occ=null,abs
     const future=new Map();
     const want=(i,priority,low=false)=>{if(i>=0&&i<frames.length){const old=future.get(i);if(!old || priority<old.priority || (!low&&old.low&&priority===old.priority)) future.set(i,{priority,low});}};
     if(scrub.playing) for(let n=1;n<=3;n++) want(idx+n,2);
-    else if(scrub.direction) for(let n=1;n<=Math.min(8,2+Math.ceil(Math.abs(scrub.velocity??0)/3));n++) want(idx+n*scrub.direction,2);
+    else if(scrub.direction) {
+      for(let n=1;n<=Math.min(8,2+Math.ceil(Math.abs(scrub.velocity??0)/3));n++) want(idx+n*scrub.direction,2);
+      // Scrubs reverse. The two frames just left stay demanded behind the lookahead, so their tiles are still wanted
+      // (kept, not dropped as superseded) and a scrub back finds them resident.
+      for(let n=1;n<=2;n++) want(idx-n*scrub.direction,3);
+    }
     else { want(idx-1,3); want(idx+1,3); for(let n=2;n<=3;n++) {want(idx-n,4,true);want(idx+n,4,true);} }
     for(const [i,{priority,low}] of future) for(const tile of planCharts(manifest,frames[i],chartTiles,null,cullBy)) for(const it of tile.items) {
       if(low) {const path=pathOf(it.key),src=ancestor(it.src,Math.min(it.src.z,Math.max(minz(path),it.dst.z-3))); add({...it,src,key:tileKey(path,src)},priority);} else add(it,priority);

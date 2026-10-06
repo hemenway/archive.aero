@@ -75,13 +75,19 @@ must call markEvicted, then setDemand again. Context restoration must mark all
 lost texture keys evicted before re-requesting.
 
 Options in addition to C7 are `concurrency` (8), `cacheBytes`, `mobile`,
-`decodeBitmap`, `decodeConcurrency` (4), `timeout` (20 s per fetch attempt) and
-the shell's `earlyFetches` (a Map of absolute tile URL → Promise<Response>). The
-encoded cache defaults to 32 MiB desktop / 12 MiB mobile; iOS/iPadOS/Android
-detection supplies mobile automatically. Explicit options win. `stats()` is
-synchronous; in Worker mode it uses the newest posted snapshot. It adds requests,
-cancelled, bytes and retries to C7's three required counters. `off(event, fn)` and
-the `metadata` event (airspace metadata loaded) are additive.
+`decodeBitmap`, `decodeConcurrency`, `linger`, `timeout` (20 s per fetch attempt)
+and the shell's `earlyFetches` (a Map of absolute tile URL → Promise<Response>).
+The encoded cache is the store behind the GPU for dates scrubbed past (a view's
+date is ~4 MB of encoded tiles): it defaults to 128 MiB on desktop, 256 MiB with
+`navigator.deviceMemory` ≥ 8, and 32/64 MiB on mobile (since 2026-10-06; it was
+32/12 MiB, about eight dates). `decodeConcurrency` defaults to 4 on mobile and
+half the hardware threads, 4–8, on desktop, since a date scrubbed back to is a
+burst of cache hits. iOS/iPadOS/Android detection supplies mobile automatically.
+Explicit options win. `stats()` is synchronous; in Worker mode it uses the newest
+posted snapshot. It adds requests, cancelled, bytes, retries, cacheHits (demand
+answered from the byte cache), lingered and readopted (below), and `lingering`
+beside `inflight`, to C7's three required counters. `off(event, fn)` and the
+`metadata` event (airspace metadata loaded) are additive.
 
 `earlyFetches` is stripped from the options posted to the Worker (Promises cannot
 be cloned). Each URL under `tileBase` becomes a scheduler placeholder for its tile
@@ -114,15 +120,24 @@ allocation cost without memoizing whole plans or reusing mutable output arrays.
 
 The scheduler uses a binary min-heap ordered by priority, centre distance, then
 stable insertion sequence. Demand is deduped by slash key; shared source tiles
-fetch once. Each job owns an AbortController. Replacing demand aborts obsolete
-running jobs, drops obsolete queued jobs and cancels obsolete backoff timers.
-Active demand reprioritizes queued jobs without replacing an ongoing shared fetch.
+fetch once. Each job owns an AbortController. Replacing demand drops obsolete
+queued jobs and cancels obsolete backoff timers; an obsolete *running* fetch
+lingers (2026-10-06): it finishes into the byte cache outside the concurrency
+slots instead of being aborted, because an aborted response never reaches the
+browser's HTTP cache either, so a scrub that came straight back paid the whole
+round trip again. At most `linger` (half the concurrency) fetches linger; past
+that the oldest are aborted. A demand that names a lingering key re-adopts the
+fetch (`readopted`) rather than starting it a second time. `destroy` aborts them
+all. Active demand reprioritizes queued jobs without replacing an ongoing shared
+fetch.
 
 New archives receive ancestors at max(minz, destination zoom minus 3), clamped to
 native max, before current full resolution. Repeated demand retains unfinished
 ancestors at current priority instead of aborting bootstrap. Scrub lookahead grows
-from 2 to 8 frames with velocity. Idle demand requests ±1 full resolution and ±2/±3
-as ancestors. Playback requests the next three frames at full resolution. Solo
+from 2 to 8 frames with velocity, and the two frames just left stay demanded at
+priority 3 behind it (scrubs reverse; a frame that stays wanted keeps its tiles
+instead of dropping them as superseded). Idle demand requests ±1 full resolution
+and ±2/±3 as ancestors. Playback requests the next three frames at full resolution. Solo
 replaces the era set and suppresses temporal prefetch. Basemap and airspace current
 tiles join current priority. Prefetched successful results are delivered and can
 buffer playback; renderer texture ownership/eviction limits decoded memory.

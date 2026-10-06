@@ -13,6 +13,9 @@ test('new archives get low zoom then full resolution, existing paths retain unfi
 test('velocity extends lookahead, playback uses next three, idle has ±1 full and ±3 low',()=>{
  const slow=buildDemand(m,state),fast=buildDemand(m,{...state,scrub:{direction:1,velocity:30}});assert.ok(fast.requests.length>slow.requests.length);
  const back=buildDemand(m,{...state,scrub:{direction:-1,velocity:0}});assert.ok(back.requests.some(r=>r.key.includes('1954-01-01')));
+ // Scrubs reverse: the two frames just left stay demanded at full resolution behind the lookahead.
+ const era=start=>slow.requests.filter(r=>r.key.includes(`${start}_to_`));assert.equal(era('1954-01-01').length,1);assert.equal(era('1953-01-01').length,1);assert.equal(era('1952-01-01').length,0);
+ assert.ok(era('1954-01-01').every(r=>r.priority===3&&r.src.z===10));assert.ok(era('1956-01-01').every(r=>r.priority===2));assert.equal(era('1956-01-01').length,1);
  const play=buildDemand(m,{...state,scrub:{playing:true}});assert.equal(play.requests.filter(r=>r.priority===2).length,3);assert.ok(play.requests.filter(r=>r.priority===2).every(r=>r.src.z===10));
  const idle=buildDemand(m,{...state,scrub:{direction:0}});assert.equal(idle.requests.filter(r=>r.priority===3).length,2);assert.equal(idle.requests.filter(r=>r.priority===4).length,4);
 });
