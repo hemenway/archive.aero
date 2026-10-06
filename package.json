@@ -2,7 +2,7 @@
   "name": "archive-aero-regression-tests",
   "private": true,
   "scripts": {
-    "test": "npm run check:frontend && npm run test:frontend && npm run test:workers && npm run test:browser",
+    "test": "npm run check:frontend && npm run check:next && npm run test:frontend && npm run test:workers && npm run test:dataplane && npm run test:browser && npm run test:next",
     "test:frontend": "python3 -m unittest discover -s tests -p 'test_viewer_config.py'",
     "build:frontend": "node scripts/build_frontend.mjs",
     "vendor:frontend": "node scripts/vendor_frontend.mjs",
@@ -12,17 +12,22 @@
     "build:beta": "node scripts/build_beta.mjs",
     "test:beta": "npm run build:beta && playwright test --config beta/playwright.config.mjs",
     "build:site": "python3 scripts/build_pages.py && node scripts/minify_site.mjs",
-    "test:browser:site": "npm run build:site && SITE_ROOT=_site playwright test"
+    "test:browser:site": "npm run build:site && SITE_ROOT=_site playwright test",
+    "build:next": "node next/build.mjs --stubs",
+    "check:next": "node next/build.mjs --check",
+    "test:next": "npm run build:next && playwright test --config next/playwright.config.mjs",
+    "test:dataplane": "node --test next/dataplane/test/*.test.mjs",
+    "test:renderer": "playwright test --config next/renderer/playwright.config.mjs",
+    "test:next:real": "playwright test --config next/tests-real/playwright.config.mjs"
   },
   "devDependencies": {
+    "@fontsource/barlow": "5.3.0",
     "@playwright/test": "1.58.2",
     "@protomaps/basemaps": "5.7.2",
     "esbuild": "0.28.2",
     "leaflet": "1.9.4",
-    "maplibre-gl": "6.11.2",
     "papaparse": "5.4.1",
     "pmtiles": "3.0.6",
-    "pngjs": "7.0.0",
     "protomaps-leaflet": "5.0.0"
   }
 }

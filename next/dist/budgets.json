@@ -1,0 +1,34 @@
+{
+  "mode": "stubs",
+  "manifestUrl": "./manifest.ecfc3cc3efa7.json",
+  "base": "/next/",
+  "allowOverBudget": false,
+  "analytics": true,
+  "linksOrigin": null,
+  "manifestGzip": 361,
+  "bytes": {
+    "criticalJS": 17652,
+    "css": 7377,
+    "cssRaw": 35241,
+    "html": 19005,
+    "htmlGzip": 5770,
+    "worker": 345,
+    "inlineBoot": 1366,
+    "lazyJS": 5505,
+    "fonts": 67568
+  },
+  "limits": {
+    "criticalJS": 51200,
+    "css": 12288,
+    "html": 24576
+  },
+  "assets": [
+    "./index.html",
+    "./worker.PSVLAI42.js",
+    "./app.IQFRE7NP.js",
+    "./chunk.V6KBJ7CT.js",
+    "./chunk.D6MR6EBD.js",
+    "./styles.c6a9f6a656ab.css",
+    "./manifest.ecfc3cc3efa7.json"
+  ]
+}

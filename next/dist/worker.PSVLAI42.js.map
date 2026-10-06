@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../app/stubs/worker.js"],
+  "sourcesContent": ["self.onmessage = ({ data }) => {\n  const canvas = new OffscreenCanvas(256, 256), ctx = canvas.getContext('2d');\n  ctx.fillStyle = data.key.startsWith('basemap/') ? '#182b35' : '#c9b78b'; ctx.fillRect(0, 0, 256, 256);\n  ctx.strokeStyle = '#786d53';\n  for (let i = 0; i < 256; i += 32) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 256); ctx.moveTo(0, i); ctx.lineTo(256, i); ctx.stroke(); }\n  ctx.fillStyle = '#263c49'; ctx.font = '14px system-ui'; ctx.fillText(data.key.split('/')[1].slice(0, 22), 15, 36);\n  const bitmap = canvas.transferToImageBitmap();\n  self.postMessage({ key: data.key, bitmap }, [bitmap]);\n};\n"],
+  "mappings": "AAAA,KAAK,UAAY,CAAC,CAAE,KAAAA,CAAK,IAAM,CAC7B,IAAMC,EAAS,IAAI,gBAAgB,IAAK,GAAG,EAAGC,EAAMD,EAAO,WAAW,IAAI,EAC1EC,EAAI,UAAYF,EAAK,IAAI,WAAW,UAAU,EAAI,UAAY,UAAWE,EAAI,SAAS,EAAG,EAAG,IAAK,GAAG,EACpGA,EAAI,YAAc,UAClB,QAASC,EAAI,EAAGA,EAAI,IAAKA,GAAK,GAAMD,EAAI,UAAU,EAAGA,EAAI,OAAOC,EAAG,CAAC,EAAGD,EAAI,OAAOC,EAAG,GAAG,EAAGD,EAAI,OAAO,EAAGC,CAAC,EAAGD,EAAI,OAAO,IAAKC,CAAC,EAAGD,EAAI,OAAO,EAC5IA,EAAI,UAAY,UAAWA,EAAI,KAAO,iBAAkBA,EAAI,SAASF,EAAK,IAAI,MAAM,GAAG,EAAE,CAAC,EAAE,MAAM,EAAG,EAAE,EAAG,GAAI,EAAE,EAChH,IAAMI,EAASH,EAAO,sBAAsB,EAC5C,KAAK,YAAY,CAAE,IAAKD,EAAK,IAAK,OAAAI,CAAO,EAAG,CAACA,CAAM,CAAC,CACtD",
+  "names": ["data", "canvas", "ctx", "i", "bitmap"]
+}

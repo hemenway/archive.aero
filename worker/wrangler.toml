@@ -1,5 +1,8 @@
 name = "tiles"
 main = "src/index.js"
+# The OAuth token can see more than one account since 2026-10; pin ours so
+# non-interactive deploys do not stop at the account picker.
+account_id = "ad20eec906d1b5a42931b881ed22232f"
 compatibility_date = "2025-05-01"
 # No tiles.<account>.workers.dev hostname: it would expose the whole charts
 # bucket outside the archive.aero zone (WAF, cache namespace) and defaults to

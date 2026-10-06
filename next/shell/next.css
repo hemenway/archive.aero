@@ -1,0 +1,200 @@
+/* archive.aero next shell: additions to the production stylesheet.
+
+   The built stylesheet is the production styles.css (repository root, used
+   unchanged), then this file, then the Barlow @font-face rules that build.mjs
+   generates from @fontsource/barlow (their URLs carry content hashes, so they
+   cannot be written here).
+
+   This file holds only what styles.css takes for granted from Leaflet and what
+   the map canvas needs. Interface styling belongs in styles.css, where both
+   viewers pick it up. */
+
+/*! Control, zoom bar, attribution and tooltip base rules from Leaflet 1.9.4: Copyright (c) 2010-2023 Volodymyr Agafonkin, (c) 2010-2011 CloudMade. BSD-2-Clause, https://github.com/Leaflet/Leaflet/blob/v1.9.4/LICENSE */
+
+/* ---- The map container -------------------------------------------------
+   Production's #map is Leaflet's container. At runtime Leaflet gives it an
+   inline position and the classes leaflet-container, leaflet-grab,
+   leaflet-touch-drag and leaflet-touch-zoom. These are the declarations of
+   those rules (vendor/leaflet/1.9.4/leaflet.css) that styles.css does not
+   override. The typography matters: the Layers panel, the utility rail and the
+   attribution are inside the container and inherit it. */
+#map {
+	position: relative;
+	overflow: hidden;
+	-webkit-tap-highlight-color: transparent;
+	font-family: "Helvetica Neue", Arial, Helvetica, sans-serif;
+	font-size: 12px;
+	font-size: 0.75rem;
+	line-height: 1.5;
+	cursor: -webkit-grab;
+	cursor:    -moz-grab;
+	cursor:         grab;
+	-ms-touch-action: none;
+	touch-action: none;
+	}
+#map a {
+	-webkit-tap-highlight-color: rgba(51, 181, 229, 0.4);
+	}
+
+/* ---- The canvas the renderer draws into ---------------------------------
+   Hidden until the first chart frame is on it (the app sets body.painted).
+   :active stands in for Leaflet's .leaflet-dragging .leaflet-grab. */
+#mapCanvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+	opacity: 0;
+	transition: opacity .25s;
+	touch-action: none;
+	}
+body.painted #mapCanvas {
+	opacity: 1;
+	}
+#mapCanvas:active {
+	cursor: move;
+	cursor: -webkit-grabbing;
+	cursor:    -moz-grabbing;
+	cursor:         grabbing;
+	}
+
+/* ---- Leaflet 1.9.4 base rules --------------------------------------------
+   Copied from vendor/leaflet/1.9.4/leaflet.css, declarations untouched.
+   Selector lists are cut down to what this page has (the top-right and
+   bottom-right corners, the zoom bar, the attribution, a top tooltip), and
+   Leaflet's .leaflet-container ancestor is written as #map. The page builds
+   the control container statically (see build.mjs) instead of letting
+   Leaflet assemble it. */
+
+/* control positioning */
+
+.leaflet-control {
+	position: relative;
+	z-index: 800;
+	pointer-events: visiblePainted; /* IE 9-10 doesn't have auto */
+	pointer-events: auto;
+	}
+.leaflet-top,
+.leaflet-bottom {
+	position: absolute;
+	z-index: 1000;
+	pointer-events: none;
+	}
+.leaflet-top {
+	top: 0;
+	}
+.leaflet-right {
+	right: 0;
+	}
+.leaflet-bottom {
+	bottom: 0;
+	}
+.leaflet-control {
+	float: left;
+	clear: both;
+	}
+.leaflet-right .leaflet-control {
+	float: right;
+	}
+.leaflet-top .leaflet-control {
+	margin-top: 10px;
+	}
+.leaflet-bottom .leaflet-control {
+	margin-bottom: 10px;
+	}
+.leaflet-right .leaflet-control {
+	margin-right: 10px;
+	}
+
+/* cursors */
+
+.leaflet-control {
+	cursor: auto;
+	}
+
+/* general toolbar styles */
+
+.leaflet-bar {
+	box-shadow: 0 1px 5px rgba(0,0,0,0.65);
+	border-radius: 4px;
+	}
+.leaflet-bar a {
+	background-color: #fff;
+	border-bottom: 1px solid #ccc;
+	width: 26px;
+	height: 26px;
+	line-height: 26px;
+	display: block;
+	text-align: center;
+	text-decoration: none;
+	color: black;
+	}
+.leaflet-bar a.leaflet-disabled {
+	cursor: default;
+	background-color: #f4f4f4;
+	color: #bbb;
+	}
+
+/* zoom control */
+
+.leaflet-control-zoom-in,
+.leaflet-control-zoom-out {
+	font: bold 18px 'Lucida Console', Monaco, monospace;
+	text-indent: 1px;
+	}
+
+/* attribution */
+
+#map .leaflet-control-attribution {
+	background: #fff;
+	background: rgba(255, 255, 255, 0.8);
+	margin: 0;
+	}
+.leaflet-control-attribution {
+	padding: 0 5px;
+	color: #333;
+	line-height: 1.4;
+	}
+.leaflet-control-attribution a {
+	text-decoration: none;
+	}
+.leaflet-control-attribution a:hover,
+.leaflet-control-attribution a:focus {
+	text-decoration: underline;
+	}
+
+/* Tooltip (the airfield hover label, .af-tip in styles.css, builds on it) */
+
+.leaflet-tooltip {
+	position: absolute;
+	padding: 6px;
+	background-color: #fff;
+	border: 1px solid #fff;
+	border-radius: 3px;
+	color: #222;
+	white-space: nowrap;
+	-webkit-user-select: none;
+	-moz-user-select: none;
+	-ms-user-select: none;
+	user-select: none;
+	pointer-events: none;
+	box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+	}
+.leaflet-tooltip-top:before {
+	position: absolute;
+	pointer-events: none;
+	border: 6px solid transparent;
+	background: transparent;
+	content: "";
+	}
+.leaflet-tooltip-top {
+	margin-top: -6px;
+}
+.leaflet-tooltip-top:before {
+	left: 50%;
+	margin-left: -6px;
+	}
+.leaflet-tooltip-top:before {
+	bottom: 0;
+	margin-bottom: -12px;
+	border-top-color: #fff;
+	}

@@ -1,0 +1,50 @@
+{
+  "concurrency": 8,
+  "latencyMs": 80,
+  "bandwidthMbps": 10,
+  "tileBytes": 99980,
+  "planning": {
+    "spatial": {
+      "tiles": 300,
+      "activeEras": 80,
+      "items": 80,
+      "p50Ms": 0.12295799999265,
+      "p95Ms": 0.17320799999288283
+    },
+    "dense": {
+      "tiles": 300,
+      "activeEras": 80,
+      "items": 24000,
+      "p50Ms": 0.2676659999997355,
+      "p95Ms": 0.5737499999959255
+    }
+  },
+  "session": {
+    "firstCompleteMs": 3995.899999976158,
+    "scrubP50Ms": 3475.8000000715256,
+    "scrubP95Ms": 3835.5,
+    "scrubSteps": 30,
+    "burstMs": 98.19999992847443,
+    "playbackReadyMs": [
+      0.8000000715255737,
+      2.100000023841858,
+      1.8000000715255737,
+      2.3000000715255737
+    ],
+    "stats": {
+      "inflight": 0,
+      "queued": 0,
+      "bytesCached": 33493300,
+      "requests": 1219,
+      "cancelled": 8,
+      "bytes": 121075780,
+      "retries": 0
+    },
+    "errors": []
+  },
+  "network": {
+    "requests": 1218,
+    "bytes": 121349516,
+    "cancelled": 7
+  }
+}

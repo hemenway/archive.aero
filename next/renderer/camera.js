@@ -23,12 +23,14 @@ export class Camera {
     return [(p[0] - this.x) * this.world + this.width / 2, (p[1] - this.y) * this.world + this.height / 2];
   }
   unproject(point) { return geographic(this.x + (point[0] - this.width / 2) / this.world, this.y + (point[1] - this.height / 2) / this.world); }
-  pan(dx, dy) { this.x -= dx / this.world; this.y = clamp(this.y - dy / this.world, 0, 1); }
+  // x stays in [0, 1): float32 shader uniforms lose sub-pixel precision past
+  // the first world copy, and callers compare longitudes, not copies.
+  pan(dx, dy) { this.x = wrap(this.x - dx / this.world); this.y = clamp(this.y - dy / this.world, 0, 1); }
   zoomAt(zoom, px, py) {
     const x = this.x + (px - this.width / 2) / this.world;
     const y = this.y + (py - this.height / 2) / this.world;
     this.zoom = clamp(zoom, this.minZoom, this.maxZoom);
-    this.x = x - (px - this.width / 2) / this.world;
+    this.x = wrap(x - (px - this.width / 2) / this.world);
     this.y = clamp(y - (py - this.height / 2) / this.world, 0, 1);
   }
   visibleTiles(size = 256, buffer) {
@@ -49,7 +51,8 @@ export class Camera {
   fitBounds(bounds, padding = 0) {
     const a = mercator(...bounds[0]), b = mercator(...bounds[1]);
     if (b[0] < a[0]) b[0] += 1;
-    const zoom = Math.floor(Math.log2(Math.min((this.width - 2 * padding) / Math.max(1e-12, b[0] - a[0]), (this.height - 2 * padding) / Math.max(1e-12, Math.abs(b[1] - a[1]))) / 256));
+    // A canvas narrower than its padding (not laid out yet, a collapsed pane) fits at minZoom instead of NaN.
+    const zoom = Math.floor(Math.log2(Math.min(Math.max(1, this.width - 2 * padding) / Math.max(1e-12, b[0] - a[0]), Math.max(1, this.height - 2 * padding) / Math.max(1e-12, Math.abs(b[1] - a[1]))) / 256));
     return { center: geographic((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), zoom: clamp(zoom, this.minZoom, this.maxZoom) };
   }
 }

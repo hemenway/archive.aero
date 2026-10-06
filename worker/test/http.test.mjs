@@ -240,3 +240,18 @@ test('preflight, unsupported methods, bad paths and missing objects', async t =>
   h.state.missing = true;
   assert.equal((await h.request()).response.status, 404);
 });
+
+test('a content-hashed key is immutable; a plain key keeps the one-day lifetime', async t => {
+  const h = harness(t);
+  const immutable = 'public, max-age=31536000, immutable', daily = 'public, max-age=86400, stale-while-revalidate=3600';
+  for (const [path, expected] of [
+    ['/next/manifest.0123456789ab.json', immutable], ['/next/pins.0123456789ab/391.json', immutable],
+    ['/sectionals/1950-01-01_to_1960-01-01.0123456789ab.pmtiles', immutable],
+    ['/chart.pmtiles', daily], ['/sectionals/timeline_data.json', daily], ['/basemap/protomaps-20260826.pmtiles', daily],
+  ]) {
+    for (const [headers, method] of [[{}, 'GET'], [{ range: 'bytes=0-15' }, 'GET'], [{}, 'HEAD']]) {
+      const { response } = await h.request(headers, method, path);
+      assert.equal(response.headers.get('cache-control'), expected, `${method} ${path} ${headers.range || ''}`);
+    }
+  }
+});

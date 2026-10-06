@@ -1,0 +1,14 @@
+[
+  {
+    "concurrency": 4,
+    "firstCompleteMs": 4104.200000047684
+  },
+  {
+    "concurrency": 8,
+    "firstCompleteMs": 3922.5
+  },
+  {
+    "concurrency": 12,
+    "firstCompleteMs": 3965.899999976158
+  }
+]

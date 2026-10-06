@@ -47,11 +47,20 @@ export class TexturePool {
       page = victim.page; layer = victim.layer;
       this.entries.delete(victim.key); this.emit('evict', { key: victim.key });
     }
-    gl.bindTexture(gl.TEXTURE_2D_ARRAY, page.texture);
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, layer, size, size, 1, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
     const e = { key, page, layer, used: ++this.clock };
-    this.entries.set(key, e); this.uploads++; return e;
+    this.rewrite(e, bitmap); this.entries.set(key, e); return e;
   }
-  clear() { for (const p of this.pages) this.gl.deleteTexture(p.texture); this.pages.length = 0; this.entries.clear(); this.pinned.clear(); this.bytes = 0; }
+  // Writes an image into an entry's layer: its first upload, or a replacement for a resident tile.
+  rewrite(entry, bitmap) {
+    const gl = this.gl, size = entry.page.size;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, entry.page.texture);
+    // Decoded bitmaps arrive premultiplied (the data plane asks for it); this
+    // flag only matters for the Image fallback source. The tile shader blends
+    // with ONE, ONE_MINUS_SRC_ALPHA so filtered edges never darken.
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, entry.layer, size, size, 1, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+    this.uploads++;
+  }
+  // Every resident key is reported evicted so the data plane re-requests it.
+  clear() { for (const p of this.pages) this.gl.deleteTexture(p.texture); this.pages.length = 0; const keys = [...this.entries.keys()]; this.entries.clear(); this.pinned.clear(); this.bytes = 0; for (const key of keys) this.emit('evict', { key }); }
 }

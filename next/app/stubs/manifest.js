@@ -1,0 +1,18 @@
+export const manifest = {
+  version: 1, generated: '2026-10-03T00:00:00Z', tileBase: './t/', fileBase: './',
+  eras: [
+    { k: '1950-01-01_to_1960-01-01', h: '0123456789ab', b: [-125, 24, -67, 50], z: [4, 14], c: null },
+    { k: '1960-01-01_to_1970-01-01', h: '123456789abc', b: [-125, 24, -67, 50], z: [4, 14], c: null },
+    { k: '1960-01-01_to_1971-01-01', h: '23456789abcd', b: [-99, 30, -95, 35], z: [4, 14], c: null },
+    { k: '1970-01-01_to_1971-01-01', h: '3456789abcde', b: [-125, 24, -67, 50], z: [4, 14], c: null }
+  ],
+  basemap: { p: 'basemap/fixture.0123456789ab', z: [0, 13], tileSize: 512 },
+  airspace: { p: 'airspace/fixture.0123456789ab', z: [0, 11] },
+  airfields: { bin: 'airfields.0123456789ab.bin', details: 'airfields.0123456789ab.json' },
+  pins: { z: 5, margin: 2, base: 'pins.0123456789ab/', shards: [395] },
+  coverage: { segments: [['1950-01-01', '1960-01-01', 1, 70], ['1960-01-01', '1970-01-01', 2, 100], ['1970-01-01', '1971-01-01', 2, 100]] }
+};
+export const fields = [
+  { name: 'Test Field', lat: 32.7767, lng: -96.797, status: 'open', start_year: 1930, state: 'TX', oa: 'KDAL' },
+  { name: 'Closed Field', lat: 33, lng: -97, status: 'gone', start_year: 1940, end_year: 1965, state: 'TX' }
+];

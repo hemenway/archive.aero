@@ -1,0 +1,26 @@
+# Beta-only copy of the tiles Worker: same code (src/), the charts-beta bucket.
+# It serves the next/ viewer preview at beta.archive.aero/next/ - the hashed
+# archives of the reslice runs, the beta manifest and overlay files - so the
+# production Worker and the charts bucket are never touched by preview work.
+#   npx wrangler deploy -c wrangler.beta.toml
+name = "tiles-beta"
+main = "src/index.js"
+account_id = "ad20eec906d1b5a42931b881ed22232f"
+compatibility_date = "2025-05-01"
+workers_dev = false
+routes = [{ pattern = "data-beta.archive.aero", custom_domain = true }]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "charts-beta"
+
+# No Analytics Engine binding: preview traffic stays out of tile_logs.
+
+[vars]
+ALLOWED_ORIGIN = "*"
+SAMPLE_RATE = "0"
+METADATA_BYTES = "1024"
+
+[observability]
+enabled = true
+head_sampling_rate = 0.1

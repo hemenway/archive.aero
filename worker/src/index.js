@@ -1,3 +1,5 @@
+import { handleTiles } from "./tiles.js";
+
 // Cloudflare Worker: proxies R2 range requests for archive.aero PMTiles,
 // logging each tile-shaped read to Analytics Engine (sampled).
 //
@@ -54,6 +56,10 @@ function withCors(response, origin) {
 // browser and lean on ETag revalidation after expiry. Trade-off: a file
 // re-uploaded under the same name can be served stale for up to a day.
 const CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=3600";
+// A key that carries a 12-hex content hash (next/manifest.<hash>.json, the hashed
+// era archives, next/pins.<hash>/...) names bytes that never change.
+const HASHED_CACHE_CONTROL = "public, max-age=31536000, immutable";
+const cacheControlFor = (key) => /\.[a-f0-9]{12}(?:\.[A-Za-z0-9]+)?(?:\/|$)/.test(key) ? HASHED_CACHE_CONTROL : CACHE_CONTROL;
 
 // Client validators are compared here in the Worker, never pushed down to R2:
 // BUCKET.get() with onlyIf + range throws when the precondition fails (the
@@ -223,7 +229,7 @@ function fromCached(cached) {
 export default {
   async fetch(request, env, ctx) {
     const startedAt = Date.now();
-    const origin = env.ALLOWED_ORIGIN || "*";
+    const origin = new URL(request.url).pathname.startsWith("/t/") ? "*" : env.ALLOWED_ORIGIN || "*";
 
     if (request.method === "OPTIONS") {
       return new Response(null, {
@@ -247,6 +253,11 @@ export default {
       return withCors(new Response("Bad request", { status: 400 }), origin);
     }
     if (!key) return withCors(new Response("Not found", { status: 404 }), origin);
+
+    // Reserved virtual namespace; existing object URLs retain their range path.
+    if (url.pathname.startsWith("/t/")) {
+      return handleTiles(request, env, ctx, { getBlock, blockBytes: BLOCK_BYTES });
+    }
 
     // HEAD: answer from object metadata alone. Routing HEAD through the GET
     // path streams the whole object into the edge cache via waitUntil.
@@ -272,7 +283,7 @@ export default {
         return withCors(
           new Response(null, {
             status: 304,
-            headers: { etag: head.httpEtag, "cache-control": CACHE_CONTROL },
+            headers: { etag: head.httpEtag, "cache-control": cacheControlFor(key) },
           }),
           origin
         );
@@ -281,7 +292,7 @@ export default {
       head.writeHttpMetadata(headers);
       headers.set("etag", head.httpEtag);
       headers.set("accept-ranges", "bytes");
-      headers.set("cache-control", CACHE_CONTROL);
+      headers.set("cache-control", cacheControlFor(key));
       headers.set("content-length", String(head.size));
       headers.set("x-cache", "HEAD");
       return withCors(new Response(null, { status: 200, headers }), origin);
@@ -394,7 +405,7 @@ export default {
         return withCors(
           new Response(null, {
             status: 304,
-            headers: { etag: first.etag, "cache-control": CACHE_CONTROL },
+            headers: { etag: first.etag, "cache-control": cacheControlFor(key) },
           }),
           origin
         );
@@ -408,7 +419,7 @@ export default {
           "content-range": `bytes ${rangeStart}-${rangeEnd}/${total}`,
           etag: first.etag,
           "accept-ranges": "bytes",
-          "cache-control": CACHE_CONTROL,
+          "cache-control": cacheControlFor(key),
         },
       });
     } else {
@@ -424,7 +435,7 @@ export default {
           return withCors(
             new Response(null, {
               status: 304,
-              headers: { etag: cachedEtag, "cache-control": CACHE_CONTROL },
+              headers: { etag: cachedEtag, "cache-control": cacheControlFor(key) },
             }),
             origin
           );
@@ -461,7 +472,7 @@ export default {
           return withCors(
             new Response(null, {
               status: 304,
-              headers: { etag: object.httpEtag, "cache-control": CACHE_CONTROL },
+              headers: { etag: object.httpEtag, "cache-control": cacheControlFor(key) },
             }),
             origin
           );
@@ -471,7 +482,7 @@ export default {
         object.writeHttpMetadata(headers);
         headers.set("etag", object.httpEtag);
         headers.set("accept-ranges", "bytes");
-        headers.set("cache-control", CACHE_CONTROL);
+        headers.set("cache-control", cacheControlFor(key));
 
         if (range) {
           // Clamp to the object size: R2 truncates a bounded range that overruns
