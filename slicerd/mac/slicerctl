@@ -3,7 +3,7 @@
 
   slicerctl status                         host + queue summary
   slicerctl eras [--start D] [--end D] [--contains S]
-  slicerctl pipeline RUN KEY... [--steps slice,convert,archive] [--charts]
+  slicerctl pipeline RUN KEY... [--steps slice,convert,archive[,upload]] [--charts]
                      [--slicer-args "--parallel-warp 6"] [--concurrency N] [--min-zoom 0]
                      [--mosaic move|delete|keep] [--force] [--keys-from FILE]
   slicerctl submit TYPE --run RUN [--key KEY] [--param k=v ...] [--after JOB]
@@ -14,6 +14,9 @@
   slicerctl runs | run RUN | overlay [--stale] | remount | cleanup RUN [--key K] [--what temp,mosaic]
   slicerctl errors RUN [--out DIR]   every failed job and every slicer ✗/⚠ line of a run, by cause
   slicerctl sync [--repo PATH]       push scripts + catalog to the server as a new code release
+  slicerctl set [KEY=VALUE ...]      server settings: cpu_slots, io_slots, hashed_remote (no args: show)
+  slicerctl worker [--jobs 3] [--max-charts 4] [--run RUN] [--once]
+                                     take start-date groups off the queue and run them on this Mac
   slicerctl publish RUN KEY [--dry-run] [--allow-new] [--allow-unverified]
                     [--max-tile-delta 0.02] [--message MSG] [--no-edge-refresh] [--finish-only]
 
@@ -219,9 +222,10 @@ def cmd_pipeline(a):
     if a.keys_from:
         keys += [ln.strip() for ln in open(a.keys_from) if ln.strip() and not ln.startswith("#")]
     steps = a.steps.split(",")
-    bad = [s for s in steps if s not in ("slice", "convert", "archive")]
+    bad = [s for s in steps if s not in ("slice", "convert", "archive", "upload")]
     if bad or not steps:
-        sys.exit(f"slicerctl: steps must be from slice, convert, archive (got {steps}); uploads go through `slicerctl publish`")
+        sys.exit(f"slicerctl: steps must be from slice, convert, archive, upload (got {steps}); "
+                 "production uploads go through `slicerctl publish`")
     common = {"charts": a.charts, "mosaic": a.mosaic, "force": a.force}
     if a.slicer_args:
         common["slicer_args"] = shlex.split(a.slicer_args)
@@ -247,13 +251,25 @@ def cmd_pipeline(a):
             if (key, step) in held:
                 prev, skipped = held[key, step], skipped + 1
                 continue
-            prev = submit_job(step, {**common, "run": a.run, "key": key}, prev)["id"]
+            params = {**common, "run": a.run, "key": key}
+            if step == "upload":
+                # An upload sends its era; every 50th also sweeps the chart artifacts archived
+                # so far (one sweep at a time on the server, so they are kept apart).
+                params = {"run": a.run, "key": key, "charts": n % 50 == 0}
+            prev = submit_job(step, params, prev)["id"]
             queued.append(prev)
         if n % 250 == 0:
             print(f"  {n:,}/{len(keys):,} eras", file=sys.stderr, flush=True)
+    if "upload" in steps and queued and keys:
+        # after the last era: the chart artifacts that are left
+        queued.append(submit_job("upload", {"run": a.run, "charts": True}, prev)["id"])
     if skipped:
         print(f"  {skipped:,} steps already held by run {a.run} were left as they are", file=sys.stderr)
-    out({"queued": queued})
+    out({"queued": len(queued), "first": queued[:3], "last": queued[-3:]})
+
+
+def cmd_set(a):
+    out(api("POST", "/api/settings", parse_kv(a.kv)) if a.kv else api("GET", "/api/settings"))
 
 
 def cmd_submit(a):
@@ -515,6 +531,361 @@ def cmd_sync(a):
     say(f"current → {rid}")
 
 
+# ---------------------------------------------------------------- worker
+#
+# The Mac as a second slicing machine. A worker thread claims one start-date
+# group (the queued slice/convert/archive jobs of every era starting that day),
+# runs the same release of slicer.py and the same patched converter the server
+# would, writes the outputs into the run's directory on the share exactly where
+# the server's archive step puts them, and reports each job back. Upload jobs
+# stay on the server: they find the files on its HDD.
+#
+# Sources are read through a READ-ONLY mount of the share (kernel-enforced, like
+# the server's bind mount), so nothing here can write into rawtiffs. An era
+# whose source needs unpacking or converting in place fails on that mount and is
+# handed back for the server, whose overlay takes such writes.
+
+WORKER_SCRATCH = Path.home() / "slicerd-work"
+WORKER_SOURCES = Path.home() / "mnt" / "projects-ro" / "rawtiffs"
+SHARE_URL = "//Ryan@192.168.1.203/projects"
+READONLY_RX = re.compile(r"Read-only file system|Errno 30\b|EROFS")
+_wlock = __import__("threading").Lock()
+_children = set()  # running slicer / converter processes, killed when the worker stops
+
+
+def wapi(method, path, payload, hours=2):
+    """api() for the worker's reports: keeps trying while the server is away (a deploy, a reboot)."""
+    t0, told = time.time(), 0
+    while True:
+        try:
+            return api(method, path, payload)
+        except SystemExit as e:
+            if "HTTP 4" in str(e) or time.time() - t0 > hours * 3600:
+                raise RuntimeError(str(e))
+            if time.time() - told > 300:  # say so: a worker that cannot report looks alive but does nothing
+                say(f"cannot report to the server ({e}); retrying every 20 s")
+                told = time.time()
+            time.sleep(20)
+
+
+def ensure_ro_sources(sources):
+    mnt = sources.parent
+    mounted = subprocess.run(["mount"], capture_output=True, text=True).stdout
+    line = next((ln for ln in mounted.splitlines() if f" on {mnt} (" in ln), None)
+    if line is None:
+        mnt.mkdir(parents=True, exist_ok=True)
+        sh("mount_smbfs", "-o", "rdonly,nobrowse", SHARE_URL, mnt)
+        line = next((ln for ln in subprocess.run(["mount"], capture_output=True, text=True).stdout.splitlines()
+                     if f" on {mnt} (" in ln), "")
+    if "read-only" not in line:
+        raise RuntimeError(f"{mnt} is not a read-only mount; the worker reads rawtiffs only through one")
+    if not sources.is_dir():
+        raise RuntimeError(f"{sources} not found on the read-only mount")
+
+
+def ensure_release(rid, scratch):
+    """The server's code release (scripts + catalog + shapefiles), copied once."""
+    dest = scratch / "releases" / rid
+    with _wlock:
+        if not (dest / "RELEASE.json").exists():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(rid + ".tmp")
+            sh("rsync", "-a", "--delete", f"{HOST}:{SERVER_CODE}/releases/{rid}/", f"{tmp}/")
+            os.replace(tmp, dest)
+            for old in sorted(p for p in dest.parent.iterdir() if p.is_dir() and p.name != rid)[:-2]:
+                shutil.rmtree(old, ignore_errors=True)
+    return dest
+
+
+def run_logged(args, log, cwd=None, env=None):
+    args = [str(x) for x in args]
+    log.append("$ " + shlex.join(args))
+    p = subprocess.Popen(args, cwd=cwd, env={**os.environ, **(env or {})}, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace",
+                         start_new_session=True)
+    _children.add(p)
+    try:
+        text = p.communicate()[0]
+    finally:
+        _children.discard(p)
+    log.append(text.rstrip("\n"))
+    log.append(f"exit {p.returncode}")
+    return p.returncode, text
+
+
+def pm_head(path):
+    import struct
+    with open(path, "rb") as f:
+        h = f.read(127)
+    if h[:7] != b"PMTiles" or h[7] != 3:
+        raise RuntimeError(f"{path}: not a PMTiles v3 archive")
+    w, s, e, n = struct.unpack_from("<4i", h, 102)
+    return {"min_zoom": h[100], "max_zoom": h[101], "tiles": struct.unpack_from("<Q", h, 72)[0],
+            "bounds": [w / 1e7, s / 1e7, e / 1e7, n / 1e7]}
+
+
+def share_put(src, dst):
+    """Copy onto the share under a temporary name, check the size, then rename into place."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(dst.name + ".partial")
+    shutil.copyfile(src, tmp)
+    if tmp.stat().st_size != src.stat().st_size:
+        raise RuntimeError(f"copy size mismatch for {dst}")
+    os.replace(tmp, dst)
+    return src.stat().st_size
+
+
+def worker_group(a, claim, cid):
+    """Run one claimed group. Returns {job id: (status, result, error, log text)}."""
+    scratch, run, start = Path(a.scratch), claim["run"], claim["start"]
+    rel = ensure_release(claim["release"], scratch)
+    jobs = claim["jobs"]
+    by = {(j["type"], j["key"]): j for j in jobs}
+    keys = [j["key"] for j in jobs if j["type"] == "slice"]
+    w = scratch / "runs" / run
+    for sub in ("mosaics", "pmtiles", "logs", "charts"):
+        (w / sub).mkdir(parents=True, exist_ok=True)
+    temp, chart_temp = scratch / "temp" / run / start, scratch / "chartfull" / run / start
+    share = SHARE_RUNS / run
+    done, t0 = {}, time.time()
+    sp = by["slice", keys[0]]["params"] or {}
+
+    # ---- slice: one slicer run covers every era of the start date
+    slog = [f"worker {a.name} on {os.uname().nodename}: slice of {start} ({len(keys)} eras), release {claim['release']}"]
+    args = [a.python, "-u", rel / "scripts" / "slicer.py", "-s", a.sources, "-o", w / "mosaics", "-t", temp,
+            "-c", rel / "master_dole_v2.csv", "-b", rel / "shapefiles", "-y", "--start-date", start, "--end-date", start,
+            "--geotiff2pmtiles-bin", a.g2p, "--chart-temp", chart_temp]
+    manifest = w / "charts" / "manifest.jsonl"
+    if sp.get("charts"):
+        with _wlock:
+            if not manifest.exists():
+                seed = rel / "chart_pmtiles" / "manifest.jsonl"
+                if seed.exists():
+                    shutil.copyfile(seed, manifest)
+                    (w / "charts" / "manifest.seed_lines").write_text(str(sum(1 for _ in open(seed))) + "\n")
+        args += ["--chart-pmtiles", w / "charts", "--chart-manifest", manifest]
+    args += [str(x) for x in sp.get("slicer_args", [])]
+    env = {"TMPDIR": str(scratch / "tmp"), "CPL_TMPDIR": str(scratch / "tmp")}
+    (scratch / "tmp").mkdir(exist_ok=True)
+    for k in keys:
+        for m in (w / "mosaics" / f"{k}.tif", w / "mosaics" / f"{k}.partial.tif"):
+            m.unlink(missing_ok=True)
+    text = ""
+    for attempt in (1, 2):
+        extra = []
+        if attempt == 2:
+            slog.append("attempt 1 failed: wiping this date's temps and retrying with --parallel-warp 1")
+            shutil.rmtree(temp, ignore_errors=True)
+            extra = ["--parallel-warp", "1"]
+        rc, text = run_logged(args + extra, slog, cwd=w / "logs", env=env)
+        ok = {k: f"{k.upper()} GEOTIFF COMPLETE" in text and (w / "mosaics" / f"{k}.tif").exists() for k in keys}
+        if (rc == 0 and all(ok.values())) or READONLY_RX.search(text):
+            break
+    for d in (temp, chart_temp):
+        shutil.rmtree(d, ignore_errors=True)
+    if READONLY_RX.search(text) and not all(ok.values()):
+        return "local_only"  # a source needs writing next to it: the server's overlay handles that
+    grid = re.findall(r"Mosaic grid: z(\d+)", text)
+    fails = [ln.strip() for ln in text.splitlines() if "✗" in ln]
+    # the slicer prints a chart's key (chart/<slug>/<date>); its mirror file is <slug>/<date>.pmtiles
+    charts = sorted(set(re.findall(r"chart pmtiles: chart/(\S+) \(", text)))
+    for k in keys:
+        j = by["slice", k]
+        m = w / "mosaics" / f"{k}.tif"
+        if ok[k]:
+            done[j["id"]] = ("succeeded", {"mosaic": str(share / "mosaics" / m.name), "size_gb": round(m.stat().st_size / 1e9, 2),
+                                           "grid_zoom": int(grid[0]) if grid else None, "attempt": attempt,
+                                           "seconds": round(time.time() - t0), "failure_lines": len(fails),
+                                           "failure_samples": fails[:8]}, None, "\n".join(slog))
+        else:
+            done[j["id"]] = ("failed", None, f"RuntimeError: slicer did not complete {k} (see log)", "\n".join(slog))
+
+    # ---- convert + archive, era by era
+    for k in keys:
+        cj, aj = by.get(("convert", k)), by.get(("archive", k))
+        if not ok[k]:
+            for j in (cj, aj):
+                if j:
+                    done[j["id"]] = ("cancelled", None, f"dependency {j['depends_on']} failed", None)
+            continue
+        m, out, part = w / "mosaics" / f"{k}.tif", w / "pmtiles" / f"{k}.pmtiles", w / "pmtiles" / f"{k}.part.pmtiles"
+        stamp, align_log = w / "logs" / f"converter_{k}.txt", w / "logs" / f"align_{k}.log"
+        res = None
+        if cj:
+            clog, p, t1 = [f"worker {a.name}: convert {k}"], cj["params"] or {}, time.time()
+            try:
+                dt, nb = sh(a.python, "-c", "import sys; from osgeo import gdal; d = gdal.Open(sys.argv[1]); "
+                            "print(gdal.GetDataTypeName(d.GetRasterBand(1).DataType), d.RasterCount)", m).split()
+                gargs = [a.g2p, "-format", p.get("format", "webp"), "-quality", str(p.get("quality", 80)),
+                         "-concurrency", str(int(p.get("concurrency") or a.concurrency)), "-mem-limit", "6000"]
+                if dt != "Byte":
+                    gargs += ["-rescale", "linear", "-rescale-range", "0,65535", "-alpha-band", nb]
+                gargs += [str(x) for x in p.get("g2p_args", [])]
+                part.unlink(missing_ok=True)
+                rc, _ = run_logged(gargs + [m, part], clog)
+                if rc != 0:
+                    raise RuntimeError(f"geotiff2pmtiles rc={rc}")
+                os.replace(part, out)
+                stamp.write_text(cid + "\n")
+                hdr = pm_head(out)
+                tol = float(p.get("align_tol", 0.3))
+                rc, atext = run_logged([a.python, Path(a.repo) / "slicerd" / "app" / "verify_align.py", m, out, "--tol", tol,
+                                        "--zoom", hdr["max_zoom"], "--auto-probes"], clog)
+                align_log.write_text(atext)
+                mm = re.search(r"worst \|shift\| ([\d.]+) px over (\d+) probes", atext)
+                if not mm:
+                    raise RuntimeError(f"alignment check crashed (rc={rc})")
+                worst, probes = float(mm.group(1)), int(mm.group(2))
+                res = {"pmtiles": str(share / "pmtiles" / out.name), "size_gb": round(out.stat().st_size / 1e9, 2), **hdr,
+                       "seconds": round(time.time() - t1), "converter": cid, "align_worst_px": worst,
+                       "align_probes": probes, "align_tol": tol, "aligned": (worst <= tol) if probes else None}
+                if probes and worst > tol:
+                    raise RuntimeError(f"misaligned: worst {worst} px > tol {tol}")
+                done[cj["id"]] = ("succeeded", res, None, "\n".join(clog))
+            except Exception as e:
+                done[cj["id"]] = ("failed", None, f"{type(e).__name__}: {e}", "\n".join(clog))
+                if aj:
+                    done[aj["id"]] = ("cancelled", None, f"dependency {cj['id']} failed", None)
+                continue
+        if aj:
+            alog, p, moved, total = [f"worker {a.name}: archive {k} -> {share}"], aj["params"] or {}, [], 0
+            try:
+                # The mosaic goes last: the server skips a slice whose mosaic is archived, so an
+                # archive cut short before it is redone in full (charts stranded here 2026-10-04).
+                items = [(f, share / "logs" / f.name) for f in sorted((w / "logs").glob(f"*{k}*"))]
+                if p.get("charts", True):
+                    items += [(w / "charts" / f"{c}.pmtiles", share / "charts" / f"{c}.pmtiles") for c in charts
+                              if (w / "charts" / f"{c}.pmtiles").exists()]
+                if out.exists():
+                    items.append((out, share / "pmtiles" / out.name))
+                if p.get("mosaic", "move") == "move":
+                    items.append((m, share / "mosaics" / m.name))
+                for src, dst in items:
+                    total += share_put(src, dst)
+                    moved.append(str(dst.relative_to(share)))
+                    src.unlink()
+                m.unlink(missing_ok=True)
+                with _wlock:  # this worker's chart records, beside the server's own manifest.jsonl
+                    seed = int((w / "charts" / "manifest.seed_lines").read_text()) if (w / "charts" / "manifest.seed_lines").exists() else 0
+                    if manifest.exists():
+                        (share / "charts").mkdir(parents=True, exist_ok=True)
+                        (share / "charts" / f"manifest.worker-{a.name}.jsonl").write_text(
+                            "".join(open(manifest).readlines()[seed:]))
+                alog += [f"  ✓ {x}" for x in moved]
+                done[aj["id"]] = ("succeeded", {"archived": moved, "total_gb": round(total / 1e9, 2), "dest": str(share)},
+                                  None, "\n".join(alog))
+            except Exception as e:
+                done[aj["id"]] = ("failed", None, f"{type(e).__name__}: {e}", "\n".join(alog))
+    with _wlock:  # the review CSVs are shared by every group in flight; never fail a group over one
+        for f in (w / "mosaics").glob("processing_review_*.csv"):
+            try:
+                share_put(f, share / "mosaics" / f.name)
+                f.unlink()
+            except (OSError, RuntimeError):
+                pass
+    return done
+
+
+def cmd_worker(a):
+    import threading
+    scratch = Path(a.scratch).expanduser()
+    a.sources = Path(a.sources).expanduser()
+    for need in (a.g2p, a.python):
+        if not Path(need).exists():
+            raise RuntimeError(f"{need} not found")
+    if not SHARE_RUNS.is_dir():
+        raise RuntimeError(f"{SHARE_RUNS} is not mounted (outputs are written there)")
+    ensure_ro_sources(a.sources)
+    cid = "b300c9e+halfpx darwin-arm64 sha256:" + hashlib.sha256(Path(a.g2p).read_bytes()).hexdigest()[:8]
+    stop, held, hl = threading.Event(), set(), threading.Lock()
+    say(f"worker {a.name}: {a.jobs} groups at a time, eras up to {a.max_charts} charts, converter {cid}")
+
+    def beat():
+        missed = 0
+        while not stop.wait(60):
+            try:
+                api("POST", "/api/heartbeat", {"worker": a.name})
+                missed = 0
+            except (SystemExit, Exception) as e:
+                missed += 1
+                if missed in (1, 5) or missed % 30 == 0:
+                    say(f"heartbeat failed x{missed} ({e}); the server requeues this worker's claims after 15 min")
+
+    def loop(n):
+        while not stop.is_set():
+            try:
+                claim = api("POST", "/api/claim", {"worker": a.name, "max_charts": a.max_charts, "run": a.run})
+            except SystemExit as e:
+                say(f"claim failed ({e}); retrying in 60 s")
+                claim = {"jobs": []}
+            if not claim.get("jobs"):
+                if a.once:
+                    say(f"nothing to claim: {claim.get('reason')}")
+                    return
+                stop.wait(60)
+                continue
+            ids = [j["id"] for j in claim["jobs"]]
+            with hl:
+                held.update(ids)
+            t0 = time.time()
+            say(f"[{n}] {claim['start']}: {sum(j['type'] == 'slice' for j in claim['jobs'])} eras")
+            try:
+                done = worker_group(a, claim, cid)
+            except Exception as e:
+                say(f"[{n}] {claim['start']}: worker error {type(e).__name__}: {e}; handing the group back")
+                done = None
+            if done == "local_only" or done is None:
+                wapi("POST", "/api/release", {"worker": a.name, "ids": ids, "local_only": done == "local_only"})
+                say(f"[{n}] {claim['start']}: handed back" + (" (needs the server's source overlay)" if done else ""))
+                if done is None:
+                    stop.wait(30)
+            else:
+                # dependents after their dependencies: a finished chain reads slice, convert, archive
+                for j in claim["jobs"]:
+                    st, res, err, log = done.get(j["id"], ("failed", None, "worker produced no result", None))
+                    try:
+                        wapi("POST", f"/api/jobs/{j['id']}/finish", {"worker": a.name, "status": st, "result": res,
+                                                                      "error": err, "log": (log or "")[-2_000_000:]})
+                    except RuntimeError as e:  # e.g. the claim expired and the server took the job back
+                        say(f"[{n}] {j['type']} {j['key']}: report refused: {e}")
+                bad = [f"{j['type']} {j['key']}" for j in claim["jobs"] if done.get(j["id"], ("failed",))[0] != "succeeded"]
+                say(f"[{n}] {claim['start']}: {'✓' if not bad else '✗ ' + ', '.join(bad[:3])} {time.time() - t0:.0f}s")
+            with hl:
+                held.difference_update(ids)
+            if a.once:
+                return
+
+    import signal
+
+    def on_term(*_):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, on_term)
+    threading.Thread(target=beat, daemon=True).start()
+    threads = [threading.Thread(target=loop, args=(i + 1,), daemon=True) for i in range(1 if a.once else a.jobs)]
+    for t in threads:
+        t.start()
+        time.sleep(2)
+    try:
+        while any(t.is_alive() for t in threads):
+            time.sleep(1)
+    except KeyboardInterrupt:
+        stop.set()
+        say("stopping: killing running steps and handing unfinished groups back to the queue")
+        for p in list(_children):
+            try:
+                os.killpg(p.pid, 15)
+            except ProcessLookupError:
+                pass
+        with hl:
+            ids = sorted(held)
+        if ids:
+            try:
+                api("POST", "/api/release", {"worker": a.name, "ids": ids})
+            except SystemExit as e:
+                say(f"release failed: {e} (the server requeues them after 15 min without a heartbeat)")
+        os._exit(130)
+
+
 # ---------------------------------------------------------------- publish (Mac half)
 
 UA = {"User-Agent": "archive-slicer-publish", "Cache-Control": "no-cache", "Pragma": "no-cache"}
@@ -700,6 +1071,14 @@ def main():
     p = sp.add_parser("errors"); p.add_argument("run"); p.add_argument("--out", help="output directory (default <repo>/worklists/data/slicer_runs/RUN)")
     p.add_argument("--repo", default=str(DEFAULT_REPO)); p.set_defaults(fn=cmd_errors)
     p = sp.add_parser("sync"); p.add_argument("--repo", default=str(DEFAULT_REPO)); p.set_defaults(fn=cmd_sync)
+    p = sp.add_parser("set"); p.add_argument("kv", nargs="*", help="cpu_slots=8 io_slots=2 hashed_remote=r2:BUCKET"); p.set_defaults(fn=cmd_set)
+    p = sp.add_parser("worker"); p.add_argument("--name", default="mac"); p.add_argument("--jobs", type=int, default=3)
+    p.add_argument("--max-charts", type=int, default=4, help="largest era (catalog rows) this Mac takes")
+    p.add_argument("--run", help="only this run"); p.add_argument("--once", action="store_true", help="one group, then stop")
+    p.add_argument("--scratch", default=str(WORKER_SCRATCH)); p.add_argument("--sources", default=str(WORKER_SOURCES))
+    p.add_argument("--g2p", default=str(WORKER_SCRATCH / "bin" / "geotiff2pmtiles")); p.add_argument("--python", default=str(Path.home() / "venv" / "bin" / "python"))
+    p.add_argument("--concurrency", type=int, default=4, help="geotiff2pmtiles threads per convert")
+    p.add_argument("--repo", default=str(DEFAULT_REPO)); p.set_defaults(fn=cmd_worker)
     p = sp.add_parser("publish"); p.add_argument("run"); p.add_argument("key")
     p.add_argument("--repo", default=str(DEFAULT_REPO)); p.add_argument("--dry-run", action="store_true")
     p.add_argument("--allow-new", action="store_true"); p.add_argument("--allow-unverified", action="store_true")

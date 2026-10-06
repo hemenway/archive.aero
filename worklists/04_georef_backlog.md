@@ -11,10 +11,9 @@ warp without row GCPs, while incorrect saved GCPs can still need repair. Only th
 **two GlidePlan rows** have neither a cutline reference nor inline WKT; the four
 Key West strips now explicitly use `cutline=none` and `proj=merc`.
 
-Source availability is a separate prerequisite: [02](02_disk_vs_dole.md) found
-142 catalog resolution misses in the September 21 mounted-tree audit, including several
-lanes below. Locate/verify each source before editing GCPs. The October 1 batch verified all of its source files, rendered its warps, and
-read back all published bytes. The 142 misses remain a separate dated audit.
+Source availability: the October 4 rerun of [02](02_disk_vs_dole.md) resolves
+every catalog row on disk; the 142 misses of September 21 were an incomplete walk. The October 1 batch verified all of its source files, rendered its warps, and
+read back all published bytes.
 See [October 1 publication](georef_publish_2026-10-01.md) for the completed batch.
 
 | Remaining item | Evidence and next action |
@@ -30,7 +29,7 @@ See [October 1 publication](georef_publish_2026-10-01.md) for the completed batc
 | **ESRI SF 2008** | Still lacks GCPs. SF 1966 was verified and published October 1; SF 1978 north was published September 15. |
 | **GlidePlan Mt. Shasta + Reno Whites** | Still lack GCPs and a cutline decision; consider explicit whole-sheet `none` for these collar-free mosaics, then verify the warp. |
 | ~~**Wichita 1972 WASP 418 pair**~~ | **Published October 1**: both hand GCPs ready, sides explicit, modern SP verified by residuals, fold cutlines traced; era plus north/south chart artifacts read back. |
-| **Dallas 1981 north (419_01)** | **Do not slice 1981-01-22 yet.** Pixel corners were added between August 26 and September 15, so the row counts as ready, but the east corners kept the prefilled **−94°**. Its pixel spans match the 1982 north face (`420_02`, −102..−95) to 0.04 %, and every other DFW WASP face says −95. Read the printed corner label, fix `gcp2_lon`/`gcp3_lon`, then trace its fold cutline (`wasp_fold_cutline.py`), reslice and publish `chart/dallas_ft_worth/1981-01-22-north`. Only `-south` is live. Sidebar A8. |
+| **Dallas 1981 north (419_01)** | **Catalog fixed 2026-10-04, not yet sliced.** The printed label at the SE corner reads 95° (Tahlequah and Valliant sit on that meridian), so `gcp2_lon`/`gcp3_lon` went −94 → −95; fold cutline traced by `wasp_fold_cutline.py` (envelope within 0.02° of the 1982 north face). A 0.004° check warp put Oklahoma City, Tulsa and Amarillo where they belong. Backups `pre_dallas_1981_north_lon_2026-10-04.csv`, `pre_fold_cutline_2026-10-04.csv`. Left: slice 1981-01-22 (the NUC needs a catalog sync first), publish the era and `chart/dallas_ft_worth/1981-01-22-north`. Sidebar A8 can be closed after that. |
 | **Denver 1975 seam** | Both halves published September 15; a ≤4 km pale band was recorded. Reconcile their GCPs at the fold before republishing improved same-key artifacts. |
 | **Tool status/sidebar** | `row_status()` still equates a GCP-less `sectional/` cutline with embedded georef (B3), which hides the Hawaiian ca-scans, ESRI SF, simviation, the archive.org 2004 JPGs and Seward 93 from the incomplete count. Sidebar refreshed October 2: new A8 (Dallas 1981 north), A6 rewritten for the Hawaiian finding, B4 now shows the 2013 conflict, A3 names the cutline fix. The tool keeps only a local copy; the pre-edit backup is `~/archive.aero-attic/1georef_toolv10_pre_todo_refresh_2026-10-02.py`. The 5001 instance shows the new list after a restart. |
 

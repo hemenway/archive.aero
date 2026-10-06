@@ -1,10 +1,19 @@
 """archive-slicer engine: job store, scheduler, job handlers, host stats.
 
-Jobs run one at a time per lane - `cpu` (slice, convert, script) and `io`
-(archive, publish) - so one era's archive copy or upload overlaps the next
-era's slice. Each job's commands run as subprocesses in their own process
-group (cancel kills the tree); everything they print lands in
+Jobs run in two lanes - `cpu` (slice, convert, script) and `io` (archive,
+upload, publish) - so one era's archive copy or upload overlaps the next
+era's slice. Each lane has a number of slots (settings: cpu_slots, io_slots).
+A cpu job takes as many slots as it can use: a slice takes one per catalog
+row of its start date, so single-chart eras run side by side while a modern
+era has the box to itself; a convert takes the lane for a big mosaic and two
+slots for a small one. Each job's commands run as subprocesses in their own
+process group (cancel kills the tree); everything they print lands in
 /state/logs/<job id>.log, which is also copied into the run's logs/ dir.
+
+Remote workers (`slicerctl worker` on the Mac) claim whole start-date groups
+of queued slice/convert/archive jobs, run them on their own hardware, write
+the outputs into the run's HDD directory over the share and report each job
+back; a worker that stops sending heartbeats has its claims requeued.
 
 Storage (container paths; see compose.yml for the host side):
   /data/rawtiffs   rawtiffs, plain read-only bind (never written, by anyone here)
@@ -26,6 +35,9 @@ import re
 import shlex
 import shutil
 import stat
+import struct
+import hashlib
+import importlib.util
 import subprocess
 import threading
 import time
@@ -53,12 +65,19 @@ MIN_FREE_CONVERT_GB = float(E("SLICERD_MIN_FREE_CONVERT_GB", "12"))
 ABORT_FREE_GB = float(E("SLICERD_ABORT_FREE_GB", "6"))
 REMOTE_PREFIX = E("SLICERD_REMOTE_PREFIX", "r2:charts/sectionals/")
 ALIGN_TOL = float(E("SLICERD_ALIGN_TOL", "0.3"))
-LANES = {"cpu": int(E("SLICERD_CPU_LANE", "1")), "io": int(E("SLICERD_IO_LANE", "1"))}
+# Lane sizes are settings (changeable at runtime through /api/settings); these are the defaults.
+DEFAULT_SETTINGS = {"cpu_slots": int(E("SLICERD_CPU_SLOTS", "6")), "io_slots": int(E("SLICERD_IO_SLOTS", "2")),
+                    "hashed_remote": E("SLICERD_HASHED_REMOTE") or None}
+# A convert of a mosaic this size takes the whole cpu lane and all converter threads. 2 GB was too
+# high: a 1.15 GB (LZW) 2013 era is 2.6 M tiles and ran 4-threaded for hours while the lane idled.
+BIG_MOSAIC_GB = float(E("SLICERD_BIG_MOSAIC_GB", "0.5"))
+SMALL_CONVERT_SLOTS, SMALL_CONVERT_THREADS = 2, 4
+WORKER_TIMEOUT = float(E("SLICERD_WORKER_TIMEOUT", "900"))  # s without a heartbeat before a worker's claims requeue
 ORIG = 20037508.342789244
 
 KEY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(_to_\d{4}-\d{2}-\d{2})?$")
 RUN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-JOB_TYPES = {"slice": "cpu", "convert": "cpu", "script": "cpu", "archive": "io", "publish": "io"}
+JOB_TYPES = {"slice": "cpu", "convert": "cpu", "script": "cpu", "archive": "io", "upload": "io", "publish": "io"}
 SCRIPTS = {"slicer.py", "build_metadata_bundle.py", "publish_chart_pmtiles.py"}
 DONE = ("succeeded", "failed", "cancelled", "interrupted")
 
@@ -148,6 +167,22 @@ def era_keys(rid=None):
         return sorted({line.split(",", 1)[0].strip() for line in f if line.strip()})
 
 
+@functools.lru_cache(maxsize=4)
+def start_row_counts(rid):
+    """Per start date in a release, the catalog rows of its largest era: how many charts a slice
+    of that date warps at once (the slicer takes a date's eras one after another)."""
+    rel = CODE / "releases" / rid
+    spec = importlib.util.spec_from_file_location(f"dole_v2_{rid}", rel / "scripts" / "dole_v2.py")
+    dole_v2 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dole_v2)
+    eras = Counter(((r.get("date") or "").strip()[:10], (r.get("end_date") or "").strip()[:10])
+                   for r in dole_v2.load_rows(rel / "master_dole_v2.csv") if (r.get("filename") or "").strip())
+    out = {}
+    for (start, _), n in eras.items():
+        out[start] = max(n, out.get(start, 0))
+    return out
+
+
 def grid_zoom(path):
     """Zoom whose 256-px tile pixel a mosaic sits on (None if off-grid)."""
     from osgeo import gdal
@@ -157,6 +192,23 @@ def grid_zoom(path):
     res = 2 * ORIG / 256 / 2 ** zr
     ok = abs(gt[1] / res - 1) < 1e-9 and abs(-gt[5] / res - 1) < 1e-9
     return zr if ok else None
+
+
+def pm_layout(head):
+    """Zooms, bounds and the end of the directories from a PMTiles v3 header (first 127 bytes)."""
+    if len(head) < 127 or head[:7] != b"PMTiles" or head[7] != 3:
+        raise ValueError("not a PMTiles v3 archive")
+    root_o, root_l, meta_o, meta_l, leaf_o, leaf_l = struct.unpack_from("<6Q", head, 8)
+    zmin, zmax = head[100], head[101]
+    w, s, e, n = struct.unpack_from("<4i", head, 102)
+    # [w, s, e, n] rounded outward to 4 decimals; None for antimeridian-wrapping or implausible
+    # headers (same rule as next_version_archives.bounds, so the manifest builder culls alike).
+    b = None
+    if -180 <= w / 1e7 < e / 1e7 <= 180 and -86 <= s / 1e7 < n / 1e7 <= 86:
+        b = [w // 1000 / 1e4, s // 1000 / 1e4, -(-e // 1000) / 1e4, -(-n // 1000) / 1e4]
+    data_o, data_l = struct.unpack_from("<2Q", head, 56)
+    dirs_end = max(root_o + root_l, meta_o + meta_l, leaf_o + leaf_l)
+    return {"z": [zmin, zmax], "b": b, "dirs_end": dirs_end, "size": max(dirs_end, data_o + data_l)}
 
 
 def pm_header(path):
@@ -311,6 +363,8 @@ class Store:
             id TEXT PRIMARY KEY, type TEXT, lane TEXT, status TEXT, run TEXT, key TEXT,
             params TEXT, result TEXT, error TEXT, depends_on TEXT, release TEXT,
             created TEXT, started TEXT, finished TEXT, pid INTEGER)""")
+        if "worker" not in {r["name"] for r in self.db.execute("PRAGMA table_info(jobs)")}:
+            self.db.execute("ALTER TABLE jobs ADD COLUMN worker TEXT")  # set while a remote worker holds the job
 
     def q(self, sql, *args):
         with self.lock:
@@ -431,7 +485,9 @@ def h_slice(ctx):
     for sub in ("mosaics", "pmtiles", "logs"):
         (w / sub).mkdir(parents=True, exist_ok=True)
     mosaic = w / "mosaics" / f"{key}.tif"
-    temp, chart_temp = WORK / "temp" / run, WORK / "chartfull" / run
+    # One temp root per start date: slices of different dates run side by side, and the
+    # slicer scans its temp root for reusable warps.
+    temp, chart_temp = WORK / "temp" / run / start, WORK / "chartfull" / run / start
     archived = hdd_run(run) / "mosaics" / f"{key}.tif"
     if not p.get("force"):
         for m in (mosaic, archived):
@@ -516,7 +572,8 @@ def h_convert(ctx):
     ds = gdal.Open(str(src))
     dt, nb = ds.GetRasterBand(1).DataType, ds.RasterCount
     ds = None
-    conc = int(p.get("concurrency") or G2P_CONCURRENCY)
+    big = src.stat().st_size >= BIG_MOSAIC_GB * 1e9  # a small one shares the cpu lane (see Engine._weight)
+    conc = int(p.get("concurrency") or (G2P_CONCURRENCY if big else SMALL_CONVERT_THREADS))
     args = [G2P, "-format", p.get("format", "webp"), "-quality", str(p.get("quality", 80)),
             "-concurrency", str(conc), "-mem-limit", str(int(p.get("mem_limit_mb") or G2P_MEM_MB))]
     if dt != gdal.GDT_Byte:
@@ -577,21 +634,125 @@ def h_archive(ctx):
         for f in ("manifest.jsonl", "manifest.seed_lines"):
             if (w / "charts" / f).exists():
                 items.append(("charts", f, "copy"))
-    for sub, name, mode in items:
-        src = w / sub / name
-        if not src.exists() or mode == "keep":
-            continue
-        if mode == "delete":
-            ctx.log(f"  deleting {src} (mosaic=delete)")
-            src.unlink()
-            continue
-        total += copy_file(ctx, src, h / sub / name)
-        moved.append(f"{sub}/{name}")
-        if mode == "move":
-            src.unlink()
+    # One archive at a time. Every archive also moves the run's shared files (chart artifacts,
+    # the chart manifest, review CSVs); two at once copied the same file through the same
+    # .partial name and 17 of them failed (2026-10-04, io lane at 5 slots).
+    with ctx.engine.archive_lock:
+        for sub, name, mode in items:
+            src = w / sub / name
+            if not src.exists() or mode == "keep":
+                continue
+            if mode == "delete":
+                ctx.log(f"  deleting {src} (mosaic=delete)")
+                src.unlink()
+                continue
+            total += copy_file(ctx, src, h / sub / name)
+            moved.append(f"{sub}/{name}")
+            if mode == "move":
+                src.unlink()
     if not moved:
         ctx.log("nothing on the SSD to archive")
     return {"archived": moved, "total_gb": gb(total), "dest": str(h)}
+
+
+def upload_hashed(ctx, path, old, remote, hashed):
+    """Upload one archive under its content-versioned key ({stem}.{sha256[:12]}.pmtiles), record
+    it in the run's plan, keep a sparse header+directory stub, then delete the local file."""
+    size, t0 = path.stat().st_size, time.time()
+    sha, md5 = hashlib.sha256(), hashlib.md5()
+    with open(path, "rb") as f:
+        head = f.read(127)
+        layout = pm_layout(head)
+        if layout["size"] != size:  # still being written, or cut short
+            raise RuntimeError(f"{path}: {size} bytes on disk, its header says {layout['size']}; not uploaded")
+        f.seek(0)
+        prefix = f.read(layout["dirs_end"])
+        f.seek(0)
+        while True:
+            ctx.check()
+            buf = f.read(8 << 20)
+            if not buf:
+                break
+            sha.update(buf)
+            md5.update(buf)
+    digest = sha.hexdigest()
+    stem = old[:-8] if old.endswith(".pmtiles") else old
+    new = f"{stem}.{digest[:12]}.pmtiles"
+    if not re.fullmatch(r"(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_.-]+\.[a-f0-9]{12}\.pmtiles", new):
+        raise RuntimeError(f"archive key does not fit the next/ contract: {new}")
+    dest = f"{remote.rstrip('/')}/{new}"
+    # --s3-no-head: after a PUT this rclone HEADs the new versionId, which R2 answers 501 (the size is checked below)
+    rc, _ = ctx.run(["rclone", "copyto", "--s3-no-check-bucket", "--s3-no-head", "--header-upload", f"x-amz-meta-sha256: {digest}",
+                     "--header-upload", "Content-Type: application/vnd.pmtiles", path, dest])
+    if rc != 0:
+        raise RuntimeError(f"rclone copyto rc={rc} for {new} (local file kept)")
+    p = subprocess.run(["rclone", "lsjson", dest], capture_output=True, text=True)
+    listed = json.loads(p.stdout or "[]") if p.returncode == 0 else []
+    if len(listed) != 1 or listed[0].get("Size") != size:
+        raise RuntimeError(f"{dest}: not listed at {size} bytes after the upload (local file kept): "
+                           f"{(p.stderr or p.stdout).strip()[-200:]}")
+    # Same stub the migration tools write: real bytes to the end of the directories, then a hole
+    # to the full size, so next_build_manifest.py --dir reads it like the archive.
+    stub = hashed / "stubs" / new
+    stub.parent.mkdir(parents=True, exist_ok=True)
+    with open(stub, "wb") as f:
+        f.write(prefix)
+        f.truncate(size)
+    rec = {"old": old, "new": new, "path": new[:-8], "sha256": digest, "z": layout["z"], "b": layout["b"],
+           "source": "local", "size": size, "md5": md5.hexdigest(), "stub_bytes": len(prefix),
+           "remote": remote, "uploaded_at": now(), "job": ctx.id}
+    with ctx.engine.plan_lock, open(hashed / "plan.jsonl", "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    path.unlink()
+    ctx.log(f"  ✓ {new} ({gb(size)} GB, {time.time() - t0:.0f}s); local copy deleted")
+    return rec
+
+
+def h_upload(ctx):
+    """Era archive + every archived chart artifact of the run → the hashed bucket (settings:
+    hashed_remote). Uploaded files are deleted here: the bucket holds the only copy, the run
+    keeps plan.jsonl (one record per object) and the directory stubs under hashed/."""
+    p = ctx.params
+    run = check_run(p["run"])
+    key = check_key(p["key"]) if p.get("key") else None
+    remote = ctx.engine.settings.get("hashed_remote")
+    if not remote:
+        raise RuntimeError("no hashed remote set (slicerctl set hashed_remote r2:BUCKET)")
+    hashed = hdd_run(run) / "hashed"
+    hashed.mkdir(parents=True, exist_ok=True)
+    done, total = [], 0
+    if key:
+        pm = locate(run, "pmtiles", f"{key}.pmtiles")
+        if pm:
+            rec = upload_hashed(ctx, pm, f"sectionals/{key}.pmtiles", remote, hashed)
+            done.append(rec["new"])
+            total += rec["size"]
+        else:
+            plan = hashed / "plan.jsonl"
+            old = f'"old": "sectionals/{key}.pmtiles"'
+            if not (plan.exists() and any(old in ln for ln in open(plan))):
+                raise RuntimeError(f"no pmtiles for {key} in run {run} and no upload record for it")
+            ctx.log(f"{key}: already uploaded (plan.jsonl)")
+    charts = hdd_run(run) / "charts"
+    if p.get("charts", True) and charts.exists():
+        # One sweep at a time: two would upload the same files. An era's upload does not wait
+        # for a sweep in progress (it would hold an io slot the archives need: 2026-10-04, the
+        # first 1,100-chart sweep and one waiter stalled every archive for 40 min); the keyless
+        # sweep job does wait, so the last one leaves nothing behind.
+        if ctx.engine.charts_lock.acquire(blocking=not key):
+            try:
+                for f in sorted(charts.rglob("*.pmtiles")):
+                    if ".part." in f.name:
+                        continue
+                    # mirror <slug>/<date>.pmtiles = chart key sectionals/chart/<slug>/<date>
+                    rec = upload_hashed(ctx, f, "sectionals/chart/" + f.relative_to(charts).as_posix()[:-8], remote, hashed)
+                    done.append(rec["new"])
+                    total += rec["size"]
+            finally:
+                ctx.engine.charts_lock.release()
+        else:
+            ctx.log("another upload is sweeping the chart artifacts; leaving them to it")
+    return {"uploaded": len(done), "total_gb": gb(total), "remote": remote, "first": done[:5]}
 
 
 def h_publish(ctx):
@@ -650,7 +811,7 @@ def h_script(ctx):
     return {"rc": rc, "cwd": str(cwd), "tail": tail}
 
 
-HANDLERS = {"slice": h_slice, "convert": h_convert, "archive": h_archive,
+HANDLERS = {"slice": h_slice, "convert": h_convert, "archive": h_archive, "upload": h_upload,
             "publish": h_publish, "script": h_script}
 
 
@@ -663,14 +824,24 @@ class Engine:
         self.store = Store(STATE / "slicerd.db")
         self.ctxs = {}
         self.blocked = {}
+        self.weights = {}                    # running local job id -> slots it holds
         self.lock = threading.Lock()
+        self.sched_lock = threading.RLock()  # scheduler tick vs. remote claims
+        self.plan_lock, self.charts_lock, self.archive_lock = threading.Lock(), threading.Lock(), threading.Lock()
+        self.settings = dict(DEFAULT_SETTINGS)
+        try:
+            self.settings.update(json.loads((STATE / "settings.json").read_text()))
+        except Exception:
+            pass
+        self.worker_seen = {}                # worker name -> time of its last heartbeat
+        self.boot = time.time()
         self.started = now()
         self.paused = (STATE / "PAUSED").exists()
         self._diff_cache = (0.0, [])
         self.remount_requested = None
         (STATE / "remount.request").unlink(missing_ok=True)
         self.store.x("UPDATE jobs SET status='interrupted', error='controller restarted while running', "
-                     "finished=?, pid=NULL WHERE status='running'", now())
+                     "finished=?, pid=NULL WHERE status='running' AND worker IS NULL", now())
         try:
             self.restart_note = json.loads((STATE / "restart.json").read_text())
         except Exception:
@@ -706,9 +877,9 @@ class Engine:
         """Chain the steps per key; each key's chain runs in order, keys in the order given."""
         check_run(run)
         keys = [check_key(k) for k in keys]
-        bad = [s for s in steps if s not in ("slice", "convert", "archive", "publish")]
+        bad = [s for s in steps if s not in ("slice", "convert", "archive", "upload", "publish")]
         if bad or not steps:
-            raise ValueError(f"steps must be from slice, convert, archive, publish (got {list(steps)})")
+            raise ValueError(f"steps must be from slice, convert, archive, upload, publish (got {list(steps)})")
         if "publish" in steps and not (opts.get("confirm") is True or opts.get("dry_run")):
             raise ValueError("a pipeline with publish needs confirm=true (or dry_run=true)")
         common = {k: v for k, v in opts.items() if v is not None}
@@ -744,7 +915,8 @@ class Engine:
         stack = [jid]
         while stack:
             cur = stack.pop()
-            self.store.update(cur, status="queued", error=None, result=None, started=None, finished=None)
+            self.store.update(cur, status="queued", error=None, result=None, started=None, finished=None,
+                              worker=None)
             requeued.append(cur)
             for d in self.store.q("SELECT id FROM jobs WHERE depends_on=? AND status='cancelled'", cur):
                 stack.append(d["id"])
@@ -756,6 +928,117 @@ class Engine:
             (STATE / "PAUSED").write_text(now())
         else:
             (STATE / "PAUSED").unlink(missing_ok=True)
+
+    def set_settings(self, **kw):
+        for k, v in kw.items():
+            if k in ("cpu_slots", "io_slots"):
+                v = int(v)
+                if not 1 <= v <= 64:
+                    raise ValueError(f"{k} must be 1-64")
+            elif k == "hashed_remote":
+                v = (v or "").strip().rstrip("/") or None
+                if v and not re.fullmatch(r"[A-Za-z0-9_-]+:[A-Za-z0-9._/-]+", v):
+                    raise ValueError("hashed_remote must look like r2:BUCKET or r2:BUCKET/prefix")
+            else:
+                raise ValueError(f"unknown setting {k!r} (cpu_slots, io_slots, hashed_remote)")
+            self.settings[k] = v
+        (STATE / "settings.json").write_text(json.dumps(self.settings, indent=1) + "\n")
+        return self.settings
+
+    # -- remote workers --------------------------------------------------
+    def claim(self, worker, max_charts=4, run=None):
+        """Hand the next start-date group a remote worker can take: every queued slice, convert
+        and archive job of one start date in one run. The worker runs them and reports each with
+        finish(); a group is skipped while any of its steps is not simply queued."""
+        if not worker or not RUN_RE.match(worker):
+            raise ValueError("worker name: letters, digits, . _ -")
+        with self.sched_lock:
+            self.worker_seen[worker] = time.time()
+            rid = current_release()[0]
+            if self.paused or not rid:
+                return {"jobs": [], "reason": "queue paused" if self.paused else "no code release"}
+            counts = start_row_counts(rid)
+            active = {(r["run"], r["key"][:10]) for r in self.store.q(
+                "SELECT run, key FROM jobs WHERE status='running' AND key IS NOT NULL")}
+            sql, args = "SELECT * FROM jobs WHERE status='queued' AND type='slice'", []
+            if run:
+                sql, args = sql + " AND run=?", [run]
+            for job in self.store.q(sql + " ORDER BY rowid", *args):
+                start = job["key"][:10]
+                n = counts.get(start)
+                if ((job["run"], start) in active or job["depends_on"] or (job["params"] or {}).get("local_only")
+                        or n is None or n > int(max_charts)):
+                    continue
+                if self.store.q("SELECT id FROM jobs WHERE run=? AND substr(key,1,10)=? AND status!='queued' "
+                                "AND type IN ('slice','convert','archive') LIMIT 1", job["run"], start):
+                    active.add((job["run"], start))  # begun here (its mosaics may sit on the SSD): the server finishes it
+                    continue
+                group = self.store.q("SELECT * FROM jobs WHERE run=? AND substr(key,1,10)=? AND status='queued' "
+                                     "AND type IN ('slice','convert','archive') ORDER BY rowid", job["run"], start)
+                sliced = {j["key"] for j in group if j["type"] == "slice"}
+                ids = {j["id"] for j in group}
+                if any(j["key"] not in sliced or (j["depends_on"] and j["depends_on"] not in ids) for j in group):
+                    active.add((job["run"], start))  # part-done here: the server finishes it
+                    continue
+                for j in group:
+                    self.store.update(j["id"], status="running", worker=worker, started=now(), release=rid)
+                    self.blocked.pop(j["id"], None)
+                return {"release": rid, "run": job["run"], "start": start, "rows": n, "converter": converter_id(),
+                        "jobs": [{k: j[k] for k in ("id", "type", "key", "params", "depends_on")} for j in group]}
+            return {"jobs": [], "reason": "nothing claimable"}
+
+    def heartbeat(self, worker):
+        self.worker_seen[worker] = time.time()
+        held = self.store.q("SELECT id FROM jobs WHERE status='running' AND worker=?", worker)
+        return {"held": [j["id"] for j in held], "paused": self.paused}
+
+    def _claimed(self, jid, worker):
+        j = self.store.get(jid)
+        if not j:
+            raise KeyError(jid)
+        if j["status"] != "running" or j.get("worker") != worker:
+            raise ValueError(f"job {jid} is not held by worker {worker} (status {j['status']}, worker {j.get('worker')})")
+        return j
+
+    def finish_remote(self, jid, worker, status, result=None, error=None, log=None):
+        if status not in ("succeeded", "failed", "cancelled"):
+            raise ValueError("status: succeeded | failed | cancelled")
+        j = self._claimed(jid, worker)
+        self.worker_seen[worker] = time.time()
+        if log:
+            text = log if log.endswith("\n") else log + "\n"
+            (STATE / "logs" / f"{jid}.log").write_text(text)
+            try:
+                d = hdd_run(j["run"]) / "logs"
+                d.mkdir(parents=True, exist_ok=True)
+                (d / f"job_{j['type']}_{j.get('key') or 'run'}_{jid}.log").write_text(text)
+            except OSError:
+                pass
+        if isinstance(result, dict):
+            result["worker"] = worker
+        self._finish(jid, status, result=result, error=error)
+        return self.job(jid)
+
+    def release(self, worker, ids, local_only=False):
+        """Give claimed jobs back to the queue; local_only keeps remote workers off them for good."""
+        back = []
+        with self.sched_lock:
+            for jid in ids:
+                j = self._claimed(jid, worker)
+                params = dict(j["params"] or {})
+                if local_only:
+                    params["local_only"] = True
+                self.store.update(jid, status="queued", worker=None, started=None, release=None, params=params)
+                back.append(jid)
+        return {"requeued": back}
+
+    def _expire_workers(self):
+        held = Counter(r["worker"] for r in self.store.q("SELECT worker FROM jobs WHERE status='running' AND worker IS NOT NULL"))
+        for worker, n in held.items():
+            if time.time() - self.worker_seen.get(worker, self.boot) > WORKER_TIMEOUT:
+                self.store.x("UPDATE jobs SET status='queued', worker=NULL, started=NULL, release=NULL "
+                             "WHERE status='running' AND worker=?", worker)
+                print(f"worker {worker}: no heartbeat for {WORKER_TIMEOUT:.0f} s, {n} claimed jobs requeued", flush=True)
 
     def job(self, jid, tail=0):
         j = self.store.get(jid)
@@ -816,23 +1099,52 @@ class Engine:
         return {
             "controller_started": self.started,
             "paused": self.paused,
-            "lanes": LANES,
+            "lanes": {lane: {"slots": self._cap(lane), "used": sum(w for j, w in self.weights.items()
+                                                                    if JOB_TYPES[self.store.get(j)["type"]] == lane)}
+                      for lane in ("cpu", "io")},
+            "workers": {w: {"held": n, "last_seen_s": round(time.time() - self.worker_seen.get(w, self.boot))}
+                        for w, n in Counter(r["worker"] for r in self.store.q(
+                            "SELECT worker FROM jobs WHERE status='running' AND worker IS NOT NULL")).items()},
             "jobs": dict(counts),
             "running": [{k: j.get(k) for k in ("id", "type", "run", "key", "started", "last_line")}
-                        for j in running],
+                        for j in running if not j.get("worker")],
             "queued_blocked": dict(list(self.blocked.items())[:10]),
             "code_release": {"id": rid, **{k: meta.get(k) for k in ("git_head", "dirty", "synced_at", "csv_sha256")}},
             "converter": converter_id(),
             "host": host_stats(),
             "settings": {"g2p_concurrency": G2P_CONCURRENCY, "g2p_mem_limit_mb": G2P_MEM_MB,
                          "min_free_slice_gb": MIN_FREE_SLICE_GB, "abort_free_gb": ABORT_FREE_GB,
-                         "align_tol": ALIGN_TOL, "remote_prefix": REMOTE_PREFIX},
+                         "align_tol": ALIGN_TOL, "remote_prefix": REMOTE_PREFIX, **self.settings},
         }
 
     # -- scheduler -------------------------------------------------------
     def _finish(self, jid, status, result=None, error=None):
         self.store.update(jid, status=status, result=result, error=error, finished=now(), pid=None)
         self.blocked.pop(jid, None)
+        self.weights.pop(jid, None)
+
+    def _cap(self, lane):
+        return int(self.settings["cpu_slots" if lane == "cpu" else "io_slots"])
+
+    def _weight(self, job):
+        """Slots a job takes in its lane (never more than the lane has)."""
+        cap = self._cap(job["lane"])
+        if job["lane"] != "cpu":
+            return 1
+        p = job["params"] or {}
+        try:
+            if job["type"] == "slice":
+                # One per catalog row of the date's largest era (the slicer warps that many at once);
+                # an unknown date is treated as a full-size era.
+                n = start_row_counts(current_release()[0]).get(job["key"][:10])
+                return min(cap, n) if n else cap
+            if job["type"] == "convert":
+                src = locate(p["run"], "mosaics", f"{job['key']}.tif")
+                if src and src.stat().st_size < BIG_MOSAIC_GB * 1e9:
+                    return min(cap, SMALL_CONVERT_SLOTS)
+        except Exception:
+            pass
+        return cap
 
     def _free_gb(self):
         s = os.statvfs(WORK)
@@ -862,10 +1174,20 @@ class Engine:
                     self._finish(jid, "failed", error="host remount helper did not respond in 180 s "
                                  "(is archive-slicer-remount.path enabled on the NUC?)")
             return
+        self._expire_workers()
         if self.paused:
             return
-        running = self.store.q("SELECT id, lane FROM jobs WHERE status='running'")
-        busy = Counter(r["lane"] for r in running)
+        with self.sched_lock:
+            self._schedule(free)
+
+    def _schedule(self, free):
+        every = self.store.q("SELECT id, lane, type, run, key, worker FROM jobs WHERE status='running'")
+        running = [r for r in every if not r["worker"]]  # jobs running here; a worker's claims use no slots
+        busy = Counter()
+        for r in running:
+            busy[r["lane"]] += self.weights.get(r["id"], 1)
+        slicing = {(r["run"], r["key"][:10]) for r in every if r["type"] == "slice" and r["key"]}
+        closed = {}  # lane -> the job at its head that is waiting for slots; nothing behind it may pass
         for job in self.store.q("SELECT * FROM jobs WHERE status='queued' ORDER BY rowid"):
             jid, lane = job["id"], job["lane"]
             dep = job["depends_on"]
@@ -877,8 +1199,17 @@ class Engine:
                 if d["status"] != "succeeded":
                     self.blocked[jid] = f"waiting for {dep} ({d['type']} {d['status']})"
                     continue
-            if busy[lane] >= LANES[lane]:
-                self.blocked[jid] = f"{lane} lane busy"
+            if lane in closed:
+                self.blocked[jid] = f"{lane} lane: behind {closed[lane]}"
+                continue
+            if job["type"] == "slice" and (job["run"], job["key"][:10]) in slicing:
+                # --start-date slices every era of that date: a second one would write the same files
+                self.blocked[jid] = "another slice of this start date is running"
+                continue
+            need, cap = self._weight(job), self._cap(lane)
+            if busy[lane] and busy[lane] + need > cap:
+                self.blocked[jid] = f"{lane} lane busy (needs {need} of {cap} slots, {busy[lane]} in use)"
+                closed[lane] = jid
                 continue
             reason = self._precheck(job, free, running)
             if reason == "failed":
@@ -887,9 +1218,12 @@ class Engine:
                 self.blocked[jid] = reason
                 continue
             self.blocked.pop(jid, None)
+            self.weights[jid] = need
             self._start(job)
-            busy[lane] += 1
+            busy[lane] += need
             running.append({"id": jid, "lane": lane})
+            if job["type"] == "slice":
+                slicing.add((job["run"], job["key"][:10]))
 
     def _precheck(self, job, free, running):
         if not current_release()[0] and job["type"] in ("slice", "convert", "publish", "script"):
@@ -900,6 +1234,8 @@ class Engine:
             return self._overlay_gate(job, running)
         if job["type"] == "convert" and free < MIN_FREE_CONVERT_GB:
             return f"waiting for SSD space ({free:.0f} GB free < {MIN_FREE_CONVERT_GB:.0f} GB)"
+        if job["type"] == "upload" and not self.settings.get("hashed_remote"):
+            return "no hashed remote set (slicerctl set hashed_remote r2:BUCKET)"
         return None
 
     def _overlay_gate(self, job, running):
@@ -922,7 +1258,7 @@ class Engine:
 
     def request_remount(self, job_id=None, diffs=None):
         """Ask the host helper (archive-slicer-remount.path) to stop + start this container."""
-        if self.store.q("SELECT id FROM jobs WHERE status='running'"):
+        if self.store.q("SELECT id FROM jobs WHERE status='running' AND worker IS NULL"):
             raise RuntimeError("jobs are running; a remount would kill them")
         (STATE / "restart.json").write_text(json.dumps({"job": job_id, "at": time.time(),
                                                         "diffs": (diffs or [])[:5]}))
@@ -1030,7 +1366,8 @@ class Engine:
         w = work_run(run)
         for item in what:
             if item == "temp":
-                targets += [WORK / "temp" / run / key] if key else [WORK / "temp" / run, WORK / "chartfull" / run]
+                targets += [WORK / "temp" / run / key[:10] / key, WORK / "chartfull" / run / key[:10] / key] if key \
+                    else [WORK / "temp" / run, WORK / "chartfull" / run]
             elif item in ("mosaic", "pmtiles"):
                 sub, ext = ("mosaics", ".tif") if item == "mosaic" else ("pmtiles", ".pmtiles")
                 if key:

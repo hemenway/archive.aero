@@ -155,8 +155,8 @@ not uploaded (content unchanged).
 
 - [x] Import the nine FAA-original sectionals from the attic — catalogued
   2026-08-29; generated chart artifacts are recorded in the chart manifest.
-- [ ] Reconcile those nine chart artifacts against remote publication before
-  publishing anything: local upload receipts and timeline `pm` stamps are absent.
+- [ ] Publish those nine chart artifacts: reconciled October 4, all nine keys
+  404 and no local copy remains ([06](06_publish_sync.md), 71-key gap).
   Tracked centrally in [worklist 11](11_acasis_img_recovery.md).
 - Future TAC/WAC publication depends on the collection/URI decision in
   worklist 11. The original card-007 partial-capture limit remains documented;

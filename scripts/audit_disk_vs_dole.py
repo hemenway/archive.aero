@@ -52,6 +52,19 @@ KNOWN_DISPOSITIONS = {
 # Sources a row used to point at before it was repointed at a better copy (the
 # 2026-08-28 ACASIS FAA-original upgrade). They stay on disk as the as-found
 # captures they are, so they are explained, not unclaimed.
+# Whole directories that are a documented, fixed-inventory set rather than
+# loose chart sources (each carries its own README/manifest or stitch record).
+EXPLAINED_DIRS = {
+    # 2026-09-19 ACASIS website-source import: TAC/FLY/HEL/enroute/planning
+    # sheets plus three same-edition SEC 103 pixel variants kept beside the
+    # catalogued NARA copies (README.txt + manifest.jsonl in the directory).
+    'acasis_website_2026-09-19': 'acasis_website_import',
+    # 48 letter-size flatbed tiles of the O'Barr DFW 1969 sheet (stitched in
+    # /Volumes/projects/ross_stitch); superseded 2026-10-01 by the catalogued
+    # M40 scans Dallas-Ft_Worth_SEC_2_{North,South}.tif.
+    'Ross donation': 'flatbed_tiles_superseded_by_m40_scan',
+}
+
 SUPERSEDED_LEDGER = REPO / 'worklists' / 'superseded_sources.csv'
 
 
@@ -120,6 +133,8 @@ def main():
             return 'non_sectional'
         if 'All_Files_Sectional' in name or 'wholecycle' in rel.lower():
             return 'wholecycle_bundle'
+        if top in EXPLAINED_DIRS:
+            return EXPLAINED_DIRS[top]
         if top == 'failed_extractions':
             return 'failed_extractions'
         if top == 'dole_gap_2026-07' and ('usahas' in rel or 'simviation' in rel.lower()):

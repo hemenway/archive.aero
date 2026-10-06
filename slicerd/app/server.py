@@ -29,8 +29,11 @@ tol 0.3 px) → archive (move outputs to the HDD: /Volumes/projects/slicer-runs/
 → publish (metadata bundle + era upload to R2; ONLY with confirm=true, and the Mac must then push
 the new bundleUrl in index.html — `slicerctl publish` on the Mac does the whole thing).
 rawtiffs is read-only here: the slicer reads it through an overlay whose writes land on the SSD
-(see source_overlay). Jobs queue per lane (cpu: slice/convert/script, io: archive/publish) and run one
-at a time per lane. A modern era takes roughly 1-2 h to slice and 2-3 h to convert on this box.
+(see source_overlay). Jobs queue per lane (cpu: slice/convert/script, io: archive/upload/publish); a
+lane has slots, a single-chart slice takes one and a modern era the whole cpu lane. upload sends an
+era's archive and the run's chart artifacts to the hashed beta bucket and deletes them locally. The
+Mac can take start-date groups off the queue as a remote worker (status().workers). A modern era
+takes roughly 1-2 h to slice and 2-3 h to convert on this box.
 Start with status(); find keys with list_eras(); queue work with submit_pipeline(); watch with
 get_job()/job_log(). Never publish without the user's explicit go-ahead.
 """
@@ -110,7 +113,7 @@ async def submit_pipeline(keys: list[str], run: str, steps: list[str] = ["slice"
 
 @mcp.tool()
 async def submit_job(type: str, params: dict, depends_on: Optional[str] = None) -> dict:
-    """Queue one job. type: slice | convert | archive | publish | script.
+    """Queue one job. type: slice | convert | archive | upload | publish | script.
     params always include run (and key for slice/convert/publish). slice: charts, slicer_args, force,
     retry, keep_temps. convert: concurrency, quality, format, mem_limit_mb, align_tol, g2p_args, force.
     archive: mosaic (move|delete|keep), charts. script: script (slicer.py | build_metadata_bundle.py |
@@ -305,6 +308,41 @@ async def r_pause(request):
     b = await body(request)
     await call(ENGINE.set_paused, bool(b.get("paused", True)))
     return {"paused": ENGINE.paused}
+
+
+@route("/api/settings")
+async def r_settings(request):
+    return ENGINE.settings
+
+
+@route("/api/settings", methods=("POST",))
+async def r_set_settings(request):
+    return await call(ENGINE.set_settings, **(await body(request)))
+
+
+# Remote workers (`slicerctl worker`): claim a start-date group, report each job, keep alive.
+@route("/api/claim", methods=("POST",))
+async def r_claim(request):
+    b = await body(request)
+    return await call(ENGINE.claim, b.get("worker"), int(b.get("max_charts", 4)), b.get("run"))
+
+
+@route("/api/heartbeat", methods=("POST",))
+async def r_heartbeat(request):
+    return await call(ENGINE.heartbeat, (await body(request)).get("worker"))
+
+
+@route("/api/jobs/{jid}/finish", methods=("POST",))
+async def r_finish(request):
+    b = await body(request)
+    return await call(ENGINE.finish_remote, request.path_params["jid"], b.get("worker"), b.get("status"),
+                      b.get("result"), b.get("error"), b.get("log"))
+
+
+@route("/api/release", methods=("POST",))
+async def r_release(request):
+    b = await body(request)
+    return await call(ENGINE.release, b.get("worker"), b.get("ids", []), bool(b.get("local_only")))
 
 
 # ---------------------------------------------------------------- auth + main

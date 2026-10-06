@@ -13,12 +13,36 @@ The separate September 29 modern-era reslice/republish job continues; its logs
 under `/Volumes/projects/2026-09-29 g2p yshift reslice/` are the evidence for that
 queue. It may supersede the bundle above while preserving this batch's keys.
 
-- [ ] Reconcile the **nine August 29 ACASIS additions** against current remote
-  objects and upload evidence (11/12); this batch does not close that audit.
+- [ ] **71 chart artifacts from the August 29 run were never uploaded**
+  (checked October 4: every key 404s on data.archive.aero, no `uploads.jsonl`
+  receipt, and no local copy survives — `/Volumes/drive/pmtiles_charts` is gone).
+  They are the nine ACASIS sectionals (Atlanta 94, Brownsville 94, Charlotte 97,
+  Dutch Harbor 50, Halifax 92, Jacksonville 95, Miami 96, Washington 97,
+  Wichita 94) and 62 Honolulu/Mariana/Samoan inset and Western Aleutian
+  east/west sheets, 2015 → 2026-09-03. Their era archives are live (23 of the
+  24 era keys in the manifest return 200; `2020-04-23_to_2020-09-10` is not a
+  current key), so what is missing is the per-chart artifact ("View alone" falls back to
+  the clipped era); mosaic content was not re-inspected. List: manifest keys minus upload keys, `generated` 2026-08-29. The
+  October 3 reslice regenerates every chart artifact into `charts-beta`;
+  publish these 71 to their permanent `sectionals/chart/…` keys from that run,
+  then merge the receipts and rebuild `timeline_data.json`. The 72nd unreceipted
+  key, `chart/boston_ma/1957-06-01`, is held on purpose (04).
+  **October 5:** `scripts/publish_chart_pmtiles_from_reslice.py` does this —
+  it diffs manifest vs receipts, looks each key up in the run's
+  `hashed/plan.jsonl`, server-side `rclone copyto`s the `charts-beta` object to
+  the permanent key (no download), verifies size + `sha256` metadata on the
+  target and appends receipts (`--copy`; bare run prints the commands,
+  `--verify` records copies made by hand). First run: **5 ready** (Charlotte,
+  Jacksonville, Miami, Washington, Wichita 2015 — reslice-built 10-05; the
+  Charlotte header matches the live 2014/2015-07 neighbours' bounds exactly,
+  z0–11 instead of z8–11), **66 pending** in 21 eras the reslice has not
+  reached (2014-11-13 → 2020-09-10 inset eras, then the nine 2025–26 modern
+  eras, which are queued last). Rerun as the run advances. Copies kept
+  `content-type: application/vnd.pmtiles` (live keys say octet-stream; the
+  Worker passes either through).
 - [ ] Resolve remaining georef/candidate issues in 04: Boston 1957, SF 1971,
   Juneau's hold, Dallas 1981 north and Denver 1975, plus the remaining GCP lanes.
-- [ ] Reconcile the September 21 source audit from 02 separately. All sources
-  required by this batch were present; that does not prove every catalog source.
+- [x] Source audit (02) rerun October 4: every catalog row resolves on disk.
 
 Current batch output: `/Volumes/drive/georef_publish_2026-10-01/`; row-level,
 upload and read-back evidence: `worklists/data/georef_publish_2026-10-01/`.

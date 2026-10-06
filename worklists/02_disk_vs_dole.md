@@ -1,47 +1,33 @@
 # Worklist 02 — Disk ↔ dole mismatches (rawtiffs audit)
 
-## Current status — 2026-09-21 (donation update 2026-10-01): source reconciliation open
+## Current status — 2026-10-04: both directions clean
 
-A read-only walk of the mounted `/Volumes/projects/rawtiffs` against **7,672**
-rows loaded through `scripts/dole_v2.py`, using the claim/resolution rules in
-`scripts/audit_disk_vs_dole.py`, found **12,061 relevant files**, **142 catalog
-rows not resolvable**, and **48 unclaimed/unexplained TIFFs**. The walk reported
-no filesystem errors. These are resolver findings, not proof that sources were
-lost or that published tiles are missing; no downloads, extraction, moves,
-content validation or live-site checks were performed.
+`scripts/audit_disk_vs_dole.py` against the mounted `/Volumes/projects/rawtiffs`
+and **7,744** rows: **14,339 relevant files, 0 catalog rows unresolvable,
+0 unexplained files.** Filename resolution only; no content validation.
 
-| Current resolution misses | Rows |
-|---|---:|
-| archive.org 2004 JPGs | 78 |
-| usahas ChartGeek mosaics | 23 |
-| Juneau NARA Batch19 JPGs | 17 |
-| AVSIM Pack 12 JPGs | 11 |
-| simviation chart TIFFs | 3 |
-| aviationtoolbox GeoTIFFs | 3 |
-| NOAA Anchorage sources | 2 |
-| San Francisco 1966/1978 chart TIFFs | 2 |
-| FAA sample, ESRI sample, Seward 93 ZIP | 3 |
+- [x] The 142 misses of the September 21 audit all resolve today with no file
+  moved or repointed in between (`dole_gap_2026-07/archive2004/` holds 79 JPGs,
+  the Pack-12, usahas, Juneau Batch19, simviation and aviationtoolbox sources
+  are in place). That walk saw an incomplete tree; it was not a loss.
+- [x] The 48 `Ross donation/Side a|b` TIFFs are the letter-size flatbed tiles
+  (24 per side, 600 dpi) of the O'Barr Dallas-Ft Worth 1969-07-24 sheet, stitched
+  under `/Volumes/projects/ross_stitch/`. The sheet is catalogued from the
+  1200 dpi M40 scans `Dallas-Ft_Worth_SEC_2_{North,South}.tif` (published
+  October 1), so the tiles get no rows. They stay as found.
+- [x] The 179 files under `acasis_website_2026-09-19/` are the documented
+  September 19 import (README + manifest in the directory): TAC/FLY/HEL,
+  enroute and planning sheets, plus `Anchorage SEC 103`, `Fairbanks SEC 103`
+  and `Houston SEC 103`, kept as pixel variants of editions already catalogued
+  from NARA. The audit script now names both directories as explained buckets.
+- [ ] Refresh any cleanup plan from current files and full hashes. The
+  classifier finds **590 short-name candidates**; suffix matching is not
+  byte-identity proof.
+- [ ] Seward 93 still resolves only by name; see the July note below and 01.
 
-The `dole_gap_2026-07/archive2004/` directory is present but empty. All 11 Pack-12
-rows have blank download links. The 48 unexplained files are the 24 TIFFs in each
-of `Ross donation/Side a/` and `Side b/`; their uniqueness and catalog eligibility
-have not been established by this filename audit.
-
-- [ ] Reconcile the 142 misses with the current volume, prior inventories and
-  retained sources before rebuilding. Restore/repoint only after verifying the
-  actual file and provenance; do not infer a deletion from this audit.
-- [ ] Identify and disposition the 48 Ross scans by edition/side against current
-  holdings before adding rows.
-- [ ] Refresh any cleanup plan from current files and full hashes. The current
-  classifier finds **590 short-name candidates**, not the historical 623; suffix
-  matching is not byte-identity proof. The `failed_extractions/` directory is now
-  empty, so its old four-TAC-ZIP deletion task is retired.
-
-Other unclaimed-but-explained buckets today: 2,406 non-sectional, 1,223 versos,
-214 ledgered superseded sources, 4 known dispositions and 1 whole-cycle bundle.
-The [September 19 duplicate-extraction](dup_extractions_cleanup_2026-09-19.md)
-and [deep-archive cleanup](deep_archive_cleanup_2026-09-19.md) reports cover their
-own fixed inventories; they do not establish today's overall rawtiffs parity.
+Explained buckets today: 2,414 non-sectional, 1,223 versos, 590 short-name
+twins, 222 ledgered superseded sources, 179 ACASIS website import, 137 gap-dir
+intermediates, 48 Ross flatbed tiles, 8 known dispositions, 1 whole-cycle bundle.
 
 ## Historical audit — July/August 2026
 

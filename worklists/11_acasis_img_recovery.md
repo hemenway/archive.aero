@@ -16,10 +16,10 @@ are not a current import queue.
   iFly gap-fillers were superseded by FAA originals in **73548cf (2026-08-29)**.
 - [x] The [2026-09-19 selective website-source import](data/acasis_import/2026-09-19/REPORT.md)
   preserved additional chart and AIS sources. It did not complete HDD recovery.
-- [ ] Reconcile publication of the nine August 29 sectionals: their generated
-  chart keys have no matching `uploads.jsonl` receipts and no `pm` fields in the
-  local 2026-09-15 `timeline_data.json`. Verify remote artifacts and era coverage
-  before deciding what still needs publishing; do not import the rows again.
+- [ ] Publish the nine August 29 sectionals' chart artifacts. Reconciled
+  October 4: the eras holding them are live, but all nine `chart/<slug>/<date>`
+  keys 404 and no local copy remains. They are part of the 71-key gap in
+  [06](06_publish_sync.md), to be filled from the October 3 reslice.
 - [ ] Locate and verify the recovery image, resume bundle and original source
   device before resuming. The [September 19 assessment](data/acasis_before_wipe/2026-09-19/REPORT.md)
   found an unchanged partial `image.imgcv2` and an empty sidecar directory. On

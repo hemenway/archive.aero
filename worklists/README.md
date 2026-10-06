@@ -1,19 +1,19 @@
 # Worklists
 
-**Reviewed 2026-09-21; georef/publication updated 2026-10-01.** Start here for current status and next actions. The dated
+**Reviewed 2026-09-21; georef/publication updated 2026-10-01; 02/04/06 updated 2026-10-04; 06 updated 2026-10-05.** Start here for current status and next actions. The dated
 results in each worklist are evidence from that run; they are not fresh production
 checks. Original hunt records and completed cleanup reports are retained below.
 
 ## Next actions
 
-1. **Reconcile source availability ([02](02_disk_vs_dole.md)).** The current
-   read-only audit cannot resolve 142 of 7,672 catalog rows in the mounted source
-   tree. Confirm the volume and source locations before retrying downloads,
-   georeferencing, or deleting duplicate candidates. This is not evidence of
-   permanent loss or a live-site outage.
-2. **Reconcile publication ([06](06_publish_sync.md)).** The October 1 donation/georef batch
-   is verified and published (17 eras, 30 chart artifacts). Reconcile the separate
-   nine August ACASIS imports and follow the ongoing modern-era reslice queue.
+1. ~~Reconcile source availability ([02](02_disk_vs_dole.md)).~~ Clean on
+   October 4: all 7,744 rows resolve on disk and no file is unexplained.
+2. **Publish the 71 missing chart artifacts ([06](06_publish_sync.md)).** The
+   August 29 run's per-chart files (nine ACASIS sectionals, 62 inset and
+   W. Aleutian sheets) never reached R2 and no local copy remains; take them
+   from the October 3 reslice with `scripts/publish_chart_pmtiles_from_reslice.py`
+   (October 5: 5 ready, 66 waiting for the reslice to reach their eras). Dallas 1981 north is catalog-ready and needs a
+   slice and publish ([04](04_georef_backlog.md)).
    [14](14_geotiff2pmtiles_audit_handoff.md) also tracks missing evidence for the
    historical PMTiles run-length repairs.
 3. **Work the remaining chart repairs ([01](01_dole_slicer_failures.md),
@@ -38,7 +38,7 @@ remain separate open work. No scheduled helper or deployment is implied by this 
 | Worklist | Current status / next step |
 |---|---|
 | [01 — Slicer failures](01_dole_slicer_failures.md) | Historical July failure report with later repairs; follow the reconciled remaining items before another affected-range run. |
-| [02 — Disk vs. catalog](02_disk_vs_dole.md) | **Source reconciliation open:** 142 unresolved catalog rows; 48 unclaimed TIFFs from the Ross donation. The August “clean” result is historical. Duplicate candidates need fresh proof. |
+| [02 — Disk vs. catalog](02_disk_vs_dole.md) | **Clean October 4:** 0 unresolved rows, 0 unexplained files. Duplicate candidates still need hash proof before any cleanup. |
 | [03 — Sources searched](03_web_sources_searched.md) | Preserved venue index and search history; use the open acquisition lanes and avoid repeating closed searches. |
 | [04 — Georeferencing](04_georef_backlog.md) | 115 pre-2011 rows lack complete GCPs; this is a triage filter, not a hand-georef count. Current table separates source, GCP, half-sheet, and publication issues. |
 | [05 — Date quality](05_date_quality.md) | 263 END-ESTIMATED, 236 GAP, 45 DATE-APPROX flags on 301 distinct rows; flags overlap. Review the dated snapshot and provenance before changes. |
