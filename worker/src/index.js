@@ -226,8 +226,7 @@ function fromCached(cached) {
   return new Response(cached.body, { status, headers: cached.headers });
 }
 
-export default {
-  async fetch(request, env, ctx) {
+async function serve(request, env, ctx) {
     const startedAt = Date.now();
     const origin = new URL(request.url).pathname.startsWith("/t/") ? "*" : env.ALLOWED_ORIGIN || "*";
 
@@ -507,6 +506,9 @@ export default {
       }
     }
 
+    // A no-cache request never consults the edge cache; reporting it as MISS
+    // made reload storms after a republish look like ordinary cold misses.
+    if (bypassCache) cacheStatus = "BYPASS";
     // Surface the edge result so cache behaviour is visible in DevTools/curl.
     response.headers.set("x-cache", cacheStatus);
 
@@ -541,6 +543,10 @@ export default {
               rangeSize || 0,
               Date.now() - startedAt,
               range ? range.offset : 0,
+              // Reads each row stands for at this Worker sampling rate, so
+              // sum(_sample_interval * double4) counts requests even across
+              // a SAMPLE_RATE change (rows before 2026-10 lack it: x20).
+              1 / sampleRate,
             ],
           });
         } catch (_) {
@@ -550,5 +556,47 @@ export default {
     }
 
     return withCors(response, origin);
+}
+
+// Every failed response is recorded: the tile_logs sample above covers only
+// successful tile reads, and console errors are head-sampled at 10%, so 416
+// bursts after a republish and R2 outages used to leave nothing durable.
+function logFailure(env, request, url, status, startedAt) {
+  try {
+    if (!env.TILE_ERRORS) return;
+    env.TILE_ERRORS.writeDataPoint({
+      indexes: [String(status)],
+      blobs: [
+        url.pathname.slice(0, 256),
+        String(status),
+        request.cf?.country || "XX",
+        (request.headers.get("range") || "").slice(0, 64),
+        (request.headers.get("cache-control") || "").slice(0, 64),
+        (request.headers.get("user-agent") || "").slice(0, 256),
+        request.headers.get("referer") || "",
+      ],
+      doubles: [status, Date.now() - startedAt],
+    });
+  } catch (_) {
+    // Never let logging fail a request.
+  }
+}
+
+export default {
+  async fetch(request, env, ctx) {
+    const startedAt = Date.now();
+    const url = new URL(request.url);
+    let response;
+    try {
+      response = await serve(request, env, ctx);
+    } catch (err) {
+      // A bug used to escape as an unlogged Cloudflare 1101.
+      console.error(`tiles: unhandled error for ${url.pathname}: ${String((err && err.stack) || err)}`);
+      const origin = url.pathname.startsWith("/t/") ? "*" : env.ALLOWED_ORIGIN || "*";
+      response = withCors(new Response("Internal error", {
+        status: 500, headers: { "retry-after": "1", "cache-control": "no-store" } }), origin);
+    }
+    if (response.status >= 400) logFailure(env, request, url, response.status, startedAt);
+    return response;
   },
 };

@@ -157,7 +157,7 @@ test('no-cache never joins a flight', { timeout: 5000 }, async t => {
   const { response, body } = await h.request({ range: 'bytes=40-55', 'cache-control': 'no-cache' }, 'GET', path);
   assert.equal(response.status, 206);
   assert.deepEqual(body, data.slice(40, 56));
-  assert.equal(response.headers.get('x-cache'), 'MISS');
+  assert.equal(response.headers.get('x-cache'), 'BYPASS');
   assert.equal(h.reads.length, 2);
 });
 
@@ -212,7 +212,7 @@ test('reload bypasses stale cache and refuses to splice different object version
   assert.equal((await h.request({ range: `bytes=${BLOCK - 1}-${BLOCK + 1}` })).response.status, 416);
   const fresh = await h.request({ range: 'bytes=10-25', 'cache-control': 'no-cache' });
   assert.equal(fresh.response.headers.get('etag'), '"v2"');
-  assert.equal(fresh.response.headers.get('x-cache'), 'MISS');
+  assert.equal(fresh.response.headers.get('x-cache'), 'BYPASS');
   assert.equal((await h.request({ range: `bytes=${BLOCK - 1}-${BLOCK + 1}` })).response.status, 206);
 });
 
@@ -254,4 +254,47 @@ test('a content-hashed key is immutable; a plain key keeps the one-day lifetime'
       assert.equal(response.headers.get('cache-control'), expected, `${method} ${path} ${headers.range || ''}`);
     }
   }
+});
+
+test('every failed response is logged to tile_errors; successes are not', async t => {
+  const h = harness(t);
+  const points = [];
+  h.env.TILE_ERRORS = { writeDataPoint(p) { points.push(p); } };
+  assert.equal((await h.request({ range: 'bytes=10-25' })).response.status, 206);
+  assert.equal(points.length, 0);
+  assert.equal((await h.request({ range: `bytes=${data.length + 5}-${data.length + 9}` })).response.status, 416);
+  h.state.missing = true;
+  assert.equal((await h.request({ range: 'bytes=10-25' }, 'GET', '/missing.pmtiles')).response.status, 404);
+  h.state.missing = false;
+  h.state.fail = true;
+  assert.equal((await h.request({ range: 'bytes=10-25', 'cache-control': 'no-cache' })).response.status, 503);
+  assert.deepEqual(points.map(p => p.indexes[0]), ['416', '404', '503']);
+  const last = points.at(-1);
+  assert.equal(last.blobs[0], '/chart.pmtiles');
+  assert.equal(last.blobs[3], 'bytes=10-25');
+  assert.equal(last.blobs[4], 'no-cache');
+  assert.equal(last.doubles[0], 503);
+});
+
+test('an exception escaping the handler is a logged 500 with CORS, not a bare 1101', async t => {
+  const h = harness(t);
+  const points = [];
+  h.env.TILE_ERRORS = { writeDataPoint(p) { points.push(p); } };
+  // The streamed path's edge-cache lookup is outside any try block.
+  globalThis.caches.default.match = async () => { throw Error('cache offline'); };
+  const { response } = await h.request({}, 'GET');
+  assert.equal(response.status, 500);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(points.map(p => p.indexes[0]), ['500']);
+});
+
+test('sampled tile reads record how many requests each row stands for', async t => {
+  const h = harness(t);
+  const points = [];
+  h.env.SAMPLE_RATE = '1';
+  h.env.TILES = { writeDataPoint(p) { points.push(p); } };
+  await h.request({ range: 'bytes=5000-9999' }); // past the header, above METADATA_BYTES
+  assert.equal(points.length, 1);
+  assert.equal(points[0].doubles[3], 1);
+  assert.equal(points[0].blobs[2], 'MISS');
 });
