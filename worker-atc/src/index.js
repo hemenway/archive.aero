@@ -272,7 +272,7 @@ async function redirectOldHost(env, url, request) {
   // canonicalOf: dropped slugs (junk pages, /home/) must also cost exactly one
   // hop instead of bouncing through /atc/<slug> a second time.
   const p = url.searchParams.get("p") || url.searchParams.get("page_id");
-  if (p && P_MAP[p]) {
+  if (p && Object.hasOwn(P_MAP, p)) { // own keys only: ?p=constructor is not a page
     const r = routeOldPath(P_MAP[p]);
     if (r?.status === 410) return html(PAGE_410, 410);
     const to = r?.to ?? PREFIX + P_MAP[p];
@@ -367,6 +367,13 @@ async function handle(request, env, ctx, url, host) {
         headers: { allow: "GET, HEAD" },
       });
 
+    // Plain http on the apex is a 301 to the https canonical (URI-POLICY
+    // covenant 1). The zone redirect rule URI-POLICY.md prescribes runs ahead
+    // of the Worker and covers the whole apex; this closes /atc/* without it.
+    if (url.protocol === "http:" && host === "archive.aero")
+      return Response.redirect(
+        NEW_ORIGIN + (url.pathname === PREFIX ? PREFIX + "/" : url.pathname) + url.search, 301);
+
     let response;
     if (OLD_HOSTS.has(host) && env.MODE === "redirect") {
       response = await redirectOldHost(env, url, request);
@@ -375,7 +382,8 @@ async function handle(request, env, ctx, url, host) {
       // the bare site root, so pre-cutover click-through works either way.
       const staging = host !== "archive.aero";
       let rawPath = url.pathname;
-      if (rawPath === PREFIX) return Response.redirect(NEW_ORIGIN + PREFIX + "/", 301);
+      // Keep the query: /atc?p=379 and /atc?state=… must reach their page.
+      if (rawPath === PREFIX) return Response.redirect(NEW_ORIGIN + PREFIX + "/" + url.search, 301);
       if (rawPath.startsWith(PREFIX + "/")) rawPath = rawPath.slice(PREFIX.length);
       else if (!staging) return html(PAGE_404, 404);
       let path;
@@ -389,7 +397,7 @@ async function handle(request, env, ctx, url, host) {
       // the serve branch answered them with the landing page. Same one-hop
       // resolution as the old host.
       const pid = url.searchParams.get("p") || url.searchParams.get("page_id");
-      if (pid && P_MAP[pid]) {
+      if (pid && Object.hasOwn(P_MAP, pid)) {
         const r = routeOldPath(P_MAP[pid]);
         if (r?.status === 410) return html(PAGE_410, 410);
         const to = r?.to ?? PREFIX + P_MAP[pid];

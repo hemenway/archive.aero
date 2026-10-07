@@ -193,6 +193,11 @@ class ChartSlicer:
         # (date_key, location, uri_name, file) for every group refused because
         # two source files resolved to one chart key; reported at the end.
         self.chart_collisions: List[Tuple[str, str, str, str]] = []
+        # Rows whose corner GCPs fail dole_v2.gcp_fit_problems at 'error' are
+        # refused at load (an alternate row can still win the group) unless
+        # --allow-gcp-misfit; (filename, location, date, reasons) for the report.
+        self.allow_gcp_misfit = False
+        self.gcp_refused: List[Tuple[str, str, str, List[str]]] = []
 
     def log(self, msg: str):
         """Print log message with timestamp."""
@@ -399,6 +404,8 @@ class ChartSlicer:
         accepted_rows = 0
         skipped_missing_filename = 0
         undated_rows = 0
+        gcp_warned = 0
+        self.gcp_refused = []
 
         for row_idx, row in enumerate(dole_v2.load_rows(self.csv_file), start=1):
             total_rows += 1
@@ -407,6 +414,20 @@ class ChartSlicer:
             if not filename:
                 skipped_missing_filename += 1
                 continue
+
+            # Corner-GCP plausibility (the Boston 1953-70 class of error: a
+            # wrong corner squeezes the whole sheet, and nothing downstream
+            # notices). Same check as `dole_v2.py check-gcps`.
+            gcp_level, gcp_reasons = dole_v2.gcp_fit_problems(row)
+            if gcp_level == 'error' and not self.allow_gcp_misfit:
+                self.log(f"  ✗ refusing {filename} ({row.get('location', '')} {row.get('date', '')}): "
+                         f"corner GCPs fail the fit check - {'; '.join(gcp_reasons)}")
+                self.gcp_refused.append((filename, row.get('location', ''), row.get('date', ''), gcp_reasons))
+                continue
+            if gcp_level != 'ok':
+                gcp_warned += 1
+                kept = " (kept: --allow-gcp-misfit)" if gcp_level == 'error' else ""
+                self.log(f"  ⚠ GCP fit {filename}{kept}: {'; '.join(gcp_reasons)}")
 
             link = row.get('download_link', '')
             timestamp = None
@@ -466,7 +487,8 @@ class ChartSlicer:
         self.log(f"Loaded {len(self.dole_data)} date ranges.")
         self.log(
             f"Accepted {accepted_rows}/{total_rows} rows "
-            f"(undated={undated_rows}, missing filename skipped={skipped_missing_filename})."
+            f"(undated={undated_rows}, missing filename skipped={skipped_missing_filename}, "
+            f"GCP fit refused={len(self.gcp_refused)}, GCP fit warnings={gcp_warned})."
         )
 
     def _build_source_index(self):
@@ -2356,23 +2378,28 @@ class ChartSlicer:
                 continue  # next alternate row
 
             produced_any = False
+            # Resolve every file's chart key before converting any of them.
+            # Two source files resolving to one chart key means the half rule
+            # failed to tell them apart. Publishing whichever glob order
+            # delivered first silently dropped the other half; the group fails
+            # instead, with nothing converted, and the end-of-run report
+            # lists it.
+            sources = []
             names_seen = set()
             for src_file_info in found_files:
                 src_file = src_file_info[0] if isinstance(src_file_info, tuple) else src_file_info
                 ident = self._chart_identity(rec, file_stem=src_file.stem)
                 if not ident:
                     return
-                slug, uri_name, half = ident
+                uri_name = ident[1]
                 if uri_name in names_seen:
-                    # Two source files resolving to one chart key means the
-                    # half rule failed to tell them apart. Publishing
-                    # whichever glob order delivered first silently dropped
-                    # the other half; treat it as a failed group instead.
                     self.log(f"      ✗ chart URI collision within {location}: {src_file.name} also maps to "
                              f"{uri_name} - refusing to publish either (fix the half rule or the catalog)")
-                    self.stats['chart_pmtiles_failed'] = self.stats.get('chart_pmtiles_failed', 0) + 1
+                    self.chart_collisions.append((date_key, location, uri_name, src_file.name))
                     return
                 names_seen.add(uri_name)
+                sources.append((src_file, ident))
+            for src_file, (slug, uri_name, half) in sources:
                 key = f"chart/{slug}/{uri_name}"
                 out_pm = self.chart_pmtiles_dir / slug / f"{uri_name}.pmtiles"
 
@@ -3402,6 +3429,12 @@ class ChartSlicer:
         if chart_backlog:
             self.emit_chart_pmtiles_bulk(chart_backlog)
 
+        if self.gcp_refused:
+            self.log(f"\n✗ {len(self.gcp_refused)} catalog row(s) refused: corner GCPs fail the fit check "
+                     f"(fix the corners, or rerun with --allow-gcp-misfit; list: dole_v2.py check-gcps):")
+            for fname, location, date, reasons in self.gcp_refused:
+                self.log(f"    {date}  {location}  {fname}  - {reasons[0]}")
+
         if self.chart_collisions:
             self.log(f"\n✗ {len(self.chart_collisions)} chart group(s) NOT published: two source files "
                      f"resolved to one chart key (half rule could not tell them apart):")
@@ -3561,6 +3594,13 @@ Examples:
     )
 
     parser.add_argument(
+        "--allow-gcp-misfit",
+        action="store_true",
+        help="Slice catalog rows whose corner GCPs fail the plausibility check (aspect off by >10%%, "
+             "mirror order, or >5 km corner residual; see `dole_v2.py check-gcps`) instead of refusing them"
+    )
+
+    parser.add_argument(
         "--keep-chart-temp",
         action="store_true",
         help="Keep full-sheet warp GeoTIFFs after pmtiles conversion (default: delete on success)"
@@ -3684,6 +3724,7 @@ Examples:
         'cubicspline': gdal.GRA_CubicSpline
     }
     slicer.resample_alg = resample_map[args.resample]
+    slicer.allow_gcp_misfit = args.allow_gcp_misfit
 
     slicer.load_dole_data()
 

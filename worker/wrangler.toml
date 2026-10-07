@@ -3,11 +3,17 @@ main = "src/index.js"
 # The OAuth token can see more than one account since 2026-10; pin ours so
 # non-interactive deploys do not stop at the account picker.
 account_id = "ad20eec906d1b5a42931b881ed22232f"
-compatibility_date = "2025-05-01"
+# Runtime behavior date. Raised from 2025-05-01 on 2026-10-07 after both Workers
+# answered a request battery identically under either date in workerd 2026-10-06.
+compatibility_date = "2026-10-06"
 # No tiles.<account>.workers.dev hostname: it would expose the whole charts
 # bucket outside the archive.aero zone (WAF, cache namespace) and defaults to
 # enabled on every deploy when unset.
 workers_dev = false
+# No per-version preview hostnames (<version>-<name>.<account>.workers.dev):
+# left unset, the account default applies, and a preview URL bypasses the
+# zone (WAF, routes) just like the workers.dev hostname.
+preview_urls = false
 
 # Custom domain attaches via dashboard or `routes` block.
 # routes = [{ pattern = "tiles.archive.aero", custom_domain = true }]
@@ -19,6 +25,12 @@ bucket_name = "charts"
 [[analytics_engine_datasets]]
 binding = "TILES"
 dataset = "tile_logs"
+
+# Every response >= 400 and every uncaught exception, unsampled (tile_logs
+# holds only sampled successful tile reads). See logFailure in src/index.js.
+[[analytics_engine_datasets]]
+binding = "TILE_ERRORS"
+dataset = "tile_errors"
 
 [vars]
 ALLOWED_ORIGIN = "*"
