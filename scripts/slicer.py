@@ -2356,23 +2356,28 @@ class ChartSlicer:
                 continue  # next alternate row
 
             produced_any = False
+            # Resolve every file's chart key before converting any of them.
+            # Two source files resolving to one chart key means the half rule
+            # failed to tell them apart. Publishing whichever glob order
+            # delivered first silently dropped the other half; the group fails
+            # instead, with nothing converted, and the end-of-run report
+            # lists it.
+            sources = []
             names_seen = set()
             for src_file_info in found_files:
                 src_file = src_file_info[0] if isinstance(src_file_info, tuple) else src_file_info
                 ident = self._chart_identity(rec, file_stem=src_file.stem)
                 if not ident:
                     return
-                slug, uri_name, half = ident
+                uri_name = ident[1]
                 if uri_name in names_seen:
-                    # Two source files resolving to one chart key means the
-                    # half rule failed to tell them apart. Publishing
-                    # whichever glob order delivered first silently dropped
-                    # the other half; treat it as a failed group instead.
                     self.log(f"      ✗ chart URI collision within {location}: {src_file.name} also maps to "
                              f"{uri_name} - refusing to publish either (fix the half rule or the catalog)")
-                    self.stats['chart_pmtiles_failed'] = self.stats.get('chart_pmtiles_failed', 0) + 1
+                    self.chart_collisions.append((date_key, location, uri_name, src_file.name))
                     return
                 names_seen.add(uri_name)
+                sources.append((src_file, ident))
+            for src_file, (slug, uri_name, half) in sources:
                 key = f"chart/{slug}/{uri_name}"
                 out_pm = self.chart_pmtiles_dir / slug / f"{uri_name}.pmtiles"
 
