@@ -46,6 +46,10 @@ export class Scheduler {
       const best=this.pop();
       if(!best)break;
       if(this.pending.get(best.request.key)!==best || best.running || best.timer!=null)continue;
+      // An adjacent date is useful after this view loads. Spare fetch slots
+      // must not let its tiles compete with current tiles still on the wire
+      // (or backing off), especially on a slow connection.
+      if((best.request.priority??1)>1 && Array.from(this.pending.values()).some(j=>(j.request.priority??1)<=1)) {this.push(best);break;}
       best.running=true; this.active++; void this.run(best);
     }
   }

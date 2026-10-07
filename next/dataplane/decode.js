@@ -1,7 +1,9 @@
 export async function decodeRaster(bytes,{bitmap=true,contentType}={}) {
   const blob=new Blob([bytes],{type:contentType??'application/octet-stream'});
   if(bitmap && typeof createImageBitmap==='function') {
-    try { return {bitmap:await createImageBitmap(blob)}; } catch(error) {
+    // WebGL ignores UNPACK_PREMULTIPLY_ALPHA_WEBGL for ImageBitmap sources.
+    // Prepare the renderer's premultiplied pixels on the decoding thread.
+    try { return {bitmap:await createImageBitmap(blob,{premultiplyAlpha:'premultiply'})}; } catch(error) {
       // Some engines expose createImageBitmap but cannot decode a particular codec in a Worker.
       if(typeof document==='undefined') return {bytes:bytes.slice(),contentType};
     }

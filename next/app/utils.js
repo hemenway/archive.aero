@@ -1,5 +1,8 @@
 // Interface helpers ported from src/viewer.js (Utils). The archive/tile helpers
 // stayed behind: the data plane owns that work on the new engine.
+// The full archive has thousands of timeline dates. Reuse the locale data
+// instead of constructing a formatter for every label during boot.
+const dateLabel = new Intl.DateTimeFormat('en-US', { year: 'numeric', month: 'short' });
 export const Utils = {
   // localStorage access itself throws SecurityError when storage is blocked
   // (block-all-cookies, third-party iframe). It is a per-viewer convenience
@@ -25,7 +28,7 @@ export const Utils = {
     try {
       const [y, m, d] = dateStr.split('-').map(Number);
       const date = new Date(y, m - 1, d);
-      return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short' });
+      return dateLabel.format(date);
     } catch (e) {
       return dateStr;
     }

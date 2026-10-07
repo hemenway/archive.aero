@@ -480,8 +480,18 @@ async function initApp() {
 
   // The offline shell is a convenience; a browser that refuses it still works.
   if ('serviceWorker' in navigator && !__STUBS__) {
-    navigator.serviceWorker.register(new URL('./sw.js', document.baseURI))
-      .catch((error) => console.warn('service worker unavailable', error));
+    // Installation fetches the complete offline shell, including lazy modules.
+    // Let the first map paint finish before those downloads start competing.
+    const register = () => {
+      const run = () => {
+        if (!torn) navigator.serviceWorker.register(new URL('./sw.js', document.baseURI))
+          .catch((error) => console.warn('service worker unavailable', error));
+      };
+      if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 2000 });
+      else setTimeout(run, 0);
+    };
+    if (mapCtrl.painted) register();
+    else window.addEventListener('first-chart-paint', register, { once: true });
   }
 
   document.body.dataset.ready = 'true';

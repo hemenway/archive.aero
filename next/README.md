@@ -70,8 +70,9 @@ entries. It bundles the Worker separately and rewrites the data plane's
 `new URL('./worker.js', import.meta.url)` reference to the hashed worker output.
 `--stubs` always selects both stubs, even when real modules are present.
 
-The service worker registers automatically only in real builds. Stub browser
-tests register it explicitly for offline/precaching verification. The server is
+The service worker registers automatically only in real builds, after the first
+map paint and an idle opportunity. Stub browser tests register it explicitly for
+offline/precaching verification. The server is
 for fixtures, not a production data proxy. Use the hosting plan for deployment.
 
 ## Merge and integration
@@ -123,3 +124,15 @@ alongside esbuild, `build:next`, and `test:next`.
 - `build.mjs`: esbuild, hashes, sourcemaps, the page and stylesheet derived from
   the production viewer, self-hosted Barlow, CSP/preload generation and budgets.
 - `sw.js`: shell-only offline caching; never duplicates the HTTP tile cache.
+
+## Startup performance
+
+The head preconnects to the manifest's actual data host and preloads the data
+Worker and its static dependencies. Early chart requests use the same final
+covered day as the timeline, exclude expired editions, and fetch overview tiles
+before full resolution. Historical links outside the inlined frame leave tile
+selection to the data plane. Fractional share-link zooms match the renderer.
+Adjacent-date prefetch waits for the current view's foreground requests,
+including retries. The timeline reuses one date formatter across the full archive,
+and raster decoding prepares premultiplied pixels before transferring them to
+WebGL. These paths are covered by the data-plane, shell and real-module tests.

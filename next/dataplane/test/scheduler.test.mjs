@@ -26,3 +26,14 @@ test('byte LRU enforces budget and least-recently-used order',()=>{const c=new B
 test('adopted early responses are consumed instead of a second fetch; a rejected one falls back to fetch',async()=>{const h=harness();h.s.adopt('a',Promise.resolve(new Response('early',{headers:{'content-type':'image/png'}})));let reject;h.s.adopt('b',new Promise((_,r)=>reject=r));h.s.setDemand([req('a'),req('b')]);await flush();assert.deepEqual(h.events.map(e=>e[0]),['a']);assert.equal(h.requests.length,0);reject(new TypeError('network'));await flush();assert.equal(h.timers.length,1);h.timers[0].fn();await flush();assert.equal(h.requests.length,1);assert.equal(h.requests[0].signal.aborted,false);h.requests[0].resolve(new Response('late'));await flush();assert.equal(h.events[1][0],'b');h.s.destroy();});
 test('Retry-After sets the backoff, capped at five seconds',async()=>{const h=harness();h.s.setDemand([req('a')]);h.requests[0].resolve(new Response('',{status:503,headers:{'retry-after':'1'}}));await flush();assert.equal(h.timers[0].ms,1000);h.timers[0].fn();await flush();h.requests[1].resolve(new Response('',{status:503,headers:{'retry-after':'120'}}));await flush();assert.equal(h.timers[1].ms,5000);h.s.destroy();});
 test('a stalled fetch times out, retries with a fresh controller and lingers on demand change until destroy',async()=>{const h=harness({timeout:1000});h.s.setDemand([req('a')]);assert.equal(h.timers[0].ms,1000);const first=h.requests[0].signal;h.timers[0].fn();await flush();assert.equal(first.aborted,true);assert.equal(first.reason.name,'TimeoutError');assert.equal(h.s.stats().retries,1);h.timers[1].fn();await flush();assert.equal(h.requests.length,2);assert.notEqual(h.requests[1].signal,first);h.s.setDemand([]);assert.equal(h.requests[1].signal.aborted,false);assert.equal(h.s.stats().lingering,1);h.s.destroy();assert.equal(h.requests[1].signal.aborted,true);await flush();assert.equal(h.errors.length,0);});
+test('adjacent-date prefetch waits for foreground responses, retries and a superseding view',async()=>{
+ const h=harness({concurrency:4});h.s.setDemand([req('visible',1),req('future',3)]);
+ assert.equal(h.requests.length,1); // spare slots do not start background work
+ h.requests[0].resolve(new Response('',{status:503}));await flush();
+ assert.equal(h.requests.length,1);h.timers[0].fn();await flush();
+ assert.equal(h.requests.length,2);h.requests[1].resolve(new Response('visible'));await flush();
+ assert.equal(h.requests.length,3);assert.deepEqual(h.events.map(e=>e[0]),['visible']);
+ h.s.setDemand([req('replacement',1),req('future',3),req('later',4)]);
+ assert.equal(h.requests.length,4);h.requests[3].resolve(new Response('replacement'));await flush();
+ assert.equal(h.requests.length,5);h.s.destroy();
+});

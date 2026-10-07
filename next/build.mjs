@@ -84,16 +84,20 @@ const pageColor = (property, variable) => {
 };
 const critical = `html,body{height:100%;margin:0;background:${pageColor('background', '--bg-dark')};color:${pageColor('color', '--text-light')}}#mapCanvas{opacity:0}`;
 const start = source.eras.map(e => e.k.split('_to_')[0]).sort().at(-1);
+// TimelineApp opens on the final covered day, which may be months after the
+// newest edition started. Early requests must use that same date.
+const end = source.eras.map(e => e.k.split('_to_')[1]).sort().at(-1);
+const lastDate = new Date(Date.parse(end) - 86400000).toISOString().slice(0, 10);
 // The inlined frame only feeds the early tile requests, so it is capped: a 1940s date has ~100 single-sheet eras in
 // effect at once (26 KB of HTML and as many early requests when the newest era was 1946, the partial beta of 2026-10-04).
 // The data plane fetches whatever was not requested early.
-const newest = source.eras.filter(e => { const [a, b] = e.k.split('_to_'); return a <= start && start < b; }).slice(0, 24).map(e => ({ p: `sectionals/${e.k}.${e.h}`, b: e.b, z: e.z }));
+const newest = source.eras.filter(e => { const [a, b] = e.k.split('_to_'); return a <= start && start < b; }).slice(0, 24).map(e => ({ p: `sectionals/${e.k}.${e.h}`, b: e.b, z: e.z, e: e.k.split('_to_')[1] }));
 const base = new URL(source.tileBase, new URL(manifestUrl, 'https://archive.aero/next/')).href;
 const early = (await transform(await readFile(path.join(directory, 'shell/early.js'), 'utf8'), { minify: true, target: 'es2022' })).code.trim();
 if (Buffer.byteLength(early) > 1536) throw new Error(`Boot script exceeds 1.5 KB: ${Buffer.byteLength(early)}`);
 // A vector basemap is not requested at boot: most of a view lies under charts, and the data plane fetches only the
 // basemap tiles that show.
-const bootData = JSON.stringify({ base: stubs ? './t/' : base, eras: newest, start, map: source.basemap?.format === 'mvt' ? null : source.basemap }).replaceAll('<', '\\u003c');
+const bootData = JSON.stringify({ base: stubs ? './t/' : base, eras: newest, start, end: lastDate, map: source.basemap?.format === 'mvt' ? null : source.basemap }).replaceAll('<', '\\u003c');
 const json = JSON.stringify(manifestUrl).replaceAll('<', '\\u003c');
 const escape = text => text.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
 const attr = value => /^[a-zA-Z0-9_:.\/-]+$/.test(value) ? value : `"${escape(value)}"`;
@@ -106,7 +110,10 @@ const eager = new Set([app]);
 for (const name of eager) { if (!graph.has(name)) throw new Error(`esbuild metafile has no output ${name}`); for (const imported of graph.get(name)) eager.add(imported); }
 const scripts = result.outputFiles.filter(f => f.path.endsWith('.js')).map(f => path.relative(outdir, f.path));
 const chunks = scripts.filter(name => eager.has(name)), lazyChunks = scripts.filter(name => !eager.has(name));
-const head = `<style>${critical}</style><link rel=preload as=fetch href=${attr(manifestUrl)} crossorigin><script id=bootData type=application/json>${bootData}</script><script>${early}</script>${chunks.map(name => `<link rel=modulepreload href=./${name}>`).join('')}<link rel=stylesheet href=./${cssName}>`;
+const workerGraph = new Map(Object.entries(worker.metafile.outputs).map(([name, output]) => [emitted(name), output.imports.filter(i => i.kind === 'import-statement' && !i.external).map(i => emitted(i.path))]));
+const workerEager = new Set([workerName]);
+for (const name of workerEager) for (const imported of workerGraph.get(name) || []) workerEager.add(imported);
+const head = `<style>${critical}</style><link rel=preload as=fetch href=${attr(manifestUrl)} crossorigin><script id=bootData type=application/json>${bootData}</script><script>${early}</script>${[...new Set([...chunks, ...workerEager])].map(name => `<link rel=modulepreload href=./${name}>`).join('')}<link rel=stylesheet href=./${cssName}>`;
 
 // Page: the production index.html, minus what only the Leaflet viewer needs, with the map controls where Leaflet puts them.
 // One tokenizer serves the minifier and its check. Attribute values are matched as quoted strings, so the favicon's data
@@ -152,6 +159,9 @@ page = edit(page, 'viewer modulepreload', /<link rel="modulepreload" data-viewer
 page = edit(page, 'Leaflet stylesheet link', /<link rel="stylesheet" href="\/vendor\/leaflet\/[^"]+"[^>]*>/g, 1, '');
 page = edit(page, 'styles.css link', /<link rel="stylesheet" href="styles\.css"[^>]*>/g, 1, '');
 page = edit(page, 'Google Fonts preconnect', /<link rel="preconnect" href="https:\/\/fonts\.(?:googleapis|gstatic)\.com"[^>]*>/g, 2, '');
+// A beta build fetches its manifest and charts from its beta data host.
+const bootOrigins = stubs ? [] : [...new Set([manifestUrl, base].map(u => new URL(u, 'https://archive.aero/next/').origin))];
+page = edit(page, 'data preconnect', /<link rel="preconnect" href="https:\/\/data\.archive\.aero"[^>]*>/g, 1, bootOrigins.map(origin => `<link rel="preconnect" href="${escape(origin)}" crossorigin>`).join(''));
 page = edit(page, 'Google Fonts stylesheet link', /<link rel="stylesheet" href="https:\/\/fonts\.googleapis\.com\/[^"]*"[^>]*>/g, 1, '');
 // Production starts its era-index fetch from an inline script; the shell's data plane reads the manifest instead.
 page = edit(page, 'bundle-head script', /<script data-bundle-head>[\s\S]*?<\/script>/g, 1, '');
