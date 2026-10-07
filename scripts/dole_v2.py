@@ -50,6 +50,7 @@ imported lazily so metadata-only consumers can run without GDAL.
 """
 
 import csv
+import math
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -168,6 +169,169 @@ def row_lcc_crs(row) -> str:
     if not all(parts.values()):
         return ""
     return LCC_TEMPLATE.format(**parts)
+
+
+# --- Corner-GCP plausibility -------------------------------------------------
+# The slicer fits an affine from the four pixel corners to the corners
+# projected into the row's chart projection (polynomialOrder=1, LCC metres).
+# A scan has square pixels, so that affine should map a pixel square to a
+# ground square: its two singular values should be equal, whatever the scan's
+# rotation. The Boston 1953-70 rows (44-40N sheet, corners copied from the
+# older 44-41N one) fit at 0.76 and squeezed the sheet north by up to 0.7 deg
+# for 17 years; residual alone could not see it (the four points still fit an
+# affine). Thresholds: good hand-GCP rows fit to 31-270 m RMS, a wrong
+# projection to 0.8-1.3 km (worklist 04, 2026-09-15); old paper shrinks
+# unevenly by about a percent.
+GCP_FIT_WARN = {"aspect": 0.03, "rms_m": 500.0}
+GCP_FIT_ERROR = {"aspect": 0.10, "rms_m": 5000.0}
+
+# NAD83 = GRS80 ellipsoid (the +datum=NAD83 of the templates above).
+_GRS80_A = 6378137.0
+_GRS80_E = math.sqrt((1 / 298.257222101) * (2 - 1 / 298.257222101))
+
+
+def _lon_delta(lon, lon0) -> float:
+    """lon - lon0 in radians, wrapped to [-pi, pi) (Aleutian sheets cross 180)."""
+    d = (lon - lon0 + 180.0) % 360.0 - 180.0
+    return math.radians(d)
+
+
+def _iso_t(phi: float) -> float:
+    s = _GRS80_E * math.sin(phi)
+    return math.tan(math.pi / 4 - phi / 2) / ((1 - s) / (1 + s)) ** (_GRS80_E / 2)
+
+
+def row_projector(row):
+    """(lon, lat) -> (x, y) metres in the row's chart projection, or None.
+
+    The projection row_lcc_crs names, evaluated in pure Python (Snyder's
+    ellipsoidal LCC 2SP and Mercator formulas, matching PROJ to well under a
+    millimetre) so the check runs where GDAL is not installed."""
+    proj = str(row.get("proj") or "").strip().lower()
+    lon0 = _fnum(row.get("lcc_lon0"))
+    if lon0 is None:
+        return None
+    a, e = _GRS80_A, _GRS80_E
+    if proj == PROJ_MERCATOR:
+        def merc(lon, lat):
+            phi = math.radians(lat)
+            s = e * math.sin(phi)
+            y = a * math.log(math.tan(math.pi / 4 + phi / 2) * ((1 - s) / (1 + s)) ** (e / 2))
+            return a * _lon_delta(lon, lon0), y
+        return merc
+    if proj:
+        raise ValueError(f"{row.get('filename')}: unknown proj {proj!r}")
+    lat1, lat2, lat0 = (_fnum(row.get(k)) for k in ("lcc_lat1", "lcc_lat2", "lcc_lat0"))
+    if None in (lat1, lat2, lat0):
+        return None
+    p1, p2, p0 = (math.radians(v) for v in (lat1, lat2, lat0))
+
+    def m(phi):
+        return math.cos(phi) / math.sqrt(1 - (e * math.sin(phi)) ** 2)
+
+    if abs(p1 - p2) < 1e-12:
+        n = math.sin(p1)
+    else:
+        n = (math.log(m(p1)) - math.log(m(p2))) / (math.log(_iso_t(p1)) - math.log(_iso_t(p2)))
+    big_f = m(p1) / (n * _iso_t(p1) ** n)
+    rho0 = a * big_f * _iso_t(p0) ** n
+
+    def lcc(lon, lat):
+        rho = a * big_f * _iso_t(math.radians(lat)) ** n
+        theta = n * _lon_delta(lon, lon0)
+        return rho * math.sin(theta), rho0 - rho * math.cos(theta)
+    return lcc
+
+
+def gcp_fit(row) -> Optional[Dict[str, float]]:
+    """Least-squares affine of the four corner GCPs, pixel -> projected metres.
+
+    Returns None when the row has no complete GCPs or projection. Keys:
+      aspect       smaller / larger singular value of the fit (1 = a pixel
+                   square lands as a ground square); rotation-invariant
+      scale_ratio  metres per pixel down / across the display frame, and
+      shear_deg    how far the pixel axes are from perpendicular on the
+                   ground: where the distortion lies (diagnostic only)
+      mirrored     True when the corners are in mirror order (det > 0: pixel y
+                   runs down while northing runs up, so a correct fit has det < 0)
+      rms_m/max_m  corner residuals of the fit, metres
+      m_per_px     mean ground metres per pixel
+    """
+    pixels = row_gcp_pixels(row)
+    lonlat = row_gcp_lonlat(row)
+    if not (pixels and lonlat):
+        return None
+    project = row_projector(row)
+    if project is None:
+        return None
+    ground = [project(lon, lat) for lon, lat in lonlat]
+    # Centred pixels make the constant term the ground centroid and leave a
+    # 2x2 system for the linear part: X = cx0 + a1*u + a2*v (and Y with b).
+    cx = sum(p[0] for p in pixels) / 4
+    cy = sum(p[1] for p in pixels) / 4
+    pts = [(px - cx, py - cy) for px, py in pixels]
+    suu = sum(u * u for u, _ in pts)
+    svv = sum(v * v for _, v in pts)
+    suv = sum(u * v for u, v in pts)
+    den = suu * svv - suv * suv
+    if suu <= 0 or svv <= 0 or den <= 1e-9 * suu * svv:
+        return {"degenerate": True}
+    coef = []
+    for k in range(2):
+        g0 = sum(g[k] for g in ground) / 4
+        sug = sum(u * (g[k] - g0) for (u, _), g in zip(pts, ground))
+        svg = sum(v * (g[k] - g0) for (_, v), g in zip(pts, ground))
+        coef.append((g0, (sug * svv - svg * suv) / den, (svg * suu - sug * suv) / den))
+    (cx0, a1, a2), (cy0, b1, b2) = coef
+    sx, sy = math.hypot(a1, b1), math.hypot(a2, b2)
+    det = a1 * b2 - a2 * b1
+    if sx == 0 or sy == 0:
+        return {"degenerate": True}
+    cos_axes = max(-1.0, min(1.0, (a1 * a2 + b1 * b2) / (sx * sy)))
+    resid = [math.hypot(cx0 + a1 * u + a2 * v - gx, cy0 + b1 * u + b2 * v - gy)
+             for (u, v), (gx, gy) in zip(pts, ground)]
+    frob = a1 * a1 + a2 * a2 + b1 * b1 + b2 * b2
+    root = math.sqrt(max(0.0, frob * frob - 4 * det * det))
+    s_big, s_small = math.sqrt((frob + root) / 2), math.sqrt(max(0.0, (frob - root) / 2))
+    return {
+        "aspect": s_small / s_big,
+        "scale_ratio": sy / sx,
+        "shear_deg": math.degrees(math.asin(abs(cos_axes))),
+        "mirrored": det > 0,
+        "rms_m": math.sqrt(sum(r * r for r in resid) / 4),
+        "max_m": max(resid),
+        "m_per_px": math.sqrt(abs(det)),
+    }
+
+
+def gcp_fit_problems(row) -> Tuple[str, List[str]]:
+    """('ok' | 'warn' | 'error', reasons) for a row's corner GCPs.
+
+    'ok' with no reasons also covers rows with nothing to check (no GCPs or
+    no projection: is_gcp_ready reports those)."""
+    try:
+        fit = gcp_fit(row)
+    except ValueError as e:
+        return "error", [str(e)]
+    if fit is None:
+        return "ok", []
+    if fit.get("degenerate"):
+        return "error", ["corner GCPs are degenerate (collinear or repeated pixels)"]
+    errors, warns = [], []
+    if fit["mirrored"]:
+        errors.append("corners are in mirror order (check TL/TR/BR/BL and rotation)")
+    off = 1 - fit["aspect"]
+    msg = (f"aspect {fit['aspect']:.3f} (y/x {fit['scale_ratio']:.3f}, shear {fit['shear_deg']:.1f} deg): "
+           f"the corners' ground span does not match their pixel span "
+           f"(a wrong corner lat/lon, or GCPs from another sheet format)")
+    (errors if off > GCP_FIT_ERROR["aspect"] else warns if off > GCP_FIT_WARN["aspect"] else []).append(msg)
+    msg = (f"corner residual {fit['rms_m']:.0f} m RMS (max {fit['max_m']:.0f} m): "
+           f"a misplaced corner, or the wrong projection/standard parallels")
+    (errors if fit["rms_m"] > GCP_FIT_ERROR["rms_m"]
+     else warns if fit["rms_m"] > GCP_FIT_WARN["rms_m"] else []).append(msg)
+    if errors:
+        return "error", errors + warns
+    return ("warn", warns) if warns else ("ok", [])
 
 
 def row_cutline(row, shape_dir) -> Optional[Dict[str, object]]:
@@ -659,3 +823,72 @@ def write_rows(csv_path, rows: List[Dict[str, str]], backup_tag: str,
         raise RuntimeError(f"refusing to save: wrote {written} rows, expected {len(rows)}")
     os.replace(tmp, csv_path)
     return backup
+
+
+def check_gcps(rows: List[Dict[str, str]]) -> List[Tuple[str, Dict[str, str], Optional[Dict], List[str]]]:
+    """(level, row, fit, reasons) for every row with corner GCPs, worst first."""
+    order = {"error": 0, "warn": 1, "ok": 2}
+    out = []
+    for row in rows:
+        if not (row_gcp_pixels(row) and row_gcp_lonlat(row)):
+            continue
+        level, reasons = gcp_fit_problems(row)
+        try:
+            fit = gcp_fit(row)
+        except ValueError:
+            fit = None
+        out.append((level, row, fit, reasons))
+    out.sort(key=lambda r: (order[r[0]], norm_location(r[1].get("location")), r[1].get("date") or ""))
+    return out
+
+
+def _main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(
+        description="Checks on a v2 dole CSV.",
+        epilog="check-gcps exits 1 when any row is an error (the slicer refuses those rows).")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("check-gcps", help="corner-GCP plausibility of every GCP row: aspect, mirror order, residual")
+    c.add_argument("csv", type=Path, help="master_dole_v2.csv")
+    c.add_argument("--all", action="store_true", help="list passing rows too")
+    c.add_argument("--out", type=Path, help="also write every checked row to this CSV")
+    args = ap.parse_args(argv)
+
+    results = check_gcps(load_rows(args.csv))
+    counts = {k: sum(1 for r in results if r[0] == k) for k in ("error", "warn", "ok")}
+
+    def num(fit, key, fmt):
+        return format(fit[key], fmt) if fit and key in fit else "-"
+
+    shown = [r for r in results if args.all or r[0] != "ok"]
+    if shown:
+        print(f"{'level':5}  {'aspect':>6}  {'y/x':>5}  {'shear':>5}  {'rms_m':>6}  "
+              f"{'date':10}  {'location':24}  filename / reason")
+    for level, row, fit, reasons in shown:
+        print(f"{level:5}  {num(fit, 'aspect', '.3f'):>6}  {num(fit, 'scale_ratio', '.3f'):>5}  "
+              f"{num(fit, 'shear_deg', '.1f'):>5}  {num(fit, 'rms_m', '.0f'):>6}  "
+              f"{(row.get('date') or '')[:10]:10}  {(row.get('location') or '')[:24]:24}  {row.get('filename')}")
+        for reason in reasons:
+            print(f"{'':58}- {reason}")
+    print(f"\n{len(results)} GCP rows: {counts['error']} error, {counts['warn']} warn, {counts['ok']} ok "
+          f"(thresholds: aspect off by >{GCP_FIT_WARN['aspect']:.0%} warn / >{GCP_FIT_ERROR['aspect']:.0%} error, "
+          f"RMS >{GCP_FIT_WARN['rms_m']:.0f} m warn / >{GCP_FIT_ERROR['rms_m']:.0f} m error, mirror order error)")
+
+    if args.out:
+        with open(args.out, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["level", "aspect", "scale_ratio", "shear_deg", "rms_m", "max_m", "m_per_px",
+                        "mirrored", "date", "location", "filename", "reasons"])
+            for level, row, fit, reasons in results:
+                fit = fit or {}
+                w.writerow([level] + [("" if fit.get(k) is None else
+                                       (f"{fit[k]:.4f}" if isinstance(fit[k], float) else fit[k]))
+                                      for k in ("aspect", "scale_ratio", "shear_deg", "rms_m", "max_m",
+                                                "m_per_px", "mirrored")]
+                           + [row.get("date"), row.get("location"), row.get("filename"), " | ".join(reasons)])
+        print(f"wrote {args.out}")
+    return 1 if counts["error"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

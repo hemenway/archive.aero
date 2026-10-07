@@ -45,6 +45,18 @@ those integration boundaries.
 
 ## Debugging and CI
 
+The catalog's corner-GCP fit check (`scripts/dole_v2.py check-gcps`, which the
+slicer also applies at load) has a standard-library suite, run in CI: synthetic
+scans of known sheets, including the Boston 1953–70 corner error, plus a
+PROJ cross-check of its projections that runs where GDAL is installed:
+
+```sh
+python3 -m unittest discover -s tests -p 'test_dole_gcp_fit.py' -v
+```
+
+The slicer tests (`test_slicer_*.py`) need GDAL ≥ 3.9 (`cutlineSRS`) and are
+not run in CI.
+
 The g2p dependency updater has a Python suite (standard library only), also run in CI:
 
 ```sh
