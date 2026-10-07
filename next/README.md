@@ -136,3 +136,28 @@ Adjacent-date prefetch waits for the current view's foreground requests,
 including retries. The timeline reuses one date formatter across the full archive,
 and raster decoding prepares premultiplied pixels before transferring them to
 WebGL. These paths are covered by the data-plane, shell and real-module tests.
+
+Real builds emit an immutable startup index with the complete timeline and a
+shard per year. The selected year's overlapping editions load first, preserving
+C2 paint order. The complete C2 manifest loads after first chart paint; historical
+jumps outside that year await the same download while the current chart remains
+visible. Offline startup falls back to the precached full manifest if its year
+shard is unavailable. The service worker caches visited shards rather than
+downloading the entire collection during installation.
+
+WebGL initializes beside startup data loading. Only the chart shader compiles at
+boot; clipping, airfields, airspace and pin shaders compile on their first draw.
+Card modules and display fonts load after first chart paint. Early pin clicks and
+keyboard actions are replayed when the card is ready. The splash uses system
+fonts. Committed Barlow UI subsets follow the pinned font package; regenerate
+them with `python3 next/shell/subset-fonts.py` using `fonttools[woff]` after a
+font update, then rebuild the shell.
+
+`window.archivePerformance` contains the last 60 local samples, also emitted as
+`archive-performance` events and User Timing measures. `first-viewport-sharp`
+measures navigation to exact visible chart/basemap texture residency after draw;
+`viewport-sharp` measures the current demand, `date-switch-sharp` includes any
+index wait, and `pan-render-latency` measures camera movement to its next rendered
+frame. Missing 204 tiles count as empty; failed tiles and blurry ancestor tiles
+do not count as sharp. Data Worker responses expose Resource Timing through
+`Timing-Allow-Origin`. These metrics remain local and are not sent to analytics.

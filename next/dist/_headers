@@ -3,15 +3,19 @@
   X-Content-Type-Options: nosniff
 /next/worker.PSVLAI42.js
   Cache-Control: public, max-age=31536000, immutable
-/next/app.YWYIHZUU.js
+/next/app.VEPO4MKS.js
   Cache-Control: public, max-age=31536000, immutable
 /next/chunk.FHVWWHAA.js
   Cache-Control: public, max-age=31536000, immutable
 /next/chunk.MIWC5OF2.js
   Cache-Control: public, max-age=31536000, immutable
-/next/styles.4414b910ec83.css
+/next/styles.f42b9bf803e2.css
   Cache-Control: public, max-age=31536000, immutable
 /next/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+/next/startup.*.json
+  Cache-Control: public, max-age=31536000, immutable
+/next/startup/*
   Cache-Control: public, max-age=31536000, immutable
 /next/manifest.*.json
   Cache-Control: public, max-age=31536000, immutable

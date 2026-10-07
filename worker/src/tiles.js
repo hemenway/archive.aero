@@ -104,6 +104,7 @@ const TYPES = { 1:'application/vnd.mapbox-vector-tile', 2:'image/png', 3:'image/
 export async function handleTiles(request, env, ctx, { getBlock, blockBytes }) {
   const started = Date.now(); const url = new URL(request.url);
   const headers = new Headers({ 'access-control-allow-origin':'*',
+    'timing-allow-origin':'*',
     'access-control-allow-methods':'GET, HEAD, OPTIONS',
     'access-control-expose-headers':'Content-Length, Content-Encoding, ETag, X-Cache' });
   function response(status, body = null, extra = {}) {

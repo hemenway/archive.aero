@@ -13,6 +13,7 @@ async function boot(page, url = view) {
   await page.goto(url);
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('body')).toHaveClass(/painted/);
+  await expect(page.locator('body')).toHaveAttribute('data-controls-ready', 'true');
   await expect(page.locator('#loadingSplash')).toBeHidden();
   return { problems, responses };
 }
@@ -37,6 +38,29 @@ test('real modules boot under the build CSP, fetch tiles from the Worker endpoin
   expect(page.workers().some(worker => /\/worker\.[A-Z0-9]+\.js$/.test(worker.url()))).toBe(true); // the data plane runs in its Worker, not the main-thread fallback
   await expect.poll(() => centrePixel(page)).toEqual([205, 70, 64]);
   expect(problems).toEqual([]);
+});
+
+test('startup paints before the full index; post-paint fonts and sharp/pan/date metrics work', async ({page}) => {
+  let release,fullRequested=false;
+  const gate=new Promise(resolve=>{release=resolve;});
+  await page.route('**/manifest.*.json',async route=>{fullRequested=true;const response=await route.fetch();await gate;await route.fulfill({response});});
+  try {
+    const {problems}=await boot(page);
+    await expect.poll(()=>fullRequested).toBe(true);
+    await expect.poll(()=>page.evaluate(()=>performance.getEntriesByName('first-viewport-sharp','mark').length)).toBe(1);
+    await expect(page.locator('body')).toHaveAttribute('data-fonts','true');
+    const timing=await page.evaluate(()=>({first:performance.getEntriesByName('first-chart-paint')[0].startTime,
+      fonts:performance.getEntriesByType('resource').filter(r=>r.name.endsWith('.woff2')).map(r=>r.startTime)}));
+    expect(timing.fonts.every(t=>t>=timing.first)).toBe(true);
+    await page.locator('#timeSelect').fill('1953-06-01');await page.locator('#timeSelect').dispatchEvent('change');
+    // The previously painted chart remains visible while the index is pending.
+    await expect.poll(()=>centrePixel(page)).toEqual([205,70,64]);
+    release();
+    await expect.poll(()=>page.evaluate(()=>window.archivePerformance.some(s=>s.metric==='date-switch-sharp'&&s.date==='1953-06-01'))).toBe(true);
+    await page.locator('#map').focus();await page.keyboard.press('ArrowRight');
+    await expect.poll(()=>page.evaluate(()=>window.archivePerformance.some(s=>s.metric==='pan-render-latency'))).toBe(true);
+    expect(problems).toEqual([]);
+  } finally { release(); }
 });
 
 test('a newer date swaps to that era; an era with no tile here leaves the basemap', async ({ page }) => {

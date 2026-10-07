@@ -44,6 +44,7 @@ function parseRange(header) {
 function withCors(response, origin) {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", origin);
+  headers.set("timing-allow-origin", origin);
   for (const [k, v] of Object.entries(CORS_BASE)) headers.set(k, v);
   return new Response(response.body, {
     status: response.status,
@@ -236,6 +237,7 @@ export default {
         status: 204,
         headers: {
           "access-control-allow-origin": origin,
+          "timing-allow-origin": origin,
           ...CORS_BASE,
         },
       });

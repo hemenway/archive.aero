@@ -1,6 +1,6 @@
 import { test as base, expect } from '@playwright/test';
 // Fail every test on unexpected requests and uncaught application errors.
-const shellFile = /^\/next\/(?:index\.html|sw\.js|(?:app|chunk|worker)\.[\w-]+\.js|styles\.[\w-]+\.css|fonts\/barlow-\d+\.[\w-]+\.woff2|manifest\.[\w-]+\.json)?$/;
+const shellFile = /^\/next\/(?:index\.html|sw\.js|(?:app|chunk|worker)\.[\w-]+\.js|styles\.[\w-]+\.css|fonts\/barlow-\d+\.[\w-]+\.woff2|(?:manifest|startup)\.[\w-]+\.json|startup\/\d{4}\.[\w-]+\.json)?$/;
 export const test = base.extend({
   guard: [async ({ page, context }, use) => {
     const errors = [], unexpected = [], requests = [], allowed = new Set();
@@ -32,6 +32,7 @@ export const view = './?date=1960-01-01&lat=32.7767&lng=-96.7970&zoom=10';
 export async function ready(page, url = view) {
   await page.goto(url); await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('body')).toHaveClass(/painted/);
+  await expect(page.locator('body')).toHaveAttribute('data-controls-ready', 'true');
   // The splash is the error surface: once the viewer is up it is gone.
   await expect(page.locator('#loadingSplash')).toBeHidden();
 }

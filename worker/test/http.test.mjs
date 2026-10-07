@@ -52,6 +52,7 @@ function harness(t) {
     const body = new Uint8Array(await response.arrayBuffer());
     await Promise.all(pending);
     assert.equal(response.headers.get('access-control-allow-origin'), '*');
+    assert.equal(response.headers.get('timing-allow-origin'), '*');
     return { response, body };
   }
   return { request, reads, entries, state, env, waited };

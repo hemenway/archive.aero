@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { manifest as fixture } from './app/stubs/manifest.js';
+import { startupArtifacts } from './dataplane/startup.js';
 const root = fileURLToPath(new URL('../', import.meta.url)), directory = path.join(root, 'next');
 const args = process.argv.slice(2), check = args.includes('--check');
 const value = flag => { const i = args.indexOf(flag); if (i < 0) return null; if (!args[i + 1] || args[i + 1].startsWith('--')) throw new Error(`${flag} needs a value`); return args[i + 1]; };
@@ -35,13 +36,21 @@ if (stubs) {
 if (source.version !== 1 || !source.eras?.length) throw new Error('Invalid C2 manifest');
 const manifestGzip = gzipSync(JSON.stringify(source)).length;
 if (manifestGzip > 80 * 1024 && !allowOverBudget) throw new Error(`Manifest exceeds 80 KB gzip (${manifestGzip} bytes); pass --allow-over-budget to ship it anyway`);
+const startup = startupArtifacts(source), years = {};
+for (const [year, raw] of startup.years) {
+  const bytes = JSON.stringify(raw), name = `startup/${year}.${hash(bytes)}.json`;
+  outputs.set(name, bytes); years[year] = `./${name}`;
+}
+const startupBytes = JSON.stringify({version:1,summary:startup.summary,years});
+const startupName = `startup.${hash(startupBytes)}.json`, startupUrl = `./${startupName}`;
+outputs.set(startupName, startupBytes);
 const common = { absWorkingDir: root, bundle: true, minify: true, format: 'esm', target: 'es2022', sourcemap: 'external', write: false, outdir, entryNames: '[name].[hash]', chunkNames: 'chunk.[hash]', metafile: true };
 const workerEntry = path.join(directory, stubs ? 'app/stubs/worker.js' : 'dataplane/worker.js');
 // The Worker is a module worker; splitting lets the basemap painter load with the first basemap tile, not with boot.
 const worker = await build({ ...common, splitting: true, entryPoints: { worker: workerEntry } });
 for (const file of worker.outputFiles) outputs.set(path.relative(outdir, file.path), file.contents);
 const workerFile = worker.outputFiles.find(f => /worker\.[^/]*\.js$/.test(f.path)), workerName = path.relative(outdir, workerFile.path);
-const result = await build({ ...common, splitting: true, entryPoints: { app: path.join(directory, 'app/main.js') }, define: { __MANIFEST_URL__: JSON.stringify(manifestUrl), __SITE_ORIGIN__: JSON.stringify(linksOrigin || ''), __WORKER_URL__: JSON.stringify(`./${workerName}`), __STUBS__: String(stubs) }, plugins: [{ name: 'hashed-data-worker', setup(builder) { builder.onLoad({ filter: /next\/dataplane\/index\.js$/ }, async ({ path: filename }) => ({ contents: (await readFile(filename, 'utf8')).replace(/new URL\(['"]\.\/worker\.js['"],\s*import\.meta\.url\)/g, `new URL('./${workerName}', import.meta.url)`), loader: 'js' })); } }], alias: { '@next/renderer': path.join(directory, stubs ? 'app/stubs/renderer.js' : 'renderer/index.js'), '@next/dataplane': path.join(directory, stubs ? 'app/stubs/dataplane.js' : 'dataplane/index.js') } });
+const result = await build({ ...common, splitting: true, entryPoints: { app: path.join(directory, 'app/main.js') }, define: { __STARTUP_URL__: JSON.stringify(startupUrl), __MANIFEST_URL__: JSON.stringify(manifestUrl), __SITE_ORIGIN__: JSON.stringify(linksOrigin || ''), __WORKER_URL__: JSON.stringify(`./${workerName}`), __STUBS__: String(stubs) }, plugins: [{ name: 'hashed-data-worker', setup(builder) { builder.onLoad({ filter: /next\/dataplane\/index\.js$/ }, async ({ path: filename }) => ({ contents: (await readFile(filename, 'utf8')).replace(/new URL\(['"]\.\/worker\.js['"],\s*import\.meta\.url\)/g, `new URL('./${workerName}', import.meta.url)`), loader: 'js' })); } }], alias: { '@next/renderer': path.join(directory, stubs ? 'app/stubs/renderer.js' : 'renderer/index.js'), '@next/dataplane': path.join(directory, stubs ? 'app/stubs/dataplane.js' : 'dataplane/index.js') } });
 for (const file of result.outputFiles) outputs.set(path.relative(outdir, file.path), file.contents);
 const app = path.relative(outdir, result.outputFiles.find(f => /app\..*\.js$/.test(f.path)).path);
 // The shell wears the production interface. Its page and stylesheet are derived from the live viewer's index.html and
@@ -53,17 +62,19 @@ const edit = (text, what, pattern, count, replacement) => {
   if (found !== count) throw new Error(`Shell derivation: expected ${count} x ${what}, found ${found}. Bring next/build.mjs in line with the production page.`);
   return text.replace(pattern, replacement);
 };
-// Barlow is production's display face. The shell's CSP has font-src 'self', so the latin files ship with the build
+// Barlow is production's display face. The shell ships committed UI subsets of the pinned font package
 // (content-hashed, immutable) instead of coming from Google Fonts. The service worker does not precache them.
 const fontPackage = '@fontsource/barlow', fontDir = path.join(root, 'node_modules', fontPackage);
 const fontPinned = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8')).devDependencies?.[fontPackage];
 const fontInstalled = JSON.parse(await readFile(path.join(fontDir, 'package.json'), 'utf8').catch(() => '{}')).version;
 if (!fontPinned || fontInstalled !== fontPinned) throw new Error(`Expected ${fontPackage}@${fontPinned} in node_modules, found ${fontInstalled || 'none'}; run npm ci.`);
 let fontFaces = '', fontBytes = 0;
+const fontSubsets = JSON.parse(await readFile(path.join(directory, 'shell/fonts/subsets.json'), 'utf8'));
+if (fontSubsets.version !== fontPinned) throw new Error('Regenerate shell font subsets after updating Barlow.');
 for (const weight of [500, 600, 700]) {
-  const bytes = await readFile(path.join(fontDir, `files/barlow-latin-${weight}-normal.woff2`));
-  // <weight>.css lists every subset; its latin block has the unicode-range (latin-<weight>.css leaves it out).
-  const range = (await readFile(path.join(fontDir, `${weight}.css`), 'utf8')).match(new RegExp(`/\\* barlow-latin-${weight}-normal \\*/\\s*@font-face\\s*\\{[^}]*?unicode-range:\\s*([^;}]+)`))?.[1].trim();
+  const bytes = await readFile(path.join(directory, `shell/fonts/barlow-${weight}.woff2`));
+  // The subset metadata restricts display fonts to the glyphs they actually contain.
+  const range = fontSubsets.ranges[weight];
   if (!range) throw new Error(`${fontPackage}/${weight}.css has no latin unicode-range`);
   const name = `fonts/barlow-${weight}.${hash(bytes)}.woff2`; outputs.set(name, bytes); fontBytes += bytes.length;
   fontFaces += `@font-face{font-family:"Barlow";font-style:normal;font-weight:${weight};font-display:swap;src:url("./${name}") format("woff2");unicode-range:${range}}\n`;
@@ -113,7 +124,7 @@ const chunks = scripts.filter(name => eager.has(name)), lazyChunks = scripts.fil
 const workerGraph = new Map(Object.entries(worker.metafile.outputs).map(([name, output]) => [emitted(name), output.imports.filter(i => i.kind === 'import-statement' && !i.external).map(i => emitted(i.path))]));
 const workerEager = new Set([workerName]);
 for (const name of workerEager) for (const imported of workerGraph.get(name) || []) workerEager.add(imported);
-const head = `<style>${critical}</style><link rel=preload as=fetch href=${attr(manifestUrl)} crossorigin><script id=bootData type=application/json>${bootData}</script><script>${early}</script>${[...new Set([...chunks, ...workerEager])].map(name => `<link rel=modulepreload href=./${name}>`).join('')}<link rel=stylesheet href=./${cssName}>`;
+const head = `<style>${critical}</style><link rel=preload as=fetch href=${attr(stubs ? manifestUrl : startupUrl)} crossorigin><script id=bootData type=application/json>${bootData}</script><script>${early}</script>${[...new Set([...chunks, ...workerEager])].map(name => `<link rel=modulepreload href=./${name}>`).join('')}<link rel=stylesheet href=./${cssName}>`;
 
 // Page: the production index.html, minus what only the Leaflet viewer needs, with the map controls where Leaflet puts them.
 // One tokenizer serves the minifier and its check. Attribute values are matched as quoted strings, so the favicon's data
@@ -198,7 +209,7 @@ if (new Set(ids).size !== ids.length) throw new Error(`Shell derivation: duplica
 const analytics = !analyticsOn ? '' : `<script async src=${attr(plausibleSrc)}></script><script>window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)};plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()</script>`;
 const html = `<!doctype html>${edit(edit(markup, '</head>', /<\/head>/g, 1, () => `${head}</head>`), '</body>', /<\/body>/g, 1, () => `<script type=module src=./${app}></script>${analytics}</body>`)}\n`;
 outputs.set('index.html', html);
-const shellAssets = ['./index.html', ...[...outputs.keys()].filter(name => /\.(js|css)$/.test(name)).map(name => `./${name}`), manifestUrl];
+const shellAssets = ['./index.html', ...[...outputs.keys()].filter(name => /\.(js|css)$/.test(name)).map(name => `./${name}`), startupUrl, manifestUrl];
 const version = hash([...outputs].map(([name, data]) => `${name}:${hash(data)}`).join('|'));
 const sw = (await transform((await readFile(path.join(directory, 'sw.js'), 'utf8')).replace('__SW_VERSION__', JSON.stringify(version)).replace('__SW_ASSETS__', JSON.stringify(shellAssets)).replace('__SW_MANIFEST__', json), { minify: true, target: 'es2022' })).code;
 outputs.set('sw.js', sw);
@@ -209,7 +220,7 @@ const plausible = analyticsOn ? ' https://plausible.io' : '';
 const csp = `default-src 'self'; script-src 'self' ${scriptHashes}${plausible}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero ${dataOrigins.map(o => o + ' ').join('')}https://get.geojs.io${plausible}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
 const immutableHeaders = [...outputs.keys()].filter(name => name !== 'sw.js' && /\.(js|css)$/.test(name)).map(name => `${deployBase}${name}\n  Cache-Control: public, max-age=31536000, immutable\n`).join('');
 // Cloudflare reads _headers only from the asset root, so this file is published there with rules already prefixed by the base.
-outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
+outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
 const externalJS = chunks.reduce((sum, name) => sum + gzipSync(outputs.get(name)).length, 0);
 const inlineJS = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].reduce((sum, match) => sum + gzipSync(match[1]).length, 0);
 const js = externalJS + inlineJS + gzipSync(workerFile.contents).length;

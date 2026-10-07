@@ -30,7 +30,7 @@ self.addEventListener('fetch', event => {
       catch { return await cache.match(SHELL) || new Response('Chart viewer unavailable offline. Reconnect and reload.', { status: 503, headers: { 'Content-Type': 'text/plain' } }); }
       finally { clearTimeout(timeout); }
     })());
-  } else if (shell || isManifest) {
+  } else if (shell || isManifest || (url.origin === self.location.origin && url.pathname.startsWith(DIR + 'startup/'))) {
     event.respondWith((async () => { const cache = await caches.open(CACHE), cached = await cache.match(request); if (cached) return cached; const response = await fetch(request); if (response.ok) await cache.put(request, response.clone()); return response; })());
   }
 });

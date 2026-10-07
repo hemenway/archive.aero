@@ -32,6 +32,10 @@ export class DataCore {
     this.metadataLoading=null;this.metadataFailures=0;this.metadataRetryAt=0;
   }
   // Early responses: [key, promise] pairs on this thread; bare [key] entries wait for prime() from the facade.
+  setManifest(raw) {
+    this.m=parseManifest(raw);
+    if(this.state)this.setDemand(this.state);
+  }
   adopt(entries) {
     for(const [key,promise] of entries) {
       if(promise) {this.scheduler.adopt(key,Promise.resolve(promise));continue;}

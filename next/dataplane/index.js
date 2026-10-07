@@ -6,6 +6,7 @@ import {planCharts,planBasemap,planKeys,basemapCover} from './plan.js';
 import {buildDemand} from './demand.js';
 import {decodeRaster} from './decode.js';
 import {AirspaceIndex} from './airspace.js';
+import {loadStartup} from './startup.js';
 // Pure planning remains on the main thread; only the compact raw manifest is cloned.
 export async function createDataPlane(options={}) {
   const nav=globalThis.navigator;
@@ -50,6 +51,11 @@ export async function createDataPlane(options={}) {
     const id=sequence++;return new Promise((resolve,reject)=>{pending.set(id,{resolve,reject});thread.postMessage({id,method,args},transfer);});
   };
   const call=(method,...args)=>send(method,args);
+  let startup=null;
+  if(options.startupUrl) {
+    try {startup=await loadStartup(options.startupUrl,options.date,options.manifestUrl,options.fetch??fetch);options={...options,manifest:startup.raw};}
+    catch { /* Offline clients can use the precached full manifest. */ }
+  }
   let manifest;
   if(options.worker!==false && !options.fetch && typeof Worker!=='undefined') {
     try {
@@ -60,12 +66,24 @@ export async function createDataPlane(options={}) {
       const {fetch:_,worker:__,earlyFetches:___,...serializable}=options;
       // The page's preload of the manifest is already in flight; this fetch joins it while the Worker script loads, and
       // the Worker is handed the JSON instead of requesting the same URL a second time.
-      const response=await fetch(options.manifestUrl);if(!response.ok)throw new Error(`Manifest HTTP ${response.status}`);
-      const raw=resolveBases(await response.json(),options.manifestUrl);
+      let raw=options.manifest;
+      if(!raw) {const response=await fetch(options.manifestUrl);if(!response.ok)throw new Error(`Manifest HTTP ${response.status}`);raw=resolveBases(await response.json(),options.manifestUrl);}
       await call('init',{...serializable,manifest:raw});manifest=parseManifest(raw);
     } catch(error) {thread?.terminate();thread=null;threadFailure=null;pending.clear();backend=await createCore(options,(...args)=>void receive(...args));manifest=backend.m;}
   } else {backend=await createCore(options,(...args)=>void receive(...args));manifest=backend.m;}
   const reportError=error=>emit('error',{key:'demand',error});
+  let archiveLoading=null;
+  const summary=startup?.summary??manifestSummary(manifest);
+  const loadArchive=()=>{
+    if(!startup)return Promise.resolve();
+    if(!archiveLoading)archiveLoading=(async()=>{
+      const response=await (options.fetch??fetch)(options.manifestUrl);if(!response.ok)throw new Error(`Manifest HTTP ${response.status}`);
+      const raw=resolveBases(await response.json(),options.manifestUrl),next=parseManifest(raw);
+      await call('setManifest',raw);
+      manifest=next;startup=null;emit('manifest',{});
+    })().catch(error=>{archiveLoading=null;throw error;});
+    return archiveLoading;
+  };
   // Tile responses the boot script already requested are handed to the
   // scheduler, which consumes them instead of fetching the same URL twice. On
   // the Worker path the bytes are read here and transferred; the Worker holds a
@@ -84,7 +102,9 @@ export async function createDataPlane(options={}) {
     }
   }
   return {
-    manifest:manifestSummary(manifest),
+    manifest:summary,
+    loadArchive,
+    ensureDate:date=>startup&&String(date).slice(0,4)!==startup.year?loadArchive():Promise.resolve(),
     planCharts(date,tiles,{solo}={}) {return {id:String(date)+(solo?`:${solo.paths.join(',')}:${solo.clip?.id??''}`:''),tiles:planCharts(manifest,date,tiles,solo,cullBy())};},
     // Follows the last demand: basemap tiles wholly under that frame's opaque charts are left out, as the core leaves them unfetched.
     planBasemap(tiles) {const covered=last&&!last.solo?basemapCover(manifest,last.date,tiles,cullBy()):null;return planBasemap(manifest.raw.basemap,tiles,absent,covered,ready);},

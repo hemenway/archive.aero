@@ -237,7 +237,12 @@ class Renderer {
   _initGL() {
     const gl = this.gl; this.pool = new TexturePool(gl, this.budget, this._emitBound);
     this.programs = {};
-    for (const name of ['tile', 'ring', 'field', 'line', 'pin']) {
+    this._program('tile');
+    this.emptyVAO = gl.createVertexArray(); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.activeTexture(gl.TEXTURE0);
+  }
+  _program(name) {
+    if (!this.programs[name]) {
+      const gl = this.gl;
       const p = gl.createProgram();
       for (const [type, source] of [[gl.VERTEX_SHADER, shader[`${name}Vertex`]], [gl.FRAGMENT_SHADER, shader[`${name}Fragment`]]]) {
         const s = gl.createShader(type); gl.shaderSource(s, source); gl.compileShader(s);
@@ -249,7 +254,7 @@ class Renderer {
       for (let i = 0; i < gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS); i++) { const n = gl.getActiveUniform(p, i).name; u[n] = gl.getUniformLocation(p, n); }
       this.programs[name] = { program: p, u };
     }
-    this.emptyVAO = gl.createVertexArray(); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.activeTexture(gl.TEXTURE0);
+    return this.programs[name];
   }
   _ringGPU(r) { const gl = this.gl; r.buffer = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, r.buffer); gl.bufferData(gl.ARRAY_BUFFER, r.data, gl.STATIC_DRAW); }
   _fieldsGPU() {
@@ -349,7 +354,7 @@ class Renderer {
     this.planDirty = false;
   }
   _use(name) {
-    const gl = this.gl, p = this.programs[name], c = this.camera;
+    const gl = this.gl, p = this._program(name), c = this.camera;
     gl.useProgram(p.program); gl.uniform2f(p.u.center, c.x, c.y); gl.uniform2f(p.u.viewport, c.width, c.height); gl.uniform1f(p.u.world, c.world); return p.u;
   }
   _drawTile(tile, item, opacity) {

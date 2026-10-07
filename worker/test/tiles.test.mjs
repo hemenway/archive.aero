@@ -16,9 +16,11 @@ test('tile 200 has every C1 header; legacy archive URL is still a range proxy',a
   const h=harness(t);h.env.ALLOWED_ORIGIN='https://legacy.test';
   const r=await h.get();assert.equal(r.status,200);assert.equal(r.headers.get('content-type'),'image/png');
   assert.equal(r.headers.get('cache-control'),IMMUTABLE);assert.equal(r.headers.get('access-control-allow-origin'),'*');
+  assert.equal(r.headers.get('timing-allow-origin'),'*');
   assert.equal(+r.headers.get('content-length'),h.bytes.length);assert.equal(r.headers.get('content-encoding'),null);
   assert.deepEqual(Buffer.from(await r.arrayBuffer()),h.bytes);
   const old=await h.fetch('https://fixture.test/'+PATH+'.pmtiles',{headers:{Range:'bytes=0-126'}});
+  assert.equal(old.headers.get('timing-allow-origin'),'https://legacy.test');
   assert.equal(old.status,206);assert.equal(old.headers.get('access-control-allow-origin'),'https://legacy.test');
 });
 test('204 absence/outside zoom, 404 unknown path, 400 malformed coordinates',async t=>{
@@ -35,7 +37,8 @@ test('uncompressed PMTiles directories work',async t=>{const h=harness(t,{compre
 test('gzip MVT is served as stored, with content encoding',async t=>{
   const h=harness(t,{type:1,gzip:true,bytes:airspaceMvt()});const r=await h.get();
   assert.equal(r.headers.get('content-type'),'application/vnd.mapbox-vector-tile');assert.equal(r.headers.get('content-encoding'),'gzip');
-  const data=Buffer.from(await r.arrayBuffer());assert.deepEqual(gunzipSync(data),h.bytes);assert.equal(+r.headers.get('content-length'),data.length);
+  const data=Buffer.from(await r.arrayBuffer());assert.deepEqual(gunzipSync(data),h.bytes);assert.equal(r.headers.get('timing-allow-origin'),'*');
+  assert.equal(+r.headers.get('content-length'),data.length);
 });
 test('metadata is JSON with immutable caching; HEAD carries the same headers and no body',async t=>{
   const h=harness(t,{metadata:{name:'fixture'}});const m=await h.get('metadata');assert.deepEqual(await m.json(),{name:'fixture'});

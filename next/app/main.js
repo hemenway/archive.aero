@@ -134,10 +134,6 @@ const renderAttribution = (el, { basemap, airfields, airspace }) => {
 
 async function initApp() {
   updateLoading(10, 'Loading timeline data...');
-  // The pin, airfield and airspace cards are not needed to paint the first
-  // chart: their chunk downloads beside the manifest and the first tiles.
-  const cardsLoading = import('./cards.js');
-  cardsLoading.catch(() => {}); // reported where it is awaited
 
   // Show warning banner temporarily
   const warningOverlay = $('warningOverlay');
@@ -150,24 +146,12 @@ async function initApp() {
   const lngParam = urlParams.get('lng');
   const zoomParam = urlParams.get('zoom');
 
-  // The manifest and the first tiles were requested by the inline boot
-  // script; the data plane adopts those responses instead of fetching again.
-  let dp;
-  try {
-    dp = await createDataPlane({ manifestUrl: __MANIFEST_URL__, earlyFetches: window.__earlyFetches || new Map() });
-  } catch (error) {
-    console.error('Initialization failed', error);
-    fail('Failed to load chart data. Check your connection and reload.');
-    return;
-  }
-  const manifest = dp.manifest;
+  // Begin data loading before WebGL setup so the network and GPU overlap.
+  const dataLoading = createDataPlane({ manifestUrl: __MANIFEST_URL__,
+    startupUrl: __STUBS__ ? undefined : __STARTUP_URL__, date: dateParam,
+    earlyFetches: window.__earlyFetches || new Map() });
+  dataLoading.catch(() => {}); // reported when awaited below
   updateLoading(40, 'Initializing map...');
-
-  if (manifest.frames.length === 0) {
-    dp.destroy();
-    fail('Failed to load chart data. Check your connection and reload.');
-    return;
-  }
 
   // Keyboard focus belongs to the #map region, which carries the label and
   // the help text; a click on the canvas hands its focus up.
@@ -193,12 +177,27 @@ async function initApp() {
     });
   } catch (error) {
     console.error('Renderer failed to start', error);
-    dp.destroy();
+    void dataLoading.then(dp => dp.destroy(), () => {});
     if (error instanceof RendererUnsupportedError) {
       fail('This browser cannot run the new chart renderer.', { href: `${__SITE_ORIGIN__}/`, text: 'Open the current viewer' });
     } else {
       fail('Failed to start the chart viewer. Reload to try again.');
     }
+    return;
+  }
+
+  let dp;
+  try { dp = await dataLoading; }
+  catch (error) {
+    renderer.destroy();
+    console.error('Initialization failed', error);
+    fail('Failed to load chart data. Check your connection and reload.');
+    return;
+  }
+  const manifest = dp.manifest;
+  if (!manifest.frames.length) {
+    dp.destroy(); renderer.destroy();
+    fail('Failed to load chart data. Check your connection and reload.');
     return;
   }
 
@@ -379,9 +378,32 @@ async function initApp() {
   updateLoading(100, 'Ready!');
   hideSplash();
 
+  let queuedPin = null;
+  const rememberPin = e => { queuedPin = {latlng:{lat:e.lat,lng:e.lng},focus:false}; };
+  const rememberEnter = e => {
+    if (e.target === mapEl && e.key === 'Enter' && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault(); queuedPin = {latlng:mapCtrl.map.getCenter(),focus:true};
+    }
+  };
+  renderer.on('click', rememberPin);
+  mapEl.addEventListener('keydown', rememberEnter);
+  document.body.dataset.ready = 'true';
+  // Keep layer controls actionable once their handlers are installed. Chart
+  // navigation and the timeline are already live while the first tiles load.
+  const layerButtons = [$('airfieldsBtn'), $('airspaceBtn')].filter(Boolean);
+  layerButtons.forEach(button => { button.disabled = true; });
+  const afterPaint = mapCtrl.painted ? Promise.resolve() : new Promise(resolve =>
+    window.addEventListener('first-chart-paint', resolve, { once: true }));
+  await afterPaint;
+  if (torn) return;
+  const later = run => window.requestIdleCallback ? requestIdleCallback(run, { timeout: 2000 }) : setTimeout(run, 0);
+  later(() => { if (!torn) document.body.dataset.fonts = 'true'; });
+  // Preserve the current chart and tile caches when the full archive arrives.
+  later(() => { if (!torn) dp.loadArchive?.().catch(error => console.warn('Full archive index unavailable', error)); });
+
   let cards;
   try {
-    cards = await cardsLoading;
+    cards = await import('./cards.js');
   } catch (error) {
     console.error('Viewer cards failed to load', error);
     Utils.toast('Part of the viewer failed to load. Reload to retry.', 6000);
@@ -392,6 +414,8 @@ async function initApp() {
   const { PinInspector, AirfieldsLayer, AirspaceLayer } = cards;
 
   const pinInspector = new PinInspector(mapCtrl, timelineApp);
+  renderer.off('click', rememberPin);
+  mapEl.removeEventListener('keydown', rememberEnter);
   // Exposed so updateShareUrl can encode the pin.
   timelineApp.pinInspector = pinInspector;
 
@@ -454,7 +478,8 @@ async function initApp() {
   // Restore a shared pin (the one case where the chart inventory loads at
   // boot rather than on a click).
   const pinParam = urlParams.get('pin');
-  if (pinParam) {
+  if (queuedPin) pinInspector.setPin(queuedPin.latlng, queuedPin.focus);
+  else if (pinParam) {
     const [pinLat, pinLng] = pinParam.split(',').map(parseFloat);
     if (!isNaN(pinLat) && !isNaN(pinLng) && Math.abs(pinLat) <= 90) {
       pinInspector.setPin({ lat: pinLat, lng: pinLng });
@@ -494,7 +519,8 @@ async function initApp() {
     else window.addEventListener('first-chart-paint', register, { once: true });
   }
 
-  document.body.dataset.ready = 'true';
+  layerButtons.forEach(button => { button.disabled = false; });
+  document.body.dataset.controlsReady = 'true';
 }
 
 initApp().catch((error) => {

@@ -198,3 +198,6 @@ body.painted #mapCanvas {
 	margin-bottom: -12px;
 	border-top-color: #fff;
 	}
+/* Display fonts start after the first chart paint, including on the splash. */
+body:not([data-fonts="true"]) { --font-display: system-ui, -apple-system, sans-serif; }
+.loading-title { font-family: system-ui, -apple-system, sans-serif; }

@@ -37,6 +37,15 @@ test('Web Mercator round trip, wrap, bounds, center-first tile resolution', asyn
   expect(Math.min(result.fit.x, 1 - result.fit.x)).toBeLessThan(1e-5); expect(result.fit.zoom).toBeLessThanOrEqual(8);
 });
 
+test('overlay shaders compile on first draw and remain cached', async ({ page }) => {
+  expect(await page.evaluate(() => Object.keys(r.programs))).toEqual(['tile']);
+  await page.evaluate(async () => { r.setPin({lng:45,lat:-40.98}); await tick(); });
+  expect(await page.evaluate(() => Object.keys(r.programs).sort())).toEqual(['pin','tile']);
+  expect(await page.evaluate(async () => {
+    const p=r.programs.pin.program;r.setPin({lng:46,lat:-40});await tick();return r.programs.pin.program===p;
+  })).toBe(true);
+});
+
 test('wheel settles on integer zoom around cursor; focused keyboard pans', async ({ page, browserName }) => {
   // Playwright mouse.wheel is unavailable for WebKit with mobile emulation.
   await page.evaluate(() => {

@@ -4,6 +4,7 @@
 // (mapCtrl.map.getCenter(), .on('moveend'), .latLngToContainerPoint() ...);
 // MapFacade answers those from the WebGL camera.
 import { Utils } from './utils.js';
+import { recordPerformance } from './performance.js';
 
 const MAX_LAT = 85.0511287798066;
 const mercator = (lng, lat) => {
@@ -171,7 +172,18 @@ export class MapController {
     // The renderer reports every lost texture evicted; re-demanding fetches them again.
     renderer.on('contextrestored', () => this._demand());
     // Tiles follow the camera.
-    renderer.on('move', () => this._demandSoon());
+    renderer.on('move', () => {
+      if (this.painted && this._panStart == null) this._panStart = performance.now();
+      this._demandSoon();
+    });
+    renderer.on('render', () => {
+      if (this._panStart != null) {
+        recordPerformance('pan-render-latency', this._panStart, {date:this.lastFrameDate,frameMs:renderer.stats().frameMs});
+        this._panStart = null;
+      }
+      this._noteSharp();
+    });
+    dp.on('manifest', () => this._demandSoon());
 
     // How long a scrub must settle before we repaint.
     this.scrubDebounceDelay = 25;
@@ -216,11 +228,22 @@ export class MapController {
     if (this.soloState) this._clearSoloState();
     this.scrubDirection = this.lastFrameDate
       ? Math.sign(selectedTime - new Date(this.lastFrameDate).getTime()) : 0;
-    this.lastFrameDate = selectedDateStr;
-
+    const previous = this._requestedDate || this.lastFrameDate;
+    const dateSwitch = !!previous && previous !== selectedDateStr;
+    this._requestedDate = selectedDateStr;
+    if (!this._frameTiming || dateSwitch)
+      this._frameTiming = { date: selectedDateStr, dateSwitch, start: performance.now(), stats: this.dp.stats(), uploads: this.r.stats().uploads, logged: false };
     // A direct (non-debounced) showFrame supersedes any pending scrub repaint;
     // cancel it so a stale date can't repaint over this newer frame afterward.
     this.showFrameDebounced?.cancel?.();
+
+    // A historical jump outside the startup year waits for the archive index;
+    // keep the previous chart drawable and discard superseded date requests.
+    const request = this._dateRequest = (this._dateRequest || 0) + 1;
+    try { await this.dp.ensureDate?.(selectedDateStr); }
+    catch (error) { Utils.toast('Could not load the archive index. Check your connection and try again.'); throw error; }
+    if (request !== this._dateRequest) return;
+    this.lastFrameDate = selectedDateStr;
 
     const opacityValue = this.chartsHidden ? 0 : parseFloat(this.els.opacitySlider?.value || 100) / 100;
     this.overlayOpacity = opacityValue;
@@ -230,7 +253,6 @@ export class MapController {
     if (this.els.chartInfoEffective) this.els.chartInfoEffective.textContent = String(inEffect);
     if (inEffect === 0) Utils.toast('No charts available for selected date');
     // Where this frame's tiles come from is measured against these counters (lastFrameTiming).
-    this._frameTiming = { date: selectedDateStr, start: performance.now(), stats: this.dp.stats(), uploads: this.r.stats().uploads, logged: false };
     this._demand();
   }
 
@@ -284,6 +306,7 @@ export class MapController {
   _demand() {
     if (!this.lastFrameDate || this.failed) return;
     const camera = this.r.getCamera();
+    this._viewportTiming = {start:performance.now(),logged:false};
     this.chartTiles = this.r.visibleTiles(256);
     const basemapTiles = this.r.visibleTiles(512);
     const solo = this.soloState?.source || null;
@@ -311,7 +334,8 @@ export class MapController {
   _renderPlans() {
     if (!this.plan) return;
     this.r.setChartPlan({ ...this.plan, tiles: this._withoutSkipped(this.plan.tiles) });
-    this.r.setBasemapPlan(this._withoutSkipped(this.dp.planBasemap(this.r.visibleTiles(512))));
+    this.basePlan = this.dp.planBasemap(this.r.visibleTiles(512));
+    this.r.setBasemapPlan(this._withoutSkipped(this.basePlan));
   }
 
   // C7 has no loading-change or paint event, so poll the data plane's counters
@@ -381,7 +405,31 @@ export class MapController {
       document.body.classList.add('painted');
       performance.mark('first-chart-paint');
       window.dispatchEvent(new Event('first-chart-paint'));
+      this._noteSharp();
     }));
+  }
+
+  // Delivered bytes and low-resolution ancestors do not imply a sharp map.
+  // Observe exact texture residency after drawing, excluding genuine 204s.
+  _noteSharp() {
+    const t = this._viewportTiming;
+    if (!this.painted || !this.plan || !t || t.logged) return;
+    const tiles = [...(this.chartsHidden ? [] : this.plan.tiles), ...(this.basePlan || [])];
+    if (tiles.some(tile => tile.items.some(item => !this.absentKeys.has(item.key) &&
+      (this.failedKeys.has(item.key) || !this.r.hasTexture(item.key))))) return;
+    t.logged = true;
+    const detail = {date:this.lastFrameDate,zoom:this.r.getCamera().zoom};
+    this.lastViewportTiming = recordPerformance('viewport-sharp', t.start, detail);
+    if (!this._firstSharp) {
+      this._firstSharp = true;
+      performance.mark('first-viewport-sharp');
+      recordPerformance('first-viewport-sharp', 0, detail);
+    }
+    const frame = this._frameTiming;
+    if (frame?.dateSwitch && !frame.sharp && frame.date === this.lastFrameDate) {
+      frame.sharp = true;
+      recordPerformance('date-switch-sharp', frame.start, detail);
+    }
   }
 
   // A failed tile degrades the view instead of ending it. Same message and
