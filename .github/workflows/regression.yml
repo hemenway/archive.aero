@@ -18,6 +18,8 @@ jobs:
       - run: npm ci
       - name: Test g2p dependency updates
         run: python3 -m unittest discover -s tests -p 'test_geotiff2pmtiles_dependency.py' -v
+      - name: Test the catalog corner-GCP fit check
+        run: python3 -m unittest discover -s tests -p 'test_dole_gcp_fit.py' -v
       - run: npx playwright install --with-deps chromium webkit
       - run: npm test
       - name: Browser tests against the minified deploy artifact

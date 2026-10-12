@@ -96,7 +96,7 @@ keep any checkout used for upstream contributions outside this project.
 
 ### 3. Delivery — [`worker/`](worker/) (Cloudflare Worker + R2)
 
-Each edition is one immutable `.pmtiles` file in R2. A small Worker proxies HTTP range requests to R2, adds caching and CORS, and logs sampled usage to Analytics Engine — no tile server, no database, no application backend. See [worker/README.md](worker/README.md).
+Each edition is one `.pmtiles` file in R2. Its key never changes, but an improved build is republished in place under the same key (URI-POLICY covenant 7), so the bytes behind a key can change; the `next/` viewer's archives use content-hashed keys instead. A small Worker proxies HTTP range requests to R2, adds caching and CORS, and logs sampled usage and every failed request to Analytics Engine — no tile server, no database, no application backend. See [worker/README.md](worker/README.md).
 
 ### 4. Frontend — [`index.html`](index.html) + [`src/viewer.js`](src/viewer.js) (vanilla JS + Leaflet)
 

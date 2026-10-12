@@ -1,6 +1,12 @@
 name = "atc"
 main = "src/index.js"
-compatibility_date = "2025-05-01"
+# Runtime behavior date. Raised from 2025-05-01 on 2026-10-07 after both Workers
+# answered a request battery identically under either date in workerd 2026-10-06.
+compatibility_date = "2026-10-06"
+# No per-version preview hostnames (<version>-<name>.<account>.workers.dev):
+# left unset, the account default applies, and a preview URL bypasses the
+# zone (WAF, routes) just like the workers.dev hostname.
+preview_urls = false
 
 # archive.aero/atc/* deployed early (2026-08-09) with ATC_NOINDEX guard so the
 # rewritten absolute asset URLs resolve pre-cutover. Cutover 09:00 step

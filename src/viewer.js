@@ -4,7 +4,14 @@ const DeviceInfo = (() => {
   const ua = navigator.userAgent || '';
   const isIOS = /iP(ad|hone|od)/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const isSafari = /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS|OPiOS|SamsungBrowser/.test(ua);
-  return { isIOS, isMobileSafari: isIOS && isSafari };
+  // Cache budgets: iOS Safari's per-tab limit set the reduced sizes, and
+  // Android browsers kill tabs at similar footprints (they got the desktop
+  // budgets: ~210 MB of decoded bitmaps alone). navigator.deviceMemory
+  // (Chromium only, GB, capped at 8) catches small-memory laptops too.
+  const isAndroid = /Android/i.test(ua);
+  const memoryGB = typeof navigator.deviceMemory === 'number' ? navigator.deviceMemory : null;
+  const lowMemory = isIOS || isAndroid || (memoryGB !== null && memoryGB <= 4);
+  return { isIOS, isMobileSafari: isIOS && isSafari, lowMemory };
 })();
 
 /** CONFIGURATION **/
@@ -238,8 +245,8 @@ const MetaBundle = {
   eras: new Map(),   // key -> {off, len, group} (offsets relative to blobsStart)
   groups: [],        // decade groups: {name, off, len, i0, i1, state, bytes, lastUse}
   // Resident groups are whole ArrayBuffers (0.2-4MB each); cap how many
-  // stay in memory so a full-history scrub can't pin ~16MB on iOS.
-  residentLimit: DeviceInfo.isIOS ? 4 : 12,
+  // stay in memory so a full-history scrub can't pin ~16MB on a phone.
+  residentLimit: DeviceInfo.lowMemory ? 4 : 12,
   _useSeq: 0,
 
   async load(url) {
@@ -415,7 +422,7 @@ class BundleSource {
     this.key = key;
     this.net = new pmtiles.FetchSource(url);
     this.rangeInflight = new Map();
-    this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
+    this.rangeCache = new LRUCache(DeviceInfo.lowMemory ? 96 : 256);
     // ETag of the live archive as seen by this instance's first network
     // read. pmtiles only arms its own etag check when the HEADER read
     // returned one, and bundle-served headers carry none — so for every
@@ -486,7 +493,7 @@ class BundleSource {
 
   _archiveChanged() {
     MetaBundle.dropEra(this.key);
-    this.rangeCache = new LRUCache(DeviceInfo.isIOS ? 96 : 256);
+    this.rangeCache = new LRUCache(DeviceInfo.lowMemory ? 96 : 256);
     this.net.mustReload = true;
     this.liveEtag = null;
   }
@@ -1159,13 +1166,13 @@ class MapController {
     this.pmtilesInstances = {}; // Cache for PMTiles instances
     this.pmtilesAccess = {};
     this.pmtilesAccessSeq = 0;
-    this.pmtilesCacheLimit = DeviceInfo.isIOS ? 18 : 96;
-    this.tileDataCache = new LRUCache(DeviceInfo.isIOS ? 350 : 1600);
+    this.pmtilesCacheLimit = DeviceInfo.lowMemory ? 18 : 96;
+    this.tileDataCache = new LRUCache(DeviceInfo.lowMemory ? 350 : 1600);
     // Shared with the layer and the scrub prefetcher so all tile reads
     // funnel through one in-flight dedupe map (see Utils.fetchTileDeduped).
     this.tileFetchInflight = new Map();
     // Evicted ImageBitmaps hold decoded pixel memory; free it explicitly.
-    this.tileBitmapCache = new LRUCache(DeviceInfo.isIOS ? 200 : 800, (key, bitmap) => {
+    this.tileBitmapCache = new LRUCache(DeviceInfo.lowMemory ? 200 : 800, (key, bitmap) => {
       if (bitmap && typeof bitmap.close === 'function') bitmap.close();
     });
     this.activeKeys = [];
@@ -1195,7 +1202,7 @@ class MapController {
       maxNativeZoom: 12,
       tileSize: 256,
       opacity: 0,
-      keepBuffer: DeviceInfo.isIOS ? 1 : 2,
+      keepBuffer: DeviceInfo.lowMemory ? 1 : 2,
       updateWhenIdle: true,
       updateWhenZooming: false,
       zIndex: 10,
@@ -1325,7 +1332,7 @@ class MapController {
     const coords = Object.values(layer._tiles)
       .filter(t => t && t.current && t.coords)
       .map(t => layer._wrapCoords(t.coords))  // stored coords are unwrapped (see _repaintTiles)
-      .slice(0, DeviceInfo.isIOS ? 12 : 40);
+      .slice(0, DeviceInfo.lowMemory ? 12 : 40);
     if (coords.length === 0) return;
 
     // Same per-tile bounds cull as _renderTile, and the same laziness: an

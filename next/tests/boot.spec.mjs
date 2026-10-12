@@ -54,9 +54,16 @@ test('100 ms loading grace and playback readiness gate', async ({ page }) => {
   release(); await expect(page.locator('#loader')).toBeHidden(); await page.locator('#playBtn').click();
 });
 test('warning banner follows its 1.5 to 8 second window', async ({ page }) => {
-  await page.clock.install(); await ready(page);
-  await expect(page.locator('#warningOverlay')).not.toHaveClass(/visible/); await page.clock.runFor(1500); await expect(page.locator('#warningOverlay')).toHaveClass(/visible/);
-  await page.clock.runFor(6500); await expect(page.locator('#warningOverlay')).not.toHaveClass(/visible/);
+  // The window is timed from boot. A ticking clock let a slow (CI WebKit)
+  // boot run into it before the first assertion, so time stands still until
+  // the test moves it.
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await page.goto(view); await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  const banner = page.locator('#warningOverlay');
+  await page.clock.runFor(1499); await expect(banner).not.toHaveClass(/visible/);
+  await page.clock.runFor(1); await expect(banner).toHaveClass(/visible/);
+  await page.clock.runFor(6499); await expect(banner).toHaveClass(/visible/);
+  await page.clock.runFor(1); await expect(banner).not.toHaveClass(/visible/);
 });
 test('the address bar is left alone while scrubbing; a share link carries the state', async ({ page }) => {
   await ready(page); const before = page.url();

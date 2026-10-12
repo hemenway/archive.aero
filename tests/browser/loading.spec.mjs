@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import { installFixtures } from './fixtures.mjs';
 
@@ -92,4 +93,23 @@ test('fingerprinted assets have JavaScript MIME type and support conditional reu
   expect(first.headers()['cache-control']).toContain('max-age=');
   const validated = await request.get(entry, { headers: { 'if-none-match': first.headers().etag } });
   expect(validated.status()).toBe(304);
+});
+
+test('cache budgets: iOS, Android and small-memory devices get the reduced sizes', async () => {
+  // The shipped DeviceInfo block, run against stand-in navigators.
+  const source = await readFile(new URL('../../src/viewer.js', import.meta.url), 'utf8');
+  const start = source.indexOf('const DeviceInfo = (() => {');
+  const block = source.slice(start, source.indexOf('})();', start) + 5);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const classify = nav => new Function('navigator', `${block}; return DeviceInfo;`)({ platform: '', maxTouchPoints: 0, ...nav });
+  const iphone = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
+  const pixel = 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36';
+  const mac = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15';
+  const chrome = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36';
+  expect(classify({ userAgent: iphone })).toMatchObject({ isIOS: true, lowMemory: true });
+  expect(classify({ userAgent: mac, platform: 'MacIntel', maxTouchPoints: 5 })).toMatchObject({ isIOS: true, lowMemory: true });
+  expect(classify({ userAgent: pixel, deviceMemory: 8 })).toMatchObject({ isIOS: false, lowMemory: true });
+  expect(classify({ userAgent: chrome, deviceMemory: 4 })).toMatchObject({ isIOS: false, lowMemory: true });
+  expect(classify({ userAgent: chrome, deviceMemory: 8 })).toMatchObject({ isIOS: false, lowMemory: false });
+  expect(classify({ userAgent: mac, platform: 'MacIntel' })).toMatchObject({ isIOS: false, lowMemory: false });
 });
