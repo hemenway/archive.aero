@@ -549,6 +549,9 @@ WORKER_SCRATCH = Path.home() / "slicerd-work"
 WORKER_SOURCES = Path.home() / "mnt" / "projects-ro" / "rawtiffs"
 SHARE_URL = "//Ryan@192.168.1.203/projects"
 READONLY_RX = re.compile(r"Read-only file system|Errno 30\b|EROFS")
+SOURCE_UNAVAILABLE_RX = re.compile(
+    r"Resource temporarily unavailable|Input/output error|Stale file handle|"
+    r"ERROR: Source directory not found")
 _wlock = __import__("threading").Lock()
 _children = set()  # running slicer / converter processes, killed when the worker stops
 
@@ -665,6 +668,8 @@ def worker_group(a, claim, cid):
                     (w / "charts" / "manifest.seed_lines").write_text(str(sum(1 for _ in open(seed))) + "\n")
         args += ["--chart-pmtiles", w / "charts", "--chart-manifest", manifest]
     args += [str(x) for x in sp.get("slicer_args", [])]
+    if a.parallel_warp:
+        args += ["--parallel-warp", str(a.parallel_warp)]
     env = {"TMPDIR": str(scratch / "tmp"), "CPL_TMPDIR": str(scratch / "tmp")}
     (scratch / "tmp").mkdir(exist_ok=True)
     for k in keys:
@@ -685,6 +690,8 @@ def worker_group(a, claim, cid):
         shutil.rmtree(d, ignore_errors=True)
     if READONLY_RX.search(text) and not all(ok.values()):
         return "local_only"  # a source needs writing next to it: the server's overlay handles that
+    if SOURCE_UNAVAILABLE_RX.search(text):
+        raise RuntimeError("source share became unavailable; retry this group after it recovers")
     grid = re.findall(r"Mosaic grid: z(\d+)", text)
     fails = [ln.strip() for ln in text.splitlines() if "✗" in ln]
     # the slicer prints a chart's key (chart/<slug>/<date>); its mirror file is <slug>/<date>.pmtiles
@@ -717,7 +724,7 @@ def worker_group(a, claim, cid):
                 dt, nb = sh(a.python, "-c", "import sys; from osgeo import gdal; d = gdal.Open(sys.argv[1]); "
                             "print(gdal.GetDataTypeName(d.GetRasterBand(1).DataType), d.RasterCount)", m).split()
                 gargs = [a.g2p, "-format", p.get("format", "webp"), "-quality", str(p.get("quality", 80)),
-                         "-concurrency", str(int(p.get("concurrency") or a.concurrency)), "-mem-limit", "6000"]
+                         "-concurrency", str(int(p.get("concurrency") or a.concurrency)), "-mem-limit", str(a.mem_limit)]
                 if dt != "Byte":
                     gargs += ["-rescale", "linear", "-rescale-range", "0,65535", "-alpha-band", nb]
                 gargs += [str(x) for x in p.get("g2p_args", [])]
@@ -814,8 +821,9 @@ def cmd_worker(a):
     def loop(n):
         while not stop.is_set():
             try:
+                ensure_ro_sources(a.sources)
                 claim = api("POST", "/api/claim", {"worker": a.name, "max_charts": a.max_charts, "run": a.run})
-            except SystemExit as e:
+            except (SystemExit, Exception) as e:
                 say(f"claim failed ({e}); retrying in 60 s")
                 claim = {"jobs": []}
             if not claim.get("jobs"):
@@ -1078,6 +1086,8 @@ def main():
     p.add_argument("--scratch", default=str(WORKER_SCRATCH)); p.add_argument("--sources", default=str(WORKER_SOURCES))
     p.add_argument("--g2p", default=str(WORKER_SCRATCH / "bin" / "geotiff2pmtiles")); p.add_argument("--python", default=str(Path.home() / "venv" / "bin" / "python"))
     p.add_argument("--concurrency", type=int, default=4, help="geotiff2pmtiles threads per convert")
+    p.add_argument("--parallel-warp", type=int, help="maximum chart/warp workers per group (default: slicer auto)")
+    p.add_argument("--mem-limit", type=int, default=6000, help="era converter tile-store memory limit in MB")
     p.add_argument("--repo", default=str(DEFAULT_REPO)); p.set_defaults(fn=cmd_worker)
     p = sp.add_parser("publish"); p.add_argument("run"); p.add_argument("key")
     p.add_argument("--repo", default=str(DEFAULT_REPO)); p.add_argument("--dry-run", action="store_true")
