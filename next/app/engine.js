@@ -456,6 +456,8 @@ export class MapController {
     if (clip) this.r.setClipRing(clip.id, null);
     this.soloState = null;
     document.getElementById('soloBar')?.classList.remove('visible');
+    // The chart view (ChartView) closes with solo, however solo ended.
+    this.onSoloExit?.();
   }
 
   // Shows one chart alone, replacing the composite until the next frame
@@ -463,7 +465,9 @@ export class MapController {
   // (durable URI, collar included; a half-sheet pair paints as two
   // sources). Fallback while artifacts roll out: the chart's era archive,
   // clipped to its footprint ring for multi-chart mosaics.
-  enterSolo(loc, chart, members = 1) {
+  // fit: false keeps the current view (an edition page opened with its own
+  // lat/lng/zoom); otherwise the view fits the chart.
+  enterSolo(loc, chart, members = 1, { fit = true } = {}) {
     // "View alone" is an explicit request to see this chart, so flip the layers
     // switch back on rather than flying to a blank map. A deliberately lowered
     // opacity slider is preserved — setChartsHidden(false) restores from the slider.
@@ -504,7 +508,7 @@ export class MapController {
     document.getElementById('soloBar')?.classList.add('visible');
 
     this._demand();
-    if (bounds) this.map.fitBounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]], { padding: [40, 40], maxZoom: 11 });
+    if (bounds && fit) this.map.fitBounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]], { padding: [40, 40], maxZoom: 11 });
   }
 
   exitSolo() {

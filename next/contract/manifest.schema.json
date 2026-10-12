@@ -250,6 +250,26 @@
         }
       ]
     },
+    "charts": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base"
+          ],
+          "properties": {
+            "base": {
+              "type": "string",
+              "pattern": "^next/charts\\.[a-f0-9]{12}/$"
+            }
+          }
+        }
+      ]
+    },
     "coverage": {
       "type": "object"
     }

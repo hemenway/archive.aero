@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { manifest as fixture } from './app/stubs/manifest.js';
+import { manifest as fixture, chartIndex as fixtureCharts } from './app/stubs/manifest.js';
 import { startupArtifacts } from './dataplane/startup.js';
 const root = fileURLToPath(new URL('../', import.meta.url)), directory = path.join(root, 'next');
 const args = process.argv.slice(2), check = args.includes('--check');
@@ -27,7 +27,9 @@ let source, manifestUrl = value('--manifest') || previousBuild?.manifestUrl;
 const deployBase = value('--base') || previousBuild?.base || '/next/';
 if (!/^\/(?:[\w-]+\/)*$/.test(deployBase)) throw new Error(`--base must look like /next/ or /, got ${deployBase}`);
 if (stubs) {
-  source = fixture; const bytes = JSON.stringify(source); const name = `manifest.${hash(bytes)}.json`; outputs.set(name, bytes); manifestUrl ||= `./${name}`;
+  source = fixture; const bytes = JSON.stringify(source); const name = `manifest.${hash(bytes)}.json`; outputs.set(name, bytes); manifestUrl ||= `${deployBase}${name}`;
+  // The chart index the fixture manifest points at, so a chart address boots against the stub server.
+  for (const [slug, data] of Object.entries(fixtureCharts)) outputs.set(`${source.charts.base}${slug}.json`, JSON.stringify(data));
 } else {
   if (!manifestUrl) throw new Error('Real builds require --manifest <immutable URL>. Use --stubs for the standalone shell.');
   if (value('--manifest-file')) source = JSON.parse(await readFile(path.resolve(value('--manifest-file')), 'utf8'));
@@ -39,10 +41,13 @@ if (manifestGzip > 80 * 1024 && !allowOverBudget) throw new Error(`Manifest exce
 const startup = startupArtifacts(source), years = {};
 for (const [year, raw] of startup.years) {
   const bytes = JSON.stringify(raw), name = `startup/${year}.${hash(bytes)}.json`;
-  outputs.set(name, bytes); years[year] = `./${name}`;
+  outputs.set(name, bytes); years[year] = `${deployBase}${name}`;
 }
 const startupBytes = JSON.stringify({version:1,summary:startup.summary,years});
-const startupName = `startup.${hash(startupBytes)}.json`, startupUrl = `./${startupName}`;
+const startupName = `startup.${hash(startupBytes)}.json`, startupUrl = `${deployBase}${startupName}`;
+// Where the per-location chart index lives (edition pages and the chart view read it); '' when the manifest has none.
+// The stub build serves its fixture index itself, so the stub base is a path on this origin.
+const chartsBase = !source.charts ? '' : stubs ? new URL(source.charts.base, 'http://stub' + deployBase).pathname : new URL(source.charts.base, source.fileBase).href;
 outputs.set(startupName, startupBytes);
 const common = { absWorkingDir: root, bundle: true, minify: true, format: 'esm', target: 'es2022', sourcemap: 'external', write: false, outdir, entryNames: '[name].[hash]', chunkNames: 'chunk.[hash]', metafile: true };
 const workerEntry = path.join(directory, stubs ? 'app/stubs/worker.js' : 'dataplane/worker.js');
@@ -50,7 +55,7 @@ const workerEntry = path.join(directory, stubs ? 'app/stubs/worker.js' : 'datapl
 const worker = await build({ ...common, splitting: true, entryPoints: { worker: workerEntry } });
 for (const file of worker.outputFiles) outputs.set(path.relative(outdir, file.path), file.contents);
 const workerFile = worker.outputFiles.find(f => /worker\.[^/]*\.js$/.test(f.path)), workerName = path.relative(outdir, workerFile.path);
-const result = await build({ ...common, splitting: true, entryPoints: { app: path.join(directory, 'app/main.js') }, define: { __STARTUP_URL__: JSON.stringify(startupUrl), __MANIFEST_URL__: JSON.stringify(manifestUrl), __SITE_ORIGIN__: JSON.stringify(linksOrigin || ''), __WORKER_URL__: JSON.stringify(`./${workerName}`), __STUBS__: String(stubs) }, plugins: [{ name: 'hashed-data-worker', setup(builder) { builder.onLoad({ filter: /next\/dataplane\/index\.js$/ }, async ({ path: filename }) => ({ contents: (await readFile(filename, 'utf8')).replace(/new URL\(['"]\.\/worker\.js['"],\s*import\.meta\.url\)/g, `new URL('./${workerName}', import.meta.url)`), loader: 'js' })); } }], alias: { '@next/renderer': path.join(directory, stubs ? 'app/stubs/renderer.js' : 'renderer/index.js'), '@next/dataplane': path.join(directory, stubs ? 'app/stubs/dataplane.js' : 'dataplane/index.js') } });
+const result = await build({ ...common, splitting: true, entryPoints: { app: path.join(directory, 'app/main.js') }, define: { __STARTUP_URL__: JSON.stringify(startupUrl), __MANIFEST_URL__: JSON.stringify(manifestUrl), __SITE_ORIGIN__: JSON.stringify(linksOrigin || ''), __WORKER_URL__: JSON.stringify(`${deployBase}${workerName}`), __BASE__: JSON.stringify(deployBase), __CHARTS_BASE__: JSON.stringify(chartsBase), __STUBS__: String(stubs) }, plugins: [{ name: 'hashed-data-worker', setup(builder) { builder.onLoad({ filter: /next\/dataplane\/index\.js$/ }, async ({ path: filename }) => ({ contents: (await readFile(filename, 'utf8')).replace(/new URL\(['"]\.\/worker\.js['"],\s*import\.meta\.url\)/g, `new URL('./${workerName}', import.meta.url)`), loader: 'js' })); } }], alias: { '@next/renderer': path.join(directory, stubs ? 'app/stubs/renderer.js' : 'renderer/index.js'), '@next/dataplane': path.join(directory, stubs ? 'app/stubs/dataplane.js' : 'dataplane/index.js') } });
 for (const file of result.outputFiles) outputs.set(path.relative(outdir, file.path), file.contents);
 const app = path.relative(outdir, result.outputFiles.find(f => /app\..*\.js$/.test(f.path)).path);
 // The shell wears the production interface. Its page and stylesheet are derived from the live viewer's index.html and
@@ -108,7 +113,7 @@ const early = (await transform(await readFile(path.join(directory, 'shell/early.
 if (Buffer.byteLength(early) > 1536) throw new Error(`Boot script exceeds 1.5 KB: ${Buffer.byteLength(early)}`);
 // A vector basemap is not requested at boot: most of a view lies under charts, and the data plane fetches only the
 // basemap tiles that show.
-const bootData = JSON.stringify({ base: stubs ? './t/' : base, eras: newest, start, end: lastDate, map: source.basemap?.format === 'mvt' ? null : source.basemap }).replaceAll('<', '\\u003c');
+const bootData = JSON.stringify({ base: stubs ? `${deployBase}t/` : base, eras: newest, start, end: lastDate, map: source.basemap?.format === 'mvt' ? null : source.basemap }).replaceAll('<', '\\u003c');
 const json = JSON.stringify(manifestUrl).replaceAll('<', '\\u003c');
 const escape = text => text.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;');
 const attr = value => /^[a-zA-Z0-9_:.\/-]+$/.test(value) ? value : `"${escape(value)}"`;
@@ -124,7 +129,7 @@ const chunks = scripts.filter(name => eager.has(name)), lazyChunks = scripts.fil
 const workerGraph = new Map(Object.entries(worker.metafile.outputs).map(([name, output]) => [emitted(name), output.imports.filter(i => i.kind === 'import-statement' && !i.external).map(i => emitted(i.path))]));
 const workerEager = new Set([workerName]);
 for (const name of workerEager) for (const imported of workerGraph.get(name) || []) workerEager.add(imported);
-const head = `<style>${critical}</style><link rel=preload as=fetch href=${attr(stubs ? manifestUrl : startupUrl)} crossorigin><script id=bootData type=application/json>${bootData}</script><script>${early}</script>${[...new Set([...chunks, ...workerEager])].map(name => `<link rel=modulepreload href=./${name}>`).join('')}<link rel=stylesheet href=./${cssName}>`;
+const head = `<style>${critical}</style><link rel=preload as=fetch href=${attr(stubs ? manifestUrl : startupUrl)} crossorigin><script id=bootData type=application/json>${bootData}</script><script>${early}</script>${[...new Set([...chunks, ...workerEager])].map(name => `<link rel=modulepreload href=${deployBase}${name}>`).join('')}<link rel=stylesheet href=${deployBase}${cssName}>`;
 
 // Page: the production index.html, minus what only the Leaflet viewer needs, with the map controls where Leaflet puts them.
 // One tokenizer serves the minifier and its check. Attribute values are matched as quoted strings, so the favicon's data
@@ -195,7 +200,7 @@ const take = (what, opening) => {
 const toolsControl = take('#toolsControl', '<div class="tools-control leaflet-control" id="toolsControl">'), utilRail = take('#utilRail', '<div class="util-rail leaflet-control" id="utilRail">');
 page = edit(page, '#map', /<div id="map" role="region"((?: [\w-]+="[^"]*")*)><\/div>/g, 1, (_, rest) => {
   if (/ tabindex=/.test(rest)) throw new Error('Shell derivation: #map already has a tabindex');
-  return `<div id="map" role="region" tabindex="0"${rest}><canvas id="mapCanvas" aria-hidden="true"></canvas><div class="leaflet-control-container"><div class="leaflet-top leaflet-right">${toolsControl}<div class="ctl-col"><div class="leaflet-control-zoom leaflet-bar leaflet-control"><a class="leaflet-control-zoom-in" id="zoomInBtn" href="#" title="Zoom in" role="button" aria-label="Zoom in"><span aria-hidden="true">+</span></a><a class="leaflet-control-zoom-out" id="zoomOutBtn" href="#" title="Zoom out" role="button" aria-label="Zoom out"><span aria-hidden="true">&#x2212;</span></a></div>${utilRail}</div></div><div class="leaflet-bottom leaflet-right"><div class="leaflet-control-attribution leaflet-control" id="mapAttribution"></div></div></div></div>`;
+  return `<div id="map" role="region" tabindex="0"${rest}><canvas id="mapCanvas" aria-hidden="true"></canvas><div class="leaflet-control-container"><div class="leaflet-top leaflet-right">${toolsControl}<div class="ctl-col"><div class="leaflet-control-zoom leaflet-bar leaflet-control"><a class="leaflet-control-zoom-in" id="zoomInBtn" href="#" title="Zoom in" role="button" aria-label="Zoom in"><span aria-hidden="true">+</span></a><a class="leaflet-control-zoom-out" id="zoomOutBtn" href="#" title="Zoom out" role="button" aria-label="Zoom out"><span aria-hidden="true">&#x2212;</span></a></div>${utilRail}</div></div><div class="leaflet-bottom leaflet-right"><div class="leaflet-control-attribution leaflet-control" id="mapAttribution"></div></div></div></div><aside class="chart-view" id="chartView" role="region" aria-label="Chart view" tabindex="-1" hidden></aside>`;
 });
 const markup = minify(page);
 if (shape(markup) !== shape(page)) throw new Error('Shell derivation: the minifier changed the markup');
@@ -207,9 +212,11 @@ if (stray) throw new Error(`Shell derivation: the production page has content th
 const ids = ['bootData', ...tokens.flatMap(t => t.tag && !t.close ? t.attrs.filter(([name]) => name === 'id').map(([, value]) => value) : [])];
 if (new Set(ids).size !== ids.length) throw new Error(`Shell derivation: duplicate element id ${[...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))].join(', ')}`);
 const analytics = !analyticsOn ? '' : `<script async src=${attr(plausibleSrc)}></script><script>window.plausible=window.plausible||function(){(plausible.q=plausible.q||[]).push(arguments)};plausible.init=plausible.init||function(i){plausible.o=i||{}};plausible.init()</script>`;
-const html = `<!doctype html>${edit(edit(markup, '</head>', /<\/head>/g, 1, () => `${head}</head>`), '</body>', /<\/body>/g, 1, () => `<script type=module src=./${app}></script>${analytics}</body>`)}\n`;
+const html = `<!doctype html>${edit(edit(markup, '</head>', /<\/head>/g, 1, () => `${head}</head>`), '</body>', /<\/body>/g, 1, () => `<script type=module src=${deployBase}${app}></script>${analytics}</body>`)}\n`;
 outputs.set('index.html', html);
-const shellAssets = ['./index.html', ...[...outputs.keys()].filter(name => /\.(js|css)$/.test(name)).map(name => `./${name}`), startupUrl, manifestUrl];
+// Shell URLs are absolute under the base: the page also answers at /<base>sectionals/chart/<slug>/<date>, where a
+// document-relative ./ would point into the chart's directory.
+const shellAssets = [`${deployBase}index.html`, ...[...outputs.keys()].filter(name => /\.(js|css)$/.test(name)).map(name => `${deployBase}${name}`), startupUrl, manifestUrl];
 const version = hash([...outputs].map(([name, data]) => `${name}:${hash(data)}`).join('|'));
 const sw = (await transform((await readFile(path.join(directory, 'sw.js'), 'utf8')).replace('__SW_VERSION__', JSON.stringify(version)).replace('__SW_ASSETS__', JSON.stringify(shellAssets)).replace('__SW_MANIFEST__', json), { minify: true, target: 'es2022' })).code;
 outputs.set('sw.js', sw);
@@ -218,9 +225,11 @@ const scriptHashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m =
 const dataOrigins = [...new Set([manifestUrl, source.tileBase, source.fileBase].map(u => new URL(u, 'https://archive.aero/next/').origin))].filter(o => !['https://archive.aero', 'https://data.archive.aero'].includes(o));
 const plausible = analyticsOn ? ' https://plausible.io' : '';
 const csp = `default-src 'self'; script-src 'self' ${scriptHashes}${plausible}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero ${dataOrigins.map(o => o + ' ').join('')}https://get.geojs.io${plausible}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
+// The edition-page Worker (next/pages/worker.mjs) configures itself from this file, beside the page it renders.
+outputs.set('chart-pages.json', JSON.stringify({ version: 1, base: deployBase, site: linksOrigin || null, charts: chartsBase || null, image: `${linksOrigin || 'https://archive.aero'}/social-card.jpg`, csp, robots: linksOrigin ? 'noindex, nofollow' : null }, null, 2) + '\n');
 const immutableHeaders = [...outputs.keys()].filter(name => name !== 'sw.js' && /\.(js|css)$/.test(name)).map(name => `${deployBase}${name}\n  Cache-Control: public, max-age=31536000, immutable\n`).join('');
 // Cloudflare reads _headers only from the asset root, so this file is published there with rules already prefixed by the base.
-outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
+outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}chart-pages.json\n  Cache-Control: no-cache\n${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
 const externalJS = chunks.reduce((sum, name) => sum + gzipSync(outputs.get(name)).length, 0);
 const inlineJS = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].reduce((sum, match) => sum + gzipSync(match[1]).length, 0);
 const js = externalJS + inlineJS + gzipSync(workerFile.contents).length;

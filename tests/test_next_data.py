@@ -20,7 +20,7 @@ from next_pmtiles import Archive, id_to_zxy, write_archive, zxy_to_id, decompres
 from next_add_overviews import add_overviews
 import next_version_archives
 from next_version_archives import plan, execute, shell_commands, bounds
-from next_build_overlays import airfields, pins, shard_indices, build as build_overlays
+from next_build_overlays import airfields, pins, shard_indices, charts_index, chart_slug, build as build_overlays
 from next_build_manifest import build, emit, estimate
 
 
@@ -236,6 +236,44 @@ class NextDataTests(unittest.TestCase):
         chart=next(iter(shards.values()))['locations']['Aleutians']['charts'][0]
         self.assertEqual(chart['pm'],['sectionals/chart/test/1950-01-01.0123456789ab']);self.assertEqual(chart['pmz'],[8,11]);self.assertEqual(chart['pmb'],[-180,-85.0512,180,85.0512])
         self.assertRaises(ValueError,pins,td,[])
+    def test_chart_index_groups_editions_by_slug_with_versioned_artifacts(self):
+        ring=[[[-73.5,40],[-66.9,40],[-66.9,44.1],[-73.5,44.1],[-73.5,40]]]
+        td={'locations':{
+            'Boston':{'ref':'sectional/boston','charts':[
+                {'d':'1953-12-01','e':'1954-06-01','ed':'32','pm':['chart/boston/1953-12-01-north','chart/boston/1953-12-01-south']},
+                {'d':'1953-06-01','e':'1953-12-01','ed':'31','pm':'chart/boston/1953-06-01'},
+                {'d':'1954-06-01','e':'1954-12-01','ed':'33'},
+                {'d':'1953-06-01','e':'1953-12-01','ed':'31','pm':'chart/boston/1953-06-01'}]},
+            'Boston TAC':{'ref':'tac/boston','charts':[{'d':'2000-01-01','e':'2000-07-01','ed':'1','pm':'chart/boston_tac/2000-01-01'}]},
+            'Nowhere':{'ref':'x','charts':[{'d':'1950-01-01','e':'1951-01-01'}]}},
+            'rings':{'sectional/boston':ring}}
+        plan=[{'old':'sectionals/chart/boston/1953-12-01-north','path':'sectionals/chart/boston/1953-12-01-north.aaaaaaaaaaaa','z':[0,11],'b':[-73.4,42,-67,44]},
+              {'old':'sectionals/chart/boston/1953-12-01-south','path':'sectionals/chart/boston/1953-12-01-south.bbbbbbbbbbbb','z':[0,11],'b':[-73.4,40.1,-67,42.1]},
+              {'old':'sectionals/chart/boston/1953-06-01','path':'sectionals/chart/boston/1953-06-01.cccccccccccc','z':[0,11],'b':None},
+              {'old':'sectionals/chart/boston_tac/2000-01-01','path':'sectionals/chart/boston_tac/2000-01-01.dddddddddddd','z':[8,12],'b':[-71.5,42,-70.5,42.8]}]
+        idx=charts_index(td,plan)
+        self.assertEqual(sorted(idx),['boston','boston_tac'],'a location without an artifact has no page')
+        b=idx['boston']
+        self.assertEqual((b['names'],b['type'],b['bbox'],b['am']),(['Boston'],'sectional',[-73.5,40,-66.9,44.1],False))
+        self.assertEqual([c['d'] for c in b['charts']],['1953-06-01','1953-12-01','1954-06-01'],'sorted by date, one record per (d, e)')
+        self.assertEqual(b['charts'][1]['pm'],[plan[0]['path'],plan[1]['path']]); self.assertEqual(b['charts'][1]['pmb'],[-73.4,40.1,-67,44])
+        self.assertEqual(b['charts'][0]['pmb'],[-180,-85.0512,180,85.0512]); self.assertNotIn('pm',b['charts'][2])
+        self.assertEqual(idx['boston_tac']['type'],'tac'); self.assertIsNone(idx['boston_tac']['bbox'])
+        am={'locations':{'Aleutians':{'ref':'am','charts':[{'d':'1950-01-01','e':'1951-01-01','pm':'chart/aleutians/1950-01-01'}]}},'rings':{'am':[[[179,50],[-179,50],[-179,51],[179,51],[179,50]]]}}
+        a=charts_index(am,[{'old':'sectionals/chart/aleutians/1950-01-01','path':'sectionals/chart/aleutians/1950-01-01.eeeeeeeeeeee','z':[0,8],'b':None}])['aleutians']
+        self.assertTrue(a['am']); self.assertIsNone(a['bbox'])
+        self.assertRaises(ValueError,chart_slug,['chart/a/1950-01-01-north','chart/b/1950-01-01-south'])
+        self.assertRaises(ValueError,chart_slug,'sectionals/1950-01-01_to_1951-01-01')
+        two={'locations':{'X':{'ref':'r','charts':[{'d':'1950-01-01','pm':'chart/a/1950-01-01'},{'d':'1951-01-01','pm':'chart/b/1951-01-01'}]}},'rings':{}}
+        self.assertRaises(ValueError,charts_index,two,[{'old':'sectionals/chart/a/1950-01-01','path':'p','z':[0,8]},{'old':'sectionals/chart/b/1951-01-01','path':'q','z':[0,8]}])
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp,'t.json').write_text(json.dumps(td)); Path(tmp,'p.json').write_text(json.dumps(plan))
+            result=build_overlays(None,Path(tmp,'t.json'),Path(tmp,'p.json'),Path(tmp,'out'))
+            self.assertRegex(result['charts']['base'],r'^next/charts\.[0-9a-f]{12}/$')
+            folder=Path(tmp,'out',result['charts']['base'][len('next/'):])
+            self.assertEqual(sorted(p.name for p in folder.iterdir()),['boston.json','boston_tac.json'])
+            self.assertEqual(json.loads((folder/'boston.json').read_text())['slug'],'boston')
+            self.assertEqual(json.loads(Path(tmp,'out','overlays.json').read_text())['charts'],result['charts'])
     def test_manifest_real_directory_coverage_sorted_bounds_schema_budget(self):
         for k in ['1950-01-01_to_1951-01-01','1940-01-01_to_1941-01-01']:
             self.archive('sectionals/'+k+'.0123456789ab.pmtiles')

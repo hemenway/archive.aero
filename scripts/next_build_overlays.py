@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Build C4 airfields and C5 pin shards from local, unpublished catalogs."""
+"""Build C4 airfields, C5 pin shards and the per-location chart index from local, unpublished catalogs."""
 import argparse
 import hashlib
 import json
 import math
+import re
 import struct
 from pathlib import Path
 
@@ -90,8 +91,66 @@ def pins(timeline, plan, margin=2):
     return shards
 
 
+# A per-chart artifact key names its edition page: chart/<slug>/<date>[-half].
+CHART_KEY = re.compile(r'^(?:sectionals/)?chart/([a-z0-9_]+)/(\d{4}-\d{2}-\d{2})(-[a-z]+)?(?:\.pmtiles)?$')
+
+
+def chart_slug(pm):
+    """The location slug of a chart's artifact key(s); a half-sheet pair must agree."""
+    slugs=set()
+    for key in (pm if isinstance(pm,list) else [pm]):
+        m=CHART_KEY.match(key)
+        if not m: raise ValueError('unrecognised chart artifact key '+key)
+        slugs.add(m.group(1))
+    if len(slugs)!=1: raise ValueError('half-sheet pair spans slugs: '+repr(pm))
+    return slugs.pop()
+
+
+def ring_box(rings):
+    pts=[p for ring in rings for p in ring]
+    xs=[float(p[0]) for p in pts]; ys=[float(p[1]) for p in pts]
+    am=any(x>150 for x in xs) and any(x<-90 for x in xs)
+    return [min(xs),min(ys),max(xs),max(ys)], am
+
+
+def location_type(name):
+    return 'tac' if name.endswith(' TAC') else 'wac' if name.endswith(' WAC') else 'sectional'
+
+
+def charts_index(timeline, plan):
+    """One record per location slug: every edition held (tiled or not), versioned artifacts, footprint box.
+
+    The edition pages (/sectionals/chart/<slug>/<date>) and the shell's chart view read these; a
+    slug is the artifact key's location segment, so a location without any artifact has no page."""
+    versions={r['old']:r for r in plan}; by_slug={}
+    for name, location in sorted(timeline['locations'].items()):
+        slugs={chart_slug(c['pm']) for c in location.get('charts',[]) if c.get('pm')}
+        if len(slugs)>1: raise ValueError(f'{name}: charts under several slugs {sorted(slugs)}')
+        if not slugs: continue
+        slug=slugs.pop(); loc=version_charts(location,versions)
+        entry=by_slug.setdefault(slug,{'slug':slug,'names':[],'ref':location.get('ref'),'type':location_type(name),'bbox':None,'am':False,'charts':[]})
+        entry['names'].append(name)
+        rings=timeline.get('rings',{}).get(location.get('ref'))
+        if rings:
+            box,am=ring_box(rings)
+            if am: entry['am']=True
+            elif entry['bbox'] is None: entry['bbox']=box
+            else: entry['bbox']=[min(entry['bbox'][0],box[0]),min(entry['bbox'][1],box[1]),max(entry['bbox'][2],box[2]),max(entry['bbox'][3],box[3])]
+        entry['charts'].extend(loc['charts'])
+    for entry in by_slug.values():
+        if entry['am']: entry['bbox']=None
+        seen=set(); charts=[]
+        # Alternate scans of one edition share (d, e); the first listed stands for it, as in ChartIndex.
+        for c in sorted(entry['charts'],key=lambda c:(c['d'],c.get('e') or '')):
+            k=(c['d'],c.get('e') or '')
+            if k in seen: continue
+            seen.add(k); charts.append(c)
+        entry['charts']=charts
+    return by_slug
+
+
 def build(airfield_path, timeline_path, plan_path, out, margin=2):
-    out=Path(out); out.mkdir(parents=True,exist_ok=True); result={'airfields':None,'pins':None}
+    out=Path(out); out.mkdir(parents=True,exist_ok=True); result={'airfields':None,'pins':None,'charts':None}
     if airfield_path:
         data,details=airfields(json.loads(Path(airfield_path).read_text()))
         # Pair identity includes details: changes to a URL or name never overwrite old details.
@@ -107,6 +166,12 @@ def build(airfield_path, timeline_path, plan_path, out, margin=2):
         folder=out/('pins.'+h); folder.mkdir(exist_ok=True)
         for i,data in contents.items(): (folder/(str(i)+'.json')).write_bytes(data)
         result['pins']={'z':5,'margin':margin,'base':'next/'+folder.name+'/', 'shards':list(contents)}
+        index=charts_index(json.loads(Path(timeline_path).read_text()),plan)
+        files={slug:compact(entry) for slug,entry in sorted(index.items())}
+        h=digest(b''.join(slug.encode()+b'\0'+data for slug,data in files.items()))
+        folder=out/('charts.'+h); folder.mkdir(exist_ok=True)
+        for slug,data in files.items(): (folder/(slug+'.json')).write_bytes(data)
+        result['charts']={'base':'next/'+folder.name+'/'}
     (out/'overlays.json').write_bytes(compact(result)); return result
 
 

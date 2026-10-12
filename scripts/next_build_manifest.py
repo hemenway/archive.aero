@@ -33,9 +33,9 @@ def build(directory,coverage,overlays=None,tile_base='https://data.archive.aero/
           file_base='https://data.archive.aero/', generated=None):
     result={'version':1,'generated':generated or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
             'tileBase':tile_base,'fileBase':file_base,'eras':[], 'basemap':None,'airspace':None,
-            'airfields':None,'pins':None,'coverage':coverage}
+            'airfields':None,'pins':None,'charts':None,'coverage':coverage}
     if overlays:
-        for k in ('airfields','pins'): result[k]=overlays.get(k)
+        for k in ('airfields','pins','charts'): result[k]=overlays.get(k)
     for path in sorted(Path(directory).rglob('*.pmtiles')):
         rel=path.relative_to(directory).as_posix(); match=PATTERN.fullmatch(rel)
         if not match: raise ValueError('not content-versioned: '+rel)

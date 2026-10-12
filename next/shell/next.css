@@ -201,3 +201,95 @@ body.painted #mapCanvas {
 /* Display fonts start after the first chart paint, including on the splash. */
 body:not([data-fonts="true"]) { --font-display: system-ui, -apple-system, sans-serif; }
 .loading-title { font-family: system-ui, -apple-system, sans-serif; }
+
+/* ---- Chart view ----------------------------------------------------------
+   One chart shown alone (next/app/chartview.js; rendered server-side for an
+   edition page by next/pages/worker.mjs). Docked under the header on the
+   left, where nothing else lives; a strip across the top on phones. Reuses
+   the pin card's close button, badge and action styles from styles.css. */
+.chart-view {
+	position: fixed;
+	top: 82px;
+	left: 12px;
+	z-index: 900;
+	width: 300px;
+	max-width: calc(100vw - 24px);
+	max-height: calc(100vh - 82px - 170px);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	background: var(--bg-glass);
+	-webkit-backdrop-filter: blur(12px);
+	backdrop-filter: blur(12px);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 12px;
+	padding: 10px 14px 12px;
+	color: var(--text-light);
+	font-family: inherit;
+	animation: slideUp 0.2s var(--transition-smooth);
+	}
+.chart-view[hidden] { display: none; }
+.chart-view:focus { outline: none; }
+.chart-view:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.cv-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cv-kicker {
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.6px;
+	text-transform: uppercase;
+	color: var(--text-muted);
+	}
+.cv-title {
+	margin: 2px 0 0;
+	font-family: var(--font-display);
+	font-size: 20px;
+	font-weight: 700;
+	line-height: 1.2;
+	}
+.cv-meta { margin: 6px 0 0; font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cv-dates { margin: 4px 0 0; font-size: 12px; color: var(--text-light); }
+.cv-note { margin: 4px 0 0; font-size: 11px; color: var(--text-muted); }
+.cv-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.cv-nav {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px 10px;
+	margin-top: 12px;
+	padding-top: 10px;
+	border-top: 1px solid rgba(255, 255, 255, 0.08);
+	font-size: 12px;
+	}
+.cv-nav a, .cv-nav span { white-space: nowrap; }
+.cv-nav a { color: var(--text-light); text-decoration: none; }
+.cv-nav a:hover, .cv-nav a:focus-visible { color: var(--primary); text-decoration: underline; }
+.cv-prev { text-align: left; }
+.cv-next { text-align: right; }
+.cv-end { color: var(--text-muted); font-style: italic; }
+.cv-pos { color: var(--text-muted); white-space: nowrap; }
+.cv-all { margin-top: 10px; font-size: 12px; }
+.cv-all summary { cursor: pointer; color: var(--text-muted); }
+.cv-all summary:hover { color: var(--text-light); }
+.cv-list { margin: 6px 0 0; padding-left: 20px; max-height: 180px; overflow-y: auto; }
+.cv-list li { margin: 2px 0; color: var(--text-muted); }
+.cv-list li[aria-current="page"] > span { color: var(--text-light); font-weight: 600; }
+.cv-list a { color: var(--text-light); text-decoration: none; }
+.cv-list a:hover, .cv-list a:focus-visible { color: var(--primary); text-decoration: underline; }
+.cv-list .pin-unavailable { font-size: 12px; }
+/* Visible before any JavaScript runs on an edition page: the panel is the page's content. */
+body:not([data-ready="true"]) .chart-view:not([hidden]) { z-index: 1400; }
+@media (max-width: 640px) {
+	/* The Layers pill, zoom bar and utility rail stack down the right edge on
+	   phones (styles.css .leaflet-top rules): the panel stops short of them. */
+	.chart-view {
+		top: 76px;
+		left: 8px;
+		right: 136px;
+		width: auto;
+		max-width: none;
+		max-height: 38vh;
+		padding: 8px 12px 10px;
+		}
+	.cv-title { font-size: 17px; }
+	.cv-list { max-height: 110px; }
+	}

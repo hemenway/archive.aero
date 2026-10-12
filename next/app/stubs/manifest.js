@@ -10,9 +10,21 @@ export const manifest = {
   airspace: { p: 'airspace/fixture.0123456789ab', z: [0, 11] },
   airfields: { bin: 'airfields.0123456789ab.bin', details: 'airfields.0123456789ab.json' },
   pins: { z: 5, margin: 2, base: 'pins.0123456789ab/', shards: [395] },
+  charts: { base: 'charts.0123456789ab/' },
   coverage: { segments: [['1950-01-01', '1960-01-01', 1, 70], ['1960-01-01', '1970-01-01', 2, 100], ['1970-01-01', '1971-01-01', 2, 100]] }
 };
 export const fields = [
   { name: 'Test Field', lat: 32.7767, lng: -96.797, status: 'open', start_year: 1930, state: 'TX', oa: 'KDAL' },
   { name: 'Closed Field', lat: 33, lng: -97, status: 'gone', start_year: 1940, end_year: 1965, state: 'TX' }
 ];
+// The chart index of the stub pins' one location (served by the stub build itself).
+export const chartIndex = {
+  test_dallas: {
+    slug: 'test_dallas', names: ['Test Dallas'], ref: 'extents/test_dallas', type: 'sectional', bbox: [-99, 30, -95, 35], am: false,
+    charts: [
+      { d: '1950-01-01', e: '1960-01-01', ed: '1', f: '', pm: 'sectionals/chart/test_dallas/1950-01-01.0123456789ab', pmz: [4, 14], pmb: [-125, 24, -67, 50] },
+      { d: '1960-01-01', e: '1970-01-01', ed: '1', f: '', pm: 'sectionals/chart/test_dallas/1960-01-01.0123456789ab', pmz: [4, 14], pmb: [-99, 30, -95, 35] },
+      { d: '1970-01-01', e: '1971-01-01', ed: '1', f: '' }
+    ]
+  }
+};

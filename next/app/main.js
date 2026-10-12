@@ -141,7 +141,13 @@ async function initApp() {
   setTimeout(() => warningOverlay.classList.remove('visible'), 8000);
 
   const urlParams = new URLSearchParams(window.location.search);
-  const dateParam = urlParams.get('date');
+  // An edition address (/<base>sectionals/chart/<slug>/<date>) opens on that
+  // chart: its date, its extent, the chart alone (ChartView takes over once the
+  // cards load). Its location's chart index is fetched beside the manifest.
+  const routeMatch = location.pathname.startsWith(__BASE__) && /^sectionals\/chart\/([a-z0-9_]+)\/(\d{4}-\d{2}-\d{2})$/.exec(location.pathname.slice(__BASE__.length));
+  const route = routeMatch ? { slug: routeMatch[1], date: routeMatch[2] } : null;
+  const routeIndexLoading = route && __CHARTS_BASE__ ? fetch(`${__CHARTS_BASE__}${route.slug}.json`).then(r => (r.ok ? r.json() : null), () => null) : null;
+  const dateParam = route ? route.date : urlParams.get('date');
   const latParam = urlParams.get('lat');
   const lngParam = urlParams.get('lng');
   const zoomParam = urlParams.get('zoom');
@@ -218,8 +224,14 @@ async function initApp() {
   const urlLat = parseFloat(latParam);
   const urlLng = parseFloat(lngParam);
   const urlZoom = parseFloat(zoomParam);
-  if (!isNaN(urlLat) && !isNaN(urlLng) && Math.abs(urlLat) <= 90) {
+  const routeIndex = routeIndexLoading ? await routeIndexLoading : null;
+  const routeChart = routeIndex?.charts?.find(c => c.d === route.date) || null;
+  const routeBox = routeChart?.pmb;
+  const sharedView = !isNaN(urlLat) && !isNaN(urlLng) && Math.abs(urlLat) <= 90;
+  if (sharedView) {
     mapCtrl.map.setView([urlLat, urlLng], Number.isFinite(urlZoom) ? urlZoom : 10);
+  } else if (routeBox && routeBox[2] > routeBox[0] && routeBox[2] - routeBox[0] <= 180) {
+    mapCtrl.map.fitBounds([[routeBox[1], routeBox[0]], [routeBox[3], routeBox[2]]], { padding: [40, 40], maxZoom: 11 });
   } else {
     mapCtrl.map.fitBounds(INITIAL_BOUNDS, { padding: INITIAL_PADDING, maxZoom: 6 });
   }
@@ -292,6 +304,9 @@ async function initApp() {
     coverage: manifest.coverage,
     initialDate
   });
+  // An edition page paints its chart alone from the first frame, not after a
+  // flash of the whole mosaic; the view was placed above.
+  if (routeChart?.pm) mapCtrl.enterSolo({ name: routeIndex.names?.[0] || route.slug, bbox: null, crossesAM: true, ringClip: null }, routeChart, 1, { fit: false });
 
   // Layers-panel stats footer: era count is static; zoom and charts-in-view
   // update live (the latter from showFrame via #chartInfoEffective).
@@ -411,9 +426,13 @@ async function initApp() {
     return;
   }
   if (torn) return;
-  const { PinInspector, AirfieldsLayer, AirspaceLayer } = cards;
+  const { PinInspector, AirfieldsLayer, AirspaceLayer, ChartView } = cards;
 
   const pinInspector = new PinInspector(mapCtrl, timelineApp);
+  // One chart alone, at its edition-page address (shares its module with the edition-page Worker).
+  const chartView = new ChartView(mapCtrl, timelineApp, pinInspector, { base: __BASE__, chartsBase: __CHARTS_BASE__, site: __SITE_ORIGIN__ });
+  timelineApp.chartView = chartView;
+  pinInspector.chartView = chartView;
   renderer.off('click', rememberPin);
   mapEl.removeEventListener('keydown', rememberEnter);
   // Exposed so updateShareUrl can encode the pin.
@@ -478,7 +497,9 @@ async function initApp() {
   // Restore a shared pin (the one case where the chart inventory loads at
   // boot rather than on a click).
   const pinParam = urlParams.get('pin');
-  if (queuedPin) pinInspector.setPin(queuedPin.latlng, queuedPin.focus);
+  if (route) {
+    chartView.openRoute(route, { push: false, index: routeIndex, fit: false }).then(ok => { if (!ok) Utils.toast('That chart is not in the archive'); });
+  } else if (queuedPin) pinInspector.setPin(queuedPin.latlng, queuedPin.focus);
   else if (pinParam) {
     const [pinLat, pinLng] = pinParam.split(',').map(parseFloat);
     if (!isNaN(pinLat) && !isNaN(pinLng) && Math.abs(pinLat) <= 90) {

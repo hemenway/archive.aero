@@ -4,3 +4,4 @@
 export { PinInspector } from './pin.js';
 export { AirfieldsLayer } from './airfields.js';
 export { AirspaceLayer } from './airspace.js';
+export { ChartView } from './chartview.js';

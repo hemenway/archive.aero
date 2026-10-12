@@ -124,6 +124,13 @@ alongside esbuild, `build:next`, and `test:next`.
 - `build.mjs`: esbuild, hashes, sourcemaps, the page and stylesheet derived from
   the production viewer, self-hosted Barlow, CSP/preload generation and budgets.
 - `sw.js`: shell-only offline caching; never duplicates the HTTP tile cache.
+- `app/chartview.js`: the chart view — one chart alone at its edition-page
+  address (`/<base>sectionals/chart/<slug>/<date>`): panel, title, canonical,
+  history. `pages/chart-page.mjs` is the shared edition-page module (address
+  rules, text, panel markup, head tags, JSON-LD, HTML rewrite) and
+  `pages/worker.mjs` the Cloudflare Worker that renders those addresses ahead
+  of the static assets (`npm run test:pages`). The build emits
+  `chart-pages.json` beside the page for it (see HOSTING.md).
 
 ## Startup performance
 

@@ -1,20 +1,20 @@
 {
   "mode": "stubs",
-  "manifestUrl": "./manifest.ecfc3cc3efa7.json",
+  "manifestUrl": "/next/manifest.6df3104e54a7.json",
   "base": "/next/",
   "allowOverBudget": false,
   "analytics": true,
   "linksOrigin": null,
-  "manifestGzip": 361,
+  "manifestGzip": 373,
   "bytes": {
-    "criticalJS": 18928,
-    "css": 7931,
-    "cssRaw": 38296,
-    "html": 19267,
-    "htmlGzip": 5919,
+    "criticalJS": 19390,
+    "css": 8370,
+    "cssRaw": 40795,
+    "html": 19489,
+    "htmlGzip": 6021,
     "worker": 345,
-    "inlineBoot": 1426,
-    "lazyJS": 5506,
+    "inlineBoot": 1520,
+    "lazyJS": 8568,
     "fonts": 57388
   },
   "limits": {
@@ -23,13 +23,13 @@
     "html": 24576
   },
   "assets": [
-    "./index.html",
-    "./worker.PSVLAI42.js",
-    "./app.VEPO4MKS.js",
-    "./chunk.FHVWWHAA.js",
-    "./chunk.MIWC5OF2.js",
-    "./styles.f42b9bf803e2.css",
-    "./startup.3de46baef58c.json",
-    "./manifest.ecfc3cc3efa7.json"
+    "/next/index.html",
+    "/next/worker.PSVLAI42.js",
+    "/next/app.VRF7LLWX.js",
+    "/next/chunk.NF2DT2BC.js",
+    "/next/chunk.MIWC5OF2.js",
+    "/next/styles.ba86a047ce36.css",
+    "/next/startup.efa4a1f06a4b.json",
+    "/next/manifest.6df3104e54a7.json"
   ]
 }

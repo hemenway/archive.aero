@@ -43,10 +43,10 @@ test('pin card, solo, exit, share and restoration in a fresh page', async ({ pag
   await ready(page); await page.locator('#map').focus(); await page.keyboard.press('Enter');
   await expect(page.locator('#pinPanel')).toBeFocused(); await expect(page.locator('#pinLoc')).toHaveText('Test Dallas');
   await expect(page.locator('#pinBadge')).toHaveText('ed. 1'); await expect(page.locator('#pinDates')).toHaveText('Jan 1960 – Jan 1970');
-  await page.getByRole('button', { name: 'View alone', exact: true }).click(); await expect(page.locator('#soloBar')).toBeVisible();
-  await expect(page.locator('#soloLabel')).toHaveText('Viewing Test Dallas · Jan 1960');
-  await page.locator('#pinClose').click(); await expect(page.locator('#pinPanel')).toBeHidden(); await expect(page.locator('#soloBar')).toBeVisible();
-  await page.locator('#soloExit').click(); await expect(page.locator('#soloBar')).toBeHidden();
+  // A chart with its own artifact opens the chart view (chartview.spec.mjs); the pin card gives way to the panel.
+  await page.getByRole('button', { name: 'View alone', exact: true }).click(); await expect(page.locator('#chartView')).toBeVisible();
+  await expect(page.locator('#chartView .cv-title')).toHaveText('Test Dallas'); await expect(page.locator('#soloBar')).toBeHidden(); await expect(page.locator('#pinPanel')).toBeHidden();
+  await page.locator('#chartView .solo-exit').click(); await expect(page.locator('#chartView')).toBeHidden();
   await page.goto(view); await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await page.locator('#map').focus(); await page.keyboard.press('Enter'); await expect(page.locator('#pinLoc')).toHaveText('Test Dallas');
   await page.locator('#shareBtn').click(); await expect.poll(() => page.evaluate(() => window.__copied)).toBeTruthy(); const link = await page.evaluate(() => window.__copied);

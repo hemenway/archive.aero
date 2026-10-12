@@ -133,7 +133,8 @@ export class PinInspector {
       btn.className = 'pin-view-alone';
       btn.type = 'button';
       btn.textContent = 'View alone';
-      btn.addEventListener('click', () => this.mapCtrl.enterSolo(loc, chart, members));
+      // The chart view takes over for a chart with its own artifact (it has an edition page); the plain solo view otherwise.
+      btn.addEventListener('click', () => this.chartView ? this.chartView.openChart(loc, chart, members) : this.mapCtrl.enterSolo(loc, chart, members));
       els.actions.appendChild(btn);
     } else {
       const note = document.createElement('span');

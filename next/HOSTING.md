@@ -24,6 +24,28 @@ and [Pages caching discussion](https://github.com/orgs/community/discussions/118
 record this limitation. A Cloudflare proxy in front of Pages could supply these
 headers; serving assets directly avoids adding another origin dependency.
 
+## Edition pages
+
+`/<base>sectionals/chart/<slug>/<date>` is served by `next/pages/worker.mjs`
+running ahead of the asset handler (`beta/wrangler.jsonc`: `main`, the
+`ASSETS` binding and `run_worker_first: ["/next/sectionals/*"]`; every other
+path never reaches the Worker). The Worker reads `<base>chart-pages.json`,
+which `build.mjs` writes beside the page: the chart-index URL from the
+manifest, the page's CSP, the links origin and the robots policy (a preview
+host built with `--links-origin` gets `noindex, nofollow`). It fetches the
+location's chart index, renders the shell page for that one edition (title,
+description, canonical, Open Graph, Twitter, JSON-LD, the chart-view panel as
+HTML with links to the location's other editions) and answers with the shell's
+CSP and `Cache-Control: no-cache`. Other spellings (uppercase, trailing slash,
+`.pmtiles`, one half of a pair) are 301s to the canonical address; a date with
+no tiled chart is the host's 404 page (thin-content guard, worklist 09 B5).
+The shell's own URLs are absolute under the base for this reason: a
+document-relative `./app.js` would resolve inside the chart's directory.
+The service worker passes these navigations through (only `<base>` and
+`<base>index.html` are network-first with an offline fallback). At the root
+switch the same Worker runs at `/sectionals/chart/*` with `base: "/"`.
+Not yet done: a per-page `og:image` (09 B3) and `sitemap-sectionals.xml` (09 B4).
+
 ## Cache policy
 
 | Resource | Cache-Control | Owner |

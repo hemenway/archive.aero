@@ -1,15 +1,15 @@
 /next/*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-JSM15ZraQ4ohRRTZK/YoJjXCZnUa2s6DetmBEezy/k8=' 'sha256-9s4ckG2sCap52/rixjGym0Rod1pIwaA7/5HYcYAgE+g=' https://plausible.io; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero https://get.geojs.io https://plausible.io; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'sha256-vCvJjBhK2kTg8PYtx00MerLf7n+ANii+U/f6/InNzMM=' 'sha256-9s4ckG2sCap52/rixjGym0Rod1pIwaA7/5HYcYAgE+g=' https://plausible.io; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero https://get.geojs.io https://plausible.io; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'
   X-Content-Type-Options: nosniff
 /next/worker.PSVLAI42.js
   Cache-Control: public, max-age=31536000, immutable
-/next/app.VEPO4MKS.js
+/next/app.VRF7LLWX.js
   Cache-Control: public, max-age=31536000, immutable
-/next/chunk.FHVWWHAA.js
+/next/chunk.NF2DT2BC.js
   Cache-Control: public, max-age=31536000, immutable
 /next/chunk.MIWC5OF2.js
   Cache-Control: public, max-age=31536000, immutable
-/next/styles.f42b9bf803e2.css
+/next/styles.ba86a047ce36.css
   Cache-Control: public, max-age=31536000, immutable
 /next/fonts/*
   Cache-Control: public, max-age=31536000, immutable
@@ -19,6 +19,8 @@
   Cache-Control: public, max-age=31536000, immutable
 /next/manifest.*.json
   Cache-Control: public, max-age=31536000, immutable
+/next/chart-pages.json
+  Cache-Control: no-cache
 /next/
   Cache-Control: no-cache
 /next/index.html

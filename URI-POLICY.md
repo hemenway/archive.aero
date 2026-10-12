@@ -45,7 +45,7 @@ pages, new collections, redirects — follows this file.
 | `/` | The sectional chart viewer — permanent. Never relocated, never demoted to a portal; the front-door job belongs to the nav and `/about`. | live |
 | `/about` `/contribute` `/sources` | Site-level documents | live — extensionless canonical since 2026-08-21 |
 | `/atc/…` | ATC History collection (designed canonical space, worklist 08 §A3) | live |
-| `/sectionals/…` | Sectional-chart pages. Edition pages at `/sectionals/chart/<slug>/<date>`, mirroring the R2 artifact key on `data.archive.aero` — the human page and the machine artifact share one identifier on two hosts. | planned (worklist 09 B2) |
+| `/sectionals/…` | Sectional-chart pages. Edition pages at `/sectionals/chart/<slug>/<date>`, mirroring the R2 artifact key on `data.archive.aero` — the human page and the machine artifact share one identifier on two hosts. | built 2026-10-06 in the next shell (`beta.archive.aero/next/sectionals/chart/…`, noindex); minted at the apex when the shell moves to `/` (worklist 09 B2) |
 | `/airports/<icao>` | Cross-collection airport pages, lowercase (`/airports/kbos`; uppercase forms 301) | planned (worklist 09 B1) |
 | future collections | one new prefix each (e.g. `/tac/`), added to this table when minted | — |
 

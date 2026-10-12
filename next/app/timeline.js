@@ -260,13 +260,16 @@ export class TimelineApp {
   }
 
   updateShareUrl() {
+    // In chart view the link is the edition page (the date is the chart's).
+    if (this.chartView?.active) return this.chartView.shareUrl();
     const selectedDate = this.selectedDate || this.frames[this.currentIndex]?.date;
     const center = this.mapCtrl.map.getCenter();
     // The renderer zooms continuously; share at most two decimals ("8", "8.25").
     const zoom = parseFloat(this.mapCtrl.map.getZoom().toFixed(2));
     // Longitude back into ±180 for a view panned across the antimeridian.
     const lng = ((center.lng + 180) % 360 + 360) % 360 - 180;
-    let url = `${window.location.origin}${window.location.pathname}?date=${selectedDate}&lat=${center.lat.toFixed(4)}&lng=${lng.toFixed(4)}&zoom=${zoom}`;
+    // The viewer's own address is the shell base: in chart view the pathname is the edition page.
+    let url = `${window.location.origin}${__BASE__}?date=${selectedDate}&lat=${center.lat.toFixed(4)}&lng=${lng.toFixed(4)}&zoom=${zoom}`;
     const pin = this.pinInspector?.latlng;
     if (pin) url += `&pin=${pin.lat.toFixed(4)},${pin.lng.toFixed(4)}`;
     return url;

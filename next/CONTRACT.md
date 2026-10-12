@@ -35,6 +35,7 @@ All four sections code to this. It is reproduced word for word in every agent's 
   "airspace": { "p": "airspace/class-20260916b.0123456789ab", "z": [0, 11] },
   "airfields": { "bin": "next/airfields.0123456789ab.bin", "details": "next/airfields.0123456789ab.json" },
   "pins": { "z": 5, "margin": 2, "base": "next/pins.0123456789ab/", "shards": [312, 313] },
+  "charts": { "base": "next/charts.0123456789ab/" },
   "coverage": { "...": "today's coverage.json content, verbatim" }
 }
 ```
@@ -47,6 +48,7 @@ All four sections code to this. It is reproduced word for word in every agent's 
   - `c` lists, in ascending order, the z6 tiles (as indices `y * 64 + x`) in which the archive has at least one tile. `null` means "assume coverage wherever `b` overlaps."
 - `basemap` may carry `"format": "mvt"` with a Protomaps `flavor` and label `lang` (added 2026-10-05): the archive then holds production's vector tiles, each painted by the data plane into the same 512 px tile a raster basemap would supply. Without `format` the tiles are raster images.
 - `basemap`, `airspace`, `airfields` and `pins` may each be `null`, meaning that feature is off. Paths in `p` resolve against `tileBase`. File paths (`bin`, `details`, `base`) resolve against `fileBase`.
+- `charts` (added 2026-10-06, optional: an older manifest simply lacks it) points at the per-location chart index of C5a, which the edition pages and the shell's chart view read. `null` or absent means there are no edition pages.
 - **Rules every consumer applies the same way:**
   - An era is in effect on date D when start ≤ D < end. ISO date strings compare correctly as plain strings.
   - Paint order is manifest order: later eras draw on top.
@@ -86,6 +88,11 @@ Visibility at year Y with the status filter S, exactly as today's `AirfieldsLaye
 - Each shard is a file at `{fileBase}{pins.base}{i}.json`, where i = `y * 32 + x` of a z5 tile (`pins.z`). It contains every location whose ring bounding box, expanded by `margin` degrees, intersects that z5 tile. Handle the antimeridian the way `ChartIndex._build` does.
 - A shard has the same shape as today's `timeline_data.json` (`{ "locations": { name: { era, ref, charts: [...] } }, "rings": { ref: [...] } }`), so `ChartIndex`'s logic ports unchanged. The one difference: each chart's `pm` (its per-chart artifact) is a versioned path or a list of paths, accompanied by `pmz: [minz, maxz]` and `pmb: [w, s, e, n]`.
 - The client loads the shard containing the clicked point (after normalizing its longitude) and ranks results the way `ChartIndex.query` does. A shard index missing from `pins.shards` means there are no charts there.
+
+### C5a. Chart index (added 2026-10-06)
+
+- One file per location slug at `{fileBase}{charts.base}{slug}.json`, where the slug is the location segment of the per-chart artifact key (`chart/<slug>/<date>[-half]`): `{ slug, names, ref, type, bbox, am, charts }`. `names` lists the catalog locations sharing the slug (first is the display name), `type` is `sectional`, `tac` or `wac`, `bbox` the footprint `[w, s, e, n]` or `null`, `am` true for an antimeridian-crossing footprint. `charts` is every edition held, sorted by start date, one record per `(d, e)`, in the C5 chart shape (`pm`/`pmz`/`pmb` only for tiled charts).
+- It names the edition pages: `/sectionals/chart/{slug}/{d}` exists exactly for the records with `pm` (URI-POLICY.md; worklist 09 B2). Built by `scripts/next_build_overlays.py`; read by `next/pages/chart-page.mjs` (shared by the shell and the edition-page Worker).
 
 ### C6. Shared types
 
