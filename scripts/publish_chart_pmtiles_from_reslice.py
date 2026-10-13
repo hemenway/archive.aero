@@ -62,9 +62,7 @@ DEFAULT_RUN = Path("/Volumes/projects/slicer-runs/2026-10-03_reslice")
 DEFAULT_REMOTE = "r2:charts"
 DEFAULT_PREFIX = "sectionals"
 # Keys deliberately not published even though the manifest has them.
-HELD = {
-    "chart/boston_ma/1957-06-01": "worklist 04: repaired artifact built 2026-10-13; publication and served verification pending",
-}
+HELD = {}  # Boston 1957 repaired, published and byte-verified 2026-10-13.
 
 
 def read_jsonl(path: Path):

@@ -24,7 +24,7 @@ const CONFIG = {
   // Single-file metadata bundle: era index + every archive's PMTiles
   // header/directories, so scrubbing needs no per-archive metadata fetches.
   // Rewritten by scripts/build_metadata_bundle.py --update-html; null = CSV only.
-  bundleUrl: 'https://data.archive.aero/sectionals/metadata-16bcc4d8.bundle',
+  bundleUrl: 'https://data.archive.aero/sectionals/metadata-61e8c828.bundle',
   // Size of the speculative first read of the bundle (preamble + gzipped era
   // index). It sits on the critical path of every boot and arrives on a cold
   // connection, where each doubling of the read costs another slow-start
@@ -52,7 +52,7 @@ const CONFIG = {
   // and a from/to validity interval (scripts/airspace_build.py, which
   // rewrites this key with --update-html). Dated and immutable for the
   // same reason as the basemap key. null disables the layer.
-  airspaceUrl: 'https://data.archive.aero/airspace/class-20260916b.pmtiles',
+  airspaceUrl: 'https://data.archive.aero/airspace/class-20261013.cce35551b42d.pmtiles',
   // The archive is tiled to z11 and overzoomed past that (a z11 tile unit
   // is ~5 m, plenty for airspace lines at the viewer's max zoom of 14).
   airspaceMaxDataZoom: 11,

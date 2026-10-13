@@ -11,7 +11,7 @@ import { handleTiles } from "./tiles.js";
 //   ALLOWED_ORIGIN  default "*"
 //   SAMPLE_RATE     default "0.05" (5% of qualifying reads)
 //   METADATA_BYTES  default "1024" (range reads <= this many bytes are not logged)
-//   CHART_CACHE_VERSION  bump after a permanent chart-key refresh and timeline upload
+//   CHART_CACHE_VERSION  bump after permanent chart/era refreshes and timeline upload
 
 const CORS_BASE = {
   "access-control-allow-methods": "GET, HEAD, OPTIONS",
@@ -62,6 +62,7 @@ const CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=3600";
 // era archives, next/pins.<hash>/...) names bytes that never change.
 const HASHED_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const HASHED_KEY = /\.[a-f0-9]{12}(?:\.[A-Za-z0-9]+)?(?:\/|$)/;
+const PERMANENT_ERA_KEY = /^sectionals\/\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}\.pmtiles$/;
 const cacheControlFor = (key) => HASHED_KEY.test(key) ? HASHED_CACHE_CONTROL : CACHE_CONTROL;
 
 // Two buckets since 2026-10-12. The content-hashed, immutable objects of the
@@ -139,7 +140,7 @@ const FLIGHT_TIMEOUT = Symbol("flight timeout");
 function cacheRequest(env, key, url) {
   const target = new URL(url);
   if (env.CHART_CACHE_VERSION && !HASHED_KEY.test(key) &&
-      (key.startsWith('sectionals/chart/') || key === 'sectionals/timeline_data.json')) {
+      (key.startsWith('sectionals/chart/') || PERMANENT_ERA_KEY.test(key) || key === 'sectionals/timeline_data.json')) {
     target.searchParams.set('v', env.CHART_CACHE_VERSION);
   }
   return new Request(target);

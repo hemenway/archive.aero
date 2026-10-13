@@ -278,6 +278,28 @@ test('a chart refresh invalidates full responses and blocks without flushing has
   assert.equal((await h.request({ range: 'bytes=0-15' }, 'GET', hashed)).response.headers.get('x-cache'), 'HIT');
 });
 
+test('an era refresh invalidates blocks and streamed responses while hashed eras stay cached', async t => {
+  const h = harness(t);
+  const permanent = '/sectionals/1953-12-01_to_1954-01-01.pmtiles';
+  const hashed = '/sectionals/1953-12-01_to_1954-01-01.0123456789ab.pmtiles';
+  for (const headers of [{ range: 'bytes=0-15' }, { range: `bytes=12-${BLOCK + 30}` }, {}]) {
+    h.env.CHART_CACHE_VERSION = 'before'; h.state.etag = '"before"';
+    await h.request(headers, 'GET', permanent);
+    await h.request(headers, 'GET', hashed);
+    const readsBefore = h.reads.length;
+    h.env.CHART_CACHE_VERSION = 'after'; h.state.etag = '"after"';
+    const fresh = await h.request(headers, 'GET', permanent);
+    assert.equal(fresh.response.headers.get('x-cache'), 'MISS');
+    assert.equal(fresh.response.headers.get('etag'), '"after"');
+    assert.equal(h.reads.length, readsBefore + 1);
+    assert.equal((await h.request(headers, 'GET', permanent)).response.headers.get('x-cache'), 'HIT');
+    const immutable = await h.request(headers, 'GET', hashed);
+    assert.equal(immutable.response.headers.get('x-cache'), 'HIT');
+    assert.equal(immutable.response.headers.get('etag'), '"before"');
+    assert.equal(h.reads.length, readsBefore + 1, 'hashed era does not refetch after the revision changes');
+  }
+});
+
 test('every failed response is logged to tile_errors; successes are not', async t => {
   const h = harness(t);
   const points = [];
