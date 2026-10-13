@@ -185,7 +185,8 @@ async function initApp() {
     console.error('Renderer failed to start', error);
     void dataLoading.then(dp => dp.destroy(), () => {});
     if (error instanceof RendererUnsupportedError) {
-      fail('This browser cannot run the new chart renderer.', { href: `${__SITE_ORIGIN__}/`, text: 'Open the current viewer' });
+      // The Leaflet viewer stays published at /classic/ (next/HOSTING.md, rollout step 4) for browsers without WebGL2.
+      fail('This browser cannot run the new chart renderer.', { href: `${__SITE_ORIGIN__}/classic/`, text: 'Open the classic viewer' });
     } else {
       fail('Failed to start the chart viewer. Reload to try again.');
     }
@@ -530,7 +531,9 @@ async function initApp() {
     // Let the first map paint finish before those downloads start competing.
     const register = () => {
       const run = () => {
-        if (!torn) navigator.serviceWorker.register(new URL('./sw.js', document.baseURI))
+        // By the deploy base, not the document: an edition page at /sectionals/chart/<slug>/<date>
+        // would otherwise look for sw.js in the chart's directory (a 404 on the beta, 2026-10-12).
+        if (!torn) navigator.serviceWorker.register(`${__BASE__}sw.js`, { scope: __BASE__ })
           .catch((error) => console.warn('service worker unavailable', error));
       };
       if (window.requestIdleCallback) requestIdleCallback(run, { timeout: 2000 });

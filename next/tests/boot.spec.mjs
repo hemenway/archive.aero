@@ -29,9 +29,9 @@ test('manifest failure leaves the splash up with an actionable message', async (
   await page.goto(view); await expect(page.locator('#loadingStatus')).toHaveText('Failed to load chart data. Check your connection and reload.');
   await expect(page.locator('#loadingSplash')).toBeVisible(); await expect(page.locator('#loader')).toBeHidden();
 });
-test('renderer unsupported error links to the current viewer', async ({ page }) => {
+test('renderer unsupported error links to the classic viewer', async ({ page }) => {
   await page.addInitScript(() => { const get = HTMLCanvasElement.prototype.getContext; HTMLCanvasElement.prototype.getContext = function(type, ...args) { return this.id === 'mapCanvas' ? null : get.call(this, type, ...args); }; });
-  await page.goto(view); await expect(page.locator('#loadingStatus')).toContainText('cannot run the new chart renderer'); await expect(page.locator('#loadingStatus a')).toHaveAttribute('href', '/');
+  await page.goto(view); await expect(page.locator('#loadingStatus')).toContainText('cannot run the new chart renderer'); await expect(page.locator('#loadingStatus a')).toHaveAttribute('href', '/classic/');
   await expect(page.locator('#loadingSplash')).toBeVisible();
 });
 test('worker failure brings the splash back with the reason and stops playback', async ({ page }) => {

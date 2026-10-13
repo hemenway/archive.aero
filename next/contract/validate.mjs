@@ -2,6 +2,8 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
+// C2 budget: 96 KiB gzip since 2026-10-12 (CONTRACT.md).
+const BUDGET = 96 * 1024;
 import { IMMUTABLE } from '../../worker/src/tiles.js';
 const schema = JSON.parse(await readFile(new URL('./manifest.schema.json',import.meta.url),'utf8'));
 // The schema deliberately uses this small, dependency-free JSON Schema subset.
@@ -90,7 +92,7 @@ async function main() {
   if (!args.includes('--manifest')) throw Error('usage: validate.mjs --manifest FILE_OR_URL [--base URL] [--schema-only] [--allow-over-budget]');
   const ref=value('--manifest'); const data=/^https?:/.test(ref)?Buffer.from(await (await fetch(ref)).arrayBuffer()):await readFile(ref);
   const m=validateManifest(JSON.parse(data)); const size=gzipSync(data).length;
-  if (size>80000 && !args.includes('--allow-over-budget')) throw Error(`gzip budget exceeded: ${size}`);
+  if (size>BUDGET && !args.includes('--allow-over-budget')) throw Error(`gzip budget exceeded: ${size}`);
   if (!args.includes('--schema-only')) await smoke(m,fetch,args.includes('--base')?value('--base'):null);
   console.log(`OK: ${m.eras.length} eras; ${size} bytes gzip${args.includes('--schema-only')?'; schema only':'; C1 smoke passed'}`);
 }

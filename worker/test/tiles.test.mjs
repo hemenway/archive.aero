@@ -57,8 +57,18 @@ test('30 concurrent cold tile lookups coalesce through the existing block flight
   assert.ok(responses.every(r=>r.status===200));assert.equal(h.reads.length,1);assert.equal(h.entries.size,1);
 });
 test('sampled tile hits retain the Analytics Engine datapoint shape',async t=>{
-  const h=harness(t);const points=[];h.env.SAMPLE_RATE='1';h.env.TILES={writeDataPoint:p=>points.push(p)};
-  await h.get();await h.get('metadata');assert.equal(points.length,1);assert.equal(points[0].blobs.length,5);assert.equal(points[0].doubles.length,3);assert.equal(points[0].indexes[0],PATH+'.pmtiles');
+  const h=harness(t);const points=[];h.env.SAMPLE_RATE='0.25';h.env.TILES={writeDataPoint:p=>points.push(p)};
+  t.mock.method(Math,'random',()=>0);
+  await h.get();await h.get('metadata');await h.get('6/15/25','HEAD');assert.equal(points.length,1);
+  const [p]=points;assert.equal(p.indexes[0],PATH+'.pmtiles');assert.equal(p.blobs.length,5);assert.equal(p.blobs[0],PATH+'.pmtiles');
+  // [length, ms, byteOffset, 1/sampleRate, z, x, y]: the first three match the
+  // legacy rows, double4 the range-read logger in index.js, and z/x/y let the
+  // heatmap skip offset decoding (hashed archives are in no metadata bundle).
+  assert.equal(p.doubles.length,7);
+  const [length,ms,offset,rate,z,x,y]=p.doubles;
+  assert.equal(length,h.bytes.length);assert.ok(Number.isFinite(ms)&&ms>=0);
+  assert.equal(offset,h.packed.length-h.bytes.length);assert.equal(rate,4);
+  assert.deepEqual([z,x,y],[6,15,25]);assert.ok(p.doubles.every(Number.isFinite));
 });
 test('storage errors are retryable 503s even when the directory is already parsed',async t=>{
   const h=harness(t,{leaf:true});t.mock.method(console,'error',()=>{});assert.equal((await h.get()).status,200);

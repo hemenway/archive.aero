@@ -184,10 +184,18 @@ export async function handleTiles(request, env, ctx, { getBlock, blockBytes }) {
       if (h.tileCompression === 2) extra['content-encoding'] = 'gzip';
       const body = request.method === 'HEAD' ? null : await read(h.tiles+e[1],e[2]);
       extra['x-cache'] = source;
-      if (env.TILES && request.method === 'GET' && Math.random() < Number(env.SAMPLE_RATE || '0.05')) {
+      const sampleRate = Number(env.SAMPLE_RATE || '0.05');
+      if (env.TILES && request.method === 'GET' && Math.random() < sampleRate) {
+        // Same dataset and first three doubles as index.js's range-read
+        // logger; double4 is the reads this row stands for (1/sampleRate, the
+        // convention index.js set, so sum(_sample_interval * double4) counts
+        // requests across a SAMPLE_RATE change). double5..7 are the tile's
+        // z/x/y, so scripts/analytics_heatmap.py never has to resolve the
+        // byte offset of a hashed archive (none is in a metadata bundle).
+        // Rows before 2026-10-12 carry only the first three doubles.
         try { env.TILES.writeDataPoint({indexes:[key],blobs:[key,request.cf?.country||'XX',source,
           (request.headers.get('user-agent')||'').slice(0,256),request.headers.get('referer')||''],
-          doubles:[e[2],Date.now()-started,h.tiles+e[1]]}); } catch {}
+          doubles:[e[2],Date.now()-started,h.tiles+e[1],1/sampleRate,z,x,y]}); } catch {}
       }
       return response(200,body,extra);
     }

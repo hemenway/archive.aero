@@ -30,7 +30,7 @@ def validate(path,allow_over_budget=False):
 
 
 def build(directory,coverage,overlays=None,tile_base='https://data.archive.aero/t/',
-          file_base='https://data.archive.aero/', generated=None):
+          file_base='https://data.archive.aero/', generated=None, catalog=None):
     result={'version':1,'generated':generated or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
             'tileBase':tile_base,'fileBase':file_base,'eras':[], 'basemap':None,'airspace':None,
             'airfields':None,'pins':None,'charts':None,'coverage':coverage}
@@ -63,13 +63,26 @@ def build(directory,coverage,overlays=None,tile_base='https://data.archive.aero/
         else: raise ValueError('unknown archive namespace '+stem)
     result['eras'].sort(key=lambda e:(*parse_key_dates(e['k']),e['k']))
     if not result['eras']: raise ValueError('no era archives')
+    if catalog:
+        # Draw rank `l` (CONTRACT C2, 2026-10-12): only ranks other than the sectional default are stored.
+        import dole_v2
+        layers=dole_v2.era_layers(dole_v2.load_rows(catalog))
+        for e in result['eras']:
+            l=layers.get(e['k'])
+            if l is not None and l!=2: e['l']=l
     return result
+
+
+# C2 budget: 96 KiB gzip since 2026-10-12 (80 KB before). The complete 3,761-era inventory is ~83 KB and its floor is
+# the 3,761 incompressible 12-hex content hashes; the per-year startup index carries the first paint, so the full
+# manifest is off the critical path (next/README.md, Startup performance).
+BUDGET=96*1024
 
 
 def emit(manifest,out,allow_over_budget=False):
     data=json.dumps(manifest,separators=(',',':'),ensure_ascii=False).encode()
     compressed=len(gzip.compress(data,mtime=0)); print(f'manifest: {len(data)} bytes; gzip: {compressed} bytes')
-    if compressed>80000 and not allow_over_budget: raise ValueError('80 KB gzip budget exceeded; request a contract split or use --allow-over-budget')
+    if compressed>BUDGET and not allow_over_budget: raise ValueError(f'{BUDGET//1024} KB gzip budget exceeded (C2); use --allow-over-budget to ship it anyway')
     out=Path(out); out.mkdir(parents=True,exist_ok=True)
     path=out/('manifest.'+hashlib.sha256(data).hexdigest()[:12]+'.json')
     path.write_bytes(data)
@@ -99,7 +112,7 @@ def estimate(dates_csv):
     coverage={'segments':[[e['k'][:10],e['k'][14:],rng.randrange(1,140),round(rng.random()*100,1)] for e in eras]}
     data=json.dumps({'version':1,'eras':eras,'coverage':coverage},separators=(',',':')).encode()
     size=len(gzip.compress(data,mtime=0))
-    return {'eras':len(eras),'gzip_bytes':size,'over_budget':size>80000,
+    return {'eras':len(eras),'gzip_bytes':size,'over_budget':size>BUDGET,
             'model':'16% continental 150-cell eras; remainder 1–12 cells; 8% null bounds; random SHA256 and 4-decimal bounds; one coverage segment per era'}
 
 
@@ -107,10 +120,12 @@ def main():
     ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--dir'); ap.add_argument('--coverage'); ap.add_argument('--overlays')
     ap.add_argument('--out'); ap.add_argument('--allow-over-budget',action='store_true'); ap.add_argument('--estimate-from')
     ap.add_argument('--tile-base',default='https://data.archive.aero/t/'); ap.add_argument('--file-base',default='https://data.archive.aero/')
+    ap.add_argument('--catalog',default=str(ROOT/'master_dole_v2.csv'),help="dole CSV the eras' draw ranks (`l`) come from; '' stamps none")
     args=ap.parse_args()
     if args.estimate_from: print(json.dumps(estimate(args.estimate_from),indent=2)); return
     if not args.dir or not args.coverage or not args.out: ap.error('need --dir, --coverage, --out')
-    m=build(args.dir,json.loads(Path(args.coverage).read_text()),json.loads(Path(args.overlays).read_text()) if args.overlays else None,args.tile_base,args.file_base)
+    if args.catalog and not Path(args.catalog).exists(): ap.error(f'catalog not found: {args.catalog} (pass --catalog "" to build without draw ranks)')
+    m=build(args.dir,json.loads(Path(args.coverage).read_text()),json.loads(Path(args.overlays).read_text()) if args.overlays else None,args.tile_base,args.file_base,catalog=args.catalog or None)
     print(emit(m,args.out,args.allow_over_budget))
 
 if __name__=='__main__': main()

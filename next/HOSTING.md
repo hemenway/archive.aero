@@ -1,4 +1,22 @@
-# Hosting proposal (no deployment performed)
+# Hosting
+
+**Live since 2026-10-12 at the apex.** `archive.aero/` is the shell, served by the
+`archive-aero-site` Worker (`next/site/wrangler.jsonc`: Static Assets from a
+`node next/build.mjs --base / --outdir next/site/dist` build, the edition-page
+Worker as `main`, `run_worker_first: true`) on the zone route `archive.aero/*`.
+The apex DNS record still points at GitHub Pages behind the Cloudflare proxy:
+every path the assets do not hold (`/about`, `/contribute`, `/sources`, the
+sitemaps, `/classic/` and the legacy `/assets/`) is a 404 in the assets that the
+Worker turns into a plain `fetch` to that origin (`ORIGIN_FALLTHROUGH="1"`).
+`/atc/*` keeps its own, more specific route. Rollback is removing the route (or
+`npx wrangler delete` in `next/site/`): `/` is the Pages viewer again at once.
+The Leaflet viewer stays published at `/classic/` (`scripts/build_pages.py`,
+`CLASSIC`; `noindex`) as the WebGL2 fallback and the home of old share links.
+
+Data lives in the production bucket `charts` under the same hashed keys the
+reslice gave the beta (server-side copies from `charts-beta`), so the manifest
+points at `data.archive.aero`. The sections below are the plan this followed.
+
 
 Serve the built shell with Cloudflare Workers Static Assets. For the preview the
 shell lives at `beta.archive.aero/next/`, inside the MapLibre beta's assets
@@ -44,7 +62,15 @@ document-relative `./app.js` would resolve inside the chart's directory.
 The service worker passes these navigations through (only `<base>` and
 `<base>index.html` are network-first with an offline fallback). At the root
 switch the same Worker runs at `/sectionals/chart/*` with `base: "/"`.
-Not yet done: a per-page `og:image` (09 B3) and `sitemap-sectionals.xml` (09 B4).
+Per-page `og:image` (09 B3): `scripts/next_og_images.py` renders one 1200x630
+card per edition page from the chart's own tiles, uploaded as
+`sectionals/chart/<slug>/<date>.jpg` on the data host; `next_build_overlays.py
+--og-manifest` records them in the chart index (`og`), and the Worker resolves
+`og` against `chart-pages.json`'s `files` (the manifest's `fileBase`), falling
+back to the site card. `sitemap-sectionals.xml` (09 B4): written by
+`next_build_overlays.py --sitemap https://archive.aero` (tiled charts only),
+copied into the build by `build.mjs --sitemap`, listed in the root
+`sitemap.xml` index.
 
 ## Cache policy
 
@@ -93,19 +119,21 @@ both inline scripts. Its equivalent template is:
 
 ```
 default-src 'self';
-script-src 'self' <boot-script-hash> <plausible-init-hash> https://plausible.io;
+script-src 'self' <boot-script-hash> <plausible-init-hash> https://plausible.io https://static.cloudflareinsights.com;
 style-src 'self' 'unsafe-inline';
 img-src 'self' data: blob:;
 font-src 'self';
-connect-src 'self' https://data.archive.aero https://get.geojs.io https://plausible.io;
+connect-src 'self' https://data.archive.aero https://get.geojs.io https://plausible.io https://cloudflareinsights.com;
 worker-src 'self';
 object-src 'none';
 base-uri 'self';
 frame-ancestors 'none'
 ```
 
-Inline style permission covers critical CSS and the dynamic timeline/card
-geometry. Script hashes cover the final minified bytes; do not edit generated
+The two cloudflareinsights origins are Cloudflare Web Analytics, which the zone
+injects into every HTML page; without them the beacon is blocked (seen on the
+beta's console 2026-10-12) and the RUM visit counts go dark. Inline style
+permission covers critical CSS and the dynamic timeline/card geometry. Script hashes cover the final minified bytes; do not edit generated
 HTML after calculating them. Fonts are system fonts. `data:` enables the SVG
 favicon; `blob:` enables decoder fallbacks. `get.geojs.io` is contacted only after
 the visitor requests Locate and GPS fails. Add approved manifest origins to
@@ -126,7 +154,10 @@ retain them in build artifacts; they are not precached or preloaded.
    after acceptance. Publish HTML last, after every referenced hash is reachable.
    Retain the old viewer at a stable rollback path, and change the
    unsupported-browser fallback from `/` to that path when `/` becomes the new
-   shell.
+   shell. *Done 2026-10-12: `/classic/`, `next/site/wrangler.jsonc`; the order
+   that worked was data first (hashed archives, manifest, pins, chart index,
+   cards copied into `charts`), then the Pages deploy carrying `/classic/`, then
+   the site Worker.*
 5. Roll back by restoring the prior HTML and unregistering the new root service
    worker if needed. Maintain both shell asset generations through the rollback
    window. To retire `/next/`, serve its document with 410 for at least the

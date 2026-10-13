@@ -4,20 +4,27 @@ import { handle } from '../worker.mjs';
 import { index, shell } from './fixtures.mjs';
 
 const ORIGIN = 'https://beta.archive.aero';
-const config = { version: 1, base: '/next/', site: 'https://archive.aero', charts: 'https://data-beta.archive.aero/next/charts.0123456789ab/', image: 'https://archive.aero/social-card.jpg', csp: "default-src 'self'", robots: 'noindex, nofollow' };
+const config = { version: 1, base: '/next/', site: 'https://archive.aero', charts: 'https://data-beta.archive.aero/next/charts.0123456789ab/', files: 'https://data-beta.archive.aero/', image: 'https://archive.aero/social-card.jpg', csp: "default-src 'self'", robots: 'noindex, nofollow' };
 
-function harness({ withConfig = true } = {}) {
-  const assetCalls = [], indexCalls = [];
-  const env = { ASSETS: { async fetch(request) {
+// base: where the shell lives; fallthrough: ORIGIN_FALLTHROUGH="1" (the apex deployment);
+// held: asset paths the ASSETS binding answers besides the shell's own (everything else is its 404).
+function harness({ withConfig = true, base = '/next/', fallthrough = false, held = null, chartIndex = index } = {}) {
+  const assetCalls = [], indexCalls = [], originCalls = [];
+  const cfg = { ...config, base };
+  const env = { ORIGIN_FALLTHROUGH: fallthrough ? '1' : undefined, ASSETS: { async fetch(request) {
     const url = new URL(request.url); assetCalls.push(url.pathname);
-    if (url.pathname === '/next/chart-pages.json') return withConfig ? Response.json(config) : new Response('', { status: 404 });
-    if (url.pathname === '/next/') return new Response(shell, { headers: { 'content-type': 'text/html; charset=utf-8', etag: '"abc"', 'content-length': String(shell.length), 'x-asset': 'yes' } });
+    if (url.pathname === base + 'chart-pages.json') return withConfig ? Response.json(cfg) : new Response('', { status: 404 });
+    if (url.pathname === base) return new Response(shell, { headers: { 'content-type': 'text/html; charset=utf-8', etag: '"abc"', 'content-length': String(shell.length), 'x-asset': 'yes' } });
     if (url.pathname === '/404.html') return new Response('<title>Not found — beta</title>', { headers: { 'content-type': 'text/html' } });
+    if (held && !held.includes(url.pathname)) return new Response(null, { status: 404 });
     return new Response('asset:' + url.pathname, { status: 200 });
   } } };
-  const fetcher = async (url) => { indexCalls.push(url); return url.endsWith('/boston.json') ? Response.json(index) : new Response('', { status: 404 }); };
+  const fetcher = async (input, init) => {
+    if (input instanceof Request) { originCalls.push(input.method + ' ' + new URL(input.url).pathname); return new Response('origin:' + new URL(input.url).pathname, { status: 200, headers: { 'x-origin': 'pages' } }); }
+    indexCalls.push(input); return input.endsWith('/boston.json') ? Response.json(chartIndex) : new Response('', { status: 404 });
+  };
   const run = (path, init) => handle(new Request(ORIGIN + path, init), env, {}, { fetcher });
-  return { run, assetCalls, indexCalls };
+  return { run, assetCalls, indexCalls, originCalls };
 }
 
 test('renders an edition page with the chart in head, body and headers', async () => {
@@ -36,6 +43,8 @@ test('renders an edition page with the chart in head, body and headers', async (
   assert.match(html, /<h1 class="cv-title">Boston<\/h1>/);
   assert.match(html, /href="\/next\/sectionals\/chart\/boston\/1953-06-01"/);
   assert.match(html, /href="https:\/\/archive.aero\/sources"/);
+  assert.match(html, /<meta property="og:image" content="https:\/\/archive.aero\/social-card.jpg">/, 'no card of its own: the site card');
+  assert.match(html, /og:image:alt" content="A 1950 FAA sectional chart of New York City/);
   assert.deepEqual(h.indexCalls, [config.charts + 'boston.json']);
   const head = await h.run('/next/sectionals/chart/boston/1953-12-01', { method: 'HEAD' });
   assert.equal(head.status, 200); assert.equal(await head.text(), '');
@@ -82,4 +91,42 @@ test('a failing chart index is a 502, never a cached page', async () => {
   const h = harness();
   const response = await handle(new Request(ORIGIN + '/next/sectionals/chart/boston/1953-12-01'), { ASSETS: { fetch: (r) => new URL(r.url).pathname === '/next/chart-pages.json' ? Response.json(config) : new Response(shell) } }, {}, { fetcher: async () => new Response('', { status: 503 }) });
   assert.equal(response.status, 502); assert.equal(response.headers.get('cache-control'), 'no-store');
+});
+
+test('a chart with a pre-rendered card of its own carries it as og:image, resolved against the data host', async () => {
+  const own = { ...index, charts: index.charts.map(c => c.d === '1953-12-01' ? { ...c, og: 'sectionals/chart/boston/1953-12-01.jpg' } : c) };
+  const h = harness({ chartIndex: own });
+  const html = await (await h.run('/next/sectionals/chart/boston/1953-12-01')).text();
+  assert.match(html, /<meta property="og:image" content="https:\/\/data-beta.archive.aero\/sectionals\/chart\/boston\/1953-12-01.jpg">/);
+  assert.match(html, /<meta name="twitter:image" content="https:\/\/data-beta.archive.aero\/sectionals\/chart\/boston\/1953-12-01.jpg">/);
+  assert.match(html, /og:image:alt" content="The Boston sectional chart of December 1953, as shown in the archive.aero chart viewer"/);
+  assert.match(html, /"image":"https:\/\/data-beta.archive.aero\/sectionals\/chart\/boston\/1953-12-01.jpg"/, 'JSON-LD names the same image');
+});
+
+test('at the apex with ORIGIN_FALLTHROUGH, a path the assets lack goes to the zone origin', async () => {
+  const h = harness({ base: '/', fallthrough: true, held: ['/app.ABC.js', '/sw.js'] });
+  // The shell and its files come from the assets.
+  assert.equal(await (await h.run('/')).text(), shell);
+  assert.equal(await (await h.run('/app.ABC.js')).text(), 'asset:/app.ABC.js');
+  // Pages the Worker does not hold are the origin's: /about, /atc/, the legacy viewer and its files.
+  for (const path of ['/about', '/atc/', '/classic/', '/classic/styles.css', '/assets/viewer.0123456789abcdef.js', '/robots.txt']) {
+    const response = await h.run(path);
+    assert.equal(response.headers.get('x-origin'), 'pages', path);
+    assert.equal(await response.text(), 'origin:' + path, path);
+  }
+  const posted = await h.run('/contribute', { method: 'POST' });
+  assert.equal(await posted.text(), 'origin:/contribute', 'a non-GET never touches the assets');
+  assert.deepEqual(h.originCalls, ['GET /about', 'GET /atc/', 'GET /classic/', 'GET /classic/styles.css', 'GET /assets/viewer.0123456789abcdef.js', 'GET /robots.txt', 'POST /contribute']);
+  // The edition pages themselves render at the apex: config read from /chart-pages.json, canonical at the apex.
+  const page = await h.run('/sectionals/chart/boston/1953-12-01');
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /<link rel="canonical" href="https:\/\/beta.archive.aero\/sectionals\/chart\/boston\/1953-12-01">/);
+  assert.equal((await h.run('/sectionals/chart/Boston/1953-12-01')).headers.get('location'), ORIGIN + '/sectionals/chart/boston/1953-12-01');
+  assert.equal((await h.run('/sectionals/chart/boston/1954-06-01')).status, 404, 'thin-content guard still a 404, not an origin fetch');
+});
+
+test('without ORIGIN_FALLTHROUGH a missing asset stays the assets 404', async () => {
+  const h = harness({ held: ['/next/app.ABC.js'] });
+  assert.equal((await h.run('/about')).status, 404);
+  assert.deepEqual(h.originCalls, []);
 });

@@ -1,3 +1,4 @@
+import csv
 import gzip
 import hashlib
 import io
@@ -274,6 +275,35 @@ class NextDataTests(unittest.TestCase):
             self.assertEqual(sorted(p.name for p in folder.iterdir()),['boston.json','boston_tac.json'])
             self.assertEqual(json.loads((folder/'boston.json').read_text())['slug'],'boston')
             self.assertEqual(json.loads(Path(tmp,'out','overlays.json').read_text())['charts'],result['charts'])
+    def test_chart_index_cards_and_sitemap(self):
+        from next_build_overlays import og_key, read_og_manifest, sitemap_xml
+        td={'locations':{'Boston':{'ref':'sectional/boston','charts':[
+                {'d':'1953-06-01','e':'1953-12-01','ed':'31','pm':'chart/boston/1953-06-01'},
+                {'d':'1953-12-01','e':'1954-06-01','ed':'32','pm':['chart/boston/1953-12-01-north','chart/boston/1953-12-01-south']},
+                {'d':'1954-06-01','e':'1954-12-01','ed':'33'}]}},'rings':{}}
+        plan=[{'old':'sectionals/chart/boston/1953-12-01-north','path':'sectionals/chart/boston/1953-12-01-north.aaaaaaaaaaaa','z':[0,11],'b':[-73.4,42,-67,44]},
+              {'old':'sectionals/chart/boston/1953-12-01-south','path':'sectionals/chart/boston/1953-12-01-south.bbbbbbbbbbbb','z':[0,11],'b':[-73.4,40.1,-67,42.1]},
+              {'old':'sectionals/chart/boston/1953-06-01','path':'sectionals/chart/boston/1953-06-01.cccccccccccc','z':[0,11],'b':None}]
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp,'t.json').write_text(json.dumps(td)); Path(tmp,'p.json').write_text(json.dumps(plan))
+            # One card rendered (the pair), one not; a line for a chart the index does not hold is ignored.
+            Path(tmp,'og.jsonl').write_text('\n'.join(json.dumps({'key':k,'size':1}) for k in [og_key('boston','1953-12-01'),og_key('nowhere','1950-01-01')])+'\n')
+            self.assertEqual(read_og_manifest(Path(tmp,'og.jsonl')),{'sectionals/chart/boston/1953-12-01.jpg','sectionals/chart/nowhere/1950-01-01.jpg'})
+            Path(tmp,'bad.jsonl').write_text(json.dumps({'key':'sectionals/chart/Boston/1953-12-01.jpg'})+'\n')
+            self.assertRaises(ValueError,read_og_manifest,Path(tmp,'bad.jsonl'))
+            result=build_overlays(None,Path(tmp,'t.json'),Path(tmp,'p.json'),Path(tmp,'out'),og_manifest=Path(tmp,'og.jsonl'),sitemap_origin='https://archive.aero')
+            folder=Path(tmp,'out',result['charts']['base'][len('next/'):]); b=json.loads((folder/'boston.json').read_text())
+            self.assertEqual([c.get('og') for c in b['charts']],[None,'sectionals/chart/boston/1953-12-01.jpg',None],'only a tiled edition with a rendered card carries og')
+            self.assertEqual(result['og'],{'pages':2,'with_card':1})
+            xml=Path(tmp,'out','sitemap-sectionals.xml').read_text()
+            self.assertEqual(result['sitemap'],{'file':'sitemap-sectionals.xml','urls':2})
+            self.assertEqual(xml.count('<url>'),2); self.assertIn('<loc>https://archive.aero/sectionals/chart/boston/1953-06-01</loc>',xml)
+            self.assertNotIn('1954-06-01',xml,'an untiled edition is a 404, never in the sitemap')
+            # Without --og-manifest the index is unchanged (no og key at all) and no sitemap is written.
+            plain=build_overlays(None,Path(tmp,'t.json'),Path(tmp,'p.json'),Path(tmp,'plain'))
+            self.assertNotIn('og',plain); self.assertFalse(Path(tmp,'plain','sitemap-sectionals.xml').exists())
+            self.assertNotIn('og',json.loads(Path(tmp,'plain',plain['charts']['base'][len('next/'):],'boston.json').read_text())['charts'][1])
+            self.assertRaises(ValueError,sitemap_xml,{},'http://archive.aero')
     def test_manifest_real_directory_coverage_sorted_bounds_schema_budget(self):
         for k in ['1950-01-01_to_1951-01-01','1940-01-01_to_1941-01-01']:
             self.archive('sectionals/'+k+'.0123456789ab.pmtiles')
@@ -287,6 +317,22 @@ class NextDataTests(unittest.TestCase):
         m['eras'][0]['c']=[25*64+15]
         m['coverage']={'note':os.urandom(100000).hex()};self.assertRaises(ValueError,emit,m,self.dir/'huge')
         self.assertTrue(emit(m,self.dir/'explicit',True).exists())
+    def test_manifest_draw_rank_from_catalog(self):
+        import dole_v2
+        for k in ['1950-01-01_to_1951-01-01','1960-01-01_to_1961-01-01','1970-01-01_to_1971-01-01']:
+            self.archive('sectionals/'+k+'.0123456789ab.pmtiles')
+        catalog=self.dir/'dole.csv'
+        with open(catalog,'w',newline='') as f:
+            w=csv.DictWriter(f,fieldnames=dole_v2.V2_FIELDS);w.writeheader()
+            for loc,d,e in [('CF-16 WAC','1950-01-01','1951-01-01'),('Denver TAC','1960-01-01','1961-01-01'),('Denver','1960-01-01','1961-01-01'),
+                            ('Las Vegas TAC','1970-01-01','1971-01-01'),('Flight Case Planning Chart','1970-01-01','1971-01-01')]:
+                w.writerow({'filename':loc+d+'.tif','location':loc,'date':d,'end_date':e})
+        self.assertEqual(dole_v2.era_layers(dole_v2.load_rows(catalog)),
+                         {'1950-01-01_to_1951-01-01':1,'1960-01-01_to_1961-01-01':2,'1970-01-01_to_1971-01-01':3})
+        m=build(self.dir,{},catalog=str(catalog))
+        self.assertEqual([e.get('l') for e in m['eras']],[1,None,3])  # the sectional default is never stored
+        self.assertTrue(emit(m,self.dir/'ranked').exists())
+        self.assertNotIn('l',build(self.dir,{})['eras'][0])
     def test_estimate_production_is_over_budget(self):
         stats=estimate(ROOT/'dates.csv');self.assertEqual(stats['eras'],3761);self.assertTrue(stats['over_budget'])
 

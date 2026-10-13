@@ -19,9 +19,11 @@ class PagesPublicationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
-        self.write("site-files.json", json.dumps(["index.html", "dates.csv"]))
-        self.write("index.html", "published viewer")
+        self.write("site-files.json", json.dumps(["index.html", "dates.csv", "styles.css", "coverage.json"]))
+        self.write("index.html", '<html><head><meta charset="utf-8" /><title>v</title></head><body>published viewer</body></html>')
         self.write("dates.csv", "date_iso,url\n")
+        self.write("styles.css", "body{}")
+        self.write("coverage.json", "{}")
 
     def write(self, path, text):
         target = self.root / path
@@ -43,8 +45,30 @@ class PagesPublicationTests(unittest.TestCase):
         output, _ = builder.build_site(self.root)
         self.assertEqual(
             {str(p.relative_to(output)) for p in output.rglob("*") if p.is_file()},
-            {"index.html", "dates.csv", old, current, ".nojekyll"},
+            {"index.html", "dates.csv", "styles.css", "coverage.json", old, current, ".nojekyll",
+             "classic/index.html", "classic/styles.css", "classic/dates.csv", "classic/coverage.json"},
         )
+
+    def test_classic_copy_is_the_viewer_marked_noindex(self):
+        output, files = builder.build_site(self.root)
+        page = (output / "classic/index.html").read_text()
+        self.assertEqual(page.count('<meta name="robots" content="noindex">'), 1)
+        self.assertEqual(page.replace('<meta name="robots" content="noindex">', ""), (self.root / "index.html").read_text())
+        self.assertIn('<meta charset="utf-8" /><meta name="robots" content="noindex"><title>', page)
+        self.assertEqual((output / "classic/styles.css").read_text(), "body{}")
+        self.assertIn("classic/index.html", files)
+        # A viewer page that does not declare its charset once cannot be marked.
+        self.write("index.html", "no charset")
+        with self.assertRaisesRegex(ValueError, "charset"):
+            builder.build_site(self.root)
+        # The copy never pulls in a file that is not itself published.
+        self.write("index.html", '<meta charset="utf-8">')
+        self.write("site-files.json", json.dumps(["index.html", "dates.csv"]))
+        with self.assertRaisesRegex(ValueError, "classic"):
+            builder.build_site(self.root)
+        self.write("site-files.json", json.dumps(["dates.csv"]))
+        output, files = builder.build_site(self.root)
+        self.assertFalse((output / "classic").exists())
 
     def test_missing_input_stops_publication(self):
         (self.root / "dates.csv").unlink()

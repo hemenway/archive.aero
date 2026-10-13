@@ -19,6 +19,15 @@ read of the live archive's leaf directories for the ~35 multi-GB modern eras
 whose directories are too big to inline. Resolutions are cached, so re-runs
 after a fresh export only decode the new rows.
 
+Reads served by the Worker's /t/{path}/{z}/{x}/{y} endpoint (the next viewer's
+only tile source) name a *hashed* archive -- sectionals/<era>.<12 hex>.pmtiles
+or sectionals/chart/<slug>/<date>[-half].<12 hex>.pmtiles -- that no metadata
+bundle describes, and since 2026-10-12 they log the tile's z/x/y outright
+(doubles 5..7, exported as z/x/y). Those rows skip offset decoding entirely;
+hashed rows logged before that date have no coordinates and are counted as
+unresolvable rather than guessed. The hash is dropped for every per-era
+aggregate, so a republished era keeps one history.
+
 Inputs:  worklists/data/analytics/tile_logs/*.jsonl.gz  (analytics_export.py)
          metadata-*.bundle
 Outputs (all under worklists/data/analytics/, gitignored):
@@ -86,6 +95,33 @@ SELF_REF = {"http://localhost:3000/"}
 # Only date-range keys are tile archives; the bucket also serves the metadata
 # bundles, which are ordinary reads with no tile behind them.
 ERA_RE = re.compile(r"^\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}$")
+# The same archives under the content-hashed names the /t/ endpoint serves
+# (worker/src/tiles.js: `<path>.<12 hex>`); group 1 is the plain key.
+HASHED_ERA_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2})\.[0-9a-f]{12}$")
+HASHED_CHART_RE = re.compile(r"^(chart/[^/]+/\d{4}-\d{2}-\d{2}(?:-[a-z]+)?)\.[0-9a-f]{12}$")
+
+
+def tile_coords(r):
+    """(z, x, y) the Worker logged for this read, or None.
+
+    The rule: a row carries coordinates when it has `rate` (double4 > 0, the
+    2026-10 layout marker) AND names a hashed archive (only the /t/ endpoint
+    serves those, and only it logs z/x/y). `z > 0` cannot be the test -- a z0
+    tile is legitimately 0/0/0 -- and `rate` alone cannot either, because
+    index.js's range-read logger writes rate without coordinates, so every
+    legacy-viewer row since 2026-10 would collapse onto z0. The residual
+    ambiguity is a Range read of a hashed key (nothing deployed does that),
+    which would read as z0/0/0. Off-grid coordinates are rejected.
+    """
+    if not r.get("rate") or not r.get("hashed"):
+        return None
+    try:
+        z, x, y = int(r["z"]), int(r["x"]), int(r["y"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (0 <= z <= 24 and 0 <= x < 2 ** z and 0 <= y < 2 ** z):
+        return None
+    return z, x, y
 
 
 # ---------------------------------------------------------------- bundles
@@ -381,6 +417,14 @@ def load_rows(keep_self, since=None, until=None):
                     low = ua.lower()
                     if "bot" in low or "crawl" in low or "spider" in low:
                         continue
+                # Fold a hashed /t/ key onto its plain era / chart key; the
+                # flag keeps the offset path (bundle-described builds only)
+                # away from these rows.
+                m = HASHED_ERA_RE.match(r["era"]) or HASHED_CHART_RE.match(r["era"])
+                r["hashed"] = bool(m)
+                if m:
+                    r["archive"] = r["era"]
+                    r["era"] = m.group(1)
                 rows.append(r)
     return rows
 
@@ -430,24 +474,43 @@ def main():
     for r in all_rows:
         if ERA_RE.match(r["era"]):
             continue
-        k = r["era"]
+        k = r["era"]  # hashed chart keys were already folded onto chart/<slug>/<date>
         cls = ("chart_solo" if k.startswith("chart/") else "basemap" if "protomaps" in k or k.startswith("basemap")
                else "bundle" if k.startswith("metadata-") else "other")
         other[cls][k] += r["views"]
+    # Three kinds of era row. /t/ rows with coordinates are tiles by
+    # construction (the Worker resolved the directory itself). Hashed rows
+    # without coordinates predate the 2026-10-12 logger and cannot be decoded:
+    # no bundle holds a hashed archive's directories, and the plain era's
+    # bundle describes a different build. Everything else is a range read
+    # and takes the offset path below.
+    coord_rows, blind_rows, range_rows = [], [], []
+    for r in era_rows:
+        if tile_coords(r):
+            coord_rows.append(r)
+        elif r["hashed"]:
+            blind_rows.append(r)
+        else:
+            range_rows.append(r)
     # The tiles Worker logs every sampled range read above METADATA_BYTES and
     # every whole-file GET as if it were a tile read. Header probes (offset 0,
     # 16 KiB), whole-file GETs (len 0) and reads inside the directory region
     # are directory traffic, not tile views: separate them before counting.
     rows, dir_traffic = [], collections.Counter()
-    for r in era_rows:
+    for r in range_rows:
         if r["len"] == 0:
             dir_traffic["whole-file GET"] += r["views"]
         elif r["off"] == 0:
             dir_traffic["header probe"] += r["views"]
         else:
             rows.append(r)
-    total_views = sum(r["views"] for r in rows)
-    print(f"{len(rows)} tile-archive log rows, {total_views} sampled views"
+    coord_views = sum(r["views"] for r in coord_rows)
+    blind_views = sum(r["views"] for r in blind_rows)
+    total_views = sum(r["views"] for r in rows) + coord_views + blind_views
+    print(f"{len(rows) + len(coord_rows) + len(blind_rows)} tile-archive log rows, "
+          f"{total_views} sampled views"
+          + (f" ({len(coord_rows)} rows / {coord_views} views carry z/x/y from /t/)" if coord_rows else "")
+          + (f" ({blind_views} views on hashed archives without coordinates)" if blind_rows else "")
           + (f" (+{sum(dir_traffic.values())} header/whole-file reads set aside)" if dir_traffic else "")
           + "".join(f" (+{sum(c.values())} {name} reads)" for name, c in other.items() if c))
 
@@ -476,7 +539,7 @@ def main():
         else:
             kept.append(r)
     rows = kept
-    total_views = sum(r["views"] for r in rows)
+    total_views = sum(r["views"] for r in rows) + coord_views + blind_views
     if dir_traffic:
         print("directory traffic excluded from tile views: "
               + ", ".join(f"{k} {v}" for k, v in dir_traffic.most_common()))
@@ -489,29 +552,39 @@ def main():
     # ---- fact table
     facts = []
     unresolved = 0
+
+    def fact(r, z, x, y):
+        w, s, e, n = tile_bounds(z, x, y)
+        return {
+            "hour": r["hour"],
+            "era": r["era"],
+            "era_start": era_start(r["era"]),
+            "z": z, "x": x, "y": y,
+            "lat": round((s + n) / 2, 4), "lon": round((w + e) / 2, 4),
+            "country": r["country"], "cache": r["cache"],
+            "views": r["views"],
+        }
+
     for r in rows:
         tid = resolved.get((r["era"], r["off"], r["len"]))
         if tid is None:
             unresolved += r["views"]
             continue
-        z, x, y = tileid_to_zxy(tid)
-        w, s, e, n = tile_bounds(z, x, y)
-        facts.append(
-            {
-                "hour": r["hour"],
-                "era": r["era"],
-                "era_start": era_start(r["era"]),
-                "z": z, "x": x, "y": y,
-                "lat": round((s + n) / 2, 4), "lon": round((w + e) / 2, 4),
-                "country": r["country"], "cache": r["cache"],
-                "views": r["views"],
-            }
-        )
+        facts.append(fact(r, *tileid_to_zxy(tid)))
+    for r in coord_rows:
+        facts.append(fact(r, *tile_coords(r)))
     placed = sum(f["views"] for f in facts)
-    denom = placed + unresolved
+    denom = placed + unresolved + blind_views
     print(f"\nplaced {placed} of {denom} views "
           f"({(placed / denom * 100) if denom else 0:.1f}%) — "
-          f"{unresolved} undecodable (served by a build no bundle records)")
+          f"{unresolved} undecodable (served by a build no bundle records)"
+          + (f", {blind_views} on hashed archives logged without coordinates" if blind_views else ""))
+    if blind_rows:
+        blind_archives = collections.Counter()
+        for r in blind_rows:
+            blind_archives[r["archive"]] += r["views"]
+        print(f"  {len(blind_archives)} hashed archives without coordinates (pre-2026-10-12 /t/ rows); top: "
+              + ", ".join(f"{k} {v}" for k, v in blind_archives.most_common(5)))
     if not facts:
         print("no tile views in this window; nothing to render", file=sys.stderr)
 
@@ -574,7 +647,9 @@ def main():
         "log_span": [min(by_day), max(by_day)] if by_day else None,
         "sampled_views_total": total_views,
         "sampled_views_placed": placed,
+        "sampled_views_placed_by_coordinates": coord_views,
         "sampled_views_undecodable": unresolved,
+        "sampled_views_hashed_without_coordinates": blind_views,
         "sample_rate": SAMPLE_RATE,
         "estimated_true_tile_reads": round(total_views / SAMPLE_RATE) if SAMPLE_RATE else None,
         "directory_traffic_excluded": dict(dir_traffic.most_common()),

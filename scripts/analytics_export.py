@@ -27,6 +27,7 @@ Usage:
 import argparse
 import gzip
 import json
+import math
 import os
 import re
 import sys
@@ -49,12 +50,23 @@ MANIFEST_NAME = "_manifest.json"
 # and treat reaching it as "subdivide this window".
 ROW_LIMIT = 10000
 
+# double4..7 arrived in 2026-10: double4 is the reads each row stands for
+# (1/SAMPLE_RATE, both loggers), double5..7 the tile's z/x/y (the /t/ logger in
+# worker/src/tiles.js only). Analytics Engine returns 0 for a double a row never
+# set, so older rows -- and index.js range reads, which carry no coordinates --
+# come back as 0 here; normalize() keeps the columns only where they mean
+# something. Grouping on them adds no rows: rate is a deployment constant and
+# (key, off, len) already pins the tile.
 FIELDS = (
     "toStartOfHour(timestamp) AS hour, blob1 AS key, double3 AS off, double1 AS len, "
     "blob2 AS country, blob3 AS cache, blob4 AS ua, blob5 AS ref, "
+    "double4 AS rate, double5 AS z, double6 AS x, double7 AS y, "
     "sum(_sample_interval) AS views, count() AS n, avg(double2) AS ms"
 )
-GROUP = "GROUP BY hour, key, off, len, country, cache, ua, ref"
+GROUP = "GROUP BY hour, key, off, len, country, cache, ua, ref, rate, z, x, y"
+# A /t/ key: the archive path with its 12-hex content hash, the only shape the
+# tile endpoint serves (worker/src/tiles.js) and the only one that logs z/x/y.
+HASHED_KEY_RE = re.compile(r"\.[0-9a-f]{12}\.pmtiles$")
 
 
 def api_token():
@@ -114,15 +126,32 @@ def fetch_window(start, end, token, depth=0):
     )
 
 
+def _number(v):
+    """A double the SQL API returned, or 0 when it is null/missing/garbage."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return 0.0
+    return f if math.isfinite(f) else 0.0
+
+
 def normalize(row):
-    """Trim the row to what downstream needs; era key matches the bundle's."""
+    """Trim the row to what downstream needs; era key matches the bundle's.
+
+    `rate` is present whenever the row carries it (2026-10 on). `z`/`x`/`y`
+    are present only for rows the /t/ endpoint logged -- rate set *and* a
+    hashed key -- since a z0 tile is legitimately 0/0/0 and a range read of a
+    plain key with rate set would otherwise masquerade as one. Older files on
+    disk lack all four keys; analytics_heatmap.py treats absent and legacy
+    alike.
+    """
     key = row["key"]
     era = key
     if era.startswith("sectionals/"):
         era = era[len("sectionals/") :]
     if era.endswith(".pmtiles"):
         era = era[: -len(".pmtiles")]
-    return {
+    out = {
         "hour": row["hour"],
         "era": era,
         "off": int(row["off"]),
@@ -135,6 +164,14 @@ def normalize(row):
         "n": int(row["n"]),
         "ms": round(float(row["ms"]), 1),
     }
+    rate = _number(row.get("rate"))
+    if rate > 0:
+        out["rate"] = rate
+        if HASHED_KEY_RE.search(key):
+            out["z"] = int(_number(row.get("z")))
+            out["x"] = int(_number(row.get("x")))
+            out["y"] = int(_number(row.get("y")))
+    return out
 
 
 def main():

@@ -26,8 +26,8 @@ node next/build.mjs --check
 `--base /next/` (the default) is the URL prefix the shell is deployed under; every
 `_headers` rule is scoped to it. `--outdir DIR` writes a build somewhere other
 than `next/dist` (a hosting tree, so the committed stub build stays the one the
-tests use). `--allow-over-budget` ships a manifest above the 80 KB C2 budget
-while the shard format is decided. `--check` reads all three back from that
+tests use). `--allow-over-budget` ships a manifest above the 96 KB C2 budget
+(80 KB until 2026-10-12; CONTRACT.md C2). `--check` reads all three back from that
 directory's `budgets.json`.
 
 The committed build uses the 2D renderer and synthetic OffscreenCanvas Worker
@@ -103,7 +103,7 @@ alongside esbuild, `build:next`, and `test:next`.
       swap, airspace status, airfield browser, pin, solo — see
       `tests-real/real.spec.mjs`; the full keyboard/a11y matrix stays on stubs).
 - [ ] Recheck end-to-end budgets including Worker and inline JS, actual request
-      counts before first chart paint, manifest gzip ≤80 KB, and no third-party
+      counts before first chart paint, manifest gzip ≤96 KB, and no third-party
       font requests (Barlow is served from the shell's own `fonts/`).
 - [ ] Measure WebKit mobile memory during repeated full-archive scrubs, playback,
       zoom and rotation; ensure texture eviction and decoded/encoded data caches

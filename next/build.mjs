@@ -12,8 +12,11 @@ const value = flag => { const i = args.indexOf(flag); if (i < 0) return null; if
 // --outdir lets a real build land in a hosting tree (the beta's dist/next/) while next/dist keeps the stub build the tests use.
 const outdir = value('--outdir') ? path.resolve(value('--outdir')) : path.join(directory, 'dist');
 const previousBuild = check ? JSON.parse(await readFile(path.join(outdir, 'budgets.json'), 'utf8').catch(() => 'null')) : null;
-// The 80 KB C2 budget is a contract target; the owner may ship an over-budget manifest while the shard format is decided (2026-10-02).
+// The C2 budget (96 KB gzip since 2026-10-12, 80 KB before; see CONTRACT.md) is a contract target; --allow-over-budget ships one above it.
+const MANIFEST_BUDGET = 96 * 1024;
 const allowOverBudget = args.includes('--allow-over-budget') || !!previousBuild?.allowOverBudget;
+// --sitemap FILE: sitemap-sectionals.xml from scripts/next_build_overlays.py, published beside the page at the apex (09 B4).
+const sitemapFile = value('--sitemap') ? path.resolve(value('--sitemap')) : previousBuild?.sitemap ? path.join(outdir, 'sitemap-sectionals.xml') : null;
 // A preview host: no page analytics, and site links (/about, /atc/...) point at the origin that has those pages.
 const analyticsOn = !(args.includes('--no-analytics') || previousBuild?.analytics === false);
 const linksOrigin = value('--links-origin') || previousBuild?.linksOrigin || null;
@@ -37,7 +40,12 @@ if (stubs) {
 }
 if (source.version !== 1 || !source.eras?.length) throw new Error('Invalid C2 manifest');
 const manifestGzip = gzipSync(JSON.stringify(source)).length;
-if (manifestGzip > 80 * 1024 && !allowOverBudget) throw new Error(`Manifest exceeds 80 KB gzip (${manifestGzip} bytes); pass --allow-over-budget to ship it anyway`);
+if (manifestGzip > MANIFEST_BUDGET && !allowOverBudget) throw new Error(`Manifest exceeds ${MANIFEST_BUDGET / 1024} KB gzip (${manifestGzip} bytes); pass --allow-over-budget to ship it anyway`);
+if (sitemapFile) {
+  const xml = await readFile(sitemapFile, 'utf8');
+  if (!/^<\?xml [^>]*\?>\s*<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/.test(xml) || !xml.trimEnd().endsWith('</urlset>')) throw new Error(`--sitemap ${sitemapFile} is not a sitemap urlset`);
+  outputs.set('sitemap-sectionals.xml', xml);
+}
 const startup = startupArtifacts(source), years = {};
 for (const [year, raw] of startup.years) {
   const bytes = JSON.stringify(raw), name = `startup/${year}.${hash(bytes)}.json`;
@@ -223,13 +231,18 @@ outputs.set('sw.js', sw);
 const scriptHashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`).join(' ');
 // Data origins named by this build's manifest join connect-src (a preview or fixture host); production's stays listed.
 const dataOrigins = [...new Set([manifestUrl, source.tileBase, source.fileBase].map(u => new URL(u, 'https://archive.aero/next/').origin))].filter(o => !['https://archive.aero', 'https://data.archive.aero'].includes(o));
+// With analytics on, Plausible's script and endpoint, plus Cloudflare Web Analytics: the zone injects its beacon into
+// every HTML response (the RUM visit counts analytics_traffic.py reads), and the CSP must admit it or it is blocked.
 const plausible = analyticsOn ? ' https://plausible.io' : '';
-const csp = `default-src 'self'; script-src 'self' ${scriptHashes}${plausible}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero ${dataOrigins.map(o => o + ' ').join('')}https://get.geojs.io${plausible}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
+const beaconScript = analyticsOn ? ' https://static.cloudflareinsights.com' : '', beaconConnect = analyticsOn ? ' https://cloudflareinsights.com' : '';
+const csp = `default-src 'self'; script-src 'self' ${scriptHashes}${plausible}${beaconScript}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero ${dataOrigins.map(o => o + ' ').join('')}https://get.geojs.io${plausible}${beaconConnect}; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'`;
 // The edition-page Worker (next/pages/worker.mjs) configures itself from this file, beside the page it renders.
-outputs.set('chart-pages.json', JSON.stringify({ version: 1, base: deployBase, site: linksOrigin || null, charts: chartsBase || null, image: `${linksOrigin || 'https://archive.aero'}/social-card.jpg`, csp, robots: linksOrigin ? 'noindex, nofollow' : null }, null, 2) + '\n');
+// `files` is the manifest's fileBase: the chart index's `og` paths (each chart's own card image) resolve against it.
+const filesBase = stubs ? `http://stub${deployBase}` : new URL(source.fileBase, manifestUrl).href;
+outputs.set('chart-pages.json', JSON.stringify({ version: 1, base: deployBase, site: linksOrigin || null, charts: chartsBase || null, files: chartsBase ? filesBase : null, image: `${linksOrigin || 'https://archive.aero'}/social-card.jpg`, csp, robots: linksOrigin ? 'noindex, nofollow' : null }, null, 2) + '\n');
 const immutableHeaders = [...outputs.keys()].filter(name => name !== 'sw.js' && /\.(js|css)$/.test(name)).map(name => `${deployBase}${name}\n  Cache-Control: public, max-age=31536000, immutable\n`).join('');
 // Cloudflare reads _headers only from the asset root, so this file is published there with rules already prefixed by the base.
-outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}chart-pages.json\n  Cache-Control: no-cache\n${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
+outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}chart-pages.json\n  Cache-Control: no-cache\n${sitemapFile ? `${deployBase}sitemap-sectionals.xml\n  Cache-Control: public, max-age=3600\n` : ''}${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
 const externalJS = chunks.reduce((sum, name) => sum + gzipSync(outputs.get(name)).length, 0);
 const inlineJS = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].reduce((sum, match) => sum + gzipSync(match[1]).length, 0);
 const js = externalJS + inlineJS + gzipSync(workerFile.contents).length;
@@ -237,7 +250,7 @@ const sizes = { criticalJS: js, css: gzipSync(css).length, cssRaw: Buffer.byteLe
 // HTML is the production page's markup plus the newest frame's era metadata inline; 24 KiB (uncompressed) leaves room for
 // both to grow. The CSS limit is on gzip and covers production's styles.css, shell/next.css and the font faces.
 if (sizes.criticalJS > 50 * 1024 || sizes.css > 12 * 1024 || sizes.html > 24 * 1024) throw new Error(`Build budgets exceeded: ${JSON.stringify(sizes)}`);
-outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, allowOverBudget, analytics: analyticsOn, linksOrigin, manifestGzip, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 24576 }, assets: shellAssets }, null, 2) + '\n');
+outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, allowOverBudget, analytics: analyticsOn, linksOrigin, manifestGzip, manifestBudget: MANIFEST_BUDGET, sitemap: !!sitemapFile, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 24576 }, assets: shellAssets }, null, 2) + '\n');
 // Outputs can sit in a subdirectory (fonts/), so stale files are looked for through the whole tree; parents sort first.
 const expected = new Set([...outputs.keys()].flatMap(name => name.split('/').map((_, i, parts) => parts.slice(0, i + 1).join('/'))));
 const existing = (await readdir(outdir, { recursive: true }).catch(e => { if (e.code !== 'ENOENT') throw e; return []; })).map(name => name.split(path.sep).join('/')).sort();

@@ -1,0 +1,32 @@
+{
+  // archive.aero/ — the next viewer at the apex (next/HOSTING.md, rollout step 4; cut over 2026-10-12).
+  //
+  // A zone route, not a custom domain: the apex keeps its DNS record (GitHub Pages behind the
+  // Cloudflare proxy), and this Worker runs ahead of it for every request. The shell's own files
+  // are static assets here (dist/ is a `node next/build.mjs --base / --outdir next/site/dist`
+  // build, gitignored); the edition pages /sectionals/chart/<slug>/<date> are rendered by
+  // next/pages/worker.mjs; anything else — /about, /contribute, /sources, the sitemaps, /classic/
+  // (the Leaflet viewer) and its /assets/ — is a 404 in the assets and goes on to the origin
+  // (ORIGIN_FALLTHROUGH). /atc/* has its own, more specific route (worker-atc) and never reaches
+  // this Worker. Rollback: `npx wrangler delete` (or remove the route in the dashboard) and / is
+  // the Pages viewer again within seconds; the hashed assets of this build stay reproducible.
+  //
+  //   node next/build.mjs --manifest https://data.archive.aero/next/manifest.<hash>.json --base / --outdir next/site/dist --sitemap <sitemap-sectionals.xml>
+  //   cd next/site && npx wrangler deploy
+  "name": "archive-aero-site",
+  "account_id": "ad20eec906d1b5a42931b881ed22232f",
+  "compatibility_date": "2026-09-29",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "archive.aero/*", "zone_name": "archive.aero" }],
+  "main": "../pages/worker.mjs",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    // "none": a path the assets do not hold is a bare 404 the Worker turns into an origin fetch.
+    "not_found_handling": "none",
+    "run_worker_first": true
+  },
+  "vars": { "ORIGIN_FALLTHROUGH": "1" },
+  "observability": { "enabled": true, "head_sampling_rate": 0.1 }
+}

@@ -4,11 +4,17 @@
 // other path is left to the asset handler (the beta's wrangler.jsonc routes
 // only the edition prefix here with run_worker_first).
 //
+// At the apex (next/site/wrangler.jsonc, route archive.aero/*) the Worker runs
+// first for every request, and a path the assets do not hold - /about, /atc/,
+// /classic/, the legacy viewer's files - goes on to the zone origin (GitHub
+// Pages) with a plain fetch, so the static pages keep their home. That is
+// ORIGIN_FALLTHROUGH="1"; without it a missing asset is the assets' own 404.
+//
 // The Worker configures itself from <base>chart-pages.json, written by
 // next/build.mjs beside the page it describes: where the chart index lives,
 // the page's CSP, the site origin for links, and the robots policy of a
 // preview host. A base with no such file is not an edition-page host.
-import { CHART_PREFIX, canonicalChartPath, describe, renderChartHtml } from './chart-page.mjs';
+import { CARD_ALT, CHART_PREFIX, canonicalChartPath, chartCardAlt, describe, renderChartHtml } from './chart-page.mjs';
 
 const CONFIG_TTL = 60_000;
 // Per asset binding (one per isolate), so a test harness or a redeploy never sees another binding's config.
@@ -38,13 +44,24 @@ async function notFound(env, origin) {
   return new Response(body, { status: 404, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60', 'x-robots-tag': 'noindex' } });
 }
 
+// The assets, then the zone origin for what they do not hold (a 404 with
+// ORIGIN_FALLTHROUGH). An assets 404 is a bare response, so nothing of it is
+// kept; an origin that is itself down answers for itself.
+async function assetsOrOrigin(request, env, fetcher) {
+  const fallthrough = env.ORIGIN_FALLTHROUGH === '1';
+  if (fallthrough && request.method !== 'GET' && request.method !== 'HEAD') return fetcher(request);
+  const response = await env.ASSETS.fetch(request);
+  if (fallthrough && response.status === 404) return fetcher(request);
+  return response;
+}
+
 export async function handle(request, env, ctx, { fetcher = fetch } = {}) {
   const url = new URL(request.url);
   const at = url.pathname.indexOf(CHART_PREFIX);
   const base = at < 0 ? null : url.pathname.slice(0, at);
-  if (base === null || !/^\/(?:[\w-]+\/)*$/.test(base)) return env.ASSETS.fetch(request);
+  if (base === null || !/^\/(?:[\w-]+\/)*$/.test(base)) return assetsOrOrigin(request, env, fetcher);
   const config = await loadConfig(env, url.origin, base);
-  if (!config) return env.ASSETS.fetch(request);
+  if (!config) return assetsOrOrigin(request, env, fetcher);
   if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
   const route = canonicalChartPath(url.pathname.slice(at));
   if (!route) return notFound(env, url.origin);
@@ -59,7 +76,10 @@ export async function handle(request, env, ctx, { fetcher = fetch } = {}) {
   const shell = await env.ASSETS.fetch(new Request(`${url.origin}${base}`));
   if (!shell.ok) return new Response('Chart viewer unavailable', { status: 502, headers: { 'cache-control': 'no-store' } });
   const canonical = `${url.origin}${base}${CHART_PREFIX}${route.slug}/${route.date}`;
-  const html = renderChartHtml(await shell.text(), model, { base, site: config.site || url.origin, canonical, image: config.image || null, robots: config.robots || null });
+  // The chart's own pre-rendered card when the index names one (09 B3); the site card stands in otherwise.
+  const own = !!(model.og && config.files);
+  const image = own ? new URL(model.og, config.files).href : (config.image || null);
+  const html = renderChartHtml(await shell.text(), model, { base, site: config.site || url.origin, canonical, image, imageAlt: own ? chartCardAlt(model) : CARD_ALT, robots: config.robots || null });
   const headers = new Headers(shell.headers);
   for (const name of ['content-length', 'etag', 'last-modified', 'content-encoding']) headers.delete(name);
   headers.set('content-type', 'text/html; charset=utf-8');

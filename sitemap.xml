@@ -2,4 +2,5 @@
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
  <sitemap><loc>https://archive.aero/sitemap-atc.xml</loc><lastmod>2026-09-14</lastmod></sitemap>
  <sitemap><loc>https://archive.aero/sitemap-core.xml</loc><lastmod>2026-09-14</lastmod></sitemap>
+ <sitemap><loc>https://archive.aero/sitemap-sectionals.xml</loc><lastmod>2026-10-12</lastmod></sitemap>
 </sitemapindex>

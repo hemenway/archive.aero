@@ -11,7 +11,8 @@
 //
 // Chart index (one file per location slug, built by scripts/next_build_overlays.py):
 //   { slug, names: [..], ref, type: 'sectional'|'tac'|'wac', bbox: [w,s,e,n]|null, am: bool,
-//     charts: [{ d, e, ed, f, pm, pmz, pmb }, ...] }   // sorted by d; pm absent = not yet tiled
+//     charts: [{ d, e, ed, f, pm, pmz, pmb, og }, ...] }   // sorted by d; pm absent = not yet tiled;
+//                                                          // og = the page's card image, a path under fileBase
 
 export const CHART_PREFIX = 'sectionals/chart/';
 const SLUG = /^[a-z0-9_]+$/;
@@ -21,8 +22,10 @@ const TYPES = {
   tac: { label: 'Terminal area chart', long: 'terminal area chart' },
   wac: { label: 'World aeronautical chart', long: 'world aeronautical chart' }
 };
-// The social card stands in for a per-page image until B3 (pre-rendered og:image per chart) lands.
+// The site card's alt text, for a page whose chart has no pre-rendered image of its own.
 export const CARD_ALT = 'A 1950 FAA sectional chart of New York City in the archive.aero timeline viewer';
+// Alt text of a chart's own card (scripts/next_og_images.py: the chart fills the frame, its title on a band below).
+export const chartCardAlt = model => `The ${model.name} ${model.typeLabel.toLowerCase()} of ${monthYear(model.chart.d)}, as shown in the archive.aero chart viewer`;
 
 export const validDate = s => { if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false; const t = Date.parse(s + 'T00:00:00Z'); return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s; };
 export const chartPath = (base, slug, date) => `${base}${CHART_PREFIX}${slug}/${date}`;
@@ -91,7 +94,7 @@ export function describe(index, date) {
   const when = chart.e ? `in effect from ${longDate(chart.d)} to ${longDate(chart.e)}` : `published ${longDate(chart.d)}`;
   return {
     slug: index.slug, name, names: index.names, ref: index.ref || null, type: index.type || 'sectional', typeLabel: type.label,
-    chart, all: charts, index: i, total: charts.length, prev, next, edition, halves, bbox, tiled: tiled(chart),
+    chart, all: charts, index: i, total: charts.length, prev, next, edition, halves, bbox, tiled: tiled(chart), og: typeof chart.og === 'string' && chart.og ? chart.og : null,
     title: `${name} ${type.label.toLowerCase()}, ${monthYear(chart.d)}${edition ? ` (${edition})` : ''}`,
     description: `The ${name} ${type.long}${edition ? `, ${edition},` : ''} ${when}. One of ${charts.length} ${name} editions in the archive.aero collection of historical FAA charts, georeferenced and viewable on an interactive map.`,
     dates: chart.e ? `In effect ${longDate(chart.d)} – ${longDate(chart.e)}` : `Published ${longDate(chart.d)}`
@@ -148,8 +151,10 @@ export function jsonLd(model, { canonical, site, image }) {
 
 // Head tags for one edition. The shell's own title/description/canonical and
 // social tags are removed by renderChartHtml; these replace them.
-export function headTags(model, { canonical, site, image, robots = null }) {
+// imageAlt describes `image`: the site card's text by default, chartCardAlt(model) for the chart's own card.
+export function headTags(model, { canonical, site, image, imageAlt = CARD_ALT, robots = null }) {
   const title = `${model.title} · archive.aero`;
+  const alt = imageAlt || CARD_ALT;
   const m = (attr, name, content) => `<meta ${attr}="${name}" content="${escapeHtml(content)}">`;
   const tags = [
     `<title>${escapeHtml(title)}</title>`,
@@ -159,7 +164,7 @@ export function headTags(model, { canonical, site, image, robots = null }) {
     m('property', 'og:title', model.title), m('property', 'og:description', model.description), m('property', 'og:url', canonical),
     m('name', 'twitter:card', 'summary_large_image'), m('name', 'twitter:title', model.title), m('name', 'twitter:description', model.description)
   ];
-  if (image) tags.push(m('property', 'og:image', image), m('property', 'og:image:width', '1200'), m('property', 'og:image:height', '630'), m('property', 'og:image:alt', CARD_ALT), m('name', 'twitter:image', image));
+  if (image) tags.push(m('property', 'og:image', image), m('property', 'og:image:width', '1200'), m('property', 'og:image:height', '630'), m('property', 'og:image:alt', alt), m('name', 'twitter:image', image));
   if (robots) tags.push(m('name', 'robots', robots));
   // A data block, not a script: CSP's script-src does not apply to JSON-LD.
   tags.push(`<script type="application/ld+json">${JSON.stringify(jsonLd(model, { canonical, site, image })).replaceAll('<', '\\u003c')}</script>`);
@@ -175,7 +180,7 @@ const REPLACED = /^(?:description|robots|og:[\w:]+|twitter:[\w:]+)$/;
 
 // The built shell page with one edition's head and panel. Throws when the
 // shell has no <head> or no #chartView: a page this cannot place must not ship.
-export function renderChartHtml(shell, model, { base, site, canonical, image, robots }) {
+export function renderChartHtml(shell, model, { base, site, canonical, image, imageAlt, robots }) {
   const headEnd = shell.search(/<\/head\s*>/i);
   if (headEnd < 0) throw new Error('Edition page: the shell has no </head>');
   let head = shell.slice(0, headEnd), rest = shell.slice(headEnd);
@@ -189,7 +194,7 @@ export function renderChartHtml(shell, model, { base, site, canonical, image, ro
     else if (tag === 'link' && (attrs.rel || '').toLowerCase() === 'canonical') drops.push([m.index, m.index + m[0].length]);
   }
   for (const [s, e] of drops.sort((a, b) => b[0] - a[0])) head = head.slice(0, s) + head.slice(e);
-  head += headTags(model, { canonical, site, image, robots });
+  head += headTags(model, { canonical, site, image, imageAlt, robots });
   // The panel: the build emits it empty and hidden; here it carries the edition and shows without JavaScript.
   let open = null;
   for (const m of rest.matchAll(TAG)) if (!m[1] && m[2].toLowerCase() === 'aside' && attrsOf(m[3]).id === 'chartView') { open = m; break; }

@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Build C4 airfields, C5 pin shards and the per-location chart index from local, unpublished catalogs."""
+"""Build C4 airfields, C5 pin shards and the per-location chart index from local, unpublished catalogs.
+
+--og-manifest FILE   scripts/next_og_images.py's manifest.jsonl: every tiled edition whose card image
+                     (key sectionals/chart/<slug>/<date>.jpg) is listed there gets `og` in the chart
+                     index, which the edition pages serve as og:image (worklist 09 B3).
+--sitemap ORIGIN     also write sitemap-sectionals.xml beside the chart index: one <url> per edition
+                     page (tiled charts only - the thin-content guard 404s the rest), so the apex
+                     sitemap index can list it (09 B4, URI-POLICY checklist item 2).
+"""
 import argparse
 import hashlib
 import json
@@ -117,11 +125,26 @@ def location_type(name):
     return 'tac' if name.endswith(' TAC') else 'wac' if name.endswith(' WAC') else 'sectional'
 
 
-def charts_index(timeline, plan):
+def og_key(slug, date): return f'sectionals/chart/{slug}/{date}.jpg'
+
+
+def read_og_manifest(path):
+    """The card images rendered so far: {key} lines from scripts/next_og_images.py."""
+    keys=set()
+    for line in Path(path).read_text().splitlines():
+        if not line.strip(): continue
+        key=json.loads(line).get('key')
+        if not re.fullmatch(r'sectionals/chart/[a-z0-9_]+/\d{4}-\d{2}-\d{2}\.jpg',key or ''): raise ValueError('unexpected og image key '+repr(key))
+        keys.add(key)
+    return keys
+
+
+def charts_index(timeline, plan, og_keys=None):
     """One record per location slug: every edition held (tiled or not), versioned artifacts, footprint box.
 
     The edition pages (/sectionals/chart/<slug>/<date>) and the shell's chart view read these; a
-    slug is the artifact key's location segment, so a location without any artifact has no page."""
+    slug is the artifact key's location segment, so a location without any artifact has no page.
+    og_keys (optional): the rendered card images; a tiled edition with one carries it as `og`."""
     versions={r['old']:r for r in plan}; by_slug={}
     for name, location in sorted(timeline['locations'].items()):
         slugs={chart_slug(c['pm']) for c in location.get('charts',[]) if c.get('pm')}
@@ -145,11 +168,22 @@ def charts_index(timeline, plan):
             k=(c['d'],c.get('e') or '')
             if k in seen: continue
             seen.add(k); charts.append(c)
+        for c in charts:
+            if c.get('pm') and og_keys is not None and og_key(entry['slug'],c['d']) in og_keys: c['og']=og_key(entry['slug'],c['d'])
         entry['charts']=charts
     return by_slug
 
 
-def build(airfield_path, timeline_path, plan_path, out, margin=2):
+def sitemap_xml(index, origin):
+    """sitemap-sectionals.xml: the canonical address of every tiled edition page, in slug then date order."""
+    if not re.fullmatch(r'https://[\w.-]+',origin): raise ValueError('sitemap origin must be an https origin')
+    urls=[f'{origin}/sectionals/chart/{slug}/{c["d"]}' for slug,entry in sorted(index.items()) for c in entry['charts'] if c.get('pm')]
+    if len(urls)>50000: raise ValueError('a sitemap holds at most 50,000 URLs; split it')
+    body=''.join(f' <url><loc>{u}</loc></url>\n' for u in urls)
+    return f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{body}</urlset>\n', len(urls)
+
+
+def build(airfield_path, timeline_path, plan_path, out, margin=2, og_manifest=None, sitemap_origin=None):
     out=Path(out); out.mkdir(parents=True,exist_ok=True); result={'airfields':None,'pins':None,'charts':None}
     if airfield_path:
         data,details=airfields(json.loads(Path(airfield_path).read_text()))
@@ -166,18 +200,26 @@ def build(airfield_path, timeline_path, plan_path, out, margin=2):
         folder=out/('pins.'+h); folder.mkdir(exist_ok=True)
         for i,data in contents.items(): (folder/(str(i)+'.json')).write_bytes(data)
         result['pins']={'z':5,'margin':margin,'base':'next/'+folder.name+'/', 'shards':list(contents)}
-        index=charts_index(json.loads(Path(timeline_path).read_text()),plan)
+        og_keys=read_og_manifest(og_manifest) if og_manifest else None
+        index=charts_index(json.loads(Path(timeline_path).read_text()),plan,og_keys)
         files={slug:compact(entry) for slug,entry in sorted(index.items())}
         h=digest(b''.join(slug.encode()+b'\0'+data for slug,data in files.items()))
         folder=out/('charts.'+h); folder.mkdir(exist_ok=True)
         for slug,data in files.items(): (folder/(slug+'.json')).write_bytes(data)
         result['charts']={'base':'next/'+folder.name+'/'}
+        if og_keys is not None:
+            carded=sum(1 for e in index.values() for c in e['charts'] if c.get('og')); tiled=sum(1 for e in index.values() for c in e['charts'] if c.get('pm'))
+            result['og']={'pages':tiled,'with_card':carded}
+        if sitemap_origin:
+            xml,n=sitemap_xml(index,sitemap_origin); (out/'sitemap-sectionals.xml').write_text(xml)
+            result['sitemap']={'file':'sitemap-sectionals.xml','urls':n}
     (out/'overlays.json').write_bytes(compact(result)); return result
 
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--airfields'); ap.add_argument('--timeline')
     ap.add_argument('--plan'); ap.add_argument('--out',required=True); ap.add_argument('--margin',type=float,default=2)
-    args=ap.parse_args(); print(json.dumps(build(args.airfields,args.timeline,args.plan,args.out,args.margin)))
+    ap.add_argument('--og-manifest'); ap.add_argument('--sitemap',metavar='ORIGIN')
+    args=ap.parse_args(); print(json.dumps(build(args.airfields,args.timeline,args.plan,args.out,args.margin,args.og_manifest,args.sitemap)))
 
 if __name__ == '__main__': main()

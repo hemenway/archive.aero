@@ -72,3 +72,8 @@ worklists/helper_prompt.md
 /_site/
 Donation List.numbers
 /beta
+
+# The apex shell build and Wrangler state (next/site/wrangler.jsonc); rebuilt from next/build.mjs
+/next/site/dist/
+/next/site/.wrangler/
+/next/site/node_modules/

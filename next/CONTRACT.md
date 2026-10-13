@@ -46,15 +46,16 @@ All four sections code to this. It is reproduced word for word in every agent's 
   - `b` is the lon/lat bounds `[w, s, e, n]` rounded to 4 decimal places, or `null`, meaning never cull this era.
   - `z` is the `[min, max]` zoom actually present in the archive.
   - `c` lists, in ascending order, the z6 tiles (as indices `y * 64 + x`) in which the archive has at least one tile. `null` means "assume coverage wherever `b` overlaps."
+  - `l` (added 2026-10-12, optional) is the era's draw rank: 0 planning chart, 1 WAC, 2 sectional, 3 TAC (`dole_v2.era_layers`: an era holding any sectional is 2; one made only of other types takes their highest rank). Absent means 2, so an older manifest reads unchanged.
 - `basemap` may carry `"format": "mvt"` with a Protomaps `flavor` and label `lang` (added 2026-10-05): the archive then holds production's vector tiles, each painted by the data plane into the same 512 px tile a raster basemap would supply. Without `format` the tiles are raster images.
 - `basemap`, `airspace`, `airfields` and `pins` may each be `null`, meaning that feature is off. Paths in `p` resolve against `tileBase`. File paths (`bin`, `details`, `base`) resolve against `fileBase`.
 - `charts` (added 2026-10-06, optional: an older manifest simply lacks it) points at the per-location chart index of C5a, which the edition pages and the shell's chart view read. `null` or absent means there are no edition pages.
 - **Rules every consumer applies the same way:**
   - An era is in effect on date D when start ≤ D < end. ISO date strings compare correctly as plain strings.
-  - Paint order is manifest order: later eras draw on top.
+  - Paint order is draw rank `l` ascending, then manifest order: later eras draw on top within a rank, a WAC-only era stays under every sectional era and a TAC-only era over them whatever their dates.
   - Timeline frames are the sorted unique start dates.
   - The date bounds are min = the earliest start, and max = the latest end minus one day.
-- Budget: the production manifest is at most 80 KB gzipped.
+- Budget: the production manifest is at most 96 KB gzipped. (Amended 2026-10-12 from 80 KB: the complete 3,761-era inventory is ~83 KB, and its floor is the 3,761 incompressible 12-hex content hashes. Since 2026-10-06 the shell boots from a per-year startup index and loads the full manifest after first chart paint, so the manifest is no longer on the critical path; `next/build.mjs` and `scripts/next_build_manifest.py` enforce the new figure.)
 
 ### C3. Overviews
 
