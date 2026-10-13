@@ -5,8 +5,33 @@
 primary note flags total **544 flag occurrences on 301 distinct rows**; flags
 can overlap. These count retained note text, not a new validation of every date.
 
-The linked [data/date_quality.csv](data/date_quality.csv) is the **2026-07-16
-snapshot** (535 flag occurrences), not a regenerated current export.
+The linked [data/date_quality.csv](data/date_quality.csv) was **regenerated
+2026-10-12** from the live catalog (311 rows; END-ESTIMATED 263, GAP 236,
+DATE-APPROX 45, END-FROM-NEXT-EDITION 14, BLANK_MAP 6).
+
+## 2026-10-12 reconciliation against the current catalog
+
+Every `GAP … before next (DATE)` note was recomputed against the editions the
+catalog holds today (same location and half, next later date), and every
+`END-ESTIMATED` row was tested with the July rule recovered from
+`end_date_fill_report.csv` (snap to the next edition when its start is within
+~1.1 × the location's typical period, else keep date + period):
+
+- **230 of 236 GAP notes unchanged** — no edition found since July closes them;
+  they remain search targets, not data errors.
+- **6 notes stale, reconciled** (backup `pre_date_quality_reconcile_2026-10-12.csv`):
+  Portland OR 1947-04-20 snapped to `ca003021` 1947-10-23 (was estimated
+  1947-10-16); Beaumont 1960, Butte 1939 and Savannah 1941 already had
+  `end_date` = the next edition (rechained when it was catalogued) but kept the
+  old GAP text, now `END-FROM-NEXT-EDITION`; Cleveland 1940 (2,497 → 1,350 d,
+  WASP 1943 scan) and San Francisco 1944 (556 → 391 d) keep END-ESTIMATED with
+  the gap re-measured.
+- **DATE-APPROX (45):** no dated duplicate has surfaced for any of them. The
+  2009 ChartGeek mosaics sit a year before the simviation 2010 rows (different
+  editions); the 2004 archive.org/AVSIM Hawaiian pair and the 2004 Alaska
+  east/west JPGs are known same-set alternatives. Nothing to change.
+- 14 END-ESTIMATED rows have no later edition at all (ends of discontinued
+  series); their estimate is the best available.
 
 Every row has a `date` and `end_date` (the 2026-07-14 end-date fill closed all blanks —
 see `search_archive/end_date_fill_report.csv` for how each was derived), but three

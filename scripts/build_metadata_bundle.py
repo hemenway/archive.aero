@@ -70,6 +70,9 @@ except ImportError:
 MAGIC = b"AAMBv1\n\0"
 PREAMBLE_LEN = 16
 DEFAULT_BASE_URL = "https://data.archive.aero/sectionals/"
+# Draw ranks (`ly`) come from the catalog beside this script tree: the repo
+# checkout, or a slicerd code release (scripts/ + master_dole_v2.csv).
+DEFAULT_CATALOG = Path(__file__).resolve().parent.parent / "master_dole_v2.csv"
 # Include leaf directories in the blob when the full metadata prefix is at
 # most this many bytes; beyond it, bundle only header+root+JSON metadata and
 # let leaf reads hit the network (only the ~34 multi-GB modern archives).
@@ -239,8 +242,12 @@ def extract_one(source, key, warnings):
 
 # ---------------------------------------------------------------- assembly
 
-def build_bundle(records, base_url):
-    """records: list of (key, start, end, size, bounds, blob). Returns (bytes, stats)."""
+def build_bundle(records, base_url, layers=None):
+    """records: list of (key, start, end, size, bounds, blob). Returns (bytes, stats).
+
+    layers: era key -> draw rank from dole_v2.era_layers; ranks other than
+    the sectional default (2) are stored as `ly` so the viewer can keep a
+    WAC-only era under, and a TAC-only era over, the sectionals."""
     # Chronological within decade groups; groups chronological.
     records.sort(key=lambda r: (r[1][:3] + "0", r[1], r[2], r[0]))
 
@@ -255,6 +262,9 @@ def build_bundle(records, base_url):
         era = {"k": key, "size": size, "off": rel, "len": len(blob)}
         if bounds:
             era["b"] = bounds
+        layer = (layers or {}).get(key)
+        if layer is not None and layer != 2:
+            era["ly"] = layer
         eras.append(era)
         groups[-1]["len"] += len(blob)
         groups[-1]["i1"] = len(eras)
@@ -358,6 +368,9 @@ def main():
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--verify", metavar="BUNDLE",
                     help="verify an existing bundle against the source instead of building")
+    ap.add_argument("--catalog", metavar="CSV", default=str(DEFAULT_CATALOG),
+                    help="dole CSV the eras' draw ranks come from (default: the repo's "
+                         "master_dole_v2.csv; pass '' to stamp none)")
     args = ap.parse_args()
 
     if args.remote:
@@ -416,7 +429,15 @@ def main():
         sys.exit(f"aborting: {len(failed)} archives unreadable — bundle would "
                  f"silently miss them (rerun when uploads finish)")
 
-    data, stats = build_bundle(records, args.base_url)
+    layers = None
+    if args.catalog:
+        if not os.path.exists(args.catalog):
+            sys.exit(f"catalog not found: {args.catalog} (pass --catalog '' to build without draw ranks)")
+        import dole_v2
+        layers = dole_v2.era_layers(dole_v2.load_rows(args.catalog))
+        ranked = sum(1 for k in keys if layers.get(k, 2) != 2)
+        log(f"draw ranks from {args.catalog}: {ranked} era(s) not at the sectional rank")
+    data, stats = build_bundle(records, args.base_url, layers)
     digest = hashlib.sha256(data).hexdigest()[:8]
     out_path = Path(args.out) / f"metadata-{digest}.bundle"
     out_path.write_bytes(data)

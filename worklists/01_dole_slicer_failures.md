@@ -172,3 +172,39 @@ source geotransform.
 ranges 2010–11 · 1 Cincinnati 2011 (ca000827r). Full cause-tagged list is in section 7 of
 the agent log analysis; each range's failure lines immediately precede its skip line in
 `slicer_run.log`.
+
+## 2026-10-12 — the 2026-10-03 reslice, read back after completion
+
+`slicerctl errors 2026-10-03_reslice` (full log in
+`data/slicer_runs/2026-10-03_reslice/errors.md`): all 3,761 eras archived,
+15,099 jobs succeeded, but 558 chart-level error lines inside otherwise
+successful eras. Classified against the hashed upload plan:
+
+- **Superseded by retries (no action):** the 2026-10-07 source-share outage
+  ("Resource temporarily unavailable" on the Mac worker) — every one of those
+  64 source files has its chart artifact in the plan from the requeued run.
+- **Real losses in the reslice output:**
+  - Denver SEC 94 (eras `2016-01-07_to_2016-06-23`, `_to_2016-07-21`) and San
+    Francisco SEC 97 (`2016-08-18_to_2017-02-02`): "Too large output raster
+    size" — the warp blew up (bad embedded georef or a GCP/cutline mismatch);
+    the chart is missing from those three mosaics and has no artifact.
+  - Eras `2021-08-12_to_2021-10-07` and `2022-03-24_to_2022-05-19` have **no
+    chart artifacts at all** in the plan (their era archives exist); the
+    2022-03-24 era was an outage requeue — the chart backfill never ran.
+  - 92 "chart URI collision within Hawaiian Islands" refusals for the 2011–14
+    inset-container rows (Hawaiian Islands zip members map to one date), plus
+    the matching `'ChartSlicer' object has no attribute 'stats'` worker error:
+    no per-chart artifacts for those insets; `split_faa_inset_containers.py`
+    is the documented fix.
+  - "No embedded CRS … refusing to warp": Hawaiian ca-scans 1950–61
+    (`ca001669`, `ca001666r`, `ca001663r`, `ca001659r` — A1), Hawaiian Islands /
+    Honolulu Inset SEC 90 (2014-08-13 zip members), Ketchikan 2010 simviation,
+    Hawaiian Islands 2004 archive.org JPG (the AVSIM twin publishes), Dutch
+    Harbor 2004 south (fixed 2026-10-12, see 04).
+  - "No source files": five simviation zips (Detroit, Klamath Falls, Lake
+    Huron, Memphis, Salt Lake City 2010-04-08) and Seward 93 (the truncated
+    Wayback zip, C1); 13 "no data for era" follow from these.
+  - 19 1930s–40s eras converted with "alignment unverified" (no probe had
+    chart coverage) — they need `--allow-unverified` at publish time.
+- 462 "two container members share cutline … keeping X, skipping Y" warnings
+  on the 2003–05 half-sheet zips: the zip-row cutline trap, already known.

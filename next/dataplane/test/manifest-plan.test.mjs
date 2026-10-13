@@ -8,6 +8,11 @@ test('intervals: exclusive end, manifest paint order and bounds',()=>{
  assert.deepEqual(erasAt(m,'1960-01-01'),[1]);assert.deepEqual(erasAt(m,'1959-01-01'),[0,1]);assert.deepEqual(erasAt(m,'1980-01-01'),[]);
  assert.deepEqual(m.frames,['1950-01-01','1955-01-01','1970-01-01']);assert.deepEqual(m.dateBounds,{min:'1950-01-01',max:'1979-12-31'});
 });
+test('draw rank orders eras before manifest order; the default rank is 2',()=>{
+ const r=parseManifest({version:1,eras:[{...era('1980-01-01_to_1990-01-01'),l:3},era('1985-01-01_to_1990-01-01'),{...era('1986-01-01_to_1990-01-01'),l:1},{...era('1987-01-01_to_1990-01-01'),l:2}]});
+ assert.deepEqual(erasAt(r,'1988-01-01'),[2,1,3,0]);assert.deepEqual(Array.from(r.layer),[3,2,1,2]);
+ for(const l of [-1,4,1.5,'2'])assert.throws(()=>parseManifest({version:1,eras:[{...era('1950-01-01_to_1960-01-01'),l}]}));
+});
 test('binary index does not reorder manifest and finds long overlaps',()=>{
  const a=parseManifest({version:1,eras:[era('1970-01-01_to_1980-01-01'),era('1900-01-01_to_2000-01-01'),era('1950-01-01_to_1960-01-01')]});assert.deepEqual(erasAt(a,'1975-01-01'),[0,1]);
 });

@@ -892,7 +892,10 @@ function applyLoadedRanges(rows) {
       url: row.url || null,
       // [w, s, e, n] from the bundle index; null (CSV fallback, old bundle,
       // antimeridian-wrapping header) means the archive is never culled.
-      bounds: row.bounds || null
+      bounds: row.bounds || null,
+      // Draw rank from the bundle index (`ly`): 0 planning, 1 WAC, 2 sectional,
+      // 3 TAC. Absent (CSV fallback, older bundle) means sectional.
+      layer: Number.isInteger(row.layer) ? row.layer : 2
     });
   });
   CONFIG.ranges = ranges.sort((a, b) => {
@@ -931,7 +934,7 @@ async function loadData() {
       const index = await MetaBundle.load(CONFIG.bundleUrl);
       // The bundle is authoritative for where the archives live.
       CONFIG.baseUrl = index.baseUrl;
-      applyLoadedRanges(index.eras.map(era => ({ key: era.k, url: null, bounds: era.b || null })));
+      applyLoadedRanges(index.eras.map(era => ({ key: era.k, url: null, bounds: era.b || null, layer: era.ly })));
       return;
     } catch (e) {
       console.warn('Metadata bundle unavailable, using dates.csv', e);
@@ -1400,7 +1403,10 @@ class MapController {
       return;
     }
 
-    rangesInEffect.sort((a, b) => a.startTime - b.startTime || a.endTime - b.endTime);
+    // Later eras draw on top, but only within a draw rank: a WAC-only era
+    // stays under every sectional era and a TAC-only era over them, whatever
+    // their start dates (dole_v2.era_layers, 2026-10-12).
+    rangesInEffect.sort((a, b) => a.layer - b.layer || a.startTime - b.startTime || a.endTime - b.endTime);
     const activeKeys = rangesInEffect.map(range => range.key);
     const sameKeys = this.activeKeys.length === activeKeys.length
       && this.activeKeys.every((key, idx) => key === activeKeys[idx]);

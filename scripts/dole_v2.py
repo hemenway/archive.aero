@@ -457,6 +457,44 @@ def row_layer(row) -> int:
     return CHART_TYPE_LAYER[row_chart_type(row)]
 
 
+def era_key(row) -> str:
+    """The slicer's era key for a row: `<date>` or `<date>_to_<end_date>`
+    (mirrors ChartSlicer._date_range_key)."""
+    start = str(row.get("date") or "").strip()
+    end = str(row.get("end_date") or "").strip()
+    if not start:
+        return ""
+    if not end or end == start:
+        return start
+    return f"{start}_to_{end}"
+
+
+def era_layers(rows) -> Dict[str, int]:
+    """Draw rank of every era (start-date group) for the viewers.
+
+    Eras are drawn by rank, then by start date, so a WAC that sits in an era
+    of its own no longer covers an older sectional just because its era
+    starts later (2026-10-12). An era holding any sectional draws at the
+    sectional rank whatever else it holds, so a mixed era never jumps above
+    or below its sectional neighbours; an era made only of WACs, TACs or
+    planning charts takes the highest rank among them. Rank 2 is the
+    default every consumer assumes, so only the others need storing.
+    """
+    sec = CHART_TYPE_LAYER[CHART_TYPE_SECTIONAL]
+    out: Dict[str, int] = {}
+    for row in rows:
+        key = era_key(row)
+        if not key:
+            continue
+        layer = row_layer(row)
+        prev = out.get(key)
+        if prev == sec or layer == sec:
+            out[key] = sec
+        else:
+            out[key] = layer if prev is None else max(prev, layer)
+    return out
+
+
 def row_rotation(row) -> int:
     """Row's display rotation in degrees clockwise: 0, 90, 180 or 270."""
     value = str(row.get("rotation") or "").strip()

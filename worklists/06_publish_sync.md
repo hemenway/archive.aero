@@ -13,7 +13,7 @@ The separate September 29 modern-era reslice/republish job continues; its logs
 under `/Volumes/projects/2026-09-29 g2p yshift reslice/` are the evidence for that
 queue. It may supersede the bundle above while preserving this batch's keys.
 
-- [ ] **71 chart artifacts from the August 29 run were never uploaded**
+- [x] **71 chart artifacts from the August 29 run were never uploaded** — closed 2026-10-12, see below.
   (checked October 4: every key 404s on data.archive.aero, no `uploads.jsonl`
   receipt, and no local copy survives — `/Volumes/drive/pmtiles_charts` is gone).
   They are the nine ACASIS sectionals (Atlanta 94, Brownsville 94, Charlotte 97,
@@ -40,6 +40,26 @@ queue. It may supersede the bundle above while preserving this batch's keys.
   eras, which are queued last). Rerun as the run advances. Copies kept
   `content-type: application/vnd.pmtiles` (live keys say octet-stream; the
   Worker passes either through).
+- [x] **2026-10-12 — 52 of the 71 published from the reslice.** With the
+  2026-10-03 reslice complete (3,761 eras, 7,389 chart artifacts hashed in
+  `charts-beta`), `publish_chart_pmtiles_from_reslice.py --copy` copied 52
+  artifacts server-side to their permanent keys, size + sha256 verified, and
+  appended receipts (Charlotte/Jacksonville/Miami/Washington/Wichita 2015, the
+  Mariana/Samoan/W. Aleutian east+west sheets 2015-04-30 → 2026-09-03).
+  `timeline_data.json` rebuilt (7,413 stamped artifacts) and uploaded;
+  `coverage.json` rebuilt. The other 19 are not pending: the script now reads
+  the catalog and reports **10 retired** (ACASIS inset sources dropped by the
+  September 19 duplicate cleanup) and **9 renamed** (their NARA rows now sit
+  under the locations `Honolulu` / `Samoan Islands` / `Mariana Islands`, whose
+  `chart/honolulu/…`, `chart/samoan_islands/…` keys have been live since
+  August). Boston 1957 stays held until its redo (04) is sliced.
+  **Catalog hygiene found on the way:** the inset series is split across two
+  location spellings — 30 rows (2015-10-15 → 2020-10-08, NARA) as `Honolulu`,
+  `Samoan Islands`, `Mariana Islands` and 120 rows as `… Inset` — so
+  `timeline_data.json` lists six inset locations instead of three and the
+  chart URIs differ by period. Decide the canonical spelling (the 120-row
+  `… Inset` names) and rename the 30 rows with a backup + note; the live
+  `chart/honolulu/…` keys stay as permanent aliases.
 - [ ] Resolve remaining georef/candidate issues in 04: Boston 1957, SF 1971,
   Juneau's hold, Dallas 1981 north and Denver 1975, plus the remaining GCP lanes.
 - [x] Source audit (02) rerun October 4: every catalog row resolves on disk.

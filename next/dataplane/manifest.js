@@ -17,7 +17,7 @@ export function parseManifest(raw) {
   if (!raw || raw.version !== 1 || !Array.isArray(raw.eras)) throw new Error('Unsupported manifest');
   const count = raw.eras.length;
   const starts = new Int32Array(count), ends = new Int32Array(count);
-  const minZoom = new Uint8Array(count), maxZoom = new Uint8Array(count);
+  const minZoom = new Uint8Array(count), maxZoom = new Uint8Array(count), layer = new Uint8Array(count).fill(2);
   const bounds = [], coverage = [], paths = [], keys = [];
   raw.eras.forEach((e, i) => {
     if (typeof e.k !== 'string' || !/^\d{4}-\d{2}-\d{2}_to_\d{4}-\d{2}-\d{2}$/.test(e.k) || !/^[a-f0-9]{12}$/.test(e.h)) throw new Error('Invalid era key/hash');
@@ -27,6 +27,8 @@ export function parseManifest(raw) {
     const z0 = e.z?.[0], z1 = e.z?.[1];
     if (!Number.isInteger(z0) || !Number.isInteger(z1) || z0 < 0 || z1 > 24 || z0 > z1) throw new Error('Invalid era zoom range');
     minZoom[i] = z0; maxZoom[i] = z1;
+    // Draw rank (`l`, added 2026-10-12): 0 planning, 1 WAC, 2 sectional (the default), 3 TAC.
+    if (e.l != null) { if (!Number.isInteger(e.l) || e.l < 0 || e.l > 3) throw new Error('Invalid era draw rank'); layer[i] = e.l; }
     const b = e.b ?? null;
     if (b && (!Array.isArray(b) || b.length !== 4 || !b.every(Number.isFinite) || b[0] > b[2] || b[1] > b[3])) throw new Error('Invalid era bounds');
     bounds.push(b); paths.push(`sectionals/${e.k}.${e.h}`); keys.push(e.k ?? paths[i]);
@@ -43,15 +45,17 @@ export function parseManifest(raw) {
   const pathIndex = new Map(paths.map((p, i) => [p, i]));
   // Era key ("1960-01-01_to_1960-07-01") to index: the pin card and solo view name eras by key.
   const keyIndex = new Map(keys.map((k, i) => [k, i]));
-  return { raw, starts, ends, minZoom, maxZoom, bounds, coverage, paths, keys, order, sortedStarts, prefixEnd, pathIndex, keyIndex,
+  return { raw, starts, ends, minZoom, maxZoom, layer, bounds, coverage, paths, keys, order, sortedStarts, prefixEnd, pathIndex, keyIndex,
     frames: frames.map(isoDay), frameDays: Int32Array.from(frames), dateBounds: count ? {min: isoDay(frames[0]), max: isoDay(Math.max(...ends)-1)} : {min:null,max:null} };
 }
+// Paint order, bottom to top: draw rank first (a WAC-only era under every sectional era, a TAC-only era
+// over them), then manifest order (later eras on top).
 export function erasAt(manifest, date) {
   const d = day(date), out = [];
   for (let j = upperBound(manifest.sortedStarts, d)-1; j >= 0 && manifest.prefixEnd[j] > d; j--) {
     const i = manifest.order[j]; if (manifest.ends[i] > d) out.push(i);
   }
-  return out.sort((a,b)=>a-b);
+  return out.sort((a,b)=>manifest.layer[a]-manifest.layer[b]||a-b);
 }
 export async function loadManifest(url, fetcher = fetch, signal) {
   const response = await fetcher(url, {signal});
