@@ -1,21 +1,31 @@
 # 15 — Airspace overlay (class airspace, three regions)
 
-**Status reviewed 2026-09-21: class airspace is published; the older FAA
-extension is locally archived but unpublished.** `src/viewer.js` still points
-to `airspace/class-20260916b.pmtiles`, matching the latest saved upload receipt.
-Viewer implementation and `CONFIG.airspaceUrl` moved from `index.html` to
-`src/viewer.js` in 5843587; `--update-html index.html` still resolves the correct
-source and rebuilds the fingerprinted frontend modules.
+**Status reviewed 2026-10-13: the older FAA extension is built and verified
+locally; publication remains.** The replacement is `class-20261013.pmtiles`
+(73,900,167 bytes), with 116 US cycles back to 2017-10-12. The saved production
+manifest still references `airspace/class-20260916b.1cb1e18a19b5` (86 US cycles).
+The current viewer reads its airspace path from the content-hashed `next/`
+manifest; publishing this replacement requires a new hashed object in
+`charts-beta` and updated production frontend artifacts. The legacy
+`src/viewer.js` setting and builder's `--update-html` option do not update
+that manifest.
 
-| Region | Latest recorded published build | Local additions awaiting a build |
+| Region | Latest recorded published build | Verified local replacement |
 |---|---|---|
-| US | 86 cycles, 2020-03-26–2026-10-01 | 30 compatible NASR cycles; 116 held in total, back to 2017-10-12, with gaps |
-| France | 36 cycles, 2019-02-28–2026-10-01, with gaps | No later build/import recorded here |
-| Brazil | One 2026-09-03 snapshot | Continue preserving later snapshots as available |
+| US | 86 cycles, 2020-03-26–2026-10-01 | 116 cycles, 2017-10-12–2026-10-01, with two 28-day gaps |
+| France | 36 cycles, 2019-02-28–2026-10-01, with gaps | Same cycles and region metadata |
+| Brazil | One 2026-09-03 snapshot | Same snapshot and region metadata |
 
-Evidence: `worklists/data/airspace/{builds,uploads}.jsonl`, current viewer
-configuration, and the [September 19 import report](data/acasis_import/2026-09-19/REPORT.md).
-This review checked those local records; it did not rebuild or publish tiles.
+Evidence: `worklists/data/airspace/{builds,uploads}.jsonl`, saved production
+manifest `~/archive-next-build/prod/next/manifest.56cf6d2fc143.json`, the
+[September 19 import report](data/acasis_import/2026-09-19/REPORT.md), and the
+[October 13 verification](data/airspace/verification_20261013/build_validation.json).
+The combined release candidate `~/archive-next-build/2026-10-13-georef` also
+passed full-viewer browser checks: historical airspace visibly renders, while the
+2018-07-19 gap has identical interior map pixels with the layer on and off.
+Evidence: candidate `qa/summary.json`; the first screenshot comparison included an
+animated loader and was corrected to inspect only map pixels. No product change
+was needed. No publication or viewer configuration changes were made during this build.
 
 Started 2026-09-14. The viewer gains a time-aware airspace layer built from the
 AIS series held in `/Volumes/projects/aisdata/` (see `scripts/aisdata_pull.py`):
@@ -123,12 +133,11 @@ history sources are parsed (all three regions have it).
 
 ## Next
 
-- [ ] B0a. Build and verify the 30 newly imported compatible US NASR cycles,
-      including representative 2017–2019 dates and gaps. Publish to a new dated
-      immutable key, then update the viewer URL/frontend artifacts. The local
-      parser check passed for every new feature, but it is not a rendered or
-      published-build check. Keep `nasr_legacy/` outside this task until its
-      older formats have parser support.
+- [ ] B0a. Publish the locally verified `class-20261013` replacement (build and
+      rendered verification completed below), then update the production
+      manifest/frontend artifacts and metadata bundle. Upload the hashed object
+      to `charts-beta` before deploying a reference to it. Keep `nasr_legacy/`
+      outside this task until its older formats have parser support.
 - [ ] B1. Special-use airspace (MOA/R/P/W/A) + Mode C veils, current-only from
       the ADDS GeoJSON (`us_faa/adds/<date>/Special_Use_Airspace.geojson`,
       `Class_Airspace.geojson` MODE C rows) as a `sua` layer with a
@@ -167,3 +176,35 @@ expected Class_Airspace layer live in `nasr_legacy/`, outside the current
 builder's normal scan. Historical DOF/CIFP packages were also archived.
 See `aisdata/us_faa/README_ACASIS_2026-09-19.txt` and
 [the completed import report](data/acasis_import/2026-09-19/REPORT.md).
+
+## 2026-10-13 — historical NASR build verified locally
+
+- Checked the bytes of all 30 recovered ZIPs against their registered SHA-256
+  values. Built and visually checked the first cycle, 2017-10-12, before the
+  complete build. The US cache now holds all 116 cycles; every held cycle's
+  membership matches its merged validity intervals. All three sqlite caches
+  pass integrity checks, and their source identities match the held files.
+- Final mirror: `/Volumes/projects/airspace_pmtiles/class-20261013.pmtiles`,
+  with its adjacent manifest. SHA-256:
+  `cce35551b42d93178a6eae6c33d07c723cb25f93cf6f0f487e7727a369ff403e`.
+  It contains 10,155 polygon versions and 14,722 interval/edge features;
+  the US contributes 8,973 versions and 4,562 Class E edge features.
+  `pmtiles verify` passed. France and Brazil region metadata is unchanged.
+- Rendered the actual PMTiles through the production decoder and WebGL
+  renderer in a local verification harness: Dallas–Fort Worth in 2017, 2018,
+  2019 and 2026, plus Elko's 2017 Class E floors. Checked the dates immediately
+  before and after both gaps: 2018-07-19–2018-08-15 and
+  2019-01-31–2019-02-27. Before the first cycle and inside both gaps there
+  are zero active versions, no airspace pixels, and the expected status text.
+  All 12 views have zero WebGL errors. The 2026 Dallas view retains the same
+  916 active version IDs and governing stack as the prior published artifact.
+- Tests: all eight airspace data-plane tests pass; the GPU date/class/region
+  filter test passes in Chromium and mobile WebKit. Logs, screenshots, source
+  identities and the local publication plan are under
+  `worklists/data/airspace/verification_20261013/`.
+- The publication plan proposes
+  `airspace/class-20261013.cce35551b42d.pmtiles`; it has **not** been uploaded.
+  The full build ran with a local Mac `--out-dir` before checksum-verified
+  copying to the mirror. `/Volumes/projects` was an SMB mount during this
+  run, and tippecanoe's SQLite journal writes were very slow there; use local
+  scratch for future builds on that mount.

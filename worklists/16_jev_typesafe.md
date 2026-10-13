@@ -1,18 +1,23 @@
 # 16 — Jev (TypeSafe) as programmable judgment for archive.aero
 
-**Updated 2026-09-21; plan written 2026-09-18.** Companion to [09](09_growth_and_revenue.md) (growth) and
+**Updated 2026-10-13; plan written 2026-09-18.** Companion to [09](09_growth_and_revenue.md) (growth) and
 [08](08_atchistory_migration.md) (ATC migration). Jev is a *System One* model: it
 returns typed answers (a choice, a yes/no probability, a score) over state you send
 it — it does not generate text. Docs: <https://docs.typesafe.ai/llms.txt>.
 
 **Current state:** W1 and W2 ran locally on 2026-09-21. Freeman dates are merged
 into `airfields.json`; the ATC post/PDF indexes exist under `worklists/data/atc/`.
-Publication of the airfield data and all W2 consumers remain open. Next: finish
-the planned validation samples (40 Freeman labels and about 40 ATC spot checks
-recorded so far, against the ≥50-row target), review flagged disagreements, then
-publish the airfield data and build the B1 airport-page pilot. W3–W5 have not
-started; W6 is conditional future work. The results below are local evidence,
-not a fresh check of production.
+Publication of the airfield data and all W2 consumers remain open. The
+[2026-10-13 acceptance review](16_jev_validation_2026-10-13.md) expanded the Freeman
+labels to 50 and reviewed 69 ATC posts. It found six inverted Freeman intervals
+(three introduced by the merge, now prevented in code), incorrect historical
+callsign joins, unsupported ATC opening/closing dates, and omitted year candidates.
+Deterministic fixes pass eleven regression tests; cached replay leaves three original
+Freeman inversions and unresolved semantic review. Existing public-shaped local
+outputs have not been replaced. Next: resolve those findings and the retained
+date/status queue before publishing. W3–W5 have not started; W6 is conditional
+future work. The September results below are historical local evidence, not a
+fresh check of production.
 
 **What it is for here:** the places where the site's pipelines currently stop at a
 regex heuristic or a blank field because the source is free text — Paul Freeman's
@@ -141,9 +146,12 @@ end years, 24 blank start years, 104 unknown and 0 conflicts** (plus 52 open).
       resolutions, 751 date disagreements + 25 status flags to review. Feeds **09 C5**:
       era-correct deep links for the
       Freeman outreach need exactly these years.
-- [ ] W1e. Extend the 40-row labeled sample to the planned ≥50 and review the
-      retained disagreements/status flags; record any threshold changes and
-      re-merge from cached answers if needed.
+- [ ] W1e. **Sample extension complete 2026-10-13:** 50 labels (40 original plus
+      10 explicitly agent-reviewed narratives), with evaluation and source evidence
+      preserved. Thresholds unchanged. Merge guards now prevent three inverted
+      intervals; cached replay leaves three pre-existing `lifespan_csv` inversions.
+      Retained-disagreement/status review and final output rebuild remain open;
+      see the [acceptance report](16_jev_validation_2026-10-13.md).
 - [ ] W1f. Publish the verified `airfields.json` to R2 using the command above,
       then verify the served data and representative viewer pins.
 
@@ -178,8 +186,14 @@ material for this airport"). Those consumers have not shipped.
       layer). `/atc/` "related pages" and category landings wait for 2026-10-30 (J3).
 - [x] W2d. Initial review: ~40 posts read across kinds during candidate design and result
       review (idents, years, closures all correct); facilities.json regression 98 % / 92 %.
-- [ ] W2e. Complete the planned ≥50-post acceptance sample across kinds and
-      coordinate sources before publishing a consumer; preserve the results.
+- [x] W2e. **Acceptance sample completed 2026-10-13; acceptance failed.** 69 posts
+      across all nine kinds and seven existing coordinate-source classes reviewed,
+      with per-row findings and source-state hashes preserved. Fixes reject
+      cross-state callsign matches and hospital-heliport city proxies, add numeric-date
+      and curly-decade candidates, and preserve uncertainty in future index builds.
+      Unsupported event dates, ambiguous kinds/intervals and existing cached candidate
+      gaps must be resolved before W2c publication; see the
+      [acceptance report](16_jev_validation_2026-10-13.md).
 
 ### W3. Airport-page pilot (09 B1) — entity alignment for the cross-links
 
