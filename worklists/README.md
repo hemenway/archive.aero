@@ -11,12 +11,13 @@ checks. Original hunt records and completed cleanup reports are retained below.
    the site Worker.
 1. ~~Reconcile source availability ([02](02_disk_vs_dole.md)).~~ Clean on
    October 4: all 7,744 rows resolve on disk and no file is unexplained.
-2. **Publish the 71 missing chart artifacts ([06](06_publish_sync.md)).** The
-   August 29 run's per-chart files (nine ACASIS sectionals, 62 inset and
-   W. Aleutian sheets) never reached R2 and no local copy remains; take them
-   from the October 3 reslice with `scripts/publish_chart_pmtiles_from_reslice.py`
-   (October 5: 5 ready, 66 waiting for the reslice to reach their eras). Dallas 1981 north is catalog-ready and needs a
-   slice and publish ([04](04_georef_backlog.md)).
+2. ~~Publish the 71 missing chart artifacts ([06](06_publish_sync.md)).~~ Done
+   October 12: 52 copied from the completed reslice and receipted, 10 retired,
+   9 renamed (see 06, which also records the `Honolulu` / `Honolulu Inset`
+   location split to resolve). **Run the four slice-ready georef rows**
+   (Boston 1957, SF 1971 halves, Dutch Harbor 2004 south, Dallas 1981 north):
+   one `slicerctl sync` + pipeline + publish, commands in
+   [04](04_georef_backlog.md).
    [14](14_geotiff2pmtiles_audit_handoff.md) also tracks missing evidence for the
    historical PMTiles run-length repairs.
 3. **Work the remaining chart repairs ([01](01_dole_slicer_failures.md),
