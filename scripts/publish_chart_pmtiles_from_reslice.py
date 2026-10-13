@@ -30,6 +30,12 @@ Modes
     --verify    no copies: check the target keys that already exist and
                 write receipts for the ones that match the plan record
                 (use after running the printed commands by hand)
+    --refresh   not only the missing keys: every manifest key whose current
+                receipt does not name the run's artifact (sha256 differs) is
+                overwritten in place with the reslice's artifact - the
+                permanent URI keeps its address, the bytes improve (URI-POLICY
+                rule 7). Combine with --copy; the receipt it appends supersedes
+                the older one (readers take the last receipt per key).
 
 Receipts are appended in publish_chart_pmtiles.py's record shape
 (`key`, `size`, `uploaded_at`) plus `sha256`, `source` and `run`, so
@@ -113,6 +119,9 @@ def main():
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--copy", action="store_true", help="run the server-side copies and record receipts")
     mode.add_argument("--verify", action="store_true", help="record receipts for targets already copied by hand")
+    ap.add_argument("--refresh", action="store_true",
+                    help="also overwrite keys already published from an older warp (receipt sha256 != the run's artifact)")
+    ap.add_argument("--limit", type=int, help="stop after this many keys (a dry batch)")
     args = ap.parse_args()
 
     plan_path = args.run / "hashed" / "plan.jsonl"
@@ -123,7 +132,11 @@ def main():
     for e in read_jsonl(args.manifest):
         if "key" in e:
             manifest[e["key"]] = e
-    uploaded = {e["key"] for e in read_jsonl(args.uploads) if "key" in e}
+    receipts_by_key = {}
+    for e in read_jsonl(args.uploads):
+        if "key" in e:
+            receipts_by_key[e["key"]] = e  # the last receipt per key is current
+    uploaded = set(receipts_by_key)
     missing = {k: e for k, e in manifest.items() if k not in uploaded}
     if args.keys:
         wanted = {ln.strip() for ln in open(args.keys) if ln.strip()}
@@ -136,7 +149,16 @@ def main():
     plan = {}
     for r in read_jsonl(plan_path):
         if r.get("old", "").startswith("sectionals/chart/") and r.get("uploaded_at"):
-            plan[r["old"][len("sectionals/"):]] = r  # chart/<slug>/<date>
+            plan[r["old"][len("sectionals/"):]] = r  # chart/<slug>/<date>; a re-converted artifact supersedes
+
+    # --refresh: published keys whose bytes are an older warp than the run's.
+    stale = {}
+    if args.refresh:
+        for k, rec in receipts_by_key.items():
+            if k in manifest and k in plan and k not in HELD and rec.get("sha256") != plan[k]["sha256"]:
+                stale[k] = manifest[k]
+        if args.keys:
+            stale = {k: e for k, e in stale.items() if k in wanted}
 
     # A manifest entry outlives its catalog row: the 2016-20 Honolulu/Samoan
     # inset entries of the August 29 run name ACASIS source files that the
@@ -166,7 +188,11 @@ def main():
             pending.append(key)
 
     print(f"{len(manifest)} manifest keys, {len(uploaded)} with upload receipts, "
-          f"{len(missing)} missing from R2")
+          f"{len(missing)} missing from R2" + (f", {len(stale)} published from an older warp (--refresh)" if args.refresh else ""))
+    if args.refresh:
+        ready = sorted(set(ready) | set(stale))
+    if args.limit:
+        ready = ready[:args.limit]
     print(f"  ready in {plan_path.parent.parent.name}: {len(ready)}   pending (reslice has not reached them): "
           f"{len(pending)}   held: {len(held)}   retired: {len(retired)}   renamed: {len(renamed)}")
     for k in held:
@@ -196,7 +222,7 @@ def main():
             print(" ".join(cmd))
             continue
         if args.copy:
-            print(f"  copy {key}  ({r['size'] / 1e6:.1f} MB)")
+            print(f"  {'refresh' if key in stale else 'copy'} {key}  ({r['size'] / 1e6:.1f} MB)")
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
                 bad += 1

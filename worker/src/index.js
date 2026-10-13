@@ -60,7 +60,19 @@ const CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=3600";
 // A key that carries a 12-hex content hash (next/manifest.<hash>.json, the hashed
 // era archives, next/pins.<hash>/...) names bytes that never change.
 const HASHED_CACHE_CONTROL = "public, max-age=31536000, immutable";
-const cacheControlFor = (key) => /\.[a-f0-9]{12}(?:\.[A-Za-z0-9]+)?(?:\/|$)/.test(key) ? HASHED_CACHE_CONTROL : CACHE_CONTROL;
+const HASHED_KEY = /\.[a-f0-9]{12}(?:\.[A-Za-z0-9]+)?(?:\/|$)/;
+const cacheControlFor = (key) => HASHED_KEY.test(key) ? HASHED_CACHE_CONTROL : CACHE_CONTROL;
+
+// Two buckets since 2026-10-12. The content-hashed, immutable objects of the
+// reslice (era archives sectionals/<era>.<hash>.pmtiles, chart artifacts
+// sectionals/chart/<slug>/<date>.<hash>.pmtiles, the hashed basemap/airspace
+// copies) and everything under next/ (manifest, pins, chart index, airfields,
+// airports) live in BUCKET_HASHED - the bucket the reslice uploaded to, kept
+// in place rather than copied (359 GB). BUCKET holds the rest: the permanent
+// per-chart keys, timeline_data.json, airfields.json, the card images, the
+// metadata bundles and the pre-reslice era archives. Deployments without the
+// second binding (tiles-beta) read everything from BUCKET.
+const bucketFor = (env, key) => (env.BUCKET_HASHED && (HASHED_KEY.test(key) || key.startsWith("next/"))) ? env.BUCKET_HASHED : env.BUCKET;
 
 // Client validators are compared here in the Worker, never pushed down to R2:
 // BUCKET.get() with onlyIf + range throws when the precondition fails (the
@@ -81,7 +93,7 @@ function etagMatches(ifNoneMatch, httpEtag) {
 async function rangeNotSatisfiable(env, key, origin) {
   let size = "*";
   try {
-    const head = await env.BUCKET.head(key);
+    const head = await bucketFor(env, key).head(key);
     if (head) size = head.size;
   } catch (_) {}
   return withCors(
@@ -128,7 +140,7 @@ function blockCacheKey(url, index) {
 }
 
 async function readBlock(env, key, index) {
-  const object = await env.BUCKET.get(key, {
+  const object = await bucketFor(env, key).get(key, {
     range: { offset: index * BLOCK_BYTES, length: BLOCK_BYTES },
   });
   if (!object) return null;
@@ -265,7 +277,7 @@ async function serve(request, env, ctx) {
     if (request.method === "HEAD") {
       let head;
       try {
-        head = await env.BUCKET.head(key);
+        head = await bucketFor(env, key).head(key);
       } catch (err) {
         console.error(
           `R2 head failed for ${key}: ${String((err && err.message) || err)}`
@@ -306,7 +318,7 @@ async function serve(request, env, ctx) {
       // takes the bounded block path like any other range.
       let head;
       try {
-        head = await env.BUCKET.head(key);
+        head = await bucketFor(env, key).head(key);
       } catch (err) {
         console.error(`R2 head failed for ${key}: ${String((err && err.message) || err)}`);
         return withCors(new Response("Upstream storage error", {
@@ -448,7 +460,7 @@ async function serve(request, env, ctx) {
         // else is transient storage trouble the client should retry (503).
         let object;
         try {
-          object = await env.BUCKET.get(key, r2Range ? { range: r2Range } : {});
+          object = await bucketFor(env, key).get(key, r2Range ? { range: r2Range } : {});
         } catch (err) {
           const msg = String((err && err.message) || err);
           if (/satisfiable|invalid range|10039/i.test(msg)) {

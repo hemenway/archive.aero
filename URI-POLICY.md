@@ -43,11 +43,10 @@ pages, new collections, redirects — follows this file.
 | Space | Meaning | Status |
 |---|---|---|
 | `/` | The sectional chart viewer — permanent. Never relocated, never demoted to a portal; the front-door job belongs to the nav and `/about`. Since 2026-10-12 the page is the `next/` shell (WebGL renderer, hashed era archives), served by the `archive-aero-site` Worker ahead of GitHub Pages; its `?date=&lat=&lng=&zoom=` permalinks are unchanged. | live |
-| `/classic/` | The Leaflet viewer that was `/` from launch until 2026-10-12: the fallback the new viewer offers browsers without WebGL2, the rollback target, and the home of share links minted there. Published by GitHub Pages (`scripts/build_pages.py` CLASSIC), `noindex`; kept as long as any browser needs it, never redirected away while a share link can point at it. | live 2026-10-12 |
 | `/about` `/contribute` `/sources` | Site-level documents | live — extensionless canonical since 2026-08-21 |
 | `/atc/…` | ATC History collection (designed canonical space, worklist 08 §A3) | live |
 | `/sectionals/…` | Sectional-chart pages. Edition pages at `/sectionals/chart/<slug>/<date>`, mirroring the R2 artifact key on `data.archive.aero` — the human page and the machine artifact share one identifier on two hosts. Each page's card image is `data.archive.aero/sectionals/chart/<slug>/<date>.jpg` (overwritten in place when re-rendered, rule 7). `sitemap-sectionals.xml` lists the pages (tiled charts only; the rest 404). | minted at the apex 2026-10-12 (built 2026-10-06 in the next shell; worklist 09 B2–B5) |
-| `/airports/<icao>` | Cross-collection airport pages, lowercase (`/airports/kbos`; uppercase forms 301) | planned (worklist 09 B1) |
+| `/airports/<icao>` | Cross-collection airport pages, lowercase (`/airports/kbos`; uppercase forms 301): the viewer centred on the airport with every chart edition covering it, by decade, linking to the edition pages. Records built by `scripts/next_build_airports.py`, pages rendered by the site Worker, listed in `sitemap-airports.xml`. | minted 2026-10-12 with a 50-airport pilot (worklist 09 B1) |
 | future collections | one new prefix each (e.g. `/tac/`), added to this table when minted | — |
 
 ## Checklist for a new collection

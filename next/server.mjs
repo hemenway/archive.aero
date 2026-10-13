@@ -6,7 +6,7 @@ const root = path.resolve(fileURLToPath(new URL('./dist/', import.meta.url)));
 http.createServer(async (request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1:4183');
   // An edition address is the shell page; deployed, next/pages/worker.mjs renders it for the chart first.
-  const pathname = /^\/next\/sectionals\/chart\/[a-z0-9_]+\/\d{4}-\d{2}-\d{2}$/.test(url.pathname) ? '/next/index.html' : url.pathname;
+  const pathname = /^\/next\/(?:sectionals\/chart\/[a-z0-9_]+\/\d{4}-\d{2}-\d{2}|airports\/[a-z0-9]{3,4})$/.test(url.pathname) ? '/next/index.html' : url.pathname;
   const relative = decodeURIComponent(pathname).replace(/^\/next\//, '/').replace(/^\//, '') || 'index.html';
   const filename = path.resolve(root, relative);
   if (url.searchParams.has('__testOffline')) { response.writeHead(503); response.end('Injected navigation failure'); return; }

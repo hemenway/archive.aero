@@ -9,13 +9,17 @@ every path the assets do not hold (`/about`, `/contribute`, `/sources`, the
 sitemaps, `/classic/` and the legacy `/assets/`) is a 404 in the assets that the
 Worker turns into a plain `fetch` to that origin (`ORIGIN_FALLTHROUGH="1"`).
 `/atc/*` keeps its own, more specific route. Rollback is removing the route (or
-`npx wrangler delete` in `next/site/`): `/` is the Pages viewer again at once.
-The Leaflet viewer stays published at `/classic/` (`scripts/build_pages.py`,
-`CLASSIC`; `noindex`) as the WebGL2 fallback and the home of old share links.
+`npx wrangler delete` in `next/site/`): `/` is the Pages page again at once.
+There is no legacy viewer page (decision 2026-10-12): a browser without WebGL2
+gets a message and a link to /about.
 
-Data lives in the production bucket `charts` under the same hashed keys the
-reslice gave the beta (server-side copies from `charts-beta`), so the manifest
-points at `data.archive.aero`. The sections below are the plan this followed.
+Data: the reslice's hashed archives stay in the bucket they were uploaded to,
+`charts-beta`, which the `tiles` Worker now binds as `BUCKET_HASHED` beside
+`charts` (`bucketFor()` routes hashed keys and `next/*` there), so the manifest
+points at `data.archive.aero` and nothing was copied. Airport pages
+(`/airports/<ident>`, `next/pages/airport-page.mjs`) ride the same Worker. The
+preview host is retired with `RETIRED="1"` (next/BETA.md). The sections below
+are the plan this followed; the runbook is worklists/18_apex_cutover.md.
 
 
 Serve the built shell with Cloudflare Workers Static Assets. For the preview the
@@ -154,9 +158,9 @@ retain them in build artifacts; they are not precached or preloaded.
    after acceptance. Publish HTML last, after every referenced hash is reachable.
    Retain the old viewer at a stable rollback path, and change the
    unsupported-browser fallback from `/` to that path when `/` becomes the new
-   shell. *Done 2026-10-12: `/classic/`, `next/site/wrangler.jsonc`; the order
-   that worked was data first (hashed archives, manifest, pins, chart index,
-   cards copied into `charts`), then the Pages deploy carrying `/classic/`, then
+   shell. *Done 2026-10-12 without a retained viewer: `next/site/wrangler.jsonc`;
+   data first (manifest, chart index, airports to the hashed bucket; cards to
+   `charts`), then the tiles Worker with its second bucket, then the push, then
    the site Worker.*
 5. Roll back by restoring the prior HTML and unregistering the new root service
    worker if needed. Maintain both shell asset generations through the rollback

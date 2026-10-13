@@ -276,6 +276,13 @@ body:not([data-fonts="true"]) { --font-display: system-ui, -apple-system, sans-s
 .cv-list a { color: var(--text-light); text-decoration: none; }
 .cv-list a:hover, .cv-list a:focus-visible { color: var(--primary); text-decoration: underline; }
 .cv-list .pin-unavailable { font-size: 12px; }
+/* Airport page (next/app/airportview.js, pages/airport-page.mjs): the editions by decade. */
+.ap-decades { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.08); font-size: 12px; }
+.ap-list { list-style: none; margin: 0; padding: 0; }
+.ap-list > li { margin: 2px 0; }
+.ap-decade summary { cursor: pointer; color: var(--text-light); font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+.ap-decade summary:hover { color: var(--primary); }
+.ap-decade .cv-list { max-height: 150px; }
 /* Visible before any JavaScript runs on an edition page: the panel is the page's content. */
 body:not([data-ready="true"]) .chart-view:not([hidden]) { z-index: 1400; }
 @media (max-width: 640px) {

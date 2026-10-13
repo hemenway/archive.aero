@@ -33,9 +33,9 @@ def build(directory,coverage,overlays=None,tile_base='https://data.archive.aero/
           file_base='https://data.archive.aero/', generated=None, catalog=None):
     result={'version':1,'generated':generated or datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
             'tileBase':tile_base,'fileBase':file_base,'eras':[], 'basemap':None,'airspace':None,
-            'airfields':None,'pins':None,'charts':None,'coverage':coverage}
+            'airfields':None,'pins':None,'charts':None,'airports':None,'coverage':coverage}
     if overlays:
-        for k in ('airfields','pins','charts'): result[k]=overlays.get(k)
+        for k in ('airfields','pins','charts','airports'): result[k]=overlays.get(k)
     for path in sorted(Path(directory).rglob('*.pmtiles')):
         rel=path.relative_to(directory).as_posix(); match=PATTERN.fullmatch(rel)
         if not match: raise ValueError('not content-versioned: '+rel)
@@ -119,13 +119,17 @@ def estimate(dates_csv):
 def main():
     ap=argparse.ArgumentParser(description=__doc__); ap.add_argument('--dir'); ap.add_argument('--coverage'); ap.add_argument('--overlays')
     ap.add_argument('--out'); ap.add_argument('--allow-over-budget',action='store_true'); ap.add_argument('--estimate-from')
+    ap.add_argument('--airports',help="scripts/next_build_airports.py's airports.json ({\"airports\": {base, count}}), merged into the overlays")
     ap.add_argument('--tile-base',default='https://data.archive.aero/t/'); ap.add_argument('--file-base',default='https://data.archive.aero/')
     ap.add_argument('--catalog',default=str(ROOT/'master_dole_v2.csv'),help="dole CSV the eras' draw ranks (`l`) come from; '' stamps none")
     args=ap.parse_args()
     if args.estimate_from: print(json.dumps(estimate(args.estimate_from),indent=2)); return
     if not args.dir or not args.coverage or not args.out: ap.error('need --dir, --coverage, --out')
     if args.catalog and not Path(args.catalog).exists(): ap.error(f'catalog not found: {args.catalog} (pass --catalog "" to build without draw ranks)')
-    m=build(args.dir,json.loads(Path(args.coverage).read_text()),json.loads(Path(args.overlays).read_text()) if args.overlays else None,args.tile_base,args.file_base,catalog=args.catalog or None)
+    overlays=json.loads(Path(args.overlays).read_text()) if args.overlays else None
+    if args.airports:
+        overlays=dict(overlays or {}); overlays['airports']=json.loads(Path(args.airports).read_text())['airports']
+    m=build(args.dir,json.loads(Path(args.coverage).read_text()),overlays,args.tile_base,args.file_base,catalog=args.catalog or None)
     print(emit(m,args.out,args.allow_over_budget))
 
 if __name__=='__main__': main()

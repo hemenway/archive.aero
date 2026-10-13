@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { handle } from '../worker.mjs';
-import { index, shell } from './fixtures.mjs';
+import { airport, index, shell } from './fixtures.mjs';
 
 const ORIGIN = 'https://beta.archive.aero';
-const config = { version: 1, base: '/next/', site: 'https://archive.aero', charts: 'https://data-beta.archive.aero/next/charts.0123456789ab/', files: 'https://data-beta.archive.aero/', image: 'https://archive.aero/social-card.jpg', csp: "default-src 'self'", robots: 'noindex, nofollow' };
+const config = { version: 1, base: '/next/', site: 'https://archive.aero', charts: 'https://data-beta.archive.aero/next/charts.0123456789ab/', airports: 'https://data-beta.archive.aero/next/airports.0123456789ab/', files: 'https://data-beta.archive.aero/', image: 'https://archive.aero/social-card.jpg', csp: "default-src 'self'", robots: 'noindex, nofollow' };
 
 // base: where the shell lives; fallthrough: ORIGIN_FALLTHROUGH="1" (the apex deployment);
 // held: asset paths the ASSETS binding answers besides the shell's own (everything else is its 404).
@@ -21,7 +21,9 @@ function harness({ withConfig = true, base = '/next/', fallthrough = false, held
   } } };
   const fetcher = async (input, init) => {
     if (input instanceof Request) { originCalls.push(input.method + ' ' + new URL(input.url).pathname); return new Response('origin:' + new URL(input.url).pathname, { status: 200, headers: { 'x-origin': 'pages' } }); }
-    indexCalls.push(input); return input.endsWith('/boston.json') ? Response.json(chartIndex) : new Response('', { status: 404 });
+    indexCalls.push(input);
+    if (input.includes('/airports.')) return input.endsWith('/kbos.json') ? Response.json(airport) : new Response('', { status: 404 });
+    return input.endsWith('/boston.json') ? Response.json(chartIndex) : new Response('', { status: 404 });
   };
   const run = (path, init) => handle(new Request(ORIGIN + path, init), env, {}, { fetcher });
   return { run, assetCalls, indexCalls, originCalls };
@@ -129,4 +131,49 @@ test('without ORIGIN_FALLTHROUGH a missing asset stays the assets 404', async ()
   const h = harness({ held: ['/next/app.ABC.js'] });
   assert.equal((await h.run('/about')).status, 404);
   assert.deepEqual(h.originCalls, []);
+});
+
+test('a retired host answers everything 410 Gone, noindex, cached an hour', async () => {
+  const h = harness();
+  const env = { RETIRED: '1', ASSETS: { fetch: () => { throw new Error('assets must not be consulted'); } } };
+  for (const path of ['/', '/next/', '/next/sectionals/chart/boston/1953-12-01', '/next/app.ABC.js', '/next/sw.js']) {
+    const response = await handle(new Request(ORIGIN + path), env, {});
+    assert.equal(response.status, 410, path);
+    assert.equal(response.headers.get('cache-control'), 'public, max-age=3600');
+    assert.equal(response.headers.get('x-robots-tag'), 'noindex');
+    assert.match(await response.text(), /archive\.aero\//);
+  }
+  const head = await handle(new Request(ORIGIN + '/next/', { method: 'HEAD' }), env, {});
+  assert.equal(head.status, 410); assert.equal(await head.text(), '');
+  assert.equal((await handle(new Request(ORIGIN + '/next/', { method: 'POST' }), env, {})).status, 410);
+  // Not retired: the harness still serves.
+  assert.equal((await h.run('/next/sectionals/chart/boston/1953-12-01')).status, 200);
+});
+
+test('airport pages render at /<base>airports/<ident>: head, aside view, card of the newest edition; aliases 301; unknown 404', async () => {
+  const h = harness();
+  const response = await h.run('/next/airports/kbos');
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-security-policy'), config.csp);
+  const html = await response.text();
+  assert.match(html, /<title>Boston Logan International Airport on aeronautical charts, 1933–1970 · archive.aero<\/title>/);
+  assert.match(html, /<link rel="canonical" href="https:\/\/beta.archive.aero\/next\/airports\/kbos">/);
+  assert.match(html, /data-airport="kbos" data-lat="42.3643" data-lng="-71.0052" data-zoom="10" data-date="1960-01-01"/);
+  assert.match(html, /href="\/next\/sectionals\/chart\/boston\/1953-12-01" data-ap-chart="boston\/1953-12-01"/);
+  assert.match(html, /<meta property="og:image" content="https:\/\/data-beta.archive.aero\/sectionals\/chart\/boston\/1953-12-01.jpg">/);
+  assert.deepEqual(h.indexCalls, [config.airports + 'kbos.json']);
+  for (const [path, target] of [['/next/airports/KBOS', '/next/airports/kbos'], ['/next/airports/kbos/?x=1', '/next/airports/kbos?x=1']]) {
+    const r = await h.run(path); assert.equal(r.status, 301, path); assert.equal(r.headers.get('location'), ORIGIN + target, path);
+  }
+  for (const path of ['/next/airports/kxyz', '/next/airports/k', '/next/airports/kbos/1953']) {
+    const r = await h.run(path); assert.equal(r.status, 404, path); assert.equal(r.headers.get('x-robots-tag'), 'noindex');
+  }
+  assert.equal((await h.run('/next/airports/kbos', { method: 'POST' })).status, 405);
+});
+
+test('without airport records in the config the address passes to the assets', async () => {
+  const assetCalls = [];
+  const env = { ASSETS: { async fetch(request) { const p = new URL(request.url).pathname; assetCalls.push(p); return p === '/chart-pages.json' ? Response.json({ ...config, base: '/', airports: null }) : new Response('asset:' + p); } } };
+  const response = await handle(new Request(ORIGIN + '/airports/kbos'), env, {}, { fetcher: async () => { throw new Error('no record fetch'); } });
+  assert.equal(await response.text(), 'asset:/airports/kbos');
 });

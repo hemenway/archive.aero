@@ -147,10 +147,16 @@ async function initApp() {
   const routeMatch = location.pathname.startsWith(__BASE__) && /^sectionals\/chart\/([a-z0-9_]+)\/(\d{4}-\d{2}-\d{2})$/.exec(location.pathname.slice(__BASE__.length));
   const route = routeMatch ? { slug: routeMatch[1], date: routeMatch[2] } : null;
   const routeIndexLoading = route && __CHARTS_BASE__ ? fetch(`${__CHARTS_BASE__}${route.slug}.json`).then(r => (r.ok ? r.json() : null), () => null) : null;
-  const dateParam = route ? route.date : urlParams.get('date');
-  const latParam = urlParams.get('lat');
-  const lngParam = urlParams.get('lng');
-  const zoomParam = urlParams.get('zoom');
+  // An airport address (/<base>airports/<ident>): the page Worker put the view on the
+  // aside (data-lat/lng/zoom/date), so the first paint is the airport; AirportView
+  // fills the panel once the cards load. Without those attributes (a dev server)
+  // the view fits once the record has loaded.
+  const airportMatch = location.pathname.startsWith(__BASE__) && /^airports\/([a-z0-9]{3,4})$/.exec(location.pathname.slice(__BASE__.length));
+  const aside = $('chartView')?.dataset || {};
+  const dateParam = route ? route.date : urlParams.get('date') || aside.date || null;
+  const latParam = urlParams.get('lat') ?? aside.lat ?? null;
+  const lngParam = urlParams.get('lng') ?? aside.lng ?? null;
+  const zoomParam = urlParams.get('zoom') ?? aside.zoom ?? null;
 
   // Begin data loading before WebGL setup so the network and GPU overlap.
   const dataLoading = createDataPlane({ manifestUrl: __MANIFEST_URL__,
@@ -185,8 +191,8 @@ async function initApp() {
     console.error('Renderer failed to start', error);
     void dataLoading.then(dp => dp.destroy(), () => {});
     if (error instanceof RendererUnsupportedError) {
-      // The Leaflet viewer stays published at /classic/ (next/HOSTING.md, rollout step 4) for browsers without WebGL2.
-      fail('This browser cannot run the new chart renderer.', { href: `${__SITE_ORIGIN__}/classic/`, text: 'Open the classic viewer' });
+      // No fallback viewer (decision 2026-10-12): the viewer needs WebGL2, which every current browser has.
+      fail('This browser cannot run the chart viewer: it needs WebGL2, which current browsers provide.', { href: `${__SITE_ORIGIN__}/about`, text: 'About the archive' });
     } else {
       fail('Failed to start the chart viewer. Reload to try again.');
     }
@@ -427,13 +433,14 @@ async function initApp() {
     return;
   }
   if (torn) return;
-  const { PinInspector, AirfieldsLayer, AirspaceLayer, ChartView } = cards;
+  const { PinInspector, AirfieldsLayer, AirspaceLayer, ChartView, AirportView } = cards;
 
   const pinInspector = new PinInspector(mapCtrl, timelineApp);
   // One chart alone, at its edition-page address (shares its module with the edition-page Worker).
   const chartView = new ChartView(mapCtrl, timelineApp, pinInspector, { base: __BASE__, chartsBase: __CHARTS_BASE__, site: __SITE_ORIGIN__ });
   timelineApp.chartView = chartView;
   pinInspector.chartView = chartView;
+  const airportView = new AirportView(mapCtrl, timelineApp, chartView, pinInspector, { base: __BASE__, airportsBase: __AIRPORTS_BASE__, site: __SITE_ORIGIN__ });
   renderer.off('click', rememberPin);
   mapEl.removeEventListener('keydown', rememberEnter);
   // Exposed so updateShareUrl can encode the pin.
@@ -500,6 +507,8 @@ async function initApp() {
   const pinParam = urlParams.get('pin');
   if (route) {
     chartView.openRoute(route, { push: false, index: routeIndex, fit: false }).then(ok => { if (!ok) Utils.toast('That chart is not in the archive'); });
+  } else if (airportMatch) {
+    airportView.open({ ident: airportMatch[1] }, { fit: !aside.lat }).then(ok => { if (!ok) Utils.toast('That airport page is not in the archive'); });
   } else if (queuedPin) pinInspector.setPin(queuedPin.latlng, queuedPin.focus);
   else if (pinParam) {
     const [pinLat, pinLng] = pinParam.split(',').map(parseFloat);
@@ -512,6 +521,7 @@ async function initApp() {
   const originalUpdate = timelineApp.update.bind(timelineApp);
   timelineApp.update = function (index, lazy, selectedDateOverride) {
     originalUpdate(index, lazy, selectedDateOverride);
+    airportView.onDateChange();
     const displayDate = this.selectedDate || this.frames[index]?.date;
     // A pinned list ranks charts in effect on the selected date, so it
     // follows the timeline (debounced for scrubbing).

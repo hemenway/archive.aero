@@ -22,6 +22,15 @@ preview_urls = false
 binding = "BUCKET"
 bucket_name = "charts"
 
+# The reslice's content-hashed archives and the next/ files (manifest, pins,
+# chart index, airports) are served from the bucket they were uploaded to
+# (2026-10-12 decision: no 359 GB copy). The name is historical: it was the
+# beta's bucket; it is production's immutable store now. src/index.js
+# bucketFor() routes hashed keys and next/* here, everything else to BUCKET.
+[[r2_buckets]]
+binding = "BUCKET_HASHED"
+bucket_name = "charts-beta"
+
 [[analytics_engine_datasets]]
 binding = "TILES"
 dataset = "tile_logs"

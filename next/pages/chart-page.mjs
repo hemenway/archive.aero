@@ -178,9 +178,16 @@ const ATTR = /([^\s"'<>\/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/
 const attrsOf = text => Object.fromEntries([...text.matchAll(ATTR)].map(a => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4] ?? '']));
 const REPLACED = /^(?:description|robots|og:[\w:]+|twitter:[\w:]+)$/;
 
-// The built shell page with one edition's head and panel. Throws when the
-// shell has no <head> or no #chartView: a page this cannot place must not ship.
+// The built shell page with one edition's head and panel.
 export function renderChartHtml(shell, model, { base, site, canonical, image, imageAlt, robots }) {
+  return renderPage(shell, { head: headTags(model, { canonical, site, image, imageAlt, robots }), panel: panelHtml(model, { base, site }) });
+}
+
+// The built shell page with a page's own head tags and the #chartView aside
+// filled (and, optionally, given data attributes the shell reads at boot).
+// Throws when the shell has no <head> or no #chartView: a page this cannot
+// place must not ship. Shared by the edition and airport pages.
+export function renderPage(shell, { head: pageHead, panel, attrs = {} }) {
   const headEnd = shell.search(/<\/head\s*>/i);
   if (headEnd < 0) throw new Error('Edition page: the shell has no </head>');
   let head = shell.slice(0, headEnd), rest = shell.slice(headEnd);
@@ -194,14 +201,16 @@ export function renderChartHtml(shell, model, { base, site, canonical, image, im
     else if (tag === 'link' && (attrs.rel || '').toLowerCase() === 'canonical') drops.push([m.index, m.index + m[0].length]);
   }
   for (const [s, e] of drops.sort((a, b) => b[0] - a[0])) head = head.slice(0, s) + head.slice(e);
-  head += headTags(model, { canonical, site, image, imageAlt, robots });
+  head += pageHead;
   // The panel: the build emits it empty and hidden; here it carries the edition and shows without JavaScript.
   let open = null;
   for (const m of rest.matchAll(TAG)) if (!m[1] && m[2].toLowerCase() === 'aside' && attrsOf(m[3]).id === 'chartView') { open = m; break; }
   if (!open) throw new Error('Edition page: the shell has no #chartView');
   const close = rest.indexOf('</aside>', open.index);
   if (close < 0) throw new Error('Edition page: #chartView is not closed');
-  const opening = open[0].replace(/\s+hidden(?=[\s>])/, '');
-  rest = rest.slice(0, open.index) + opening + panelHtml(model, { base, site }) + rest.slice(close);
+  let opening = open[0].replace(/\s+hidden(?=[\s>])/, '');
+  const extra = Object.entries(attrs).map(([k, v]) => ` ${k}="${escapeHtml(v)}"`).join('');
+  if (extra) opening = opening.replace(/\s*>$/, extra + '>');
+  rest = rest.slice(0, open.index) + opening + panel + rest.slice(close);
   return head + rest;
 }

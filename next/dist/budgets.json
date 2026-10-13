@@ -1,22 +1,22 @@
 {
   "mode": "stubs",
-  "manifestUrl": "/next/manifest.6df3104e54a7.json",
+  "manifestUrl": "/next/manifest.64da7a610d01.json",
   "base": "/next/",
   "allowOverBudget": false,
   "analytics": true,
   "linksOrigin": null,
-  "manifestGzip": 373,
+  "manifestGzip": 390,
   "manifestBudget": 98304,
-  "sitemap": false,
+  "sitemaps": [],
   "bytes": {
-    "criticalJS": 19395,
-    "css": 8370,
-    "cssRaw": 40795,
+    "criticalJS": 19531,
+    "css": 8429,
+    "cssRaw": 41175,
     "html": 19489,
-    "htmlGzip": 6021,
+    "htmlGzip": 6020,
     "worker": 345,
     "inlineBoot": 1520,
-    "lazyJS": 8588,
+    "lazyJS": 9964,
     "fonts": 57388
   },
   "limits": {
@@ -27,11 +27,11 @@
   "assets": [
     "/next/index.html",
     "/next/worker.PSVLAI42.js",
-    "/next/app.POCVP7DQ.js",
-    "/next/chunk.ZKMZC73L.js",
+    "/next/app.CCS6SD3R.js",
+    "/next/chunk.TXMQXXQW.js",
     "/next/chunk.MIWC5OF2.js",
-    "/next/styles.ba86a047ce36.css",
-    "/next/startup.efa4a1f06a4b.json",
-    "/next/manifest.6df3104e54a7.json"
+    "/next/styles.415f9e39dbfa.css",
+    "/next/startup.387981252bad.json",
+    "/next/manifest.64da7a610d01.json"
   ]
 }

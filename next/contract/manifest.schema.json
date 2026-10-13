@@ -275,6 +275,30 @@
         }
       ]
     },
+    "airports": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "base"
+          ],
+          "properties": {
+            "base": {
+              "type": "string",
+              "pattern": "^next/airports\\.[a-f0-9]{12}/$"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
     "coverage": {
       "type": "object"
     }

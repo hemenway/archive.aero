@@ -3,6 +3,7 @@
   "base": "/next/",
   "site": null,
   "charts": "/next/charts.0123456789ab/",
+  "airports": "/next/airports.0123456789ab/",
   "files": "http://stub/next/",
   "image": "https://archive.aero/social-card.jpg",
   "csp": "default-src 'self'; script-src 'self' 'sha256-vCvJjBhK2kTg8PYtx00MerLf7n+ANii+U/f6/InNzMM=' 'sha256-9s4ckG2sCap52/rixjGym0Rod1pIwaA7/5HYcYAgE+g=' https://plausible.io https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://data.archive.aero https://get.geojs.io https://plausible.io https://cloudflareinsights.com; worker-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",

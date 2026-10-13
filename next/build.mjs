@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
-import { manifest as fixture, chartIndex as fixtureCharts } from './app/stubs/manifest.js';
+import { manifest as fixture, chartIndex as fixtureCharts, airportIndex as fixtureAirports } from './app/stubs/manifest.js';
 import { startupArtifacts } from './dataplane/startup.js';
 const root = fileURLToPath(new URL('../', import.meta.url)), directory = path.join(root, 'next');
 const args = process.argv.slice(2), check = args.includes('--check');
@@ -15,8 +15,10 @@ const previousBuild = check ? JSON.parse(await readFile(path.join(outdir, 'budge
 // The C2 budget (96 KB gzip since 2026-10-12, 80 KB before; see CONTRACT.md) is a contract target; --allow-over-budget ships one above it.
 const MANIFEST_BUDGET = 96 * 1024;
 const allowOverBudget = args.includes('--allow-over-budget') || !!previousBuild?.allowOverBudget;
-// --sitemap FILE: sitemap-sectionals.xml from scripts/next_build_overlays.py, published beside the page at the apex (09 B4).
-const sitemapFile = value('--sitemap') ? path.resolve(value('--sitemap')) : previousBuild?.sitemap ? path.join(outdir, 'sitemap-sectionals.xml') : null;
+// --sitemap FILE (repeatable): sitemap-sectionals.xml / sitemap-airports.xml from the data builders, published beside the
+// page at the apex (09 B4) under their own basenames; --check reads them back from the previous build's record.
+const sitemapFiles = args.flatMap((a, i) => a === '--sitemap' ? [path.resolve(args[i + 1] || '')] : []);
+if (!sitemapFiles.length && Array.isArray(previousBuild?.sitemaps)) sitemapFiles.push(...previousBuild.sitemaps.map(name => path.join(outdir, name)));
 // A preview host: no page analytics, and site links (/about, /atc/...) point at the origin that has those pages.
 const analyticsOn = !(args.includes('--no-analytics') || previousBuild?.analytics === false);
 const linksOrigin = value('--links-origin') || previousBuild?.linksOrigin || null;
@@ -33,6 +35,7 @@ if (stubs) {
   source = fixture; const bytes = JSON.stringify(source); const name = `manifest.${hash(bytes)}.json`; outputs.set(name, bytes); manifestUrl ||= `${deployBase}${name}`;
   // The chart index the fixture manifest points at, so a chart address boots against the stub server.
   for (const [slug, data] of Object.entries(fixtureCharts)) outputs.set(`${source.charts.base}${slug}.json`, JSON.stringify(data));
+  for (const [ident, data] of Object.entries(fixtureAirports)) outputs.set(`${source.airports.base}${ident}.json`, JSON.stringify(data));
 } else {
   if (!manifestUrl) throw new Error('Real builds require --manifest <immutable URL>. Use --stubs for the standalone shell.');
   if (value('--manifest-file')) source = JSON.parse(await readFile(path.resolve(value('--manifest-file')), 'utf8'));
@@ -41,10 +44,11 @@ if (stubs) {
 if (source.version !== 1 || !source.eras?.length) throw new Error('Invalid C2 manifest');
 const manifestGzip = gzipSync(JSON.stringify(source)).length;
 if (manifestGzip > MANIFEST_BUDGET && !allowOverBudget) throw new Error(`Manifest exceeds ${MANIFEST_BUDGET / 1024} KB gzip (${manifestGzip} bytes); pass --allow-over-budget to ship it anyway`);
-if (sitemapFile) {
-  const xml = await readFile(sitemapFile, 'utf8');
+for (const sitemapFile of sitemapFiles) {
+  const xml = await readFile(sitemapFile, 'utf8'), name = path.basename(sitemapFile);
+  if (!/^sitemap-[a-z]+\.xml$/.test(name)) throw new Error(`--sitemap ${sitemapFile}: name it sitemap-<name>.xml`);
   if (!/^<\?xml [^>]*\?>\s*<urlset xmlns="http:\/\/www\.sitemaps\.org\/schemas\/sitemap\/0\.9">/.test(xml) || !xml.trimEnd().endsWith('</urlset>')) throw new Error(`--sitemap ${sitemapFile} is not a sitemap urlset`);
-  outputs.set('sitemap-sectionals.xml', xml);
+  outputs.set(name, xml);
 }
 const startup = startupArtifacts(source), years = {};
 for (const [year, raw] of startup.years) {
@@ -56,6 +60,8 @@ const startupName = `startup.${hash(startupBytes)}.json`, startupUrl = `${deploy
 // Where the per-location chart index lives (edition pages and the chart view read it); '' when the manifest has none.
 // The stub build serves its fixture index itself, so the stub base is a path on this origin.
 const chartsBase = !source.charts ? '' : stubs ? new URL(source.charts.base, 'http://stub' + deployBase).pathname : new URL(source.charts.base, source.fileBase).href;
+// The airport records (09 B1), same arrangement; '' when the manifest has none.
+const airportsBase = !source.airports ? '' : stubs ? new URL(source.airports.base, 'http://stub' + deployBase).pathname : new URL(source.airports.base, source.fileBase).href;
 outputs.set(startupName, startupBytes);
 const common = { absWorkingDir: root, bundle: true, minify: true, format: 'esm', target: 'es2022', sourcemap: 'external', write: false, outdir, entryNames: '[name].[hash]', chunkNames: 'chunk.[hash]', metafile: true };
 const workerEntry = path.join(directory, stubs ? 'app/stubs/worker.js' : 'dataplane/worker.js');
@@ -63,7 +69,7 @@ const workerEntry = path.join(directory, stubs ? 'app/stubs/worker.js' : 'datapl
 const worker = await build({ ...common, splitting: true, entryPoints: { worker: workerEntry } });
 for (const file of worker.outputFiles) outputs.set(path.relative(outdir, file.path), file.contents);
 const workerFile = worker.outputFiles.find(f => /worker\.[^/]*\.js$/.test(f.path)), workerName = path.relative(outdir, workerFile.path);
-const result = await build({ ...common, splitting: true, entryPoints: { app: path.join(directory, 'app/main.js') }, define: { __STARTUP_URL__: JSON.stringify(startupUrl), __MANIFEST_URL__: JSON.stringify(manifestUrl), __SITE_ORIGIN__: JSON.stringify(linksOrigin || ''), __WORKER_URL__: JSON.stringify(`${deployBase}${workerName}`), __BASE__: JSON.stringify(deployBase), __CHARTS_BASE__: JSON.stringify(chartsBase), __STUBS__: String(stubs) }, plugins: [{ name: 'hashed-data-worker', setup(builder) { builder.onLoad({ filter: /next\/dataplane\/index\.js$/ }, async ({ path: filename }) => ({ contents: (await readFile(filename, 'utf8')).replace(/new URL\(['"]\.\/worker\.js['"],\s*import\.meta\.url\)/g, `new URL('./${workerName}', import.meta.url)`), loader: 'js' })); } }], alias: { '@next/renderer': path.join(directory, stubs ? 'app/stubs/renderer.js' : 'renderer/index.js'), '@next/dataplane': path.join(directory, stubs ? 'app/stubs/dataplane.js' : 'dataplane/index.js') } });
+const result = await build({ ...common, splitting: true, entryPoints: { app: path.join(directory, 'app/main.js') }, define: { __STARTUP_URL__: JSON.stringify(startupUrl), __MANIFEST_URL__: JSON.stringify(manifestUrl), __SITE_ORIGIN__: JSON.stringify(linksOrigin || ''), __WORKER_URL__: JSON.stringify(`${deployBase}${workerName}`), __BASE__: JSON.stringify(deployBase), __CHARTS_BASE__: JSON.stringify(chartsBase), __AIRPORTS_BASE__: JSON.stringify(airportsBase), __STUBS__: String(stubs) }, plugins: [{ name: 'hashed-data-worker', setup(builder) { builder.onLoad({ filter: /next\/dataplane\/index\.js$/ }, async ({ path: filename }) => ({ contents: (await readFile(filename, 'utf8')).replace(/new URL\(['"]\.\/worker\.js['"],\s*import\.meta\.url\)/g, `new URL('./${workerName}', import.meta.url)`), loader: 'js' })); } }], alias: { '@next/renderer': path.join(directory, stubs ? 'app/stubs/renderer.js' : 'renderer/index.js'), '@next/dataplane': path.join(directory, stubs ? 'app/stubs/dataplane.js' : 'dataplane/index.js') } });
 for (const file of result.outputFiles) outputs.set(path.relative(outdir, file.path), file.contents);
 const app = path.relative(outdir, result.outputFiles.find(f => /app\..*\.js$/.test(f.path)).path);
 // The shell wears the production interface. Its page and stylesheet are derived from the live viewer's index.html and
@@ -239,10 +245,10 @@ const csp = `default-src 'self'; script-src 'self' ${scriptHashes}${plausible}${
 // The edition-page Worker (next/pages/worker.mjs) configures itself from this file, beside the page it renders.
 // `files` is the manifest's fileBase: the chart index's `og` paths (each chart's own card image) resolve against it.
 const filesBase = stubs ? `http://stub${deployBase}` : new URL(source.fileBase, manifestUrl).href;
-outputs.set('chart-pages.json', JSON.stringify({ version: 1, base: deployBase, site: linksOrigin || null, charts: chartsBase || null, files: chartsBase ? filesBase : null, image: `${linksOrigin || 'https://archive.aero'}/social-card.jpg`, csp, robots: linksOrigin ? 'noindex, nofollow' : null }, null, 2) + '\n');
+outputs.set('chart-pages.json', JSON.stringify({ version: 1, base: deployBase, site: linksOrigin || null, charts: chartsBase || null, airports: airportsBase || null, files: chartsBase || airportsBase ? filesBase : null, image: `${linksOrigin || 'https://archive.aero'}/social-card.jpg`, csp, robots: linksOrigin ? 'noindex, nofollow' : null }, null, 2) + '\n');
 const immutableHeaders = [...outputs.keys()].filter(name => name !== 'sw.js' && /\.(js|css)$/.test(name)).map(name => `${deployBase}${name}\n  Cache-Control: public, max-age=31536000, immutable\n`).join('');
 // Cloudflare reads _headers only from the asset root, so this file is published there with rules already prefixed by the base.
-outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}chart-pages.json\n  Cache-Control: no-cache\n${sitemapFile ? `${deployBase}sitemap-sectionals.xml\n  Cache-Control: public, max-age=3600\n` : ''}${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
+outputs.set('_headers', `${deployBase}*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n${immutableHeaders}${deployBase}fonts/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}startup/*\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}manifest.*.json\n  Cache-Control: public, max-age=31536000, immutable\n${deployBase}chart-pages.json\n  Cache-Control: no-cache\n${[...outputs.keys()].filter(n => /^sitemap-[a-z]+\.xml$/.test(n)).map(n => `${deployBase}${n}\n  Cache-Control: public, max-age=3600\n`).join('')}${deployBase}\n  Cache-Control: no-cache\n${deployBase}index.html\n  Cache-Control: no-cache\n${deployBase}sw.js\n  Cache-Control: no-cache\n`);
 const externalJS = chunks.reduce((sum, name) => sum + gzipSync(outputs.get(name)).length, 0);
 const inlineJS = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].reduce((sum, match) => sum + gzipSync(match[1]).length, 0);
 const js = externalJS + inlineJS + gzipSync(workerFile.contents).length;
@@ -250,7 +256,7 @@ const sizes = { criticalJS: js, css: gzipSync(css).length, cssRaw: Buffer.byteLe
 // HTML is the production page's markup plus the newest frame's era metadata inline; 24 KiB (uncompressed) leaves room for
 // both to grow. The CSS limit is on gzip and covers production's styles.css, shell/next.css and the font faces.
 if (sizes.criticalJS > 50 * 1024 || sizes.css > 12 * 1024 || sizes.html > 24 * 1024) throw new Error(`Build budgets exceeded: ${JSON.stringify(sizes)}`);
-outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, allowOverBudget, analytics: analyticsOn, linksOrigin, manifestGzip, manifestBudget: MANIFEST_BUDGET, sitemap: !!sitemapFile, bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 24576 }, assets: shellAssets }, null, 2) + '\n');
+outputs.set('budgets.json', JSON.stringify({ mode: stubs ? 'stubs' : 'real', manifestUrl, base: deployBase, allowOverBudget, analytics: analyticsOn, linksOrigin, manifestGzip, manifestBudget: MANIFEST_BUDGET, sitemaps: sitemapFiles.map(f => path.basename(f)), bytes: sizes, limits: { criticalJS: 51200, css: 12288, html: 24576 }, assets: shellAssets }, null, 2) + '\n');
 // Outputs can sit in a subdirectory (fonts/), so stale files are looked for through the whole tree; parents sort first.
 const expected = new Set([...outputs.keys()].flatMap(name => name.split('/').map((_, i, parts) => parts.slice(0, i + 1).join('/'))));
 const existing = (await readdir(outdir, { recursive: true }).catch(e => { if (e.code !== 'ENOENT') throw e; return []; })).map(name => name.split(path.sep).join('/')).sort();

@@ -1,6 +1,6 @@
 import { test as base, expect } from '@playwright/test';
 // Fail every test on unexpected requests and uncaught application errors.
-const shellFile = /^\/next\/(?:index\.html|sw\.js|(?:app|chunk|worker)\.[\w-]+\.js|styles\.[\w-]+\.css|fonts\/barlow-\d+\.[\w-]+\.woff2|(?:manifest|startup)\.[\w-]+\.json|startup\/\d{4}\.[\w-]+\.json|charts\.[\w-]+\/[a-z0-9_]+\.json|sectionals\/chart\/[a-z0-9_]+\/\d{4}-\d{2}-\d{2})?$/;
+const shellFile = /^\/next\/(?:index\.html|sw\.js|(?:app|chunk|worker)\.[\w-]+\.js|styles\.[\w-]+\.css|fonts\/barlow-\d+\.[\w-]+\.woff2|(?:manifest|startup)\.[\w-]+\.json|startup\/\d{4}\.[\w-]+\.json|charts\.[\w-]+\/[a-z0-9_]+\.json|airports\.[\w-]+\/[a-z0-9]+\.json|sectionals\/chart\/[a-z0-9_]+\/\d{4}-\d{2}-\d{2}|airports\/[a-z0-9]{3,4})?$/;
 export const test = base.extend({
   guard: [async ({ page, context }, use) => {
     const errors = [], unexpected = [], requests = [], allowed = new Set();

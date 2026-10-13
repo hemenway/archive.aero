@@ -50,6 +50,7 @@ All four sections code to this. It is reproduced word for word in every agent's 
 - `basemap` may carry `"format": "mvt"` with a Protomaps `flavor` and label `lang` (added 2026-10-05): the archive then holds production's vector tiles, each painted by the data plane into the same 512 px tile a raster basemap would supply. Without `format` the tiles are raster images.
 - `basemap`, `airspace`, `airfields` and `pins` may each be `null`, meaning that feature is off. Paths in `p` resolve against `tileBase`. File paths (`bin`, `details`, `base`) resolve against `fileBase`.
 - `charts` (added 2026-10-06, optional: an older manifest simply lacks it) points at the per-location chart index of C5a, which the edition pages and the shell's chart view read. `null` or absent means there are no edition pages.
+- `airports` (added 2026-10-12, optional) points at the per-airport records (`next/airports.<hash>/<ident>.json`, `scripts/next_build_airports.py`) behind the airport pages `/airports/<ident>`; `count` is informational. `null` or absent means there are no airport pages.
 - **Rules every consumer applies the same way:**
   - An era is in effect on date D when start ≤ D < end. ISO date strings compare correctly as plain strings.
   - Paint order is draw rank `l` ascending, then manifest order: later eras draw on top within a rank, a WAC-only era stays under every sectional era and a TAC-only era over them whatever their dates.

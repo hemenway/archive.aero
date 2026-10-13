@@ -299,3 +299,35 @@ test('sampled tile reads record how many requests each row stands for', async t 
   assert.equal(points[0].doubles[3], 1);
   assert.equal(points[0].blobs[2], 'MISS');
 });
+
+test('hashed keys and next/* read from BUCKET_HASHED when it is bound; everything else from BUCKET', async t => {
+  const h = harness(t);
+  const hashedReads = [];
+  const small = Uint8Array.from([1, 2, 3]);
+  h.env.BUCKET_HASHED = {
+    async head() { return { size: small.length, httpEtag: '"h1"', writeHttpMetadata(x) { x.set('content-type', 'application/json'); } }; },
+    async get(key, { range } = {}) {
+      hashedReads.push({ key, range });
+      const offset = range?.offset ?? 0, bytes = small.slice(offset, offset + (range?.length ?? small.length));
+      return { size: small.length, httpEtag: '"h1"', writeHttpMetadata(x) { x.set('content-type', 'application/json'); }, body: new Response(bytes).body, arrayBuffer: async () => bytes.buffer };
+    },
+  };
+  for (const path of ['/next/manifest.0123456789ab.json', '/next/pins.0123456789ab/312.json', '/sectionals/1950-01-01_to_1951-01-01.0123456789ab.pmtiles', '/basemap/protomaps-20260826.0938e8f9d55b.pmtiles']) {
+    const { response, body } = await h.request({}, 'GET', path);
+    assert.equal(response.status, 200, path);
+    assert.deepEqual([...body], [1, 2, 3], path);
+  }
+  assert.equal(hashedReads.length, 4);
+  assert.equal(h.reads.length, 0, 'BUCKET untouched for hashed keys');
+  for (const path of ['/sectionals/1950-01-01_to_1951-01-01.pmtiles', '/sectionals/chart/boston_ma/1953-12-01', '/sectionals/chart/boston_ma/1953-12-01.jpg', '/sectionals/timeline_data.json']) {
+    const { response } = await h.request({ Range: 'bytes=0-15' }, 'GET', path);
+    assert.equal(response.status, 206, path);
+  }
+  assert.equal(hashedReads.length, 4, 'plain keys never reach BUCKET_HASHED');
+  assert.ok(h.reads.length >= 4);
+  // Without the binding every key is BUCKET's.
+  delete h.env.BUCKET_HASHED;
+  const before = h.reads.length;
+  const { response } = await h.request({ Range: 'bytes=0-15' }, 'GET', '/next/other.0123456789ab.json');
+  assert.equal(response.status, 206); assert.ok(h.reads.length > before);
+});
