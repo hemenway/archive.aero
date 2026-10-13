@@ -22,6 +22,8 @@ test('the splash shows progress, then leaves; the page is the production page', 
   await expect(page.locator('.ctl-col .leaflet-control-zoom + #utilRail')).toHaveCount(1);
   expect(await page.locator('svg').count()).toBeGreaterThanOrEqual(12);
   // Barlow is served by this origin, not a font CDN.
+  // Fonts activate on idle after first paint; fonts.ready can resolve before that.
+  await expect(page.locator('body')).toHaveAttribute('data-fonts', 'true');
   expect(await page.evaluate(async () => { await document.fonts.ready; return getComputedStyle(document.querySelector('.site-logo')).fontFamily; })).toContain('Barlow');
 });
 test('manifest failure leaves the splash up with an actionable message', async ({ page }) => {
