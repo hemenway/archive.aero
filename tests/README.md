@@ -57,6 +57,17 @@ python3 -m unittest discover -s tests -p 'test_dole_gcp_fit.py' -v
 The slicer tests (`test_slicer_*.py`) need GDAL ≥ 3.9 (`cutlineSRS`) and are
 not run in CI.
 
+The source-georeferencing suite uses GDAL and small temporary TIFF/JPG/ZIP
+fixtures. It verifies the sidebar cannot hide plain scans behind a cutline or
+CRS alone, world-file and ZIP-face handling, and metadata-cache invalidation:
+
+```sh
+~/venv/bin/python -m unittest discover -s tests -p 'test_georef_status.py' -v
+```
+
+Core probes run independently; three Flask/sidebar checks also run when the
+intentionally gitignored local `scripts/1georef_toolv10.py` is installed.
+
 The g2p dependency updater has a Python suite (standard library only), also run in CI:
 
 ```sh

@@ -244,7 +244,7 @@ def range_pair(seg, a, b):
     a, b = int(a), int(b)
     if a >= b:
         return False
-    return re.search(rf"\b{a}\s*(?:-|–|&|and|to)\s*(?:{b}|{b % 100:02d})\b", seg) is not None
+    return re.search(rf"\b{a}\s*(?:-|–|—|&|and|to)\s*(?:{b}|{b % 100:02d})\b", seg) is not None
 
 
 def regex_closure_misfire(seg, year):
@@ -263,6 +263,18 @@ def merge(row, jc, review, seg=""):
     j_s = jc["jev_start_year"] or None
     j_e = jc["jev_end_year"] or None
     actions = []
+    original_start = row["start_year"], row["start_basis"]
+    start_adoption_review = None
+
+    for field, value in (("start", j_s), ("end", j_e)):
+        if value is not None and value > THIS_YEAR:
+            review.append(_rv(row, field, r_s if field == "start" else r_e,
+                              value, jc, "rejected_future_year"))
+            actions.append(f"{field}=jev_future")
+            if field == "start":
+                j_s = None
+            else:
+                j_e = None
 
     # -- a regex `conflict` (its end < its start) means one of ITS two years is
     # wrong, so its start is not a trustworthy tie-breaker: a consistent,
@@ -286,7 +298,8 @@ def merge(row, jc, review, seg=""):
     elif r_s is not None and j_s is not None:
         if row["start_basis"] in WEAK_START and jc["jev_start_basis"] == "jev_built" \
                 and jc["jev_start_conf"] >= ADOPT_OVER_WEAK:
-            review.append(_rv(row, "start", r_s, j_s, jc, "adopted_over_weak"))
+            start_adoption_review = _rv(row, "start", r_s, j_s, jc, "adopted_over_weak")
+            review.append(start_adoption_review)
             row["start_year"], row["start_basis"] = j_s, jc["jev_start_basis"]
             actions.append("start=jev_over_weak")
         else:
@@ -294,6 +307,12 @@ def merge(row, jc, review, seg=""):
             actions.append("start=disagree")
     else:
         actions.append("start=none")
+
+    s_now = int(row["start_year"]) if row["start_year"] else None
+    if j_e is not None and s_now is not None and j_e < s_now:
+        review.append(_rv(row, "end", r_e, j_e, jc, "rejected_date_conflict"))
+        actions.append("end=jev_conflict")
+        j_e = None
 
     # -- end (an OA-open field has no end by design: leave it alone)
     if row["status"] == "open":
@@ -333,6 +352,21 @@ def merge(row, jc, review, seg=""):
             actions.append("end=disagree")
     else:
         actions.append("end=none")
+
+    # Validate the adopted start against the FINAL end. A weak old end may
+    # have been replaced above, allowing both years to advance together.
+    # When a strong old end survives, reject only the start adoption that
+    # crosses it (Heber Springs' proposed 1939 start / retained 1934 end).
+    e_now = int(row["end_year"]) if row["end_year"] else None
+    if s_now is not None and e_now is not None and s_now > e_now \
+            and (row["start_year"], row["start_basis"]) != original_start:
+        row["start_year"], row["start_basis"] = original_start
+        if start_adoption_review is not None:
+            start_adoption_review["disposition"] = "rejected_date_conflict"
+        else:
+            review.append(_rv(row, "start", r_s, j_s, jc, "rejected_date_conflict"))
+        actions = [a for a in actions if a not in ("start=jev_fill", "start=jev_over_weak")]
+        actions.append("start=jev_conflict")
 
     if row["status"] == "gone" and jc["jev_still_open"] >= STILL_OPEN_MIN:
         review.append(_rv(row, "still_open", row["end_year"], "open?", jc, "kept_regex"))

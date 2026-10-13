@@ -98,7 +98,7 @@ FULLDATE_RE = re.compile(rf"\b(?:{MONTHS})\.?\s+\d{{1,2}},?\s+(?:18|19|20)\d\d\b
 MONTHYEAR_RE = re.compile(rf"\b(?:{MONTHS})\.?,?\s+(?:18|19|20)\d\d\b")
 NUMDATE_RE = re.compile(r"\b\d{1,2}/\d{1,2}/(?:\d{4}|\d{2})\b")
 YEAR_RE = re.compile(r"\b(?:18[5-9]\d|19\d\d|20[0-2]\d)\b")
-DECADE_RE = re.compile(r"\b((?:18|19|20)\d0)'?s\b")
+DECADE_RE = re.compile(r"\b((?:18|19|20)\d0)['’]?s\b")
 NONE = "none"
 NOT_STATED = "not_stated"
 
@@ -188,7 +188,7 @@ def clean_city(c):
 
 def state_abbr(s):
     s = s.strip()
-    return s if s.upper() in STATES else NAME_TO_ABBR.get(s.lower(), "")
+    return s.upper() if s.upper() in STATES else NAME_TO_ABBR.get(s.lower(), "")
 
 
 def candidates(post, fac):
@@ -225,6 +225,12 @@ def candidates(post, fac):
     for m in YEAR_RE.finditer(both):
         if m.group(0) not in years:
             years.append(m.group(0))
+    # Class captions often contain only dates such as 02/18/83. The Choice
+    # cannot select 1983 unless code first offers that normalized year.
+    for m in NUMDATE_RE.finditer(both):
+        numeric_year = to_year(m.group(0))
+        if numeric_year is not None and str(numeric_year) not in years:
+            years.append(str(numeric_year))
     decades = []
     for m in DECADE_RE.finditer(both):
         v = m.group(1) + "s"
@@ -381,7 +387,7 @@ class Gazetteer:
             return rec is not None and (not state or rec["state"] == state)
         if ident in ARTCC:
             rec, src = self.by_city(*ARTCC[ident])
-            return (rec, "artcc_city") if rec else (None, "")
+            return (rec, "artcc_city") if ok(rec) else (None, "")
         homes = [r for r in self.fss_home.get(ident, []) if ok(r)]
         if homes:
             return homes[0], "fss1988_on_airport"
@@ -405,6 +411,9 @@ class Gazetteer:
         if recs:
             recs = sorted(recs, key=lambda r: (not r["fss_on_apt"], not r["id"].isalpha()))
             return recs[0], "city1988"
+        # A hospital heliport is not a principal-airport proxy for its city.
+        # Leave the location unplaced if that is all the gazetteer contains.
+        oa = [r for r in oa if r["type"] not in {"heliport", "balloonport"}]
         if oa:
             return oa[0], "ourairports_city"
         return None, ""
@@ -464,9 +473,10 @@ def interpret(post, ans, gaz, fac):
     rec = src = None
     if ident and iconf >= IDENT_MIN_CONF:
         rec, src = gaz.by_ident(ident, st or None)
-        if rec is None and st:
-            rec, src = gaz.by_ident(ident)  # ident is stronger than a possibly-wrong state
-            src = src and src + "_state_mismatch"
+        # Historic radio callsigns can be reassigned as airport codes in a
+        # different state (1929 St. Louis KCQ now resolves to Chignik, Alaska).
+        # A mismatched ident is not stronger evidence than the stated place;
+        # try the city below, or leave coordinates blank.
     if rec is None and city and st and (pconf >= PLACE_MIN_CONF or pconf < 0):
         rec, src = gaz.by_city(city, st)
     if rec:
@@ -665,13 +675,25 @@ def main():
     with open(OUT_DIR / "pdfs.jsonl", "w", encoding="utf-8") as f:
         for r in pdfs:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    index = [{k: m[k] for k in ("href", "title", "kind", "facility_type", "ident", "fss_name_1988", "city",
-                                "state", "year", "opened", "closed", "lat", "lon", "coord_source", "image",
-                                "categories")} for m in metas]
+    index = [public_record(m) for m in metas]
     (OUT_DIR / "posts_index.json").write_text(json.dumps(index, ensure_ascii=False, indent=0) + "\n")
     print(f"wrote {len(metas)} posts -> {OUT_DIR}/posts_meta.jsonl, posts_index.json; {len(pdfs)} PDFs -> pdfs.jsonl")
     if args.report:
         report(metas, fac)
+
+
+def public_record(meta):
+    """Keep uncertainty available to consumers; these are unverified selections.
+
+    A photo caption date is not automatically a facility's opening date, and
+    a decade must not become an exact year simply because it sorts as an int.
+    """
+    keys = ("href", "title", "kind", "kind_conf", "facility_type", "facility_type_conf",
+            "ident", "ident_conf", "fss_name_1988", "city", "state", "place_conf",
+            "year", "year_raw", "year_conf", "opened", "opened_conf", "closed",
+            "closed_conf", "about_one_facility", "about_a_person", "lat", "lon",
+            "coord_source", "coord_name", "image", "categories", "jev_model")
+    return {key: meta[key] for key in keys}
 
 
 def report(metas, fac):
