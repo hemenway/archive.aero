@@ -2,21 +2,23 @@
 
 ## Current status — 2026-10-13
 
-**All six eras in `2026-10-13_georef` completed slice, conversion and archive.**
+**All six rebuilt eras in `2026-10-13_georef` and the five changed full-sheet artifacts are published and byte-verified.**
 The five changed full-sheet artifacts are Boston 1957, SF 1971 north/south,
 Dallas 1981 north and Dutch Harbor 2004 south. Mosaic-grid alignment errors are
 ≤0.01 px against a 0.3 px tolerance; all six final mosaics have been rendered and inspected.
-The release candidate at `~/archive-next-build/2026-10-13-georef` is assembled;
-**none of this batch has been published**. Manifest `3399e551dd77` and metadata
-bundle `61e8c828` include 3,762 eras; all six changed metadata records match their
+Release evidence is at `~/archive-next-build/2026-10-13-georef`. Live manifest `3399e551dd77` and metadata
+bundle `61e8c828` include 3,762 eras; all six rebuilt metadata records match their
 archives byte for byte. The isolated shell build, budget check and deployment dry run pass. All nine
 browser views passed (610 candidate responses, all 200/204, zero browser errors);
 held historical airspace draws and a missing-cycle gap matches disabled-layer pixels.
 Evidence is in the candidate's `qa/summary.json` and `qa/browser-results.json`.
-`publication-plan.json` lists 297 objects (about 934 MB including permanent copies),
-four regenerated cards and the required deployment/receipt steps. Explicit live
-publication approval was requested; no upload receipts were fabricated. Publish the
-archives and supporting metadata, then verify served bytes and viewer behavior.
+After explicit publication approval, all 297 planned objects passed full-byte storage
+verification. Public served-byte checks passed for 30 objects: three sampled ranges
+on each of 23 archives, plus four cards, the bundle, manifest and timeline.
+The tiles Worker and apex shell are deployed; **all ten live browser views and
+all 50 airport page/JSON-LD checks passed**. The live run observed 2,579 successful
+data responses, with no browser errors or failed requests. Final evidence is in
+`qa-live/summary.json` and `qa-live/browser-results.json`.
 
 The new source-aware B3 audit classifies **7,742 rows** as **4,237 GCP-ready,
 3,398 source-georeferenced and 107 incomplete**. Those 107 are a triage queue,
@@ -36,18 +38,18 @@ See [October 1 publication](georef_publish_2026-10-01.md) for the completed batc
 | Remaining item | Evidence and next action |
 |---|---|
 | **Corner-GCP fit check — first catalog run (new 2026-10-07)** | `python3 scripts/dole_v2.py check-gcps master_dole_v2.csv` fits every GCP row's four corners in its chart projection and flags a pixel square that does not land as a ground square (aspect off by >3% warn, >10% error; the Boston 1953–70 rows read 0.76), mirror-order corners, and corner residual (>500 m warn, the wrong-SP band; >5 km error). The slicer now **refuses error rows at load** (an alternate row can still win the group; `--allow-gcp-misfit` keeps them). **First real run 2026-10-12:** 4,237 GCP rows → 6 error, 47 warn (Boston 1957 was a seventh, fixed the same day). Errors, all aspect mismatches, i.e. corner lat/lons from another sheet format: Aroostook 1969-02-01 `ca000156r` (0.83), El Paso 1967-12-07 `ca001408r` (0.87), Nashville 1965-07-01 `ca002582r` (0.82), New York 2006-05-11 `New_York_SEC_73_North.tif` (0.89, a donated scan), and **Hawaiian Islands 1968-12-12 `ca001655r` / 1969-05-29 `ca001656r` (0.63, 18.7 km corner residual — published eras, almost certainly wrong corners)**. The slicer now refuses these six at load, so their eras lose the chart on the next reslice unless fixed or `--allow-gcp-misfit`. Warnings: 500–620 m residuals across Wichita 1933–59 (a systematic wrong-SP band), Cincinnati 1968–69 / San Antonio 1934–35 / New Orleans 1956 / Twin Cities 1967 aspect 0.92–0.96, Mobile 1935 3.6 km, Aberdeen 1951 2.1 km. Review the errors first (read the printed corner labels), then decide whether the aspect thresholds fit the 1930s formats. |
-| ~~**Boston 1953-12 → 1970 sheet extent (27 rows)**~~ | **Fixed and republished 2026-09-25** — see the 2026-09-25 entry below. `ca000440r` (1957-06-01) is the only Boston row of the period still open (hand redo, next row). |
-| **Boston 1957 `ca000440r`** | **Built and rendered 2026-10-13; publication pending.** The October 12 correction located the 72/69W × 44/40N graticule intersections at full resolution in the rotation-90 display frame (rotation 90 is right; the September "270" diagnosis was wrong): 74 m RMS, cutline `extents/boston_ma_1953`, backup `pre_boston_1957_gcps_2026-10-12.csv`. Era `1957-06-01_to_1957-11-21` and `chart/boston_ma/1957-06-01` are in the release candidate. Publish the new era (`--allow-new` where required), verify it, then retire the corresponding publication hold. |
-| **SF 1971 WASP 415 pair** | **Refined and built 2026-10-13; publication pending.** Four graticule corners per face were re-read/refined, and the legend confirms SP 38°40′ / 33°20′. RMS fell from 1,574 to 221 m north and 623 to 52 m south. Traced fold edges intersected with `sectional/san_francisco` replace the rectangular GCP-box clips that left a 0.5° seam gap. The October 12 `half` values remain 415_01 south / 415_02 north. Evidence and backup are recorded in the dated section below. Era `1971-04-29_to_1971-11-11` and both half artifacts are built; inspect/publish the candidate and retain the permanent bare-date key. |
+| ~~**Boston 1953-12 → 1970 sheet extent (27 rows)**~~ | **Fixed and republished 2026-09-25** — see the 2026-09-25 entry below. The separate `ca000440r` (1957-06-01) redo was published October 13, next row. |
+| **Boston 1957 `ca000440r`** | **Published and byte-verified 2026-10-13; postdeploy browser check passed.** The October 12 correction located the 72/69W × 44/40N graticule intersections at full resolution in the rotation-90 display frame (rotation 90 is right; the September "270" diagnosis was wrong): 74 m RMS, cutline `extents/boston_ma_1953`, backup `pre_boston_1957_gcps_2026-10-12.csv`. Era `1957-06-01_to_1957-11-21` and `chart/boston_ma/1957-06-01` are live at permanent and hashed addresses. The corresponding publication hold has been retired after byte and live-viewer checks. |
+| **SF 1971 WASP 415 pair** | **Published and byte-verified 2026-10-13; postdeploy browser check passed.** Four graticule corners per face were re-read/refined, and the legend confirms SP 38°40′ / 33°20′. RMS fell from 1,574 to 221 m north and 623 to 52 m south. Traced fold edges intersected with `sectional/san_francisco` replace the rectangular GCP-box clips that left a 0.5° seam gap. The October 12 `half` values remain 415_01 south / 415_02 north. Evidence and backup are recorded in the dated section below. Era `1971-04-29_to_1971-11-11` and both half artifacts are live; the permanent bare-date key is retained. |
 | **Juneau 2013 Batch19 hold conflict** | The 2013 scan (`…_023_001.jpg`) has GCPs although its note says withheld; 2014 (`…_012_001.jpg`) remains GCP-less. The live 2013 era and `chart/juneau/2013-04-04-north`/`-south` still come from the Juneau 53 wayback ZIP, so nothing published is wrong, but the next slice of 2013-04-04 would rank the scan first. Either blank the 2013 GCPs (backup + dated note) or drop the hold. The 2011/12/15/16 scans won on purpose (published from scan GCPs on August 19). Sidebar B4 now lists both rows, so the conflict is visible there. |
 | **Hawaiian 1947–66** | 15 ca-series rows still lack GCPs (includes `ca001666X`); two-panel scans need per-panel treatment. 1968/69 rows already have GCPs. |
 | **simviation 2010–11** | 55 rows still lack GCPs. Since September 12 they point to chart TIFFs extracted losslessly from embedded JPEGs; the old manual page-assembly instruction is superseded. |
-| **Dutch Harbor 2004 south** | **Three affected eras and south artifact built 2026-10-13; publication pending.** August 20 refinement fit was applied October 12 (`worklists/data/georef_batch2/georef_transfer_refine.json`: scale 1.0164, 10/18 windows, max residual 2.47 px; scan 5386×2025; backup `pre_dutch_harbor_2004s_gcps_2026-10-12.csv`). Publish the three `2004-03-18_to_…` eras and `chart/dutch_harbor/2004-03-18-south` with the candidate's metadata, then verify the served result. |
+| **Dutch Harbor 2004 south** | **Three rebuilt eras and south artifact published and byte-verified 2026-10-13; postdeploy browser check passed.** August 20 refinement fit was applied October 12 (`worklists/data/georef_batch2/georef_transfer_refine.json`: scale 1.0164, 10/18 windows, max residual 2.47 px; scan 5386×2025; backup `pre_dutch_harbor_2004s_gcps_2026-10-12.csv`). The three `2004-03-18_to_…` eras and `chart/dutch_harbor/2004-03-18-south` are live with the release metadata; two of those era rebuilds were byte-identical to the prior artifacts. |
 | **Hawaiian 2004 archive.org JPG** | Optional upgrade, not a gap. The AVSIM JPG's world-file path works: it was published August 19 as `chart/hawaiian_islands/2004-07-01` (warp `georef`), and its live header bounds (161.18–154.06°W, 18.21–23.62°N, z8–10) were checked on October 2. The archive.org scan (`dole_gap_2026-07/archive2004/`) has the same ~6.8k px, is uncropped and has 3.4× the bytes; it needs hand GCPs only if it should replace the AVSIM source. |
 | **ESRI SF 2008** | Still lacks GCPs. SF 1966 was verified and published October 1; SF 1978 north was published September 15. |
 | **GlidePlan Mt. Shasta + Reno Whites** | Still lack GCPs and a cutline decision; consider explicit whole-sheet `none` for these collar-free mosaics, then verify the warp. |
 | ~~**Wichita 1972 WASP 418 pair**~~ | **Published October 1**: both hand GCPs ready, sides explicit, modern SP verified by residuals, fold cutlines traced; era plus north/south chart artifacts read back. |
-| **Dallas 1981 north (419_01)** | **Built and rendered 2026-10-13; publication pending.** The October 4 correction changed `gcp2_lon`/`gcp3_lon` from −94 to the printed −95; the traced fold cutline matches the 1982 north-face envelope within 0.02°. The check warp placed Oklahoma City, Tulsa and Amarillo correctly. Backups `pre_dallas_1981_north_lon_2026-10-04.csv`, `pre_fold_cutline_2026-10-04.csv`. Era `1981-01-22_to_1981-07-09` and `chart/dallas_ft_worth/1981-01-22-north` are built. Publish and verify before closing sidebar A8. |
+| **Dallas 1981 north (419_01)** | **Published and byte-verified 2026-10-13; postdeploy browser check passed.** The October 4 correction changed `gcp2_lon`/`gcp3_lon` from −94 to the printed −95; the traced fold cutline matches the 1982 north-face envelope within 0.02°. The check warp placed Oklahoma City, Tulsa and Amarillo correctly. Backups `pre_dallas_1981_north_lon_2026-10-04.csv`, `pre_fold_cutline_2026-10-04.csv`. Era `1981-01-22_to_1981-07-09` and `chart/dallas_ft_worth/1981-01-22-north` are live. The final live-viewer check passed; sidebar A8 is complete. |
 | **Denver 1975 seam** | Both halves published September 15; a ≤4 km pale band was recorded. Reconcile their GCPs at the fold before republishing improved same-key artifacts. |
 | ~~**Tool status/sidebar (B3)**~~ | **Fixed 2026-10-13.** `row_status()` now checks the source's pixel-to-ground metadata and a usable CRS (embedded or `src_crs`), including every face of extracted/unextracted ZIPs. A cutline, world file without CRS, or `src_crs` alone no longer hides an unreferenced scan. Read-only checks confirmed Hawaiian ca-scans, archive.org Hawaiian JPG, simviation Seward and Seward 93 are incomplete, while AVSIM + world file/CRS, ChartGeek and modern FAA sources remain georeferenced. Metadata probes are cached with source/sidecar signatures, persisted locally, and warmed in the background. A full 7,742-row check found 4,237 GCP-ready, 3,398 source-georeferenced and 107 incomplete rows; a fresh index using the saved metadata cache reproduced those counts in 5.1 seconds (the initial cold check took 211 seconds on SMB). Regression coverage: `tests/test_georef_status.py`. The tool remains gitignored local tooling; the 5001 instance was restarted and its live `/timeline_data` verified HTTP 200 with the same counts in 1.03 seconds. This status is a metadata check, not a verified warp or a full-raster readability test. |
 
@@ -60,7 +62,28 @@ catalog's GCP count. Seward 93 is a replacement-source problem in 01.
 
 ## Dated progress and decisions
 
-> **2026-10-13 — six-era run complete; candidate unpublished.**
+> **2026-10-13 — release published after approval; browser follow-up passed.**
+> All 297 planned objects were read back and verified byte for byte:
+> 12 immutable archives, 11 permanent archive copies, four cards, 267 index files,
+> the manifest, metadata bundle and timeline. The six era rebuilds add Boston 1957
+> and replace SF 1971, Dallas 1981 and Dutch Harbor 2004–2005; two other 2004
+> eras rebuilt byte-identically. All six permanent era addresses were published.
+> Public checks passed for 23 archives (three sampled ranges each) plus four cards,
+> the bundle, manifest and timeline. Evidence under
+> `~/archive-next-build/2026-10-13-georef/publication/`:
+> `verified-objects.jsonl`, `served-byte-checks.json` and deployment logs.
+> Live manifest `next/manifest.3399e551dd77.json` and
+> `sectionals/metadata-61e8c828.bundle` cover 3,762 eras; the shell has 7,121
+> edition URLs and 50 airport records. The same release publishes recovered NASR
+> history in `airspace/class-20261013.cce35551b42d.pmtiles`.
+> Tiles Worker `16d60293-72c5-4b7d-b755-cb982f5e77e2` uses cache revision
+> `2026-10-13-georef` for permanent chart, era and timeline keys; site Worker
+> `4ef92237-747b-41e6-94e0-bb1afd3d94d8` serves the new manifest.
+> All ten live browser views and all 50 airport page/JSON-LD checks passed;
+> evidence is in the release folder’s `qa-live/`. Current production pointers and
+> rebuild/rollback instructions are in [18](18_apex_cutover.md).
+
+> **2026-10-13 — preparation before publication.**
 > `/Volumes/projects/slicer-runs/2026-10-13_georef` completed slice, conversion and
 > archive for Boston `1957-06-01_to_1957-11-21`, SF
 > `1971-04-29_to_1971-11-11`, Dallas `1981-01-22_to_1981-07-09`, and Dutch Harbor

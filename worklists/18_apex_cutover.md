@@ -1,6 +1,45 @@
 # 18 — Apex cutover and production rebuild
 
-## Status — 2026-10-12
+## Current production — 2026-10-13
+
+The georef and recovered-history airspace follow-up is published after explicit
+approval. All 297 planned objects passed full-byte storage readback; public
+served-byte checks passed for 23 archives (three sampled ranges each), four
+cards, the bundle, manifest and timeline. **All ten live browser views and all 50 airport page/JSON-LD checks passed.** The October 12 cutover record below is historical; these are the
+current pointers:
+
+- Site Worker: `archive-aero-site`, version
+  `4ef92237-747b-41e6-94e0-bb1afd3d94d8`.
+- Tiles Worker: `tiles`, version `16d60293-72c5-4b7d-b755-cb982f5e77e2`, with
+  `CHART_CACHE_VERSION="2026-10-13-georef"`. The revision now covers permanent
+  era archives as well as chart keys/cards and the timeline, for block and
+  whole-response caches. Hashed archives keep their existing cache entries.
+- Production manifest: `next/manifest.3399e551dd77.json` (3,762 eras).
+- Chart index: `next/charts.9a7e9403a5f5/` (150 records).
+- Airport records: `next/airports.dae9aa908458/` (50 airports plus index).
+- Pin shards: `next/pins.b195a9d65c01/` (66 shards).
+- Airspace: `airspace/class-20261013.cce35551b42d.pmtiles`, with 153 regional
+  cycles including 116 US cycles back to 2017-10-12.
+- Airfields: the existing `next/airfields.3561417ba096.bin` and `.json`
+  reference is preserved. Jev acceptance corrections remain open in worklist 16.
+- Metadata bundle: `sectionals/metadata-61e8c828.bundle`; the legacy viewer
+  points to it and to the new hashed airspace archive.
+- Sitemaps: 7,121 unique edition URLs and 50 airport URLs. Four edition cards
+  were generated for this release.
+
+Six eras were rebuilt: Boston 1957 is newly present; SF 1971, Dallas 1981 and
+Dutch Harbor 2004–2005 have changed hashes; the other two 2004 eras are
+byte-identical rebuilds. All six permanent era addresses and five permanent
+chart addresses were published alongside their immutable copies. Release inputs,
+artifacts and evidence are retained at `~/archive-next-build/2026-10-13-georef/`,
+including `release.json`, `publication-plan.json`,
+`publication/verified-objects.jsonl`, `publication/served-byte-checks.json` and
+deployment logs. The persistent `~/archive-next-build/prod/` build inputs are
+refreshed from that verified release while preserving old assets. The promoted
+stage rebuilds the reviewed manifest byte for byte; candidate symlinks remain
+valid, and backups preserve the prior records and four retired local stubs.
+
+## Historical cutover — 2026-10-12
 
 The apex shell and airport/edition pages are deployed. `beta.archive.aero`
 returns 410 for every path, including static assets. There is no `/classic/`
@@ -77,7 +116,7 @@ mtime match, requires matching SHA-256 metadata, and flushes/fsyncs each
 verified receipt. Interrupted batches resume from their last receipt.
 
 `CHART_CACHE_VERSION` in `worker/wrangler.toml` versions the edge-cache entries
-for permanent chart keys/cards and `timeline_data.json`, including both block
+for permanent chart keys/cards, era archives and `timeline_data.json`, including both block
 and whole-response caches. Bump it **after** a replacement batch and timeline
 upload, then deploy `tiles`. Hashed archives keep their existing cache entries.
 Browser caches of plain addresses retain their previously issued HTTP TTL;
@@ -85,7 +124,7 @@ the new viewer uses the immutable hashed addresses.
 
 ## Repeat the production data build
 
-Persistent build inputs now live under `~/archive-next-build/prod/`, replacing
+Persistent build inputs live under `~/archive-next-build/prod/`, replacing
 the handoff's temporary Codex workspace path:
 
 - `stage/`: sparse metadata stubs for the chosen era archives, basemap/airspace.
@@ -116,7 +155,7 @@ folders and manifest to `r2:charts-beta/next/`. Upload data **before** the shell
 Then rebuild with the emitted manifest name (the current example follows):
 
 ```bash
-node next/build.mjs --manifest https://data.archive.aero/next/manifest.56cf6d2fc143.json --manifest-file ~/archive-next-build/prod/next/manifest.56cf6d2fc143.json --base / --outdir next/site/dist --sitemap ~/archive-next-build/prod/next/sitemap-sectionals.xml --sitemap ~/archive-next-build/prod/next/sitemap-airports.xml
+node next/build.mjs --manifest https://data.archive.aero/next/manifest.3399e551dd77.json --manifest-file ~/archive-next-build/prod/next/manifest.3399e551dd77.json --base / --outdir next/site/dist --sitemap ~/archive-next-build/prod/next/sitemap-sectionals.xml --sitemap ~/archive-next-build/prod/next/sitemap-airports.xml
 cd next
 npm ci --ignore-scripts
 npm run deploy:site
@@ -135,8 +174,9 @@ byte budget. New shell functionality belongs in the lazy cards chunk.
 
 Upload `timeline_data.json` to `charts/sectionals/timeline_data.json`, bump the
 chart cache revision and deploy `tiles`. A final report without `--copy` must
-show zero ready/stale keys. Boston 1957 remains held until its repaired artifact
-is sliced; the 10 retired and 9 renamed inset addresses are preserved.
+show zero ready/stale keys. Boston 1957 was published October 13; retire its
+hold after the final live Boston check. The 10 retired and 9 renamed inset
+addresses are preserved.
 
 ## Rollback and later retirement
 

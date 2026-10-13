@@ -1,23 +1,22 @@
 # 15 — Airspace overlay (class airspace, three regions)
 
-**Status reviewed 2026-10-13: the older FAA extension is built and verified
-locally; publication remains.** The replacement is `class-20261013.pmtiles`
-(73,900,167 bytes), with 116 US cycles back to 2017-10-12. The saved production
-manifest still references `airspace/class-20260916b.1cb1e18a19b5` (86 US cycles).
-The current viewer reads its airspace path from the content-hashed `next/`
-manifest; publishing this replacement requires a new hashed object in
-`charts-beta` and updated production frontend artifacts. The legacy
-`src/viewer.js` setting and builder's `--update-html` option do not update
-that manifest.
+**Status reviewed 2026-10-13: the older FAA extension is published and byte-verified;
+full postdeploy browser checks passed.** The live archive is
+`airspace/class-20261013.cce35551b42d.pmtiles` (73,900,167 bytes), with 153 held
+regional cycles, including 116 US cycles back to 2017-10-12. Production manifest
+`next/manifest.3399e551dd77.json` references it in `charts-beta`; the apex shell
+and legacy viewer configuration are updated. The current viewer reads its airspace
+path from the manifest; changing only the legacy `src/viewer.js` setting or the
+builder's `--update-html` option does not update that manifest.
 
-| Region | Latest recorded published build | Verified local replacement |
-|---|---|---|
-| US | 86 cycles, 2020-03-26–2026-10-01 | 116 cycles, 2017-10-12–2026-10-01, with two 28-day gaps |
-| France | 36 cycles, 2019-02-28–2026-10-01, with gaps | Same cycles and region metadata |
-| Brazil | One 2026-09-03 snapshot | Same snapshot and region metadata |
+| Region | Published October 13 build |
+|---|---|
+| US | 116 cycles, 2017-10-12–2026-10-01, with two 28-day gaps; 30 recovered cycles added |
+| France | 36 cycles, 2019-02-28–2026-10-01, with gaps; region metadata unchanged |
+| Brazil | One 2026-09-03 snapshot; region metadata unchanged |
 
 Evidence: `worklists/data/airspace/{builds,uploads}.jsonl`, saved production
-manifest `~/archive-next-build/prod/next/manifest.56cf6d2fc143.json`, the
+manifest `~/archive-next-build/2026-10-13-georef/next/manifest.3399e551dd77.json`, the
 [September 19 import report](data/acasis_import/2026-09-19/REPORT.md), and the
 [October 13 verification](data/airspace/verification_20261013/build_validation.json).
 The combined release candidate `~/archive-next-build/2026-10-13-georef` also
@@ -25,7 +24,12 @@ passed full-viewer browser checks: historical airspace visibly renders, while th
 2018-07-19 gap has identical interior map pixels with the layer on and off.
 Evidence: candidate `qa/summary.json`; the first screenshot comparison included an
 animated loader and was corrected to inspect only map pixels. No product change
-was needed. No publication or viewer configuration changes were made during this build.
+was needed. Subsequent publication was explicitly approved; all 297 combined-release
+objects passed full-byte storage verification. Public checks include three matching
+ranges from the airspace archive. Evidence is in the release's
+`publication/verified-objects.jsonl` and `publication/served-byte-checks.json`.
+The live-browser follow-up passed: historical airspace renders and the missing-cycle
+map interior matches the disabled layer exactly. See `qa-live/summary.json`.
 
 Started 2026-09-14. The viewer gains a time-aware airspace layer built from the
 AIS series held in `/Volumes/projects/aisdata/` (see `scripts/aisdata_pull.py`):
@@ -133,11 +137,12 @@ history sources are parsed (all three regions have it).
 
 ## Next
 
-- [ ] B0a. Publish the locally verified `class-20261013` replacement (build and
-      rendered verification completed below), then update the production
-      manifest/frontend artifacts and metadata bundle. Upload the hashed object
-      to `charts-beta` before deploying a reference to it. Keep `nasr_legacy/`
-      outside this task until its older formats have parser support.
+- [x] B0a. Published `class-20261013` on October 13 after source, build and
+      rendered verification below. The hashed object in `charts-beta` passed
+      full-byte readback before the new manifest and frontend deployed; the
+      combined metadata bundle is `61e8c828`. Full postdeploy browser checks
+      remain pending. Keep `nasr_legacy/` outside this task until its older
+      formats have parser support.
 - [ ] B1. Special-use airspace (MOA/R/P/W/A) + Mode C veils, current-only from
       the ADDS GeoJSON (`us_faa/adds/<date>/Special_Use_Airspace.geojson`,
       `Class_Airspace.geojson` MODE C rows) as a `sua` layer with a
@@ -177,7 +182,7 @@ builder's normal scan. Historical DOF/CIFP packages were also archived.
 See `aisdata/us_faa/README_ACASIS_2026-09-19.txt` and
 [the completed import report](data/acasis_import/2026-09-19/REPORT.md).
 
-## 2026-10-13 — historical NASR build verified locally
+## 2026-10-13 — historical NASR build and publication
 
 - Checked the bytes of all 30 recovered ZIPs against their registered SHA-256
   values. Built and visually checked the first cycle, 2017-10-12, before the
@@ -202,9 +207,10 @@ See `aisdata/us_faa/README_ACASIS_2026-09-19.txt` and
   filter test passes in Chromium and mobile WebKit. Logs, screenshots, source
   identities and the local publication plan are under
   `worklists/data/airspace/verification_20261013/`.
-- The publication plan proposes
-  `airspace/class-20261013.cce35551b42d.pmtiles`; it has **not** been uploaded.
-  The full build ran with a local Mac `--out-dir` before checksum-verified
+- Published `airspace/class-20261013.cce35551b42d.pmtiles` after explicit
+  approval as part of the georef release. The full object was read back from
+  storage and its public route passed three sampled range comparisons.
+  Manifest `3399e551dd77` is deployed; the full postdeploy browser check passed. The build ran with a local Mac `--out-dir` before checksum-verified
   copying to the mirror. `/Volumes/projects` was an SMB mount during this
   run, and tippecanoe's SQLite journal writes were very slow there; use local
   scratch for future builds on that mount.
