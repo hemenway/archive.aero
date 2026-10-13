@@ -187,7 +187,13 @@ successful eras. Classified against the hashed upload plan:
   - Denver SEC 94 (eras `2016-01-07_to_2016-06-23`, `_to_2016-07-21`) and San
     Francisco SEC 97 (`2016-08-18_to_2017-02-02`): "Too large output raster
     size" — the warp blew up (bad embedded georef or a GCP/cutline mismatch);
-    the chart is missing from those three mosaics and has no artifact.
+    the chart is missing from those three mosaics. **2026-10-12 cutover repair:**
+    both full-sheet artifacts and their cards were rebuilt from valid original
+    FAA ZIPs (the NARA duplicates had ~0.0000847 m/pixel embedded transforms),
+    visually checked and published under new hashes plus their permanent keys.
+    The two malformed duplicate catalog rows were retired with a backup and
+    provenance on the ZIP rows. The affected mosaics still need reslicing;
+    their full-sheet repairs are documented in worklist 18.
   - Eras `2021-08-12_to_2021-10-07` and `2022-03-24_to_2022-05-19` have **no
     chart artifacts at all** in the plan (their era archives exist); the
     2022-03-24 era was an outage requeue — the chart backfill never ran.

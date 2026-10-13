@@ -177,7 +177,8 @@ def charts_index(timeline, plan, og_keys=None):
 def sitemap_xml(index, origin):
     """sitemap-sectionals.xml: the canonical address of every tiled edition page, in slug then date order."""
     if not re.fullmatch(r'https://[\w.-]+',origin): raise ValueError('sitemap origin must be an https origin')
-    urls=[f'{origin}/sectionals/chart/{slug}/{c["d"]}' for slug,entry in sorted(index.items()) for c in entry['charts'] if c.get('pm')]
+    # Alternative end dates still share one permanent edition-page address.
+    urls=sorted({f'{origin}/sectionals/chart/{slug}/{c["d"]}' for slug,entry in index.items() for c in entry['charts'] if c.get('pm')})
     if len(urls)>50000: raise ValueError('a sitemap holds at most 50,000 URLs; split it')
     body=''.join(f' <url><loc>{u}</loc></url>\n' for u in urls)
     return f'<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n{body}</urlset>\n', len(urls)

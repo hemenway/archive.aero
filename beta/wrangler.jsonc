@@ -1,0 +1,20 @@
+{
+  "name": "archive-aero-beta",
+  "account_id": "ad20eec906d1b5a42931b881ed22232f",
+  "compatibility_date": "2026-09-29",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "beta.archive.aero", "custom_domain": true }],
+  // Run before every asset so retirement covers the entire hostname.
+  "main": "../next/pages/worker.mjs",
+  // Retirement (next/BETA.md): set RETIRED to "1" and deploy once archive.aero/ is the shell.
+  // Every path then answers 410 Gone (the service worker unregisters on it); keep it so for
+  // a few weeks, then the Worker and custom domain can go.
+  "vars": { "RETIRED": "1" },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "run_worker_first": true
+  }
+}

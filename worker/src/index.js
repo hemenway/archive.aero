@@ -11,6 +11,7 @@ import { handleTiles } from "./tiles.js";
 //   ALLOWED_ORIGIN  default "*"
 //   SAMPLE_RATE     default "0.05" (5% of qualifying reads)
 //   METADATA_BYTES  default "1024" (range reads <= this many bytes are not logged)
+//   CHART_CACHE_VERSION  bump after a permanent chart-key refresh and timeline upload
 
 const CORS_BASE = {
   "access-control-allow-methods": "GET, HEAD, OPTIONS",
@@ -135,8 +136,17 @@ const FLIGHT_MS = 3000;
 const inflightBlocks = new Map(); // cache key URL -> { promise, deadline }
 const FLIGHT_TIMEOUT = Symbol("flight timeout");
 
-function blockCacheKey(url, index) {
-  return new Request(`${url.origin}${url.pathname}?b=${index}&bs=${BLOCK_BYTES}`);
+function cacheRequest(env, key, url) {
+  const target = new URL(url);
+  if (env.CHART_CACHE_VERSION && !HASHED_KEY.test(key) &&
+      (key.startsWith('sectionals/chart/') || key === 'sectionals/timeline_data.json')) {
+    target.searchParams.set('v', env.CHART_CACHE_VERSION);
+  }
+  return new Request(target);
+}
+
+function blockCacheKey(url, index, env, key) {
+  return cacheRequest(env, key, `${url.origin}${url.pathname}?b=${index}&bs=${BLOCK_BYTES}`);
 }
 
 async function readBlock(env, key, index) {
@@ -174,10 +184,10 @@ function joinFlight(promise, ms) {
 // caller (a block start past EOF surfaces as R2's "not satisfiable").
 async function getBlock(env, ctx, url, key, index, bypass = false) {
   const cache = caches.default;
-  const cacheKey = blockCacheKey(url, index);
+  const cacheKey = blockCacheKey(url, index, env, key);
   // bypass: the client asked for fresh bytes (Cache-Control: no-cache, which
   // pmtiles sends via cache:"reload" when it detects an ETag mismatch). The
-  // edge entry is version-less, so without this the retry re-read the same
+  // cache revision is batch-wide, so without this the retry re-reads the same
   // stale block for up to a day after a same-key republish.
   const cached = bypass ? null : await cache.match(cacheKey);
   if (cached) {
@@ -439,7 +449,7 @@ async function serve(request, env, ctx) {
       // Whole-file, open-ended, or longer-than-a-block read: stream straight
       // from R2 without buffering, keyed on the exact range in the edge cache.
       const rangeTag = range ? `${range.offset}-${range.end ?? ""}` : "full";
-      const cacheKey = new Request(`${url.origin}${url.pathname}?r=${rangeTag}`);
+      const cacheKey = cacheRequest(env, key, `${url.origin}${url.pathname}?r=${rangeTag}`);
       const cached = bypassCache ? null : await cache.match(cacheKey);
       if (cached) {
         cacheStatus = "HIT";

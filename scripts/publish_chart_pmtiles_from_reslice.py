@@ -26,7 +26,7 @@ pending; rerun as the reslice advances.
 Modes
     (default)   report: ready / pending / held, print the copy commands
     --copy      run the copies, verify size + sha256 metadata on the target,
-                append receipts to uploads.jsonl
+                append each verified receipt immediately to uploads.jsonl
     --verify    no copies: check the target keys that already exist and
                 write receipts for the ones that match the plan record
                 (use after running the printed commands by hand)
@@ -43,15 +43,17 @@ build_timeline_data.py stamps `pm` on them like any other upload.
 
 Usage
     ~/venv/bin/python scripts/publish_chart_pmtiles_from_reslice.py
-    ~/venv/bin/python scripts/publish_chart_pmtiles_from_reslice.py --copy
+    ~/venv/bin/python scripts/publish_chart_pmtiles_from_reslice.py --refresh --copy --workers 16
     ~/venv/bin/python scripts/publish_chart_pmtiles_from_reslice.py --verify
 """
 
 import argparse
 import datetime
 import json
+import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -61,7 +63,7 @@ DEFAULT_REMOTE = "r2:charts"
 DEFAULT_PREFIX = "sectionals"
 # Keys deliberately not published even though the manifest has them.
 HELD = {
-    "chart/boston_ma/1957-06-01": "worklist 04: GCPs suspect, hand redo pending",
+    "chart/boston_ma/1957-06-01": "worklist 04: GCP redo catalogued; repaired artifact not yet sliced",
 }
 
 
@@ -91,19 +93,61 @@ def rclone_json(args):
 
 def stat_object(remote_path: str):
     """{size, sha256 metadata} of one object, or None when absent."""
-    items, err = rclone_json(["lsjson", "--metadata", "--files-only", remote_path])
-    if items is None:
+    item, err = rclone_json(["lsjson", "--stat", "--metadata", remote_path])
+    if item is None:
         if "directory not found" in err.lower() or "not found" in err.lower():
             return None
-        print(f"ERROR: rclone lsjson {remote_path}: {err}", file=sys.stderr)
-        sys.exit(1)
-    for it in items:
-        if it.get("IsDir"):
-            continue
-        meta = it.get("Metadata") or {}
-        return {"size": it.get("Size", -1), "sha256": meta.get("sha256"),
-                "content_type": meta.get("content-type")}
-    return None
+        raise RuntimeError(f"rclone lsjson {remote_path}: {err}")
+    if not item or item.get("IsDir"):
+        return None
+    meta = item.get("Metadata") or {}
+    return {"size": item.get("Size", -1), "sha256": meta.get("sha256"),
+            "content_type": meta.get("content-type")}
+
+
+def publish_one(key, record, remote, prefix, run, copy):
+    src = f"{record['remote']}/{record['path']}.pmtiles"
+    dst = f"{remote}/{prefix}/{key}"
+    if copy:
+        # A different warp may have the same size/mtime; the receipt's hash
+        # already established that a replacement is necessary.
+        proc = subprocess.run(["rclone", "copyto", "--ignore-times", "--metadata", src, dst],
+                              capture_output=True, text=True)
+        if proc.returncode:
+            raise RuntimeError(f"rclone copyto failed: {(proc.stderr or '').strip()[-300:]}")
+    got = stat_object(dst)
+    if got is None:
+        raise RuntimeError(f"{dst}: not present")
+    if got['size'] != record['size']:
+        raise RuntimeError(f"{dst}: size {got['size']} != plan {record['size']}")
+    if got['sha256'] != record['sha256']:
+        raise RuntimeError(f"{dst}: sha256 metadata missing or mismatched")
+    return {"key": key, "size": record['size'],
+            "uploaded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "sha256": record['sha256'], "source": src, "run": run}
+
+
+def publish_ready(ready, plan, args):
+    ok = bad = 0
+    # Only this thread writes receipts. Flush every verified object so an
+    # interruption loses at most in-flight work, never the entire batch.
+    with open(args.uploads, 'a', encoding='utf-8') as receipts, ThreadPoolExecutor(max_workers=args.workers) as pool:
+        pending = {pool.submit(publish_one, key, plan[key], args.remote, args.prefix,
+                               args.run.name, args.copy): key for key in ready}
+        for future in as_completed(pending):
+            key = pending[future]
+            try:
+                receipt = future.result()
+            except Exception as exc:
+                bad += 1
+                print(f"    ✗ {key}: {exc}", file=sys.stderr, flush=True)
+                continue
+            receipts.write(json.dumps(receipt) + '\n')
+            receipts.flush()
+            os.fsync(receipts.fileno())
+            ok += 1
+            print(f"    ✓ {key}  {receipt['size']} B  sha256 match ({ok}/{len(ready)})", flush=True)
+    return ok, bad
 
 
 def main():
@@ -122,7 +166,10 @@ def main():
     ap.add_argument("--refresh", action="store_true",
                     help="also overwrite keys already published from an older warp (receipt sha256 != the run's artifact)")
     ap.add_argument("--limit", type=int, help="stop after this many keys (a dry batch)")
+    ap.add_argument("--workers", type=int, default=1, help="Concurrent copies/verifications (default: 1)")
     args = ap.parse_args()
+    if args.workers < 1:
+        ap.error('--workers must be positive')
 
     plan_path = args.run / "hashed" / "plan.jsonl"
     if not plan_path.exists():
@@ -210,52 +257,19 @@ def main():
         print("Nothing ready to publish.")
         return
 
-    now = datetime.datetime.now().isoformat(timespec="seconds")
-    ok = bad = 0
-    receipts = []
-    for key in ready:
-        r = plan[key]
-        src = f"{r['remote']}/{r['path']}.pmtiles"
-        dst = f"{args.remote}/{args.prefix}/{key}"
-        cmd = ["rclone", "copyto", src, dst]
-        if not (args.copy or args.verify):
-            print(" ".join(cmd))
-            continue
-        if args.copy:
-            print(f"  {'refresh' if key in stale else 'copy'} {key}  ({r['size'] / 1e6:.1f} MB)")
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode != 0:
-                bad += 1
-                print(f"    ✗ rclone copyto failed: {(proc.stderr or '').strip()[-300:]}", file=sys.stderr)
-                continue
-        got = stat_object(dst)
-        if got is None:
-            bad += 1
-            print(f"    ✗ {dst}: not present", file=sys.stderr)
-            continue
-        if got["size"] != r["size"]:
-            bad += 1
-            print(f"    ✗ {dst}: size {got['size']} != plan {r['size']}", file=sys.stderr)
-            continue
-        if got["sha256"] and got["sha256"] != r["sha256"]:
-            bad += 1
-            print(f"    ✗ {dst}: sha256 metadata {got['sha256'][:12]} != plan {r['sha256'][:12]}", file=sys.stderr)
-            continue
-        ok += 1
-        receipts.append({"key": key, "size": r["size"], "uploaded_at": now,
-                         "sha256": r["sha256"], "source": f"{r['remote']}/{r['path']}.pmtiles",
-                         "run": args.run.name})
-        print(f"    ✓ {key}  {got['size']} B  sha256 {('match' if got['sha256'] else 'not on object')}")
-
     if not (args.copy or args.verify):
+        for key in ready:
+            r = plan[key]
+            src = f"{r['remote']}/{r['path']}.pmtiles"
+            dst = f"{args.remote}/{args.prefix}/{key}"
+            cmd = ["rclone", "copyto", "--ignore-times", "--metadata", src, dst]
+            print(" ".join(cmd))
         print(f"\n{len(ready)} command(s) above. Run them, then rerun with --verify to record receipts;"
               f" or rerun with --copy to do both.")
         return
 
-    if receipts:
-        with open(args.uploads, "a", encoding="utf-8") as f:
-            for rec in receipts:
-                f.write(json.dumps(rec) + "\n")
+    ok, bad = publish_ready(ready, plan, args)
+    if ok:
         print(f"\n{ok} receipt(s) appended to {args.uploads}")
         print("Next: ~/venv/bin/python scripts/build_timeline_data.py, upload timeline_data.json "
               "(CLAUDE.md recipe), then scripts/build_coverage.py.")

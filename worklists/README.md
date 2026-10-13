@@ -1,14 +1,15 @@
 # Worklists
 
-**Reviewed 2026-09-21; georef/publication updated 2026-10-01; 02/04/06 updated 2026-10-04; 06 updated 2026-10-05; 18 added 2026-10-12.** Start here for current status and next actions. The dated
+**Reviewed 2026-09-21; georef/publication updated 2026-10-01; 02/04/06 updated 2026-10-04; apex cutover and publication completed 2026-10-12.** Start here for current status and next actions. The dated
 results in each worklist are evidence from that run; they are not fresh production
 checks. Original hunt records and completed cleanup reports are retained below.
 
 ## Next actions
 
-0. **Run the apex cutover ([18](18_apex_cutover.md)).** Code is on `main`; the
-   R2 copies and the two Worker deploys need the account. Data, then Pages, then
-   the site Worker.
+0. ~~Run the apex cutover ([18](18_apex_cutover.md)).~~ Complete October 12:
+   viewer and 50 airport pages live, all 7,120 edition cards published,
+   permanent keys refreshed, beta retired behind 410. The runbook records
+   production rebuilds and rollback.
 1. ~~Reconcile source availability ([02](02_disk_vs_dole.md)).~~ Clean on
    October 4: all 7,744 rows resolve on disk and no file is unexplained.
 2. ~~Publish the 71 missing chart artifacts ([06](06_publish_sync.md)).~~ Done
@@ -55,7 +56,7 @@ remain separate open work. No scheduled helper or deployment is implied by this 
 |---|---|
 | [08 — ATC migration](08_atchistory_migration.md) | Cutover executed August 31; stabilization continues. September facility-browser and directory-link fixes are recorded. |
 | [08a — Backlink repair](08a_backlink_repair.md) | Remaining backlink decisions and optional external edits; preserve redirects and use current canonical targets. |
-| [09 — Growth and revenue](09_growth_and_revenue.md) | Audience qualification, opt-in, and a small airport/edition-page pilot remain open; Jev metadata is now available locally as an input. |
+| [09 — Growth and revenue](09_growth_and_revenue.md) | Airport/edition-page pilot live October 12; audience qualification, opt-in and Jev metadata integration remain open. |
 | [10 — Cold archive](10_cold_archive.md) | Planned; choose destination after a fresh source manifest. No verified off-site upload is recorded. |
 | [11 — ACASIS recovery](11_acasis_img_recovery.md) | Nine sectionals imported; reconcile their publication. Locate the recovery image/checkpoints before any targeted resume; deferred chart families remain in the attic. |
 | [12 — First SD-card batch](12_sdcard_batch.md) | 18 only-copy 2014–15 rows published; the nine later ACASIS imports have a separate publication follow-up. |
@@ -63,7 +64,7 @@ remain separate open work. No scheduled helper or deployment is implied by this 
 | [14 — geotiff2pmtiles audit](14_geotiff2pmtiles_audit_handoff.md) | PR #49 recorded merged; managed dependency in use. Reconcile production-repair evidence and remaining audit findings against the current upstream revision. |
 | [15 — Airspace](15_airspace_overlay.md) | US/France/Brazil class overlay shipped; recovered older NASR cycles await a verified build. SUA, labels and other extensions remain open. |
 | [16 — Jev / TypeSafe](16_jev_typesafe.md) | Local W1/W2 batches complete: 2,822 airfields, 1,333 ATC posts. Validation follow-ups, airfields publication, and all metadata consumers remain open. |
-| [18 — Apex cutover](18_apex_cutover.md) | Runbook for moving the next viewer to `archive.aero/` (prepared 2026-10-12): data copies, tiles Worker, `/classic/` on Pages, site Worker, verification, rollback. |
+| [18 — Apex cutover](18_apex_cutover.md) | Completed October 12: apex viewer, 50 airport pages, 7,120 edition cards, permanent-key refresh and beta 410. Production rebuild recipes, verification and rollback retained. |
 | [17 — Repo split](17_repo_split.md) | Plan drafted 2026-10-02, nothing moved: site stays in this repo, pipeline (slicerd, scripts, shapefiles, worklists) extracted with history. Six decisions open; decouple-in-place steps can start before the redesign branches land. |
 
 ## Completed runs and reference records

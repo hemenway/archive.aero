@@ -1,6 +1,14 @@
 # Worklist 06 — Publication state and reconciliation
 
-## Current status — 2026-10-01
+## Latest deployment — 2026-10-12
+
+The next viewer, 50 airport pages and 7,120 edition pages/cards are live at the
+apex; beta returns 410. Publication details, current data hashes and verification
+are maintained in [worklist 18](18_apex_cutover.md). The two malformed 2016
+full-sheet artifacts were replaced from valid original FAA ZIPs. The refreshed
+metadata bundle is `metadata-16bcc4d8.bundle`.
+
+## Previous publication batch — 2026-10-01
 
 **[October 1 georef batch](georef_publish_2026-10-01.md) complete:** 17 era
 artifacts and 30 full-sheet chart artifacts uploaded, R2 size-checked and

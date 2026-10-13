@@ -8,13 +8,16 @@ switched off.
 
 | Piece | What | Where |
 |---|---|---|
-| Page host | A Worker with Static Assets on a custom domain (`beta.archive.aero`); `main` is `next/pages/worker.mjs` so edition pages render there too. | `beta/wrangler.jsonc` (assets `beta/dist`, `run_worker_first: ["/next/sectionals/*"]`) |
+| Page host | A Worker with Static Assets on a custom domain (`beta.archive.aero`); `main` is `next/pages/worker.mjs` so edition pages render there too. | `beta/wrangler.jsonc` (assets `beta/dist`, `run_worker_first: true`) |
 | Data host | A second copy of the tiles Worker on its own hostname and bucket, no analytics binding, so preview traffic never lands in `tile_logs`. | `worker/wrangler.beta.toml` → `tiles-beta`, `data-beta.archive.aero`, bucket `charts-beta` |
 | Data | Hashed era archives, chart artifacts, `next/manifest.<hash>.json`, pins, chart index, airports, airfields; hashed copies of the basemap and airspace. | the bucket named in the data host's config |
 | Shell | `node next/build.mjs` with the preview's manifest URL, `--base /next/` (or `/`), `--no-analytics`, `--links-origin https://archive.aero` (site links and robots `noindex` follow from it). | `beta/dist/next/` |
 
 A hostname other than the apex gets `noindex, nofollow` on every page from
 `--links-origin`; never run a preview without it or Google indexes two viewers.
+
+**Retired on 2026-10-12:** the root, `/next/`, edition paths and static assets
+all return 410. The production hashed bucket remains in use.
 
 ## Standing one up
 
@@ -24,25 +27,33 @@ A hostname other than the apex gets `noindex, nofollow` on every page from
    copy of `worker/wrangler.beta.toml` and deploy `npx wrangler deploy -c
    worker/wrangler.beta.toml` (routes carry the `custom_domain`, DNS is made
    by the deploy).
-2. Data: stage and build as `worklists/18_apex_cutover.md` section 5 does, with
+2. Data: stage and build as the "Repeat the production data build" section of
+   `worklists/18_apex_cutover.md` describes, with
    `next_build_manifest.py --tile-base https://<data host>/t/ --file-base
    https://<data host>/`; `rclone copy` the `next/` outputs to the bucket.
-3. Shell: `node next/build.mjs --manifest https://<data host>/next/manifest.<hash>.json
+3. Host: set `RETIRED` to `"0"`, keep `run_worker_first: true`, and bind
+   `DATA` to the preview tiles Worker for server-rendered chart/airport records.
+   Public same-zone fetches can bypass a Worker route and reach the R2 origin.
+4. Shell: `node next/build.mjs --manifest https://<data host>/next/manifest.<hash>.json
    --manifest-file <local copy> --base /next/ --outdir beta/dist/next
    --no-analytics --links-origin https://archive.aero`, then replace everything
    from the `/next/*` line of `beta/dist/_headers` with `beta/dist/next/_headers`
-   (Cloudflare reads only the root `_headers`), `cd beta && npx wrangler deploy`.
-4. Check: the page's CSP names the data host in `connect-src`; "View alone"
+   (Cloudflare reads only the root `_headers`), then `cd next && npm run deploy:beta`.
+5. Check: the page's CSP names the data host in `connect-src`; "View alone"
    changes the address; the console shows no CSP error and the service worker
    registered at the base.
 
 ## Retiring one
 
-Set `"RETIRED": "1"` in the host's wrangler vars and deploy: every path answers
+Set `"RETIRED": "1"` in the host's wrangler vars, ensure
+`assets.run_worker_first` is `true`, and deploy with
+`cd next && npm run deploy:beta`: every path answers
 `410 Gone` with a line pointing at archive.aero (`retired()` in
 `next/pages/worker.mjs`). The shell's service worker unregisters itself when
 its document comes back 410, so nobody stays pinned to the cached preview.
-Leave it so for a few weeks (bookmarks, crawlers), then delete the Worker and
+A route allowlist such as `["/next/sectionals/*"]` is insufficient: other
+static assets bypass the retirement handler. Leave it so for a few weeks
+(bookmarks, crawlers), then delete the Worker and
 its custom domain. `tiles-beta` and `data-beta.archive.aero` can go at the same
 time unless the bucket behind them is still production's (it is, for
 `charts-beta`: keep the bucket, drop only the preview Worker).

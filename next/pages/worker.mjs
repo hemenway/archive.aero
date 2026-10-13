@@ -1,12 +1,12 @@
 // Edition pages for the next shell: a Cloudflare Worker in front of the shell's
 // static assets that answers /<base>sectionals/chart/<slug>/<date> with the
 // shell page rendered for that one chart (next/pages/chart-page.mjs). Every
-// other path is left to the asset handler (the beta's wrangler.jsonc routes
-// only the edition prefix here with run_worker_first).
+// other path is left to the asset handler. All paths run through this Worker
+// so a retired preview cannot serve static assets around the 410 response.
 //
 // At the apex (next/site/wrangler.jsonc, route archive.aero/*) the Worker runs
 // first for every request, and a path the assets do not hold - /about, /atc/,
-// /classic/, the legacy viewer's files - goes on to the zone origin (GitHub
+// the older static files - goes on to the zone origin (GitHub
 // Pages) with a plain fetch, so the static pages keep their home. That is
 // ORIGIN_FALLTHROUGH="1"; without it a missing asset is the assets' own 404.
 //
@@ -109,13 +109,16 @@ export async function handle(request, env, ctx, { fetcher = fetch } = {}) {
   if (base === null || !/^\/(?:[\w-]+\/)*$/.test(base)) return assetsOrOrigin(request, env, fetcher);
   const config = await loadConfig(env, url.origin, base);
   if (!config) return assetsOrOrigin(request, env, fetcher);
-  if (airport) return typeof config.airports === 'string' && config.airports ? airportPage(request, env, url, base, config, fetcher) : assetsOrOrigin(request, env, fetcher);
+  // Same-zone fetches can bypass the tiles Worker's route and hit its R2
+  // origin instead. The service binding preserves bucket routing for SSR.
+  const dataFetch = env.DATA ? (input, init) => env.DATA.fetch(input, init) : fetcher;
+  if (airport) return typeof config.airports === 'string' && config.airports ? airportPage(request, env, url, base, config, dataFetch) : assetsOrOrigin(request, env, fetcher);
   if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
   const route = canonicalChartPath(url.pathname.slice(at));
   if (!route) return notFound(env, url.origin);
   // Aliases are permanent 301s to the one canonical form (URI-POLICY rules 1, 5, 6).
   if (route.redirect) return Response.redirect(`${url.origin}${base}${route.redirect}${url.search}`, 301);
-  const indexResponse = await fetcher(`${config.charts}${route.slug}.json`, { cf: { cacheEverything: true, cacheTtl: 86400 } });
+  const indexResponse = await dataFetch(`${config.charts}${route.slug}.json`, { cf: { cacheEverything: true, cacheTtl: 86400 } });
   if (indexResponse.status === 404) return notFound(env, url.origin);
   if (!indexResponse.ok) return new Response('Chart index unavailable', { status: 502, headers: { 'cache-control': 'no-store' } });
   const model = describe(await indexResponse.json(), route.date);

@@ -71,7 +71,8 @@ worklists/helper_prompt.md
 # GitHub Pages publication artifact
 /_site/
 Donation List.numbers
-/beta
+/beta/*
+!/beta/wrangler.jsonc
 
 # The apex shell build and Wrangler state (next/site/wrangler.jsonc); rebuilt from next/build.mjs
 /next/site/dist/

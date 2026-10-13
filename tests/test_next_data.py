@@ -299,6 +299,10 @@ class NextDataTests(unittest.TestCase):
             self.assertEqual(result['sitemap'],{'file':'sitemap-sectionals.xml','urls':2})
             self.assertEqual(xml.count('<url>'),2); self.assertIn('<loc>https://archive.aero/sectionals/chart/boston/1953-06-01</loc>',xml)
             self.assertNotIn('1954-06-01',xml,'an untiled edition is a 404, never in the sitemap')
+            duplicate = dict(b['charts'][0], e='1953-11-01')
+            dedup_xml, count = sitemap_xml({'boston': dict(b, charts=b['charts'] + [duplicate])}, 'https://archive.aero')
+            self.assertEqual(count, 2, 'alternative end dates share one canonical edition page')
+            self.assertEqual(dedup_xml.count('<url>'), 2)
             # Without --og-manifest the index is unchanged (no og key at all) and no sitemap is written.
             plain=build_overlays(None,Path(tmp,'t.json'),Path(tmp,'p.json'),Path(tmp,'plain'))
             self.assertNotIn('og',plain); self.assertFalse(Path(tmp,'plain','sitemap-sectionals.xml').exists())

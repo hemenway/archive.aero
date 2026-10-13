@@ -6,7 +6,7 @@
 Worker as `main`, `run_worker_first: true`) on the zone route `archive.aero/*`.
 The apex DNS record still points at GitHub Pages behind the Cloudflare proxy:
 every path the assets do not hold (`/about`, `/contribute`, `/sources`, the
-sitemaps, `/classic/` and the legacy `/assets/`) is a 404 in the assets that the
+root sitemap index and the older `/assets/`) is a 404 in the assets that the
 Worker turns into a plain `fetch` to that origin (`ORIGIN_FALLTHROUGH="1"`).
 `/atc/*` keeps its own, more specific route. Rollback is removing the route (or
 `npx wrangler delete` in `next/site/`): `/` is the Pages page again at once.
@@ -18,8 +18,10 @@ Data: the reslice's hashed archives stay in the bucket they were uploaded to,
 `charts` (`bucketFor()` routes hashed keys and `next/*` there), so the manifest
 points at `data.archive.aero` and nothing was copied. Airport pages
 (`/airports/<ident>`, `next/pages/airport-page.mjs`) ride the same Worker. The
-preview host is retired with `RETIRED="1"` (next/BETA.md). The sections below
-are the plan this followed; the runbook is worklists/18_apex_cutover.md.
+preview host is retired with `RETIRED="1"` and `run_worker_first: true` (next/BETA.md).
+The site Worker uses its `DATA` service binding to `tiles` for server-rendered
+chart and airport records; a public same-zone fetch bypasses the tiles route
+and reaches the old R2 origin. The runbook is worklists/18_apex_cutover.md.
 
 
 Serve the built shell with Cloudflare Workers Static Assets. For the preview the
@@ -50,8 +52,8 @@ headers; serving assets directly avoids adding another origin dependency.
 
 `/<base>sectionals/chart/<slug>/<date>` is served by `next/pages/worker.mjs`
 running ahead of the asset handler (`beta/wrangler.jsonc`: `main`, the
-`ASSETS` binding and `run_worker_first: ["/next/sectionals/*"]`; every other
-path never reaches the Worker). The Worker reads `<base>chart-pages.json`,
+`ASSETS` binding and `run_worker_first: true`; retirement must intercept
+static pages as well as edition pages). The Worker reads `<base>chart-pages.json`,
 which `build.mjs` writes beside the page: the chart-index URL from the
 manifest, the page's CSP, the links origin and the robots policy (a preview
 host built with `--links-origin` gets `noindex, nofollow`). It fetches the
@@ -156,9 +158,8 @@ retain them in build artifacts; they are not precached or preloaded.
 4. For the switch, build with `--base /` and publish the shell at `/`; the
    generated `_headers` rules then target the root. Register the root worker only
    after acceptance. Publish HTML last, after every referenced hash is reachable.
-   Retain the old viewer at a stable rollback path, and change the
-   unsupported-browser fallback from `/` to that path when `/` becomes the new
-   shell. *Done 2026-10-12 without a retained viewer: `next/site/wrangler.jsonc`;
+   A browser without WebGL2 receives a message and an About link.
+   *Done 2026-10-12 without a retained viewer: `next/site/wrangler.jsonc`;
    data first (manifest, chart index, airports to the hashed bucket; cards to
    `charts`), then the tiles Worker with its second bucket, then the push, then
    the site Worker.*
@@ -167,5 +168,6 @@ retain them in build artifacts; they are not precached or preloaded.
    window. To retire `/next/`, serve its document with 410 for at least the
    rollback window: the preview worker unregisters itself on seeing it.
 
-No `.github/workflows`, `site-files.json`, `CNAME`, or deployment configuration is
-changed by this branch. Hosting changes require a later deployment task.
+Deployment verification and current data hashes are recorded in
+`worklists/18_apex_cutover.md`. Site and beta deployment commands use the pinned
+Wrangler installation under `next/`.

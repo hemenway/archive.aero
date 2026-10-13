@@ -6,8 +6,8 @@ key mirrors the page: `sectionals/chart/<slug>/<date>.jpg`, written under --out 
 uploaded next to the chart artifact later (this script never touches R2).
 
 Inputs are the per-location chart index files (one JSON per slug, see
-scripts/next_build_overlays.py) and the beta tile endpoint
-`https://data-beta.archive.aero/t/<pm>/{z}/{x}/{y}` (256 px WebP, 204 = no tile).
+scripts/next_build_overlays.py) and the production tile endpoint
+`https://data.archive.aero/t/<pm>/{z}/{x}/{y}` (256 px WebP, 204 = no tile).
 A date's page is the first chart row with that date (next/pages/chart-page.mjs
 `describe`), and a page exists only when that row carries `pm`; a half-sheet pair
 (`pm` is a list) composites both halves into the one image.
@@ -51,7 +51,7 @@ MIN_QUALITY = 70          # dense modern sheets can exceed TARGET_BYTES rather t
 INSET = 0.10              # fraction of the sheet's content box trimmed on each side (collars, legends)
 DETAIL = 0.85             # the zoom must give >= 1200 px for this fraction of the bbox width (the inset view stays native)
 USER_AGENT = 'archive.aero-og/1.0 (+https://archive.aero/contribute)'
-TILE_BASE = 'https://data-beta.archive.aero/t/'
+TILE_BASE = 'https://data.archive.aero/t/'
 MAX_IN_FLIGHT = 32        # tile requests in flight, process-wide (the Worker fronts R2 and caches at the edge)
 
 # styles.css dark theme tokens: --bg-dark, --text-light, --text-muted (0.6 white).

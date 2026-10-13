@@ -1,150 +1,147 @@
-# 18 — The next viewer at the apex (cutover runbook)
+# 18 — Apex cutover and production rebuild
 
-**Prepared 2026-10-12, revised the same evening** after three decisions: the
-reslice's hashed archives stay in the bucket they were uploaded to (`charts-beta`
-becomes production's second bucket; nothing is copied), there is no legacy
-viewer page, and `beta.archive.aero` is retired behind a 410 once the apex is
-live. Code is on `main`. The steps below touch the account (R2 writes, Worker
-deploys, the push) and are run by hand; each is idempotent. Order: **data,
-then the tiles Worker, then the push, then the site Worker** — the page must
-never reference a hash that is not yet reachable (next/HOSTING.md).
+## Status — 2026-10-12
 
-What is where:
+The apex shell and airport/edition pages are deployed. `beta.archive.aero`
+returns 410 for every path, including static assets. There is no `/classic/`
+viewer. All 7,306 stale permanent chart keys were refreshed, including the two
+2016 repairs below. The final report has **zero stale, ready or pending keys**;
+7,417 keys have upload receipts. The 20 documented exceptions remain untouched
+(Boston 1957 held, 10 retired and 9 renamed inset addresses).
 
-| What | Where it is | Where it goes |
-|---|---|---|
-| Hashed era archives + chart artifacts (3,761 + 7,389, 359 GB) | `r2:charts-beta/sectionals/` | stays; served by `tiles` as `BUCKET_HASHED` |
-| Hashed basemap, airspace, airfields, pins `pins.e8fbe410908f` | `r2:charts-beta/` | stays |
-| Chart cards, 7,066 JPEGs (1.15 GB) | `/Volumes/projects/archive-next/og/sectionals/` | `r2:charts/sectionals/` (plain keys, `charts`) |
-| Manifest `manifest.7a3ad0e24662.json`, chart index `charts.958e6035f0fa/` (151 files), airport records `airports.370ad3ae35b6/` (51 files) | `~/archive-next-build/prod/next/` | `r2:charts-beta/next/` |
-| Root shell build (`sitemap-sectionals.xml` 7,083 URLs, `sitemap-airports.xml` 50 URLs inside) | `next/site/dist/` | the site Worker's assets |
+- Site Worker: `archive-aero-site`, route `archive.aero/*`, version
+  `32e27843-d1b2-4411-a8bf-567d2029c2d7`.
+- Tiles Worker: `tiles`, version `acb3c192-aae2-4c87-91c9-1485b314ef08`,
+  deployed after the completed refresh and timeline upload with
+  `CHART_CACHE_VERSION="2026-10-12-reslice"`.
+- The site Worker binds `DATA` to `tiles`. Server-rendered chart and airport
+  records must use that service binding: public same-zone requests bypassed
+  the tiles route and returned 404 from its R2 origin.
+- Beta Worker: `archive-aero-beta`, version
+  `8d64267d-e43d-4e18-ada4-2f4e5190cd90`; `RETIRED="1"` and
+  `assets.run_worker_first: true`. The rebuild/retirement guide is `next/BETA.md`.
+- Production manifest: `next/manifest.56cf6d2fc143.json`.
+- Chart index: `next/charts.0e4fcec7abc2/` (150 records).
+- Airport records: `next/airports.acf9bdccccc6/` (50 airports plus index).
+- Pin shards: `next/pins.a4d88f6bc08b/`.
+- Cards: **7,120 JPEGs, every eligible edition page**. The earlier prepared
+  timeline omitted 52 newly published editions; their cards and the two
+  repaired 2016 cards were generated during the cutover.
+- Sitemaps: 7,120 unique edition URLs and 50 airport URLs. Alternate end-date
+  records share a canonical edition address and are deduplicated.
+- Metadata bundle: `sectionals/metadata-16bcc4d8.bundle` (3,761 eras), uploaded;
+  the origin viewer's fingerprinted build points to it.
 
-## 1. Data
+The reslice's hashed archives remain in `charts-beta`, production's immutable
+bucket. `tiles` routes hashed keys and `next/*` to `BUCKET_HASHED`. `charts`
+retains permanent chart keys, cards, timeline JSON, metadata bundles and the
+older era archives. No bulk bucket copy was performed.
 
-```bash
-rclone copy /Volumes/projects/archive-next/og/sectionals r2:charts/sectionals --include '*.jpg' --s3-no-head --transfers 16 --stats 30s --stats-one-line
-```
+## The two 2016 repairs
 
-```bash
-rclone copy ~/archive-next-build/prod/next/charts.958e6035f0fa r2:charts-beta/next/charts.958e6035f0fa --s3-no-head
-```
+Denver 2016-01-07 and San Francisco 2016-08-18 had malformed NARA GeoTIFF
+transforms (~0.0000847 metres/pixel). Their original FAA ZIPs already on disk
+have ~42.33 metres/pixel, matching raster dimensions and matching sampled
+pixels. The two malformed duplicate catalog rows were retired after backing
+up the catalog; surviving ZIP rows carry provenance notes. Raw sources were
+not modified. Full-sheet warps were visually inspected before publication.
 
-```bash
-rclone copy ~/archive-next-build/prod/next/airports.370ad3ae35b6 r2:charts-beta/next/airports.370ad3ae35b6 --s3-no-head
-```
+New hashed objects, also published to their existing permanent addresses:
 
-```bash
-rclone copy ~/archive-next-build/prod/next/manifest.7a3ad0e24662.json r2:charts-beta/next/ --s3-no-head
-```
+- `sectionals/chart/denver/2016-01-07.82dba6cf01b8.pmtiles`
+- `sectionals/chart/san_francisco/2016-08-18.3ccdcecdef23.pmtiles`
 
-Check: `rclone size r2:charts/sectionals --include '*.jpg' --json` → 7,066 objects;
-`rclone lsf r2:charts-beta/next/` lists the three new names.
+Both are z0–11 with normal geographic bounds. Corrected records supersede
+the bad records in the reslice's append-only hashed plan. Rebuild evidence and
+sources are under `~/archive-next-build/repair-2016/`. This repairs full-sheet
+artifacts/cards; the older mosaic omissions remain in worklist 01.
 
-## 2. The tiles Worker — now two buckets
+## Verification and evidence
 
-`worker/wrangler.toml` binds `charts` as `BUCKET` and `charts-beta` as
-`BUCKET_HASHED`; `src/index.js` routes hashed keys and `next/*` to the second
-(and logs z/x/y for `/t/` reads). Deploy, then smoke both halves:
+`worklists/data/apex_cutover_2026-10-12/` contains publication logs, pre-refresh
+receipt backup, repair plan, browser screenshots, all-airport HTTP checks and
+test logs. Canonical chart receipts remain in
+`worklists/data/chart_pmtiles/uploads.jsonl`.
 
-```bash
-cd worker && npm run deploy
-```
+Passed: 93 stub browser tests, 8 real-module browser tests, 75 Worker tests,
+21 page tests, 71 data-plane tests, and the Python publication/data/airport
+builder suites. Production browser checks covered root, Boston airport and
+edition pages, both repaired 2016 charts, and the Denver airport on mobile;
+they rendered tiles without console errors or failed requests. All 50 airport
+pages returned 200 with Airport JSON-LD. The metadata bundle passed 25 remote
+era byte comparisons. The final timeline response matches the local file byte
+for byte; sampled permanent archives return matching sizes and repaired bounds.
 
-```bash
-curl -sI https://data.archive.aero/t/sectionals/1928-04-01_to_1929-11-01.25a9b218f55b/5/8/12 | head -5; curl -sI https://data.archive.aero/next/manifest.7a3ad0e24662.json | head -3; curl -sI https://data.archive.aero/sectionals/timeline_data.json | head -2
-```
+The publisher now supports `--workers`, forces replacement even when size and
+mtime match, requires matching SHA-256 metadata, and flushes/fsyncs each
+verified receipt. Interrupted batches resume from their last receipt.
 
-Expected: 200/204 with `cache-control: public, max-age=31536000, immutable` for
-the first two (hashed bucket), 200 for the third (plain bucket).
+`CHART_CACHE_VERSION` in `worker/wrangler.toml` versions the edge-cache entries
+for permanent chart keys/cards and `timeline_data.json`, including both block
+and whole-response caches. Bump it **after** a replacement batch and timeline
+upload, then deploy `tiles`. Hashed archives keep their existing cache entries.
+Browser caches of plain addresses retain their previously issued HTTP TTL;
+the new viewer uses the immutable hashed addresses.
 
-## 3. Push main (the Pages deploy carries the new sitemap index and the re-fingerprinted viewer)
+## Repeat the production data build
 
-```bash
-git push origin main
-```
+Persistent build inputs now live under `~/archive-next-build/prod/`, replacing
+the handoff's temporary Codex workspace path:
 
-## 4. The site Worker — the switch
+- `stage/`: sparse metadata stubs for the chosen era archives, basemap/airspace.
+- `work/plan.json`: latest uploaded records from the reslice hashed plan.
+- `work/timeline.json`: current timeline, with chart links restricted to the
+  artifacts present in that plan.
+- `next/`: generated immutable manifest, indexes, cards references and sitemaps.
 
-```bash
-cd next/site && npx wrangler deploy
-```
-
-Verify from the apex:
-
-```bash
-for p in / /about /contribute /sources /sitemap.xml /sitemap-sectionals.xml /sitemap-airports.xml /robots.txt /atc/ /sectionals/chart/boston_ma/1933-03-01 /sectionals/chart/Boston_MA/1933-03-01/ /sectionals/chart/boston_ma/1999-01-01 /airports/kbos /airports/KBOS /airports/kxyz; do printf '%-48s ' "$p"; curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' "https://archive.aero$p"; done
-```
-
-Expected: `/` 200 with a `content-security-policy` header and the manifest hash
-in the page; `/about` `/contribute` `/sources` `/sitemap.xml` `/robots.txt`
-`/atc/` 200 (Pages or the ATC Worker, untouched); both sitemaps 200; the edition
-page and `/airports/kbos` 200; the mixed-case spellings 301 to lowercase; the
-untiled date and the unknown ident 404.
-
-```bash
-curl -s https://archive.aero/sectionals/chart/boston_ma/1933-03-01 | grep -o '<meta property="og:image" content="[^"]*"'; curl -s https://archive.aero/airports/kbos | grep -o 'data-airport="[^"]*" data-lat="[^"]*"'
-```
-
-Then in a browser: `https://archive.aero/` paints charts, "View alone" changes
-the address, `https://archive.aero/airports/kbos` opens on Logan with the
-decades panel, the console shows no CSP error (Plausible and the Cloudflare
-beacon both load), and the service worker registered at `/`. Resubmit
-`https://archive.aero/sitemap.xml` in Search Console.
-
-## 5. After the switch
-
-Refresh the permanent per-chart keys from the reslice (7,306 published from the
-August warps + 3 never published; server-side copies `charts-beta` → `charts`,
-same keys, sha256-verified, receipts appended; ~1–2 h):
-
-```bash
-~/venv/bin/python scripts/publish_chart_pmtiles_from_reslice.py --refresh --copy
-```
-
-then `~/venv/bin/python scripts/build_timeline_data.py`, upload
-`timeline_data.json` (CLAUDE.md recipe) and `scripts/build_coverage.py`.
-Still held/unpublishable: Boston 1957-06-01 (worklist 04), 10 retired and 9
-renamed inset keys (listed by the script's report).
-
-Retire the beta (next/BETA.md): in `beta/wrangler.jsonc` set `"RETIRED": "1"`,
-then `cd beta && npx wrangler deploy`; every path answers 410, the preview's
-service worker unregisters. After a few weeks delete the `archive-aero-beta`
-Worker and `beta.archive.aero`; keep `tiles-beta` only if another preview is
-coming (the bucket behind it is production's and stays regardless).
-
-Later, once nothing reads them: the 4,031 pre-reslice era archives in `charts`
-(`sectionals/<era>.pmtiles`, ~350 GB) served only the Leaflet viewer and can go;
-the metadata bundles stay (the heatmap needs them). The Leaflet viewer's own
-files (`index.html`, `src/`, `vendor/`, `assets/`) can leave `site-files.json`
-once the apex has been the shell for a while.
-
-Two edition pages have no card because their artifacts are broken (bbox a
-few metres wide): `denver/2016-01-07`, `san_francisco/2016-08-18` — re-warp.
-
-## Rollback
+When publication/catalog state changes, regenerate `timeline_data.json` and
+`coverage.json`, refresh the staged plan/timeline, then build overlays:
 
 ```bash
-cd next/site && npx wrangler delete
+~/venv/bin/python scripts/next_build_overlays.py --airfields airfields.json --timeline ~/archive-next-build/prod/work/timeline.json --plan ~/archive-next-build/prod/work/plan.json --out ~/archive-next-build/prod/next --og-manifest /Volumes/projects/archive-next/og/manifest.jsonl --sitemap https://archive.aero
 ```
 
-`/` is the Pages page again at once (the Leaflet viewer, until its files leave
-`site-files.json`). Nothing in R2 needs undoing; the tiles Worker's second
-bucket is additive.
-
-## Rebuilding the production data
+Render any missing cards with `scripts/next_og_images.py --index <new charts
+folder> --out /Volumes/projects/archive-next/og`, then repeat the overlays build
+so it includes those cards. The renderer defaults to the production tiles host.
+Build airports with `scripts/next_build_airports.py --charts <new charts folder>
+--timeline timeline_data.json --out ~/archive-next-build/prod/next`.
 
 ```bash
-P=~/archive-next-build/prod/next; C=~/Documents/Codex/2026-10-12/upd/work/data; ~/venv/bin/python scripts/next_build_overlays.py --airfields airfields.json --timeline $C/work/timeline.json --plan $C/work/plan.json --out $P --og-manifest /Volumes/projects/archive-next/og/manifest.jsonl --sitemap https://archive.aero && ~/venv/bin/python scripts/next_build_airports.py --charts $(ls -d $P/charts.*/) --timeline timeline_data.json --out $P --sitemap https://archive.aero && ~/venv/bin/python scripts/next_build_manifest.py --dir $C/stage --coverage coverage.json --overlays $P/overlays.json --airports $P/airports.json --out $P
+~/venv/bin/python scripts/next_build_manifest.py --dir ~/archive-next-build/prod/stage --coverage coverage.json --overlays ~/archive-next-build/prod/next/overlays.json --airports ~/archive-next-build/prod/next/airports.json --out ~/archive-next-build/prod/next
 ```
+
+Upload cards to `r2:charts/sectionals/`; upload the new pins, charts, airports
+folders and manifest to `r2:charts-beta/next/`. Upload data **before** the shell.
+Then rebuild with the emitted manifest name (the current example follows):
 
 ```bash
-P=~/archive-next-build/prod/next; M=$(ls -t $P/manifest.*.json | head -1); node next/build.mjs --manifest https://data.archive.aero/next/$(basename $M) --manifest-file $M --base / --outdir next/site/dist --sitemap $P/sitemap-sectionals.xml --sitemap $P/sitemap-airports.xml
+node next/build.mjs --manifest https://data.archive.aero/next/manifest.56cf6d2fc143.json --manifest-file ~/archive-next-build/prod/next/manifest.56cf6d2fc143.json --base / --outdir next/site/dist --sitemap ~/archive-next-build/prod/next/sitemap-sectionals.xml --sitemap ~/archive-next-build/prod/next/sitemap-airports.xml
+cd next
+npm ci --ignore-scripts
+npm run deploy:site
 ```
 
-`$C/stage` is the sparse-stub stage of the complete reslice (the 2026-10-12
-Codex refresh; `scripts/next_stage_beta.py` rebuilds one from
-`slicer-runs/2026-10-03_reslice/hashed/`). Cards: `scripts/next_og_images.py
---index <charts dir> --out /Volumes/projects/archive-next/og` (resumable;
-`--only slug`). Upload the new `next/` files (step 1), redeploy the site Worker
-(step 4). The real build's critical JavaScript is within 110 bytes of its
-50 KB budget: anything new in `next/app/main.js` goes in the cards chunk.
+The real build is 51,087 bytes of critical gzipped JavaScript against a 51,200
+byte budget. New shell functionality belongs in the lazy cards chunk.
+
+## Permanent chart refresh
+
+```bash
+~/venv/bin/python scripts/publish_chart_pmtiles_from_reslice.py --refresh --copy --workers 16
+~/venv/bin/python scripts/build_timeline_data.py
+~/venv/bin/python scripts/build_coverage.py
+```
+
+Upload `timeline_data.json` to `charts/sectionals/timeline_data.json`, bump the
+chart cache revision and deploy `tiles`. A final report without `--copy` must
+show zero ready/stale keys. Boston 1957 remains held until its repaired artifact
+is sliced; the 10 retired and 9 renamed inset addresses are preserved.
+
+## Rollback and later retirement
+
+Removing the `archive-aero-site` route restores the origin viewer. Keep its
+assets and old era archives through the rollback window; metadata bundles also
+remain necessary for historical analytics. Do not delete `charts-beta`: it is
+production storage. Beta stays behind 410 for the retirement window; removing
+its Worker/domain later is separate from deleting any data bucket.

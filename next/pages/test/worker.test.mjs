@@ -177,3 +177,28 @@ test('without airport records in the config the address passes to the assets', a
   const response = await handle(new Request(ORIGIN + '/airports/kbos'), env, {}, { fetcher: async () => { throw new Error('no record fetch'); } });
   assert.equal(await response.text(), 'asset:/airports/kbos');
 });
+
+test('server-rendered chart and airport records use the tiles service binding', async () => {
+  const calls = [];
+  const env = {
+    ORIGIN_FALLTHROUGH: '1',
+    ASSETS: { async fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === '/chart-pages.json') return Response.json({ ...config, base: '/' });
+      return path === '/' ? new Response(shell) : new Response('', { status: 404 });
+    } },
+    DATA: { async fetch(input) {
+      calls.push(input);
+      return Response.json(input.includes('/airports.') ? airport : index);
+    } }
+  };
+  const fetcher = async input => {
+    assert.ok(input instanceof Request, 'record reads must not use public fetch');
+    return new Response('origin');
+  };
+  for (const path of ['/airports/kbos', '/sectionals/chart/boston/1953-12-01']) {
+    assert.equal((await handle(new Request(ORIGIN + path), env, {}, { fetcher })).status, 200);
+  }
+  assert.equal(calls.length, 2);
+  assert.equal(await (await handle(new Request(ORIGIN + '/about'), env, {}, { fetcher })).text(), 'origin');
+});

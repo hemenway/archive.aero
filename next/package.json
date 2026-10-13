@@ -1,1 +1,11 @@
-{"private":true,"type":"module"}
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy:site": "wrangler deploy --config site/wrangler.jsonc",
+    "deploy:beta": "wrangler deploy --config ../beta/wrangler.jsonc"
+  },
+  "devDependencies": {
+    "wrangler": "4.149.0"
+  }
+}

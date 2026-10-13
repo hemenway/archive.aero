@@ -5,8 +5,8 @@
   // Cloudflare proxy), and this Worker runs ahead of it for every request. The shell's own files
   // are static assets here (dist/ is a `node next/build.mjs --base / --outdir next/site/dist`
   // build, gitignored); the edition pages /sectionals/chart/<slug>/<date> are rendered by
-  // next/pages/worker.mjs; anything else — /about, /contribute, /sources, the sitemaps, /classic/
-  // (the Leaflet viewer) and its /assets/ — is a 404 in the assets and goes on to the origin
+  // next/pages/worker.mjs; anything else — /about, /contribute, /sources and /assets/ —
+  // is a 404 in the assets and goes on to the origin
   // (ORIGIN_FALLTHROUGH). /atc/* has its own, more specific route (worker-atc) and never reaches
   // this Worker. Rollback: `npx wrangler delete` (or remove the route in the dashboard) and / is
   // the Pages viewer again within seconds; the hashed assets of this build stay reproducible.
@@ -20,6 +20,7 @@
   "preview_urls": false,
   "routes": [{ "pattern": "archive.aero/*", "zone_name": "archive.aero" }],
   "main": "../pages/worker.mjs",
+  "services": [{ "binding": "DATA", "service": "tiles" }],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

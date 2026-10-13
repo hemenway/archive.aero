@@ -257,6 +257,27 @@ test('a content-hashed key is immutable; a plain key keeps the one-day lifetime'
   }
 });
 
+test('a chart refresh invalidates full responses and blocks without flushing hashed archives', async t => {
+  const h = harness(t);
+  for (const [path, headers] of [
+    ['/sectionals/chart/boston/1953-12-01', { range: 'bytes=0-15' }],
+    ['/sectionals/chart/boston/1953-12-01', {}],
+    ['/sectionals/timeline_data.json', {}],
+  ]) {
+    h.env.CHART_CACHE_VERSION = 'before'; h.state.etag = '"before"';
+    await h.request(headers, 'GET', path);
+    h.env.CHART_CACHE_VERSION = 'after'; h.state.etag = '"after"';
+    const fresh = await h.request(headers, 'GET', path);
+    assert.equal(fresh.response.headers.get('x-cache'), 'MISS');
+    assert.equal(fresh.response.headers.get('etag'), '"after"');
+    assert.equal((await h.request(headers, 'GET', path)).response.headers.get('x-cache'), 'HIT');
+  }
+  const hashed = '/sectionals/chart/boston/1953-12-01.0123456789ab.pmtiles';
+  await h.request({ range: 'bytes=0-15' }, 'GET', hashed);
+  h.env.CHART_CACHE_VERSION = 'later';
+  assert.equal((await h.request({ range: 'bytes=0-15' }, 'GET', hashed)).response.headers.get('x-cache'), 'HIT');
+});
+
 test('every failed response is logged to tile_errors; successes are not', async t => {
   const h = harness(t);
   const points = [];
