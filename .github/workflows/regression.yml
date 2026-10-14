@@ -21,7 +21,7 @@ jobs:
       - name: Test the catalog corner-GCP fit check
         run: python3 -m unittest discover -s tests -p 'test_dole_gcp_fit.py' -v
       - run: npx playwright install --with-deps chromium webkit
-      - run: npm test
+      - run: xvfb-run --auto-servernum npm test
       - name: Browser tests against the minified deploy artifact
         run: npm run test:browser:site
       - uses: actions/upload-artifact@v4
