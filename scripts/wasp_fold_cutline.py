@@ -47,7 +47,7 @@ MAX_MARGIN = 200   # widest blank margin we'd believe past the paper edge, px
 CLAMP_HI = 50      # upper clamp percentile: faces with a thin printed overlap gap past p50
 BIAS = 20          # px pushed into the ink past the print edge
 SMOOTH = 9         # running-median width over edge samples (kills spikes)
-MAX_WALK = 1500    # deepest margin we'd believe, px
+MAX_WALK = 1500    # deepest margin we'd believe, px (--max-walk overrides)
 
 
 def find_source(filename: str) -> Path:
@@ -115,29 +115,44 @@ def smooth(vals):
     return [float(np.median(vals[max(0, i - k):i + k + 1])) for i in range(len(vals))]
 
 
-def trace(ds, fold_edge, clamp_hi=None):
+def trace(ds, fold_edge, clamp_hi=None, max_walk=None):
     """Ring of raw-frame pixel points, clockwise from the top-left: the
     fold edge traced, the other three left at the image bounds (their
     neat lines are the outline's job; tracing them too cut 20 px inside
-    the neat line and lost a sliver the outline would have kept)."""
+    the neat line and lost a sliver the outline would have kept).
+
+    The band along the fold edge (max_walk deep, the whole edge long) is
+    read from the raster once: a per-column read of a 3.6 GB 600 dpi scan
+    over SMB decodes every strip for every column (hours per face), while
+    one window read is a few hundred MB."""
+    walk = max_walk or MAX_WALK
     w, h = ds.RasterXSize, ds.RasterYSize
     half = BLOCK // 2
+    scale = 1.0 if ds.GetRasterBand(1).DataType == gdal.GDT_Byte else 1 / 257.0
     if fold_edge in ("top", "bottom"):
+        depth = min(walk, h)
+        y0 = 0 if fold_edge == "top" else h - depth
+        win = ds.ReadAsArray(0, y0, w, depth)[:3]          # 3 x depth x w, as stored
         xs = list(range(half, w - half, STEP)); pairs = []
         for x in xs:
-            strip = luminance_strip(ds, x - half, 0, BLOCK, h)
-            pairs.append(edges((strip if fold_edge == "top" else strip[::-1])[:MAX_WALK]))
+            blk = win[:, :, x - half:x + half].astype(np.float32) * scale
+            strip = 0.299 * blk[0] + 0.587 * blk[1] + 0.114 * blk[2]
+            pairs.append(edges(strip if fold_edge == "top" else strip[::-1]))
         vals, margin = boundary(pairs, clamp_hi); vals = smooth(vals)
-        print(f"    fold edge {fold_edge}: blank margin {margin:.0f} px")
+        print(f"    fold edge {fold_edge}: blank margin {margin:.0f} px (walk {depth} px)")
         if fold_edge == "top":
             return list(zip(xs, vals)) + [(w, 0), (w, h), (0, h)]
         return [(0, 0), (w, 0)] + list(zip(xs, [h - v for v in vals]))[::-1]
+    depth = min(walk, w)
+    x0 = 0 if fold_edge == "left" else w - depth
+    win = ds.ReadAsArray(x0, 0, depth, h)[:3]              # 3 x h x depth
     ys = list(range(half, h - half, STEP)); pairs = []
     for y in ys:
-        strip = luminance_strip(ds, 0, y - half, w, BLOCK).T
-        pairs.append(edges((strip if fold_edge == "left" else strip[::-1])[:MAX_WALK]))
+        blk = win[:, y - half:y + half, :].astype(np.float32) * scale
+        strip = (0.299 * blk[0] + 0.587 * blk[1] + 0.114 * blk[2]).T
+        pairs.append(edges(strip if fold_edge == "left" else strip[::-1]))
     vals, margin = boundary(pairs, clamp_hi); vals = smooth(vals)
-    print(f"    fold edge {fold_edge}: blank margin {margin:.0f} px")
+    print(f"    fold edge {fold_edge}: blank margin {margin:.0f} px (walk {depth} px)")
     if fold_edge == "left":
         return [(0, 0), (w, 0), (w, h)] + list(zip(vals, ys))[::-1]
     return [(0, 0), (w, 0)] + list(zip([w - v for v in vals], ys)) + [(0, h)]
@@ -184,8 +199,33 @@ def outline_geometry(row):
     return feat.GetGeometryRef().Clone()
 
 
-def build_wkt(row, ds, fold_edge, clamp_hi=None):
-    ring_px = trace(ds, fold_edge, clamp_hi)
+def fold_crop(row, ds, fold_edge, ring_px, slack=40):
+    """The row's crop box with its fold-edge side moved to the deepest traced
+    print edge (+ slack px outward), so the full-sheet chart artifact, which
+    takes no cutline, also loses the scanner background and blank margin
+    beyond the fold. The other three sides keep the existing crop (or the
+    image bounds). Unrotated scans only: crop and GCP pixels share the raw frame."""
+    if dole_v2.row_rotation(row) != 0:
+        raise SystemExit(f"{row['filename']}: --set-crop needs an unrotated scan")
+    W, H = ds.RasterXSize, ds.RasterYSize
+    cur = str(row.get("crop") or "").strip()
+    x0, y0, x1, y1 = (int(v) for v in cur.split(",")) if cur else (0, 0, W, H)
+    traced = [pt for pt in ring_px if pt not in ((0, 0), (W, 0), (W, H), (0, H))]
+    if fold_edge == "bottom":
+        y1 = min(H, int(max(y for _, y in traced)) + BIAS + slack)
+    elif fold_edge == "top":
+        y0 = max(0, int(min(y for _, y in traced)) - BIAS - slack)
+    elif fold_edge == "right":
+        x1 = min(W, int(max(x for x, _ in traced)) + BIAS + slack)
+    else:
+        x0 = max(0, int(min(x for x, _ in traced)) - BIAS - slack)
+    return f"{x0},{y0},{x1},{y1}"
+
+
+def build_wkt(row, ds, fold_edge, clamp_hi=None, max_walk=None, set_crop=False):
+    ring_px = trace(ds, fold_edge, clamp_hi, max_walk)
+    if set_crop:
+        row["_fold_crop"] = fold_crop(row, ds, fold_edge, ring_px)
     # GCP pixels are stored in the display frame; trace ran in the raw frame.
     rot = dole_v2.row_rotation(row)
     W, H = ds.RasterXSize, ds.RasterYSize
@@ -219,6 +259,12 @@ def main():
                     help="upper clamp percentile of the margin widths (default %(default)s; "
                          "use 20 for a pair whose georefs disagree at the seam — shallower cut, "
                          "a pale band beats a gap)")
+    ap.add_argument("--max-walk", type=int, default=MAX_WALK,
+                    help="deepest blank margin + background believed past the image edge, px (default "
+                         "%(default)s; the M40 scans end in up to ~5,000 px of white scanner background)")
+    ap.add_argument("--set-crop", action="store_true",
+                    help="also move the row's `crop` fold-edge side to the traced print edge (+40 px), so the "
+                         "full-sheet chart artifact drops the scanner background too")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     rows = dole_v2.load_rows(args.csv)
@@ -232,15 +278,22 @@ def main():
             raise SystemExit(f"{fn}: row is not GCP-ready")
         ds = gdal.Open(str(find_source(fn)))
         edge = fold_edge_for(row, ds) if args.fold_edge == "auto" else args.fold_edge
-        wkt, env = build_wkt(row, ds, edge, args.clamp_hi)
+        wkt, env = build_wkt(row, ds, edge, args.clamp_hi, args.max_walk, args.set_crop)
         print(f"{fn}: half={dole_v2.row_half(row) or '-'} lon {env[0]:.3f}..{env[1]:.3f} "
               f"lat {env[2]:.3f}..{env[3]:.3f} ({len(wkt)} chars)")
+        new_crop = row.pop("_fold_crop", None)
+        if new_crop:
+            print(f"    crop {row.get('crop') or '-'} -> {new_crop}")
         if args.dry_run:
             continue
+        if new_crop:
+            row["crop"] = new_crop
         row["cutline_wkt"] = wkt
         stamp = (f"FOLD-CUTLINE {__import__('datetime').date.today().isoformat()}: cutline_wkt traced "
                  f"along the {edge} (fold) edge, clamp p20-p{args.clamp_hi} ({BLOCK}px-strip luminance walk to the paper edge + the print edge, clamped to the face's p20-p50 margin band, + {BIAS}px into ink) "
-                 f"∩ {row.get('cutline')} outline; scripts/wasp_fold_cutline.py")
+                 f"∩ {row.get('cutline')} outline"
+                 + (f"; crop fold side set to the traced print edge + 40 px ({new_crop})" if new_crop else "")
+                 + "; scripts/wasp_fold_cutline.py")
         # Re-runs replace the previous stamp instead of stacking them.
         note = " | ".join(part for part in (row.get("note") or "").split(" | ")
                           if not part.startswith("FOLD-CUTLINE "))

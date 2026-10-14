@@ -62,6 +62,33 @@ catalog's GCP count. Seward 93 is a replacement-source problem in 01.
 
 ## Dated progress and decisions
 
+> **2026-10-13 (evening) — twelve 1985–1992 eras sliced and published from the eBay
+> batch's georeferenced faces.** The timeline had two eras between 1982 and 1991
+> (Dallas 1982, Cincinnati 1991); the catalog held 23 georef-ready faces there that
+> had never been sliced. Run `/Volumes/projects/slicer-runs/2026-10-13_eighties` on
+> the NUC: Albuquerque 36 north (`1985-11-21`), Dallas 35 south (`1986-01-16`),
+> Denver TAC 25 (`1986-02-13`), and nine WAC pairs (CG-18/19/21 1986, CF-19 1988,
+> CG-20 and CF-17 1991, CH-25, CF-16 and CG-19 1992), 21 full-sheet artifacts, every
+> era re-converted with `-min-zoom 0` (the MCP pipeline does not add slicerctl's
+> z0 floor; the next renderer draws nothing below an archive's min zoom), all
+> alignment probes 0.00 px. **Fold margins:** the M40 scans end in white scanner
+> background, not the dark background `wasp_fold_cutline.py` expected, and the
+> georef tool's Crop button had boxed only the top of most faces. Nine WAC seams
+> were already clean (their crops stop at the print edge); Albuquerque north
+> carried 3,064 px of white below the print, CF-17 north 596 px, and the
+> uncropped CG-18 pair 650/724 px (pale band across the mosaic at 36°N). The tracer
+> now reads the fold-edge window once (43 s per 3.6 GB face instead of hours),
+> takes `--max-walk`, and `--set-crop` moves the crop's fold side to the traced
+> print edge + 40 px so the full-sheet artifact drops the background too; applied
+> to those four faces (backups `pre_eighties_fold_cutlines_2026-10-13.csv`,
+> `pre_fold_cutline_2026-10-13*.csv`), synced as release `20261013-151222`, the
+> three eras re-sliced. Publication via the new `scripts/next_release_run.py`
+> (plan → upload → permanent → stage) plus the worklist-18 overlay/manifest steps;
+> evidence under `~/archive-next-build/2026-10-13-eighties/`. Still dark in that
+> span: the 23 un-georeferenced faces (New Orleans 43/44/45/50, Las Vegas 35,
+> Los Angeles 38, Phoenix 34, Denver 34, Jacksonville 27, Atlanta 25 N,
+> Albuquerque 36 S, Dallas 35 N, five TACs, the 1985 planning chart).
+
 > **2026-10-13 — release published after approval; browser follow-up passed.**
 > All 297 planned objects were read back and verified byte for byte:
 > 12 immutable archives, 11 permanent archive copies, four cards, 267 index files,

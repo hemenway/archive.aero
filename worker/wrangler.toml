@@ -47,7 +47,7 @@ SAMPLE_RATE = "0.05"
 METADATA_BYTES = "1024"
 # Deploy this revision after the completed permanent chart/era refresh and timeline upload.
 # It retires old edge blocks without changing any public chart address.
-CHART_CACHE_VERSION = "2026-10-13-georef"
+CHART_CACHE_VERSION = "2026-10-13-eighties"
 
 # Workers Logs: keep sampled invocation logs (incl. console.error and uncaught
 # exceptions) queryable in the dashboard — without this, error bursts like the

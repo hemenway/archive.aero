@@ -1,6 +1,22 @@
 # 18 — Apex cutover and production rebuild
 
-## Current production — 2026-10-13
+## Current production — 2026-10-13 (evening, eighties release)
+
+Twelve 1985–1992 eras and 21 full-sheet artifacts added (worklist 04 entry of the
+same date). Pointers after this release:
+
+- Production manifest: `next/manifest.229990827e88.json` (3,774 eras).
+- Chart index: `next/charts.ae4a901ac334/`; airport records `next/airports.419050ae8e8d/`;
+  pin shards `next/pins.83c597a524d8/`.
+- Metadata bundle: `sectionals/metadata-9a94f060.bundle`; `dates.csv` 3,774 keys.
+- Tiles Worker `CHART_CACHE_VERSION="2026-10-13-eighties"`.
+- Release inputs and evidence: `~/archive-next-build/2026-10-13-eighties/`
+  (`work/upload-plan.json`, `publication/*.log`, `publication/verified-objects.jsonl`).
+- `scripts/next_release_run.py` now does the plan/upload/permanent/stage phases of
+  "Repeat the production data build" for a slicerd run; the overlay, card,
+  airport, manifest, shell and bundle steps below are unchanged.
+
+## Previous production — 2026-10-13 (georef release)
 
 The georef and recovered-history airspace follow-up is published after explicit
 approval. All 297 planned objects passed full-byte storage readback; public

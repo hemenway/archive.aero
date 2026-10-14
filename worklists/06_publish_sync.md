@@ -99,6 +99,7 @@ The former `/Volumes/drive/pmtiles` mirror remains absent; use actual run paths.
 
 | Date | Recorded result |
 |---|---|
+| 2026-10-13 (evening) | Twelve new 1985–1992 eras + 21 chart artifacts from run `2026-10-13_eighties` (hashed in `charts-beta`, permanent keys in `charts`, 33 objects sha256-verified, 66 served-byte checks); manifest `next/manifest.229990827e88.json` (3,774 eras), bundle `metadata-9a94f060`, twelve new cards, `CHART_CACHE_VERSION=2026-10-13-eighties`. |
 | 2026-10-01 | 17 georef-tool/donation eras + 30 chart artifacts verified and published; see the completed batch report. |
 | 2026-07-21 (`f08a5fb`) | Full July-run publish: 3,658 eras (3,656 new-run keys + 2 retained fallbacks), first metadata bundle; 7 empty sparse mosaics skipped; 23 UInt16 mosaics rescaled. |
 | 2026-07-23 (`5719624`) | 14 broken ranges repaired and republished after sibling-georef and empty-mosaic fixes. |

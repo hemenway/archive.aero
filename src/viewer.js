@@ -24,7 +24,7 @@ const CONFIG = {
   // Single-file metadata bundle: era index + every archive's PMTiles
   // header/directories, so scrubbing needs no per-archive metadata fetches.
   // Rewritten by scripts/build_metadata_bundle.py --update-html; null = CSV only.
-  bundleUrl: 'https://data.archive.aero/sectionals/metadata-61e8c828.bundle',
+  bundleUrl: 'https://data.archive.aero/sectionals/metadata-9a94f060.bundle',
   // Size of the speculative first read of the bundle (preamble + gzipped era
   // index). It sits on the critical path of every boot and arrives on a cold
   // connection, where each doubling of the read costs another slow-start
