@@ -9,7 +9,10 @@ same date). Pointers after this release:
 - Chart index: `next/charts.ae4a901ac334/`; airport records `next/airports.419050ae8e8d/`;
   pin shards `next/pins.83c597a524d8/`.
 - Metadata bundle: `sectionals/metadata-9a94f060.bundle`; `dates.csv` 3,774 keys.
-- Tiles Worker `CHART_CACHE_VERSION="2026-10-13-eighties"`.
+- Site Worker `archive-aero-site` version `4f821a9c-a7a0-4d2a-af12-601a9d704171`; tiles Worker
+  version `c434866c-a051-4739-82eb-69fa1634f462` with `CHART_CACHE_VERSION="2026-10-13-eighties"`.
+  Published 2026-10-13 21:43 (commit `11d662f`); live checks: manifest, bundle, timeline,
+  a CG-18 tile and the CG-18 edition page all 200.
 - Release inputs and evidence: `~/archive-next-build/2026-10-13-eighties/`
   (`work/upload-plan.json`, `publication/*.log`, `publication/verified-objects.jsonl`).
 - `scripts/next_release_run.py` now does the plan/upload/permanent/stage phases of
