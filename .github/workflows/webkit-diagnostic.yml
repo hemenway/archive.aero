@@ -1,0 +1,41 @@
+name: WebKit version comparison
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/fix-mobile-webkit-ci]
+    paths: [.github/workflows/webkit-diagnostic.yml]
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        playwright: ['1.58.2', '1.64.0']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save --package-lock=false @playwright/test@${{ matrix.playwright }}
+      - run: npx playwright install --with-deps webkit
+      - run: npm run build:next
+      - name: Repeat the unchanged mobile viewer suite
+        env:
+          CI: 'true'
+          DEBUG: pw:browser,pw:protocol
+        run: |
+          mkdir -p diagnostics
+          npx playwright test --config next/playwright.config.mjs --project webkit-mobile --repeat-each 3 > diagnostics/browser.log 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: webkit-${{ matrix.playwright }}
+          path: |
+            diagnostics/
+            next/test-results/
+          retention-days: 7
