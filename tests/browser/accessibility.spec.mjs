@@ -91,7 +91,9 @@ test('keyboard users can inspect map center and browse canvas airfields', async 
   await page.locator('#toolsBtn').click();
   // Airfields start off (since 2026-09-25); the switch turns them on.
   await expect(page.locator('#airfieldsBtn')).toHaveAttribute('aria-pressed', 'false');
-  await page.locator('#airfieldsBtn').click();
+  // Exercise the keyboard path without mouse coordinates in Leaflet's scrolling container.
+  await page.locator('#airfieldsBtn').focus();
+  await page.keyboard.press('Space');
   await expect(page.locator('#airfieldsBtn')).toHaveAttribute('aria-pressed', 'true');
   await page.locator('#afBrowser summary').focus();
   await page.keyboard.press('Enter');
@@ -105,7 +107,8 @@ test('keyboard users can inspect map center and browse canvas airfields', async 
   await expect(page.locator('#afPanel')).toBeHidden();
   await expect(page.locator('#toolsBtn')).toBeFocused();
   await page.locator('#toolsBtn').click();
-  await page.locator('#airfieldsBtn').click();
+  await page.locator('#airfieldsBtn').focus();
+  await page.keyboard.press('Space');
   await expect(page.locator('#afSelect')).toBeDisabled();
   await expect(page.locator('#afCount')).toContainText('Turn on Airfields');
   expect(diagnostics).toEqual({ errors: [], unexpected: [] });
