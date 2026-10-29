@@ -36,7 +36,8 @@ addressed tiles, z0–12, and is 3,810,139,589 bytes.
 Release evidence: `~/archive-next-build/2026-10-28-faa-cycle/publication/`
 (`archive-readback.json`, `metadata-readback.json`, `served-byte-checks.json`,
 `verified-objects.jsonl`, deployment logs). Raw download evidence is below.
-Legacy Pages deployment and follow-up removal are recorded in the final entry.
+Legacy Pages deployment and regression CI passed; the follow-up is deleted.
+No remaining publication work. Final evidence is recorded below.
 
 ## Authorization and status
 
@@ -163,3 +164,18 @@ packaging, alignment and archive still follow). No user action needed.
 Heartbeat 2026-10-29 04:10 America/Chicago: all NUC stages succeeded. Era archive
 3.81 GB, z0–12, 7,529,437 addressed tiles. Alignment passed 12 probes with worst
 shift 0.00 px (0.3 px tolerance). Release candidate preparation/publication started.
+
+## Final completion — 2026-10-29 04:37 America/Chicago
+
+Release commit `a2b8d4d544f03c0f91c0c5824c1d79a222113f86` pushed to main.
+GitHub Pages deployment [40850040623](https://github.com/hemenway/archive.aero/actions/runs/40850040623)
+and full regression/browser suite [40850040559](https://github.com/hemenway/archive.aero/actions/runs/40850040559)
+both passed. All 57 new edition pages return correct metadata; live `dates.csv`
+exactly matches the release and both new legacy assets are served successfully.
+The initial Python urllib page probe received a client-specific 403; curl and
+browser verification passed. No website or content failure remained.
+
+`finish-faa-cycle-publication` was deleted after publication verification.
+Chat kept open. No previous published data was deleted. The unrelated Numbers
+backup remains untouched. Completion and page evidence are saved in
+`publication/completion.json` and `publication/edition-pages.json` under the candidate.
