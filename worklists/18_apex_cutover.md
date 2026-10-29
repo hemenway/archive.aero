@@ -1,6 +1,25 @@
 # 18 — Apex cutover and production rebuild
 
-## Current production — 2026-10-13 (evening, eighties release)
+## Current production — 2026-10-29 (FAA cycle)
+
+Added the October 29–December 24 era and 57 full-sheet editions. Both FAA VFR
+cycles were archived; see [FAA cycle worklist](faa_cycles_2026-10-28.md).
+
+- Manifest: `next/manifest.6e6525010d79.json` (3,775 eras).
+- Charts: `next/charts.785ce80026fe/`; pins: `next/pins.2be1b8a3451a/`;
+  airports: `next/airports.3c6f68e146c1/`.
+- Legacy bundle: `sectionals/metadata-5ca3db1f.bundle`; dates: 3,775 keys.
+- Site Worker: `2638c1e2-8ed4-457a-b81d-b8e269990e40`.
+- Tiles Worker: `4d9b9c63-c916-47fb-8289-6d7f9fd7c033`;
+  `CHART_CACHE_VERSION="2026-10-29-faa-cycle"`.
+- 58 archives and 336 metadata/card objects passed full-byte storage readback;
+  348 public ranges, eight mosaic tiles, metadata bytes and live browser passed.
+- All prior eras and chart records preserved. Existing basemap, airspace and
+  airfields references unchanged. Only the 57 requested editions were added.
+- Release: `~/archive-next-build/2026-10-28-faa-cycle/`; persistent production
+  inputs promoted to `~/archive-next-build/prod/`, with old inputs backed up.
+
+## Previous production — 2026-10-13 (evening, eighties release)
 
 Twelve 1985–1992 eras and 21 full-sheet artifacts added (worklist 04 entry of the
 same date). Pointers after this release:
